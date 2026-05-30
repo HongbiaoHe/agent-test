@@ -82,6 +82,48 @@ For multi-step tasks, state a brief plan:
 
 Strong success criteria let you loop independently. Weak criteria ("make it work") require constant clarification.
 
+## 5. Code Organization — High Cohesion, Colocate by Module
+
+**Keep a feature's files together. The directory IS the module boundary.**
+
+- Organize by feature/module, NOT by technical layer scattered across the tree.
+- **Backend (NestJS):** one directory per feature module, holding its `*.module.ts`,
+  `*.controller.ts`, `*.service.ts`, processors, `dto/`, `entities/` together —
+  e.g. `src/agent/{agent.module.ts, agent.service.ts, agent.processor.ts, dto/, entities/, ...}`.
+  Avoid global `services/` / `controllers/` / `dtos/` buckets.
+- **Frontend (Next.js):** colocate a feature's components, hooks, API clients, and types
+  in one directory; don't spread them across global `components/` / `hooks/` / `utils/`.
+- A module exposes a clear public surface (its `index`); internals stay private to the directory.
+- When a file or directory grows to do too many things, split it — that growth is the signal.
+
+## 6. Frontend Components — Reuse First, shadcn/ui by Default
+
+**Prefer existing components over hand-rolled UI. Build new ones only on top of them.**
+
+- Default to **shadcn/ui** components — don't reinvent buttons, dialogs, inputs, tables, forms, etc.
+- If shadcn/ui doesn't fit, build the new component **on top of** the shadcn/ui primitive
+  (wrap / compose / extend), never from scratch.
+- Favor high reuse and extensibility: when UI repeats, extract a component and reuse it.
+- If something can be a component, make it a component — compose, don't copy-paste.
+
+## 7. Frontend Design System — Follow the Tokens (REQUIRED for every page)
+
+**Every page and component MUST follow the project design system. No ad-hoc colors.**
+
+The design system is the **manus 暖中性 (warm-neutral)** system defined in
+`apps/frontend/src/app/globals.css` (semantic `oklch` tokens, light + dark via the `.dark` class).
+Reference implementation: `apps/frontend/src/app/demo/template/`.
+
+- **Semantic tokens only** — `bg-background` / `text-foreground` / `bg-card` /
+  `text-muted-foreground` / `bg-primary` / `text-primary-foreground` / `bg-accent` /
+  `border-border` / `text-destructive` / `ring-ring`, etc.
+  **Never hardcode colors** (no `zinc-*` / `gray-*` / `slate-*` / raw hex). Raw colors = wrong; convert to tokens.
+- **Both light and dark must hold.** Color comes from tokens — never assume one mode or write mode-specific hex.
+- **Radius & spacing**: `rounded-md/lg/xl` (driven by `--radius`) + 4/8px spacing rhythm; match `demo/template`.
+- **Icons**: `lucide-react` only — never emoji as structural icons.
+- **Components**: per §6, compose shadcn/ui primitives; place new business components beside the feature (per §5).
+- When unsure how something should look, open `demo/template/` and match it.
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

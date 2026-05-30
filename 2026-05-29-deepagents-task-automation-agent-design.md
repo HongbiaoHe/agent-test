@@ -55,14 +55,14 @@
                                     │   Agent Worker        │
                                     │  (独立 NestJS 进程,可多实例) │
                                     │  - deepagents loop    │
-                                    │  - streamEvents→Stream │
+                                    │  - stream→Stream       │
                                     │  - 消息落库 MySQL      │
                                     │  - interruptOn 审批    │
                                     └──────────┬───────────┘
                                     (一期)虚拟FS+外部工具
                                     (后期)SandboxProvider→沙箱
 
-  Redis:  ① BullMQ 队列  ② task:{id}:events Stream  ③ RedisSaver checkpointer  ④ resume 通道
+  Redis:  ① BullMQ 队列(run + resume + 超时 delayed job)  ② task:{id}:events Stream  ③ RedisSaver checkpointer
   MySQL:  tenants/users/assistants/tasks/messages/events_archive/approvals
 ```
 
@@ -73,7 +73,8 @@
 | Next.js 前端 | 渲染会话/任务、流式消息、审批卡片；Socket.IO 收事件发指令 | 不接触 LLM/沙箱 |
 | API Gateway | 鉴权、租户隔离、Socket.IO 网关、任务入 BullMQ、订阅 Redis Stream 转发、REST 拉历史 | **不跑 agent loop** |
 | Agent Worker | 领 BullMQ 任务、跑 deepagents、事件写 Stream + 落库、审批中断/恢复 | 不直接连前端 |
-| Redis | 队列 + Stream 事件流 + checkpointer + resume 通道 | — |
+| Redis | 队列(含 resume job) + Stream 事件流 + checkpointer | — |
+| Archiver | Stream consumer group 消费 task:*:events，MAXLEN 裁剪前落 events_archive（一期可内置于 Gateway 进程） | 不转发前端、不跑 agent |
 | MySQL | 持久真相源 | 不做实时 |
 
 **与 Claude Code 映射**：Gateway≈REPL/bridge 中转；Worker≈daemon；Redis Stream≈SSE 事件流 + seq 重连；MySQL≈`*.jsonl` transcript；`interruptOn`≈permission control 协议。
@@ -135,7 +136,7 @@ type CommandDef =
 
 **前端**：输入框监听 `/` → 弹补全面板，命令按 `domain-` 前缀**分组展示**（video / image / …）、支持 name+description **模糊搜索**与前缀过滤（输入 `/video` 只列 `video-*`）→ 选中填充 `/name ` → 补 args 提交。
 
-**存储（第一期）**：skill 文件打包镜像走 `FilesystemBackend` + `skills: ["./skills/"]`；prompt 模板走内置配置。**第一期无需 DB 表**；后期租户自定义再加 `commands` / `skills` 元数据表 + StoreBackend（namespace = 租户）。
+**存储（第一期）**：skill 文件打包镜像走 `FilesystemBackend`（多租户务必 `virtualMode: true` 防路径越权）+ `skills: ["./skills/"]`；prompt 模板走内置配置。**第一期无需 DB 表**；后期租户自定义再加 `commands` / `skills` 元数据表 + StoreBackend（namespace = 租户）。
 
 **与 Claude Code 映射**：`/command` 解析 ≈ commands.ts；Registry ≈ 可用 skill 列表；forcedSkill 注入 ≈ 用户显式调用而非模型自选。
 
@@ -151,7 +152,7 @@ type CommandDef =
 要点：用户消息先落库 + 前端乐观显示；入队即返回，长任务不阻塞连接。
 
 ### 5.2 收消息 / 流式（Worker → 前端）
-Worker 用 `agent.streamEvents(input, { configurable:{ thread_id: taskId }, version:'v2' })` 拿细粒度事件，每个事件包成统一信封写 Redis Stream：
+Worker 用 `agent.stream(input, { configurable:{ thread_id: taskId }, streamMode:['updates','messages','custom'], subgraphs:true })` 拿细粒度事件（deepagents 推荐方式；子 agent 独立流必须开 `subgraphs:true`），每个事件包成统一信封写 Redis Stream：
 ```ts
 interface TaskEvent {
   seq: string            // Redis Stream id
@@ -166,16 +167,20 @@ interface TaskEvent {
 Worker XADD → Redis Stream(task:{id}:events) → Gateway XREAD BLOCK 订阅 → socket.to(room=taskId).emit('task:event', evt)
   → 前端: token→累积流式 buffer(按行刷新);message→落定;tool_*→工具卡片;control_request→审批弹窗
 ```
+**`type` 的事件来源**（`normalize` 映射）：`token`/`tool_start`/`tool_end` ← `streamMode:'messages'`（token 流 + `tool_call_chunks`/`ToolMessage`）；`plan_update` ← `streamMode:'updates'` 的 `todos` channel；`control_request` ← `__interrupt__`；`message`/`result` ← `updates`；自定义进度 ← `streamMode:'custom'`（工具内 `config.writer`）。多模式组合时 `stream` 产出的元组是 `[namespace, mode, data]`。
+
 约定：**token 增量只走 Stream 不落库**，只有完整 message 落 MySQL。前端流式渲染复用 Claude Code 思路（增量累积 → 按行刷新 → 收到完整 message 原子替换）。
 
 ### 5.3 断线恢复
 ```
 前端记 lastSeq
   断线 → Socket.IO 重连 → emit('task:resume', {taskId, lastSeq})
-  → Gateway: XRANGE task:{id}:events (lastSeq, +] 补发 → 转 XREAD BLOCK 实时
+  → Gateway:
+     lastSeq 仍在 Stream → XRANGE task:{id}:events (lastSeq, +] 补发 → 转 XREAD BLOCK 实时
+     lastSeq 已被 MAXLEN 裁出 → 先从 events_archive 按 seq 补 (lastSeq, 已归档最大] → 再衔接 Stream/XREAD
   → 若任务已结束: 从 MySQL 拉完整历史 + 最终结果
 ```
-Stream 设 `MAXLEN ~ N` 控内存，更久远历史回落 `events_archive` 表。
+Stream 设 `MAXLEN ~ N` 控内存。**Redis MAXLEN 是裁剪即丢、无回调**，故由独立 **Archiver**（§4 组件，Stream consumer group）在裁剪前把事件落 `events_archive`——不能依赖"自动回落"。
 
 > 注意区分两种恢复：**前端展示恢复**（Stream+MySQL，不依赖 checkpointer）vs **agent 执行恢复**（checkpointer，审批/崩溃续跑）。
 
@@ -195,19 +200,24 @@ createDeepAgent({
 })
 ```
 
-流程：
+流程（关键：审批可能等很久，Worker **不在进程内阻塞等待**——命中中断即结束当前 job 释放 slot，决策回来后入队 resume job 由**任意** Worker 续跑，与"无状态可横扩 Worker 池"一致）：
 ```
-Worker: deepagents 执行到命中 interruptOn 的工具 → 图暂停,状态存 checkpointer
+[run job] Worker: deepagents 命中 interruptOn 的工具 → 图暂停,状态存 checkpointer → invoke 返回带 __interrupt__
   → result.__interrupt__[0].value 含 actionRequests + reviewConfigs
   → 包成 control_request 事件写 Stream → 前端审批卡片(显示工具名+参数,可编辑)
+  → task 状态置 waiting_approval → 当前 job 正常结束,释放 worker slot(不阻塞等人)
 用户决策 → emit('control:response', {requestId, decisions})
-  → Gateway 鉴权 → 写 task:{id}:resume 通道唤醒 Worker
-  → Worker: agent.invoke(new Command({ resume: { decisions } }), config)  // 必须同一 thread_id
+  → Gateway 鉴权 + 校验 requestId 命中当前未决审批
+  → BullMQ.add('agent-run', { taskId, kind:'resume', requestId, decisions })   // 复用任务队列,不再用独立 resume 通道
+  → [resume job] 任意空闲 Worker 领取 → agent.invoke(
+       new Command({ resume: { decisions } }),
+       { configurable: { thread_id: taskId }, context: { tenantId, userId } })   // 同 thread_id+checkpointer 续跑; context 同 §7.1 注入租户身份
+  → 续跑事件继续写同一 task:{id}:events Stream
 ```
 
-**决策类型（4 种，前端均需支持）**：`approve`（原参数执行）/ `edit`（改参数执行）/ `reject`（跳过）/ `respond`（人类回复当工具结果）。多工具调用时 `decisions` 数组按 `actionRequests` 顺序对应。
+**决策类型（4 种，前端均需支持）**：`approve`（原参数执行）/ `edit`（改参数执行，回传格式 `{ type:'edit', editedAction:{ name, args } }`）/ `reject`（跳过）/ `respond`（人类回复当工具结果）。多工具调用时 `decisions` 数组按 `actionRequests` 顺序对应。
 
-**兜底**：control_request 设 TTL（如 30min），超时默认 `reject` + 通知；每次决策落 `approvals` 表审计。
+**超时兜底**：发出 control_request 时同步排一个 BullMQ delayed job（如 30min）；到点若 task 仍 `waiting_approval`，按默认 `reject` 入队 resume job 续跑 + 通知（不依赖 Worker 进程内计时）。用户决策与超时是两个并发触发源——以 `task.status` 的 `waiting_approval → running` 原子 CAS 保证只续跑一次（幂等）。每次决策落 `approvals` 表审计。
 
 ## 7. deepagents 集成
 
@@ -220,20 +230,23 @@ const agent = createDeepAgent({
   backend: new StateBackend(),                   // 一期虚拟 FS
   interruptOn: { /* 审批策略 */ },
   checkpointer,                                  // RedisSaver
+  contextSchema,                                 // 多租户: 声明 context 形状, 供 namespace 工厂读取
   middleware: [ /* guardrails, 见 §9 */ ],
   // subagents: 一期不配
 })
 
-for await (const ev of agent.streamEvents(input, {
+for await (const [namespace, mode, data] of await agent.stream(input, {
   configurable: { thread_id: taskId },
-  version: 'v2',
+  context: { tenantId, userId },                 // 自托管无 serverInfo.user, 多租户身份只能经 context 注入
+  streamMode: ['updates', 'messages', 'custom'], // updates=状态/__interrupt__, messages=token/tool, custom=writer
+  subgraphs: true,                               // 子 agent 独立流必须开
 })) {
-  await publishToRedisStream(taskId, normalize(ev))
+  await publishToRedisStream(taskId, normalize(namespace, mode, data))
 }
 ```
 
 ### 7.2 内置默认中间件（deepagents 自带）
-`TodoListMiddleware`、`FilesystemMiddleware`、`SubAgentMiddleware`、`SummarizationMiddleware`、`AnthropicPromptCachingMiddleware`、`PatchToolCallsMiddleware`；传 `interruptOn` 自动加 `HumanInTheLoopMiddleware`。
+`TodoListMiddleware`、`FilesystemMiddleware`、`SubAgentMiddleware`、`SummarizationMiddleware`、`AnthropicPromptCachingMiddleware`、`PatchToolCallsMiddleware`；传 `interruptOn` 自动加 `HumanInTheLoopMiddleware`、传 `skills` 自动加 `SkillsMiddleware`、传 `memory` 自动加 `MemoryMiddleware`。
 
 ### 7.3 工具来源（统一成 LangChain tools）
 | 来源 | 接入方式 |
@@ -267,7 +280,7 @@ tasks              ≈thread: id(=thread_id), tenantId, userId, assistantId, goa
                    lastSeq, createdAt
 messages           对话树: uuid, taskId, parentUuid, role(user|assistant|tool), type,
                    content(JSON), seq, createdAt   ← parentUuid 应用层 walk 重建链
-events_archive     taskId, seq, type, payload(JSON), ts  (Stream 超 MAXLEN 的回落)
+events_archive     taskId, seq, type, payload(JSON), ts  (Archiver 经 consumer group 落库; 供 lastSeq 超出 Stream 窗口时重放)
 approvals          审批审计: taskId, requestId, toolName, args(JSON),
                    decision(approve|edit|reject|respond), editedArgs, decidedBy, decidedAt
 ```
@@ -275,13 +288,12 @@ approvals          审批审计: taskId, requestId, toolName, args(JSON),
 ### Redis（运行时状态）
 ```
 checkpointer       RedisSaver, key 按 thread_id → 图状态/审批断点/续跑
-task:{id}:events   Stream, XADD 自增 id=seq, MAXLEN 限长
-bull:agent-run     BullMQ 队列
-task:{id}:resume   审批响应回传通道(唤醒 Worker)
+task:{id}:events   Stream, XADD 自增 id=seq, MAXLEN 限长; Archiver consumer group 裁剪前落档
+bull:agent-run     BullMQ 队列(run job + resume job + 审批超时 delayed job)
 ```
 
 ### 多租户隔离（贯穿每层）
-Gateway 鉴权校验 tenantId → Socket.IO room 按 taskId → checkpointer/StoreBackend namespace 按 `(tenantId,userId)` → MySQL 查询带 tenantId。
+Gateway 鉴权校验 tenantId → Socket.IO room 按 taskId → checkpointer/StoreBackend namespace 按 `(tenantId,userId)`（自托管无 Platform 的 `serverInfo.user`，namespace 工厂只能取 `rt.runtime.context.*`——故 Worker 必须配 `contextSchema` 且 `stream/invoke(..., { context:{ tenantId, userId } })` 注入，见 §7.1）→ MySQL 查询带 tenantId。
 
 ## 9. 守护、错误处理与测试
 
@@ -301,14 +313,14 @@ middleware: [
 |------|------|
 | LLM API 错误 | 指数退避重试 6→10 次 + fallback 模型 |
 | 工具失败 | `toolRetryMiddleware` 重试；仍失败把错误回灌模型自调整 |
-| 审批超时 | control_request TTL，超时默认 `reject` + 通知 |
+| 审批超时 | BullMQ delayed job 到点 → 默认 `reject` 重入队续跑 + 通知（详见 §6） |
 | Worker 崩溃 | BullMQ 重试 job + checkpointer 从断点续跑 |
 | 前端断线 | Socket.IO 重连 + `task:resume{lastSeq}` 重放 |
 | 上下文超限 | deepagents 自动 offload + summarize |
 
 ### 9.3 测试策略
 - **单元**：事件信封 normalize 映射、审批决策（approve/edit/reject/respond）处理、对话树 parentUuid 重建、`SandboxProvider` 接口 mock。
-- **集成**：Worker→Stream→Gateway 事件流贯通、`lastSeq` 断线重放、`interruptOn` 中断→`Command(resume)` 恢复（MemorySaver 注入）、BullMQ 任务生命周期。
+- **集成**：Worker→Stream→Gateway 事件流贯通、`lastSeq` 断线重放、**Archiver 落档 + lastSeq 超 Stream 窗口时从 events_archive 重放**、`interruptOn` 中断 → resume 重入队由任意 Worker `Command(resume)` 续跑（MemorySaver 注入）、BullMQ 任务生命周期。
 - **E2E**：提交目标→规划→工具调用→审批弹窗→批准→完成；断线重连恢复；任务暂停后续跑。
 
 ## 10. 第一期范围与 YAGNI 边界

@@ -1,0 +1,29 @@
+services:
+  mysql:
+    image: mysql:8
+    environment:
+      MYSQL_ROOT_PASSWORD: dev
+      MYSQL_DATABASE: agent
+    ports:
+      - "3306:3306"
+    volumes:
+      - ./.docker-data/mysql:/var/lib/mysql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "localhost", "-pdev"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+
+  redis:
+    # redis-stack-server = Redis + RediSearch + RedisJSON 模块
+    # （@langchain/langgraph-checkpoint-redis 的 RedisSaver 依赖 FT.CREATE / JSON.SET）
+    image: redis/redis-stack-server:latest
+    ports:
+      - "6379:6379"
+    volumes:
+      - ./.docker-data/redis:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 20

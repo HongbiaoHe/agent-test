@@ -1,0 +1,20 @@
+# dependencies
+node_modules/
+.pnpm-store/
+.docker-data/
+
+# builds
+dist/
+.next/
+out/
+build/
+coverage/
+
+# env
+.env
+.env.*
+!.env.example
+
+# misc
+*.log
+.DS_Store

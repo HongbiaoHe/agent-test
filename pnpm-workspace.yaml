@@ -1,0 +1,21 @@
+packages:
+  - apps/*
+
+allowBuilds:
+  '@nestjs/core': true
+  '@prisma/client': true
+  '@prisma/engines': true
+  esbuild: true
+  msgpackr-extract: true
+  msw: true
+  prisma: true
+  sharp: true
+  unrs-resolver: true
+
+# 允许这些包运行构建/postinstall 脚本：
+#   sharp / unrs-resolver: 原生模块，允许构建以确保二进制 binding 正确
+#   @nestjs/core: postinstall 为捐赠提示，无副作用
+onlyBuiltDependencies:
+  - '@nestjs/core'
+  - sharp
+  - unrs-resolver

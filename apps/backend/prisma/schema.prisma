@@ -1,0 +1,61 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "mysql"
+  url      = env("DATABASE_URL")
+}
+
+model Tenant {
+  id        String   @id @default(cuid())
+  name      String
+  users     User[]
+  createdAt DateTime @default(now())
+}
+
+model User {
+  id        String   @id @default(cuid())
+  email     String   @unique
+  tenantId  String
+  tenant    Tenant   @relation(fields: [tenantId], references: [id])
+  createdAt DateTime @default(now())
+
+  @@index([tenantId])
+}
+
+model Conversation {
+  id        String    @id @default(cuid())
+  goal      String    @db.Text
+  status    String    @default("queued") // queued | running | waiting_approval | done | failed
+  tenantId  String
+  userId    String
+  messages  Message[]
+  createdAt DateTime  @default(now())
+  updatedAt DateTime  @updatedAt
+
+  @@index([tenantId])
+}
+
+model Message {
+  id             String       @id @default(cuid())
+  conversationId String
+  conversation   Conversation @relation(fields: [conversationId], references: [id])
+  role           String // user | assistant | tool
+  type           String // message | tool_call | tool_result | plan | result | control_request
+  content        Json
+  seq            Int
+  createdAt      DateTime     @default(now())
+
+  @@index([conversationId, seq])
+}
+
+model Approval {
+  id             String   @id @default(cuid())
+  conversationId String
+  decision       String // approve | edit | reject | respond | timeout
+  payload        Json // 完整 decisions / 上下文
+  decidedAt      DateTime @default(now())
+
+  @@index([conversationId])
+}

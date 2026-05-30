@@ -1,0 +1,23 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "backend",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "export PATH=$HOME/.nvm/versions/node/v22.21.1/bin:$PATH; exec pnpm --filter backend start:dev"
+      ],
+      "port": 3001
+    },
+    {
+      "name": "frontend",
+      "runtimeExecutable": "bash",
+      "runtimeArgs": [
+        "-c",
+        "export PATH=$HOME/.nvm/versions/node/v22.21.1/bin:$PATH; exec pnpm --filter frontend dev"
+      ],
+      "port": 3000
+    }
+  ]
+}
