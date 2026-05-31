@@ -10,7 +10,8 @@ import {
   WebSocketServer,
 } from '@nestjs/websockets';
 import { Queue } from 'bullmq';
-import { Server, Socket } from 'socket.io';
+import { type DefaultEventsMap, Server, Socket } from 'socket.io';
+import { Prisma } from '@prisma/client';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from './stream.service';
 
@@ -18,6 +19,20 @@ interface SocketUser {
   userId: string;
   tenantId: string;
 }
+
+/** 挂在 socket.data 上的每连接状态（socket.io 第 4 个泛型）。 */
+interface SocketData {
+  user?: SocketUser;
+  // 该 socket 已订阅的会话集合，用于「同 socket 同会话」订阅去重。
+  subscribed?: Set<string>;
+}
+
+type AppSocket = Socket<
+  DefaultEventsMap,
+  DefaultEventsMap,
+  DefaultEventsMap,
+  SocketData
+>;
 
 @WebSocketGateway({
   cors: { origin: process.env.CORS_ORIGIN ?? 'http://localhost:3000' },
@@ -34,15 +49,17 @@ export class EventsGateway implements OnGatewayConnection {
   ) {}
 
   /** 连接时验证 handshake.auth.token（与 REST 同一个 JWT），注入 socket.data.user。 */
-  async handleConnection(socket: Socket) {
+  async handleConnection(socket: AppSocket) {
     const token = socket.handshake.auth?.token as string | undefined;
     if (!token) {
       socket.disconnect();
       return;
     }
     try {
-      const p = await this.jwt.verifyAsync(token);
-      socket.data.user = { userId: p.sub, tenantId: p.tenantId } as SocketUser;
+      const p = await this.jwt.verifyAsync<{ sub: string; tenantId: string }>(
+        token,
+      );
+      socket.data.user = { userId: p.sub, tenantId: p.tenantId };
     } catch {
       this.logger.warn('socket 鉴权失败，断开连接');
       socket.disconnect();
@@ -53,18 +70,28 @@ export class EventsGateway implements OnGatewayConnection {
   @SubscribeMessage('conversation:subscribe')
   async handleSubscribe(
     @MessageBody() body: { conversationId: string },
-    @ConnectedSocket() socket: Socket,
+    @ConnectedSocket() socket: AppSocket,
   ) {
     const conversationId = body?.conversationId;
-    const user = socket.data.user as SocketUser | undefined;
+    const user = socket.data.user;
     if (!conversationId || !user) return { ok: false };
+
+    // 同一 socket 对同一会话只保留一个 reader：socket 是单例长连接（切换会话不断连），
+    // 前端每次切换都会重新 subscribe，若每次都新建 reader 会累积，导致同一事件被多次 emit。
+    // 这里同步占位去重（含并发重订阅），鉴权失败再回滚。
+    const subscribed = (socket.data.subscribed ??= new Set<string>());
+    if (subscribed.has(conversationId)) return { ok: true };
+    subscribed.add(conversationId);
 
     // 租户隔离：只能订阅自己租户的会话
     const conv = await this.prisma.conversation.findFirst({
       where: { id: conversationId, tenantId: user.tenantId },
       select: { id: true },
     });
-    if (!conv) return { ok: false, reason: 'forbidden' };
+    if (!conv) {
+      subscribed.delete(conversationId);
+      return { ok: false, reason: 'forbidden' };
+    }
 
     let stopped = false;
     socket.on('disconnect', () => {
@@ -85,10 +112,10 @@ export class EventsGateway implements OnGatewayConnection {
   @SubscribeMessage('control:response')
   async handleControlResponse(
     @MessageBody() body: { conversationId: string; decisions: unknown[] },
-    @ConnectedSocket() socket: Socket,
+    @ConnectedSocket() socket: AppSocket,
   ) {
     const { conversationId, decisions } = body;
-    const user = socket.data.user as SocketUser | undefined;
+    const user = socket.data.user;
     if (!conversationId || !Array.isArray(decisions) || !user) {
       return { ok: false };
     }
@@ -101,17 +128,22 @@ export class EventsGateway implements OnGatewayConnection {
       },
       data: { status: 'running' },
     });
-    if (cas.count === 0) return { ok: false, reason: 'already_resolved_or_forbidden' };
+    if (cas.count === 0)
+      return { ok: false, reason: 'already_resolved_or_forbidden' };
 
     const first = decisions[0] as { type?: string } | undefined;
     await this.prisma.approval.create({
       data: {
         conversationId,
         decision: first?.type ?? 'unknown',
-        payload: decisions as object,
+        payload: decisions as Prisma.InputJsonValue,
       },
     });
-    await this.queue.add('resume', { conversationId, kind: 'resume', decisions });
+    await this.queue.add('resume', {
+      conversationId,
+      kind: 'resume',
+      decisions,
+    });
     return { ok: true };
   }
 }
