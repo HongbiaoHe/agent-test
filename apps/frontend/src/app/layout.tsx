@@ -27,6 +27,9 @@ export default function RootLayout({
     <html
       lang="en"
       className={`${geistSans.variable} ${geistMono.variable} h-full antialiased`}
+      // 浏览器扩展/远程框架工具会在 React 前往 <html> 注入属性（如 __gcrremoteframetoken），
+      // 抑制由此产生的 hydration 警告
+      suppressHydrationWarning
     >
       <body className="min-h-full flex flex-col">
         <Providers>{children}</Providers>

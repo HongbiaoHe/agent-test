@@ -1,17 +1,38 @@
 import NextAuth from "next-auth";
 import Credentials from "next-auth/providers/credentials";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+// 服务端直连后端（绝对地址）：NEXT_PUBLIC_API_BASE_URL 现在是浏览器侧同源前缀（/api-backend），
+// 服务端 fetch 不能用相对路径，故走内网直连地址。
+const API_BASE = process.env.BACKEND_INTERNAL_URL ?? "http://localhost:3001";
+
+/** 从后端 JWT 解出 email（仅用于展示，不做验签——token 由后端刚签发并经本源传回）。 */
+function decodeJwtEmail(token: string): string | undefined {
+  try {
+    const payload = token.split(".")[1];
+    const json = Buffer.from(payload, "base64").toString("utf8");
+    return (JSON.parse(json) as { email?: string }).email;
+  } catch {
+    return undefined;
+  }
+}
 
 export const { handlers, auth, signIn, signOut } = NextAuth({
   session: { strategy: "jwt" },
+  // 信任反代/隧道转发的 Host（配合 AUTH_TRUST_HOST），ngrok 域名下也能正确生成回调地址
+  trustHost: true,
   pages: { signIn: "/login" },
   providers: [
     Credentials({
-      credentials: { email: {} },
-      // 调 NestJS /auth/login 拿后端标准 JWT；authorize 返回的字段进 jwt callback
+      // email：开发态邮箱兜底；token：passkey 已在后端验证并签发，直接桥接
+      credentials: { email: {}, token: {} },
       async authorize(credentials) {
+        // Passkey 路径：后端 PasskeyService 验证通过后给的 backendToken，直接使用
+        const token = credentials?.token as string | undefined;
+        if (token) {
+          const email = decodeJwtEmail(token) ?? "passkey-user";
+          return { id: email, email, backendToken: token };
+        }
+        // 邮箱兜底：调 NestJS /auth/login 拿后端标准 JWT
         const email = credentials?.email as string | undefined;
         if (!email) return null;
         const res = await fetch(`${API_BASE}/auth/login`, {

@@ -9,11 +9,8 @@ export class AuthService {
     private readonly jwt: JwtService,
   ) {}
 
-  /**
-   * 简化登录（开发期，passkey/WebAuthn 留设计文档 §4.1 后续）：
-   * email 不存在则自动建租户 + 用户（一 email 一租户，便于演示多租户隔离）。
-   */
-  async login(email: string): Promise<{ token: string }> {
+  /** email 不存在则自动建租户 + 用户（一 email 一租户，便于演示多租户隔离）。 */
+  async findOrCreateByEmail(email: string) {
     let user = await this.prisma.user.findUnique({ where: { email } });
     if (!user) {
       const tenant = await this.prisma.tenant.create({ data: { name: email } });
@@ -21,11 +18,25 @@ export class AuthService {
         data: { email, tenantId: tenant.id },
       });
     }
-    const token = await this.jwt.signAsync({
+    return user;
+  }
+
+  /** 签发后端标准 JWT（REST/socket 鉴权用）。 */
+  signToken(user: {
+    id: string;
+    tenantId: string;
+    email: string;
+  }): Promise<string> {
+    return this.jwt.signAsync({
       sub: user.id,
       tenantId: user.tenantId,
       email: user.email,
     });
-    return { token };
+  }
+
+  /** 邮箱登录（开发态兜底；passkey 为主，见 PasskeyService）。 */
+  async login(email: string): Promise<{ token: string }> {
+    const user = await this.findOrCreateByEmail(email);
+    return { token: await this.signToken(user) };
   }
 }

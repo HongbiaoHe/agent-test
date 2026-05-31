@@ -70,11 +70,13 @@ export class EventsGateway implements OnGatewayConnection {
     socket.on('disconnect', () => {
       stopped = true;
     });
+    // 从 '$' 起只推订阅之后的新增事件：历史由前端 GET /conversations/:id 提供，
+    // 二者不重叠，避免历史 + 回放重复渲染同一批事件。
     void this.stream.subscribe(
       conversationId,
       (evt) => socket.emit('conversation:event', evt),
       () => stopped,
-      '0',
+      '$',
     );
     return { ok: true };
   }

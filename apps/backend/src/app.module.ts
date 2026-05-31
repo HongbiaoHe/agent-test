@@ -8,6 +8,7 @@ import { EventsModule } from './events/events.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RedisModule } from './redis/redis.module';
 import { AuthModule } from './auth/auth.module';
+import { CommandsModule } from './commands/commands.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { WorkerModule } from './worker/worker.module';
 
@@ -37,6 +38,7 @@ import { WorkerModule } from './worker/worker.module';
     AuthModule,
     PrismaModule,
     RedisModule,
+    CommandsModule,
     EventsModule,
     WorkerModule,
     ConversationsModule,

@@ -16,12 +16,27 @@ model Tenant {
 
 model User {
   id        String   @id @default(cuid())
-  email     String   @unique
-  tenantId  String
-  tenant    Tenant   @relation(fields: [tenantId], references: [id])
-  createdAt DateTime @default(now())
+  email          String          @unique
+  tenantId       String
+  tenant         Tenant          @relation(fields: [tenantId], references: [id])
+  authenticators Authenticator[]
+  createdAt      DateTime        @default(now())
 
   @@index([tenantId])
+}
+
+/** WebAuthn/Passkey 凭据（一个用户可注册多把）。 */
+model Authenticator {
+  id           String   @id @default(cuid())
+  credentialId String   @unique // base64url 编码的 credential ID，登录时按此查找
+  userId       String
+  user         User     @relation(fields: [userId], references: [id])
+  publicKey    Bytes // COSE 公钥
+  counter      Int      @default(0) // 签名计数器，防重放
+  transports   String? // 逗号拼接，如 "internal,hybrid"
+  createdAt    DateTime @default(now())
+
+  @@index([userId])
 }
 
 model Conversation {

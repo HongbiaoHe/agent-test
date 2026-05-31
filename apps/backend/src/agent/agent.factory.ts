@@ -11,9 +11,16 @@ const SYSTEM_PROMPT = `你是一个任务自动化助手。
 export interface BuildAgentOptions {
   /** RedisSaver 实例；配 interruptOn 审批时必须传。 */
   checkpointer?: unknown;
+  /** 追加到系统提示末尾（如 /command 强制使用某技能的指令）。 */
+  systemPromptExtra?: string;
 }
 
-/** 装配主 agent：Gemini + 内置 + get_weather + 需审批的 send_email。 */
+/**
+ * 装配主 agent：Gemini + 内置 + get_weather + 需审批的 send_email。
+ * 启用 deepagents 原生 SkillsMiddleware：技能文件由 worker 每轮经 invoke 的 `files`
+ * 注入 per-thread StateBackend 的 /skills/ 下；中间件把技能列进系统提示，agent 用
+ * read_file 按需加载（progressive disclosure）。`files` 随 thread_id 隔离 → 多租户互不影响。
+ */
 export function buildAgent(opts: BuildAgentOptions = {}): any {
   const model = new ChatGoogleGenerativeAI({
     model: process.env.GOOGLE_GENAI_MODEL ?? 'gemini-2.0-flash',
@@ -22,9 +29,10 @@ export function buildAgent(opts: BuildAgentOptions = {}): any {
 
   return createDeepAgent({
     model,
-    systemPrompt: SYSTEM_PROMPT,
+    systemPrompt: SYSTEM_PROMPT + (opts.systemPromptExtra ?? ''),
     tools: [getWeatherTool, sendEmailTool],
     backend: new StateBackend(),
+    skills: ['/skills/'],
     interruptOn: { send_email: true },
     checkpointer: opts.checkpointer as never,
   });

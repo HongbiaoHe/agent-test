@@ -5,6 +5,8 @@ import { Job, Queue } from 'bullmq';
 import { buildAgent } from '../agent/agent.factory';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
 import { normalize, RawEvent } from '../agent/event-normalizer';
+import { CommandRegistryService } from '../commands/command-registry.service';
+import { parseCommand } from '../commands/parse-command';
 import { StreamService } from '../events/stream.service';
 import { PrismaService } from '../prisma/prisma.service';
 
@@ -34,6 +36,7 @@ export class AgentProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly stream: StreamService,
+    private readonly commands: CommandRegistryService,
     @Inject(CHECKPOINTER) private readonly checkpointer: unknown,
     @InjectQueue('agent-run') private readonly queue: Queue,
   ) {
@@ -41,7 +44,7 @@ export class AgentProcessor extends WorkerHost {
   }
 
   async process(job: Job<JobData>): Promise<void> {
-    const { conversationId, goal, kind, decisions } = job.data;
+    const { conversationId, kind, decisions } = job.data;
 
     if (kind === 'timeout') {
       await this.handleTimeout(conversationId);
@@ -49,7 +52,6 @@ export class AgentProcessor extends WorkerHost {
     }
 
     const config = { configurable: { thread_id: conversationId } };
-    const agent = buildAgent({ checkpointer: this.checkpointer });
 
     try {
       await this.prisma.conversation.update({
@@ -57,13 +59,52 @@ export class AgentProcessor extends WorkerHost {
         data: { status: 'running' },
       });
 
-      const input =
-        kind === 'resume'
-          ? new Command({ resume: { decisions } })
-          : { messages: [{ role: 'user', content: goal }] };
+      // resume 续跑沿用 checkpointer 的中断态；run/追加则从 DB 重放完整对话历史，
+      // 因为 deepagents 跑完一轮后不在持久化 state 保留对话消息（同 thread_id 续跑拿不到上文）。
+      let runName = `审批续跑 · ${conversationId}`;
+      let input: unknown;
+      if (kind === 'resume') {
+        input = new Command({ resume: { decisions } });
+      } else {
+        const messages = await this.loadHistory(conversationId);
+        // 把所有技能文件注入 per-thread state 的 /skills/ 下，供 deepagents SkillsMiddleware 发现/列出，
+        // agent 据系统提示用 read_file 按需加载（原生 progressive disclosure）。files 随 thread_id 隔离。
+        const now = new Date().toISOString();
+        const files: Record<
+          string,
+          { content: string[]; created_at: string; modified_at: string }
+        > = {};
+        for (const def of this.commands.all()) {
+          files[`/skills/${def.name}/SKILL.md`] = {
+            content: def.raw.split('\n'),
+            created_at: now,
+            modified_at: now,
+          };
+        }
+        // /command 显式触发：把命令消息转成明确指令（展示用的原始命令仍存 DB），让 agent 去用该技能
+        let lastLabel = '';
+        for (const m of messages) {
+          if (m.role !== 'user') continue;
+          lastLabel = `Agent · ${m.content.slice(0, 60)}`;
+          const cmd = parseCommand(m.content);
+          if (!cmd) continue;
+          const def = this.commands.get(cmd.name);
+          if (!def) continue;
+          m.content = `请使用「${def.name}」技能完成以下任务（先用 read_file 读取 /skills/${def.name}/SKILL.md 获取技能说明）：\n${cmd.args || '（无附加内容，请按该技能说明执行）'}`;
+          lastLabel = `技能:${def.name} · ${cmd.args}`.slice(0, 60);
+        }
+        runName = lastLabel || runName;
+        input = { messages, files };
+      }
 
+      const agent = buildAgent({ checkpointer: this.checkpointer });
+
+      // runName/tags/metadata → LangSmith 里按此命名/过滤，而非只显示 "LangGraph"
       const stream = await agent.stream(input, {
         ...config,
+        runName,
+        tags: ['buzz-agent', kind ?? 'run'],
+        metadata: { conversationId, kind: kind ?? 'run' },
         streamMode: ['updates', 'messages'],
         subgraphs: true,
       } as never);
@@ -105,10 +146,10 @@ export class AgentProcessor extends WorkerHost {
         where: { id: conversationId },
         data: { status: 'done' },
       });
-      await this.stream.publish(conversationId, {
-        type: 'result',
-        payload: { status: 'done' },
-      });
+      // 持久化 result：历史据此收尾未完成的工具卡、置为 done；实时丢失/重连也能从历史对齐。
+      const resultEvt: RawEvent = { type: 'result', payload: { status: 'done' } };
+      await this.stream.publish(conversationId, resultEvt);
+      await this.persist(conversationId, resultEvt, seq++);
       this.logger.log(`agent 完成: conversation=${conversationId}`);
     } catch (e) {
       this.logger.error(`agent 失败: conversation=${conversationId} ${String(e)}`);
@@ -116,11 +157,37 @@ export class AgentProcessor extends WorkerHost {
         where: { id: conversationId },
         data: { status: 'failed' },
       });
-      await this.stream.publish(conversationId, {
+      const errorEvt: RawEvent = {
         type: 'error',
         payload: { message: e instanceof Error ? e.message : String(e) },
-      });
+      };
+      await this.stream.publish(conversationId, errorEvt);
+      // catch 作用域取不到 try 内的 seq，重新计数后持久化
+      const seq = await this.prisma.message.count({ where: { conversationId } });
+      await this.persist(conversationId, errorEvt, seq);
     }
+  }
+
+  /**
+   * 从 DB 重放该会话的完整对话历史（user/assistant 文本消息，按 seq）。
+   * 工具调用/结果是每轮内的临时过程，不重放（也无法重建合法的 tool_call 配对）。
+   */
+  private async loadHistory(
+    conversationId: string,
+  ): Promise<{ role: string; content: string }[]> {
+    const rows = await this.prisma.message.findMany({
+      where: {
+        conversationId,
+        type: 'message',
+        role: { in: ['user', 'assistant'] },
+      },
+      orderBy: { seq: 'asc' },
+      select: { role: true, content: true },
+    });
+    return rows.map((m) => ({
+      role: m.role,
+      content: (m.content as { text?: string })?.text ?? '',
+    }));
   }
 
   /** 超时兜底：CAS 抢占成功则按默认 reject 续跑（用户已决策则 CAS 失败、忽略）。 */

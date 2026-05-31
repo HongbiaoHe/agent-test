@@ -1,8 +1,8 @@
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 
-const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+// SSR 服务端取数：直连后端内网地址（NEXT_PUBLIC_API_BASE_URL 已改为浏览器侧同源前缀）
+const API_BASE = process.env.BACKEND_INTERNAL_URL ?? "http://localhost:3001";
 
 interface ConvItem {
   id: string;
