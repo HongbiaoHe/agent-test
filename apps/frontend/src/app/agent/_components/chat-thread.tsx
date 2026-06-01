@@ -24,6 +24,7 @@ import { listCommands } from "@/lib/api";
 import type { Approval, Decision, ThreadItem } from "../_lib/thread";
 import { ApprovalCard } from "./approval-card";
 import { ChatMessage } from "./chat-message";
+import { TaskPlanPanel } from "./task-plan-panel";
 
 export function ChatThread({
   title,
@@ -128,6 +129,12 @@ export function ChatThread({
 
   const showEmpty = !isLoading && items.length === 0;
 
+  // 任务计划独立固定在输入框上方，故从消息流中剔除，避免重复渲染
+  const plan = items.find(
+    (it): it is Extract<ThreadItem, { kind: "plan" }> => it.kind === "plan",
+  );
+  const streamItems = items.filter((it) => it.kind !== "plan");
+
   return (
     <section className="flex h-full min-w-0 flex-1 flex-col bg-background">
       {/* 顶栏 */}
@@ -180,7 +187,7 @@ export function ChatThread({
             </div>
           ) : (
             <>
-              {items.map((item) => (
+              {streamItems.map((item) => (
                 <ChatMessage
                   key={item.id}
                   item={item}
@@ -202,6 +209,9 @@ export function ChatThread({
       {/* 输入区 */}
       <div className="shrink-0 px-5 pb-4">
         <div className="relative mx-auto max-w-3xl">
+          {/* 任务计划：固定在输入框上方，可折叠/展开 */}
+          {plan && <TaskPlanPanel todos={plan.todos} />}
+
           {/* 命令补全面板（输入 / 时浮在输入框上方，按 domain 分组）*/}
           {showCmdMenu && (
             <div className="absolute bottom-full mb-2 max-h-72 w-full overflow-y-auto rounded-xl border bg-popover p-1.5 shadow-lg">

@@ -2,7 +2,6 @@
 
 import {
   CloudSun,
-  ListChecks,
   Loader,
   Mail,
   Sparkles,
@@ -10,7 +9,6 @@ import {
   type LucideIcon,
 } from "lucide-react";
 
-import { TodoList } from "@/components/agent/todo-list";
 import { cn } from "@/lib/utils";
 
 import type { ThreadItem } from "../_lib/thread";
@@ -88,26 +86,16 @@ export function ChatMessage({
     );
   }
 
-  if (item.kind === "plan") {
+  if (item.kind === "error") {
     return (
       <div className={INDENT}>
-        <div className="rounded-xl border bg-card p-3">
-          <div className="mb-2 flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <ListChecks className="size-3.5" />
-            任务计划
-          </div>
-          <TodoList todos={item.todos} />
+        <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+          {item.text}
         </div>
       </div>
     );
   }
 
-  // error
-  return (
-    <div className={INDENT}>
-      <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-        {item.text}
-      </div>
-    </div>
-  );
+  // plan 由输入框上方的固定面板渲染（见 TaskPlanPanel），此处不再展示。
+  return null;
 }
