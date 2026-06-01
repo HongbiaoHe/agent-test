@@ -3,6 +3,9 @@ node_modules/
 .pnpm-store/
 .docker-data/
 
+# pm2 (本项目独立 daemon 的 home：进程列表 / 日志 / socket)
+.pm2/
+
 # builds
 dist/
 .next/
