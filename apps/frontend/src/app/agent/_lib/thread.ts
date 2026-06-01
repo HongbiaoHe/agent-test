@@ -41,6 +41,17 @@ export interface ThreadState {
   nextId: number;
 }
 
+/** 工具结果可能是字符串或对象，统一转成可读文本（对象做缩进 JSON），避免渲染成 [object Object]。 */
+function stringifyContent(content: unknown): string {
+  if (content == null) return "";
+  if (typeof content === "string") return content;
+  try {
+    return JSON.stringify(content, null, 2);
+  } catch {
+    return String(content);
+  }
+}
+
 const EMPTY: ThreadState = {
   items: [],
   status: "idle",
@@ -95,7 +106,7 @@ export function reduce(state: ThreadState, ev: NormalizedEvent): ThreadState {
       for (let i = items.length - 1; i >= 0; i--) {
         const it = items[i];
         if (it.kind === "tool" && it.name === name && !it.done) {
-          items[i] = { ...it, result: String(ev.payload?.content ?? ""), done: true };
+          items[i] = { ...it, result: stringifyContent(ev.payload?.content), done: true };
           break;
         }
       }

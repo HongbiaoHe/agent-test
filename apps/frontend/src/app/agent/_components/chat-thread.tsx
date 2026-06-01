@@ -55,6 +55,7 @@ export function ChatThread({
   onOpenSidebar: () => void;
 }) {
   const [draft, setDraft] = useState("");
+  const [activeIndex, setActiveIndex] = useState(0);
   const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
 
@@ -76,6 +77,20 @@ export function ChatThread({
         );
   const showCmdMenu = !busy && cmdPrefix !== null && matches.length > 0;
 
+  // 按 domain 分组展示；flat 为菜单从上到下的实际可选顺序（键盘导航以此为准）
+  const grouped = matches.reduce<Record<string, typeof matches>>((acc, c) => {
+    (acc[c.domain] ??= []).push(c);
+    return acc;
+  }, {});
+  const flat = Object.values(grouped).flat();
+
+  // 候选项变化（输入过滤 / 菜单重新打开）时，默认高亮第一个
+  const [prevPrefix, setPrevPrefix] = useState(cmdPrefix);
+  if (prevPrefix !== cmdPrefix) {
+    setPrevPrefix(cmdPrefix);
+    setActiveIndex(0);
+  }
+
   // 新消息 / 审批出现时滚动到底
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
@@ -94,19 +109,22 @@ export function ChatThread({
   }
 
   function onKeyDown(e: React.KeyboardEvent<HTMLTextAreaElement>) {
+    if (showCmdMenu && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
+      e.preventDefault();
+      setActiveIndex((i) =>
+        e.key === "ArrowDown"
+          ? (i + 1) % flat.length
+          : (i - 1 + flat.length) % flat.length,
+      );
+      return;
+    }
     if (e.key === "Enter" && !e.shiftKey) {
       e.preventDefault();
-      // 补全打开时 Enter 选中首个命令，而不是发送半截命令
-      if (showCmdMenu) pickCommand(matches[0].name);
+      // 补全打开时 Enter 选中当前高亮命令并收起菜单，而不是发送半截命令
+      if (showCmdMenu) pickCommand((flat[activeIndex] ?? flat[0]).name);
       else submit();
     }
   }
-
-  // 按 domain 分组展示
-  const grouped = matches.reduce<Record<string, typeof matches>>((acc, c) => {
-    (acc[c.domain] ??= []).push(c);
-    return acc;
-  }, {});
 
   const showEmpty = !isLoading && items.length === 0;
 
@@ -192,27 +210,39 @@ export function ChatThread({
                   <div className="px-2 py-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
                     {domain}
                   </div>
-                  {cmds.map((c) => (
-                    <button
-                      key={c.name}
-                      type="button"
-                      onMouseDown={(e) => {
-                        e.preventDefault(); // 避免 textarea 失焦
-                        pickCommand(c.name);
-                      }}
-                      className="flex w-full cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 text-left hover:bg-accent"
-                    >
-                      <Slash className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
-                      <span className="min-w-0">
-                        <span className="block truncate text-sm font-medium">
-                          {c.name}
+                  {cmds.map((c) => {
+                    const idx = flat.indexOf(c);
+                    const active = idx === activeIndex;
+                    return (
+                      <button
+                        key={c.name}
+                        type="button"
+                        ref={(el) => {
+                          if (active)
+                            el?.scrollIntoView({ block: "nearest" });
+                        }}
+                        aria-selected={active}
+                        onMouseDown={(e) => {
+                          e.preventDefault(); // 避免 textarea 失焦
+                          pickCommand(c.name);
+                        }}
+                        onMouseMove={() => setActiveIndex(idx)}
+                        className={`flex w-full cursor-pointer items-start gap-2 rounded-lg px-2 py-1.5 text-left ${
+                          active ? "bg-accent" : ""
+                        }`}
+                      >
+                        <Slash className="mt-0.5 size-3.5 shrink-0 text-muted-foreground" />
+                        <span className="min-w-0">
+                          <span className="block truncate text-sm font-medium">
+                            {c.name}
+                          </span>
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {c.description}
+                          </span>
                         </span>
-                        <span className="block truncate text-xs text-muted-foreground">
-                          {c.description}
-                        </span>
-                      </span>
-                    </button>
-                  ))}
+                      </button>
+                    );
+                  })}
                 </div>
               ))}
             </div>
