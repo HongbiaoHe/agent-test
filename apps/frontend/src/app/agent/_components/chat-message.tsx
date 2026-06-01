@@ -14,6 +14,7 @@ import { TodoList } from "@/components/agent/todo-list";
 import { cn } from "@/lib/utils";
 
 import type { ThreadItem } from "../_lib/thread";
+import { Markdown } from "./markdown";
 
 const TOOL_ICON: Record<string, LucideIcon> = {
   send_email: Mail,
@@ -49,12 +50,10 @@ export function ChatMessage({
           <Sparkles className="size-4" />
         </div>
         <div className="min-w-0 flex-1">
-          <p className="text-sm leading-relaxed whitespace-pre-wrap text-foreground/90">
-            {item.text}
-            {item.streaming && (
-              <span className="ml-0.5 inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-foreground/60" />
-            )}
-          </p>
+          <Markdown>{item.text}</Markdown>
+          {item.streaming && (
+            <span className="ml-0.5 inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-foreground/60" />
+          )}
         </div>
       </div>
     );

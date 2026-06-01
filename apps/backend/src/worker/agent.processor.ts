@@ -9,6 +9,7 @@ import { CommandRegistryService } from '../commands/command-registry.service';
 import { parseCommand } from '../commands/parse-command';
 import { StreamService } from '../events/stream.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { buildSkillFiles } from './skill-files';
 
 interface JobData {
   conversationId: string;
@@ -69,18 +70,10 @@ export class AgentProcessor extends WorkerHost {
         const messages = await this.loadHistory(conversationId);
         // 把所有技能文件注入 per-thread state 的 /skills/ 下，供 deepagents SkillsMiddleware 发现/列出，
         // agent 据系统提示用 read_file 按需加载（原生 progressive disclosure）。files 随 thread_id 隔离。
-        const now = new Date().toISOString();
-        const files: Record<
-          string,
-          { content: string[]; created_at: string; modified_at: string }
-        > = {};
-        for (const def of this.commands.all()) {
-          files[`/skills/${def.name}/SKILL.md`] = {
-            content: def.raw.split('\n'),
-            created_at: now,
-            modified_at: now,
-          };
-        }
+        const files = buildSkillFiles(
+          this.commands.all(),
+          new Date().toISOString(),
+        );
         // /command 显式触发：把命令消息转成明确指令（展示用的原始命令仍存 DB），让 agent 去用该技能
         let lastLabel = '';
         for (const m of messages) {
