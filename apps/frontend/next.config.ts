@@ -1,6 +1,6 @@
 import type { NextConfig } from "next";
 
-const BACKEND = process.env.BACKEND_INTERNAL_URL ?? "http://localhost:3001";
+const BACKEND = process.env.BACKEND_INTERNAL_URL ?? "http://localhost:3101";
 
 const nextConfig: NextConfig = {
   // 允许经 ngrok 隧道域名访问 dev 资源（/_next/*）。否则 Next 16 dev 默认拦截跨源请求，

@@ -1,7 +1,7 @@
 import { getSession } from "next-auth/react";
 
 const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3101";
 
 interface ApiEnvelope<T> {
   code: number;
@@ -124,13 +124,13 @@ export function passkeyRegisterVerify(
   });
 }
 
-export function passkeyLoginOptions(): Promise<{
+export function passkeyLoginOptions(email: string): Promise<{
   flowId: string;
   options: PublicKeyCredentialRequestOptionsJSON;
 }> {
   return request("/auth/passkey/login/options", {
     method: "POST",
-    body: JSON.stringify({ ...rp() }),
+    body: JSON.stringify({ email, ...rp() }),
   });
 }
 

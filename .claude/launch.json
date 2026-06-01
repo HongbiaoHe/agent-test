@@ -8,7 +8,7 @@
         "-c",
         "export PATH=$HOME/.nvm/versions/node/v22.21.1/bin:$PATH; exec pnpm --filter backend start:dev"
       ],
-      "port": 3001
+      "port": 3101
     },
     {
       "name": "frontend",
@@ -17,7 +17,8 @@
         "-c",
         "export PATH=$HOME/.nvm/versions/node/v22.21.1/bin:$PATH; exec pnpm --filter frontend dev"
       ],
-      "port": 3000
+      "port": 3100,
+      "autoPort": false
     },
     {
       "name": "frontend-prod",
@@ -26,7 +27,7 @@
         "-c",
         "export PATH=$HOME/.nvm/versions/node/v22.21.1/bin:$PATH; exec pnpm --filter frontend start"
       ],
-      "port": 3000
+      "port": 3100
     }
   ]
 }

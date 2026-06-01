@@ -7,7 +7,7 @@ import {
 import { Fingerprint, KeyRound, Loader2, Mail, Sparkles } from "lucide-react";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -20,6 +20,8 @@ import {
 } from "@/lib/api";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+// 仅缓存最近一次成功登录/注册用的邮箱，下次进来自动预填
+const LAST_EMAIL_KEY = "lastLoginEmail";
 
 type Busy = null | "passkey-login" | "passkey-register" | "email";
 
@@ -28,6 +30,26 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState("");
+
+  // 挂载时回填上次登录的邮箱（仅客户端读 localStorage，避免 SSR 水合不一致）
+  useEffect(() => {
+    try {
+      const saved = localStorage.getItem(LAST_EMAIL_KEY);
+      // eslint-disable-next-line react-hooks/set-state-in-effect -- 一次性挂载初始化，非持续同步
+      if (saved) setEmail(saved);
+    } catch {
+      /* localStorage 不可用时忽略 */
+    }
+  }, []);
+
+  // 登录/注册成功后记下当前邮箱（只留最新一个）
+  function rememberEmail() {
+    try {
+      localStorage.setItem(LAST_EMAIL_KEY, email);
+    } catch {
+      /* localStorage 不可用时忽略 */
+    }
+  }
 
   // passkey 仪式被用户取消时浏览器抛 NotAllowedError，统一成友好提示
   function friendly(e: unknown): string {
@@ -42,15 +64,20 @@ export default function LoginPage() {
       setError("登录失败，请重试");
       setBusy(null);
     } else {
+      rememberEmail();
       router.push("/agent");
     }
   }
 
   async function passkeyLogin() {
     setError("");
+    if (!EMAIL_RE.test(email)) {
+      setError("使用 Passkey 登录前请先填写邮箱");
+      return;
+    }
     setBusy("passkey-login");
     try {
-      const { flowId, options } = await passkeyLoginOptions();
+      const { flowId, options } = await passkeyLoginOptions(email);
       const response = await startAuthentication({ optionsJSON: options });
       const { token } = await passkeyLoginVerify(flowId, response);
       await finishWithToken(token);
@@ -90,6 +117,7 @@ export default function LoginPage() {
       setError("登录失败，请重试");
       setBusy(null);
     } else {
+      rememberEmail();
       router.push("/agent");
     }
   }

@@ -4,7 +4,7 @@ import { getSession } from "next-auth/react";
 import { io, type Socket } from "socket.io-client";
 
 const API_BASE =
-  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3001";
+  process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3101";
 
 export type ConversationEventType =
   | "token"

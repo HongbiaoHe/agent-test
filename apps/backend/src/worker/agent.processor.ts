@@ -74,7 +74,9 @@ export class AgentProcessor extends WorkerHost {
           this.commands.all(),
           new Date().toISOString(),
         );
-        // /command 显式触发：把命令消息转成明确指令（展示用的原始命令仍存 DB），让 agent 去用该技能
+        // 历史按原样重放，不改写任何用户消息：/command 该触发哪个技能由 system prompt 约束
+        // （见 agent.factory）。改写历史会让旧命令每轮被重新注入「先 read_file 读 SKILL.md」祈使，
+        // 导致多轮里重复触发同一技能、重复读同一文件。这里只取末条 user 消息做 LangSmith runName。
         let lastLabel = '';
         for (const m of messages) {
           if (m.role !== 'user') continue;
@@ -83,7 +85,6 @@ export class AgentProcessor extends WorkerHost {
           if (!cmd) continue;
           const def = this.commands.get(cmd.name);
           if (!def) continue;
-          m.content = `请使用「${def.name}」技能完成以下任务（先用 read_file 读取 /skills/${def.name}/SKILL.md 获取技能说明）：\n${cmd.args || '（无附加内容，请按该技能说明执行）'}`;
           lastLabel = `技能:${def.name} · ${cmd.args}`.slice(0, 60);
         }
         runName = lastLabel || runName;

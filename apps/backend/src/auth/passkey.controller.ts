@@ -29,7 +29,7 @@ export class PasskeyController {
 
   @Post('login/options')
   loginOptions(@Body() dto: PasskeyLoginOptionsDto) {
-    return this.passkey.authenticationOptions(dto.rpId);
+    return this.passkey.authenticationOptions(dto.rpId, dto.email);
   }
 
   @Post('login/verify')

@@ -34,7 +34,12 @@ export class PasskeyRegVerifyDto extends PasskeyRpDto {
   response!: RegistrationResponseJSON;
 }
 
-export class PasskeyLoginOptionsDto extends PasskeyRpDto {}
+export class PasskeyLoginOptionsDto extends PasskeyRpDto {
+  // username-first：带上邮箱，后端据此下发 allowCredentials；缺省则回退 discoverable
+  @IsOptional()
+  @IsString()
+  email?: string;
+}
 
 export class PasskeyLoginVerifyDto extends PasskeyRpDto {
   @IsString()

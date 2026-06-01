@@ -35,7 +35,7 @@ type AppSocket = Socket<
 >;
 
 @WebSocketGateway({
-  cors: { origin: process.env.CORS_ORIGIN ?? 'http://localhost:3000' },
+  cors: { origin: process.env.CORS_ORIGIN ?? 'http://localhost:3100' },
 })
 export class EventsGateway implements OnGatewayConnection {
   @WebSocketServer() server!: Server;

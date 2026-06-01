@@ -18,7 +18,7 @@ import { AuthService } from './auth.service';
 
 const RP_ID = process.env.WEBAUTHN_RP_ID ?? 'localhost';
 const RP_NAME = process.env.WEBAUTHN_RP_NAME ?? 'Agent';
-const ORIGIN = process.env.WEBAUTHN_ORIGIN ?? 'http://localhost:3000';
+const ORIGIN = process.env.WEBAUTHN_ORIGIN ?? 'http://localhost:3100';
 const CHALLENGE_TTL = 300; // 秒
 
 function parseTransports(s: string | null): AuthenticatorTransportFuture[] {
@@ -57,7 +57,8 @@ export class PasskeyService {
       authenticatorSelection: {
         // platform：用本机平台认证器（Mac Touch ID / Windows Hello），注册直接走指纹而非给一堆选项
         authenticatorAttachment: 'platform',
-        residentKey: 'preferred',
+        // required：登录走 discoverable（不填邮箱、无 allowCredentials），必须生成 resident key 才能被发现，否则登录报 NotAllowedError
+        residentKey: 'required',
         userVerification: 'preferred',
       },
     });
@@ -114,11 +115,31 @@ export class PasskeyService {
     return { verified: true, token, email: user.email };
   }
 
-  /** 登录第一步：产出认证 options（discoverable），挑战存 Redis 并返回 flowId。 */
-  async authenticationOptions(rpId?: string) {
+  /**
+   * 登录第一步：产出认证 options，挑战存 Redis 并返回 flowId。
+   * 传 email 则走 username-first：按邮箱取该用户凭证下发 allowCredentials，浏览器据此精确定位
+   * （不依赖凭证是否 resident，localhost 下也稳）。不传则回退 discoverable。
+   */
+  async authenticationOptions(rpId?: string, email?: string) {
+    let allowCredentials:
+      | { id: string; transports: AuthenticatorTransportFuture[] }[]
+      | undefined;
+    if (email) {
+      const user = await this.prisma.user.findUnique({ where: { email } });
+      if (user) {
+        const creds = await this.prisma.authenticator.findMany({
+          where: { userId: user.id },
+        });
+        allowCredentials = creds.map((c) => ({
+          id: c.credentialId,
+          transports: parseTransports(c.transports),
+        }));
+      }
+    }
     const options = await generateAuthenticationOptions({
       rpID: rpId || RP_ID,
       userVerification: 'preferred',
+      ...(allowCredentials ? { allowCredentials } : {}),
     });
     const flowId = randomUUID();
     await this.redis.set(

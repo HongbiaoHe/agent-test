@@ -3,7 +3,7 @@ import Credentials from "next-auth/providers/credentials";
 
 // 服务端直连后端（绝对地址）：NEXT_PUBLIC_API_BASE_URL 现在是浏览器侧同源前缀（/api-backend），
 // 服务端 fetch 不能用相对路径，故走内网直连地址。
-const API_BASE = process.env.BACKEND_INTERNAL_URL ?? "http://localhost:3001";
+const API_BASE = process.env.BACKEND_INTERNAL_URL ?? "http://localhost:3101";
 
 /** 从后端 JWT 解出 email（仅用于展示，不做验签——token 由后端刚签发并经本源传回）。 */
 function decodeJwtEmail(token: string): string | undefined {
