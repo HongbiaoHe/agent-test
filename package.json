@@ -7,11 +7,19 @@
   },
   "packageManager": "pnpm@11.5.0",
   "scripts": {
+    "dev": "pm2 start ecosystem.config.cjs",
+    "dev:stop": "pm2 delete ecosystem.config.cjs",
+    "dev:restart": "pm2 restart ecosystem.config.cjs",
+    "dev:logs": "pm2 logs",
+    "dev:status": "pm2 status",
     "dev:backend": "pnpm --filter backend start:dev",
     "dev:frontend": "pnpm --filter frontend dev",
     "build:backend": "pnpm --filter backend build",
     "build:frontend": "pnpm --filter frontend build",
     "build": "pnpm -r build",
     "lint": "pnpm -r lint"
+  },
+  "devDependencies": {
+    "pm2": "^7.0.1"
   }
 }

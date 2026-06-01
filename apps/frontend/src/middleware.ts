@@ -1,12 +1,27 @@
 import { auth } from "@/auth";
 
-// SSR 守卫：未登录访问 /agent 在服务端直接重定向到 /login（无闪烁）
+// 需要登录的受保护区域
+const PROTECTED_PREFIXES = ["/agent", "/conversations"];
+
+// SSR 守卫（无闪烁，在服务端直接重定向）：
+// - 已登录访问 / 或 /login → 默认进 /agent
+// - 未登录访问 / 或受保护页 → 跳 /login
 export default auth((req) => {
-  if (!req.auth && req.nextUrl.pathname.startsWith("/agent")) {
-    return Response.redirect(new URL("/login", req.nextUrl.origin));
+  const { pathname, origin } = req.nextUrl;
+  const isLoggedIn = Boolean(req.auth);
+
+  if (isLoggedIn && (pathname === "/" || pathname === "/login")) {
+    return Response.redirect(new URL("/agent", origin));
+  }
+
+  const needsAuth =
+    pathname === "/" ||
+    PROTECTED_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  if (!isLoggedIn && needsAuth) {
+    return Response.redirect(new URL("/login", origin));
   }
 });
 
 export const config = {
-  matcher: ["/agent/:path*", "/conversations/:path*"],
+  matcher: ["/", "/login", "/agent/:path*", "/conversations/:path*"],
 };
