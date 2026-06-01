@@ -17,6 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 
 import { ThemeToggle } from "./theme-toggle";
+import type { ThemeSetting } from "../_hooks/use-theme";
 
 const STATUS_BADGE: Record<
   string,
@@ -39,8 +40,8 @@ export type SidebarProps = {
   onNewChat: () => void;
   userEmail: string;
   onSignOut: () => void;
-  theme: "light" | "dark";
-  onToggleTheme: () => void;
+  theme?: ThemeSetting;
+  onCycleTheme: () => void;
 };
 
 /** 侧边栏内容主体，desktop 的 <aside> 与 mobile 的 Sheet 抽屉共用。 */
@@ -55,7 +56,7 @@ export function SidebarContent({
   userEmail,
   onSignOut,
   theme,
-  onToggleTheme,
+  onCycleTheme,
 }: SidebarProps) {
   return (
     <div className="flex h-full min-h-0 flex-col">
@@ -153,7 +154,7 @@ export function SidebarContent({
           <span className="truncate text-sm font-medium">{userEmail}</span>
         </div>
         <div className="flex shrink-0 items-center">
-          <ThemeToggle theme={theme} onToggle={onToggleTheme} />
+          <ThemeToggle theme={theme} onCycle={onCycleTheme} />
           <Tooltip>
             <TooltipTrigger
               render={

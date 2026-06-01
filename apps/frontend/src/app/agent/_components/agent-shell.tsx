@@ -26,7 +26,7 @@ import type { ThreadItem } from "../_lib/thread";
  */
 export function AgentShell({ conversationId }: { conversationId: string | null }) {
   const router = useRouter();
-  const { theme, toggle } = useTheme();
+  const { theme, cycle } = useTheme();
   const isDesktop = useIsDesktop();
   const qc = useQueryClient();
   const { data: session } = useSession();
@@ -137,7 +137,7 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
       window.location.href = "/login";
     },
     theme,
-    onToggleTheme: toggle,
+    onCycleTheme: cycle,
   };
 
   return (
