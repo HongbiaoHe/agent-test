@@ -64,6 +64,8 @@ export class AgentProcessor extends WorkerHost {
       // 因为 deepagents 跑完一轮后不在持久化 state 保留对话消息（同 thread_id 续跑拿不到上文）。
       let runName = `审批续跑 · ${conversationId}`;
       let input: unknown;
+      // 仅非 resume（新一轮重放）时按需注入既有任务计划，避免每轮重新拆解（详见 buildPlanPrompt）。
+      let systemPromptExtra = '';
       if (kind === 'resume') {
         input = new Command({ resume: { decisions } });
       } else {
@@ -89,9 +91,13 @@ export class AgentProcessor extends WorkerHost {
         }
         runName = lastLabel || runName;
         input = { messages, files };
+        systemPromptExtra = await this.buildPlanPrompt(conversationId);
       }
 
-      const agent = buildAgent({ checkpointer: this.checkpointer });
+      const agent = buildAgent({
+        checkpointer: this.checkpointer,
+        systemPromptExtra,
+      });
 
       // runName/tags/metadata → LangSmith 里按此命名/过滤，而非只显示 "LangGraph"
       const stream = await agent.stream(input, {
@@ -182,6 +188,38 @@ export class AgentProcessor extends WorkerHost {
       role: m.role,
       content: (m.content as { text?: string })?.text ?? '',
     }));
+  }
+
+  /**
+   * 多轮重放时，模型在提示和消息里都看不到上一轮的任务计划：write_todos 产生的
+   * plan_update / tool 消息不在 loadHistory 的重放范围内，langchain 的 todoListMiddleware
+   * 也只注入「如何使用 write_todos」的说明、从不注入当前 todos 列表。叠加系统提示「收到目标后
+   * 先 write_todos 拆解计划」，会导致每一轮都从零重新规划、计划不断变化。
+   *
+   * 这里取该会话最近一次计划注入系统提示，并要求按既定计划逐步执行、只更新状态，避免重新拆解。
+   * 计划尚未产生（首轮）时返回空串，交由基础系统提示完成首次拆解。
+   */
+  private async buildPlanPrompt(conversationId: string): Promise<string> {
+    const row = await this.prisma.message.findFirst({
+      where: { conversationId, type: 'plan_update' },
+      orderBy: { seq: 'desc' },
+      select: { content: true },
+    });
+    const todos = (
+      row?.content as { todos?: { content: string; status: string }[] } | null
+    )?.todos;
+    if (!Array.isArray(todos) || todos.length === 0) return '';
+
+    const lines = todos
+      .map((t, i) => `${i + 1}. [${t.status}] ${t.content}`)
+      .join('\n');
+    return (
+      `\n\n## 当前任务计划（已存在，请勿重新拆解）\n${lines}\n\n` +
+      `本会话已有上面这份既定计划。请直接按它继续逐步执行：\n` +
+      `- 不要重新拆解，不要新增、删除或改写步骤内容，保持步骤文本与顺序不变；\n` +
+      `- 仅用 write_todos 更新每一步的状态（pending → in_progress → completed）；\n` +
+      `- 开始某一步前标记为 in_progress，完成后立即标记为 completed。`
+    );
   }
 
   /** 超时兜底：CAS 抢占成功则按默认 reject 续跑（用户已决策则 CAS 失败、忽略）。 */
