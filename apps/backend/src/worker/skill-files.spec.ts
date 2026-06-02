@@ -57,6 +57,73 @@ describe('buildSkillFiles', () => {
     expect(skillMd).toContain('description: see references later');
   });
 
+  it('SKILL.md 里带 ./ 前缀的相对 reference 路径被改写成绝对路径（tvc-director 写法）', () => {
+    const out = buildSkillFiles(
+      [
+        def({
+          'SKILL.md':
+            '见 `./references/treatment.md` Part 1，定调读 `./references/shot-language.md`',
+          'references/treatment.md': 'a',
+        }),
+      ],
+      '2026-06-01T00:00:00.000Z',
+    );
+    const skillMd = out['/skills/tvc-director/SKILL.md'].content.join('\n');
+    expect(skillMd).toContain('`/skills/tvc-director/references/treatment.md`');
+    expect(skillMd).toContain(
+      '`/skills/tvc-director/references/shot-language.md`',
+    );
+    // 不再保留裸的相对路径（./ 与无 ./ 都不应残留）
+    expect(skillMd).not.toContain('`./references/');
+  });
+
+  it('markdown 链接 ](./sub-skill.md) 被改写成绝对路径（marketing-strategist 路由表写法）', () => {
+    const out = buildSkillFiles(
+      [
+        {
+          name: 'marketing-strategist',
+          description: '',
+          domain: 'marketing',
+          raw: '',
+          files: {
+            'SKILL.md':
+              '| [big-idea](./big-idea-concept-pitching.md) | ... |\n| [brand](./brand-positioning.md) | ... |',
+            'big-idea-concept-pitching.md': 'x',
+            'brand-positioning.md': 'y',
+          },
+        },
+      ],
+      '2026-06-01T00:00:00.000Z',
+    );
+    const skillMd = out['/skills/marketing-strategist/SKILL.md'].content.join(
+      '\n',
+    );
+    expect(skillMd).toContain(
+      '](/skills/marketing-strategist/big-idea-concept-pitching.md)',
+    );
+    expect(skillMd).toContain(
+      '](/skills/marketing-strategist/brand-positioning.md)',
+    );
+    expect(skillMd).not.toContain('](./');
+  });
+
+  it('http(s) 链接与已是绝对路径的引用不被误伤', () => {
+    const out = buildSkillFiles(
+      [
+        def({
+          'SKILL.md':
+            '参考 [docs](https://example.com/a.md) 与 `/skills/tvc-director/references/treatment.md`',
+        }),
+      ],
+      '2026-06-01T00:00:00.000Z',
+    );
+    const skillMd = out['/skills/tvc-director/SKILL.md'].content.join('\n');
+    expect(skillMd).toContain('](https://example.com/a.md)');
+    // 已是绝对路径的不被二次改写
+    expect(skillMd).toContain('`/skills/tvc-director/references/treatment.md`');
+    expect(skillMd).not.toContain('/skills/tvc-director//skills/');
+  });
+
   it('子文件内容不被改写', () => {
     const out = buildSkillFiles(
       [

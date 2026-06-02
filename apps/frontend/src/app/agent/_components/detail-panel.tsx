@@ -1,6 +1,6 @@
 "use client";
 
-import { Check, Loader, X } from "lucide-react";
+import { Check, Download, Loader, X } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,6 +25,34 @@ function CodeBlock({ children }: { children: string }) {
   );
 }
 
+/**
+ * write_file 等写文件工具的参数里带 file_path + content 时，可据此直接下载文件。
+ * 后端用 deepagents StateBackend（虚拟 FS，不落磁盘），故文件内容只在工具参数里。
+ */
+function downloadableFile(
+  args: unknown,
+): { name: string; content: string } | null {
+  if (!args || typeof args !== "object") return null;
+  const a = args as Record<string, unknown>;
+  if (typeof a.content !== "string") return null;
+  // 去掉 deepagents 虚拟根的前导斜杠，取文件名
+  const path = typeof a.file_path === "string" ? a.file_path : "";
+  const name = path.split("/").filter(Boolean).pop() || "download.txt";
+  return { name, content: a.content };
+}
+
+function triggerDownload(name: string, content: string) {
+  const blob = new Blob([content], { type: "text/plain;charset=utf-8" });
+  const url = URL.createObjectURL(blob);
+  const a = document.createElement("a");
+  a.href = url;
+  a.download = name;
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+  URL.revokeObjectURL(url);
+}
+
 export function DetailPanel({
   tool,
   onClose,
@@ -34,6 +62,8 @@ export function DetailPanel({
   onClose: () => void;
   className?: string;
 }) {
+  const file = downloadableFile(tool.args);
+
   return (
     <aside
       className={cn(
@@ -50,14 +80,26 @@ export function DetailPanel({
           </span>
           <span className="truncate text-sm font-medium">{tool.name}</span>
         </div>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          aria-label="关闭详情面板"
-          onClick={onClose}
-        >
-          <X />
-        </Button>
+        <div className="flex shrink-0 items-center gap-1">
+          {file && (
+            <Button
+              variant="outline"
+              size="sm"
+              onClick={() => triggerDownload(file.name, file.content)}
+            >
+              <Download />
+              下载
+            </Button>
+          )}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="关闭详情面板"
+            onClick={onClose}
+          >
+            <X />
+          </Button>
+        </div>
       </header>
 
       <Tabs

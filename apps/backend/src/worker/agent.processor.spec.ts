@@ -75,6 +75,124 @@ describe('AgentProcessor 多轮重放', () => {
     expect(sent.every((m) => !m.content.includes('请使用「'))).toBe(true);
   });
 
+  it('续跑时把之前轮次激活的技能 SKILL.md 注入系统提示，并要求不要再 read_file 读取它', async () => {
+    const def: CommandDef = {
+      name: 'tvc-director',
+      description: '',
+      domain: 'tvc',
+      raw: '# tvc',
+      files: { 'SKILL.md': '# TVC Director\n详见 `./references/treatment.md`' },
+    };
+    // 第 1 轮 /command 激活技能，第 3 轮是普通追问（当前请求） → 应注入
+    const history = [
+      { role: 'user', content: { text: '/tvc-director 帮我做一条30秒手表广告' } },
+      { role: 'assistant', content: { text: '（上一轮分镜）' } },
+      { role: 'user', content: { text: '再短一点，改成15秒' } },
+    ];
+
+    const prisma = {
+      conversation: { update: jest.fn().mockResolvedValue({}) },
+      message: {
+        findMany: jest.fn().mockResolvedValue(history),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(history.length),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+
+    const streamSvc = {
+      publish: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StreamService;
+
+    const commands = {
+      all: jest.fn(() => [def]),
+      get: jest.fn((n: string) => (n === 'tvc-director' ? def : undefined)),
+    } as unknown as CommandRegistryService;
+
+    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+
+    let capturedExtra = '';
+    const fakeAgent = {
+      stream: jest.fn(async () => (async function* () {})()),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    };
+    (buildAgent as jest.Mock).mockImplementation(
+      (opts: { systemPromptExtra?: string }) => {
+        capturedExtra = opts.systemPromptExtra ?? '';
+        return fakeAgent;
+      },
+    );
+
+    const proc = new AgentProcessor(prisma, streamSvc, commands, {}, queue);
+    await proc.process({
+      data: { conversationId: 'c3', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+
+    // SKILL.md 全文进了系统提示
+    expect(capturedExtra).toContain('已加载技能：tvc-director');
+    expect(capturedExtra).toContain('# TVC Director');
+    // 明确告知不要再读 SKILL.md
+    expect(capturedExtra).toContain(
+      '不要再 read_file 读取 `/skills/tvc-director/SKILL.md`',
+    );
+    // 正文里的相对引用被改写为绝对路径，注入后仍能命中虚拟 FS
+    expect(capturedExtra).toContain('/skills/tvc-director/references/treatment.md');
+  });
+
+  it('本轮当前请求才首次发起 /command 时不注入 SKILL.md（首次加载交给 read_file）', async () => {
+    const def: CommandDef = {
+      name: 'tvc-director',
+      description: '',
+      domain: 'tvc',
+      raw: '# tvc',
+      files: { 'SKILL.md': '# TVC Director' },
+    };
+    // 只有一轮，且当前请求就是 /command → 首次加载，不注入
+    const history = [
+      { role: 'user', content: { text: '/tvc-director 帮我做一条30秒手表广告' } },
+    ];
+
+    const prisma = {
+      conversation: { update: jest.fn().mockResolvedValue({}) },
+      message: {
+        findMany: jest.fn().mockResolvedValue(history),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(history.length),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+
+    const streamSvc = {
+      publish: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StreamService;
+
+    const commands = {
+      all: jest.fn(() => [def]),
+      get: jest.fn((n: string) => (n === 'tvc-director' ? def : undefined)),
+    } as unknown as CommandRegistryService;
+
+    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+
+    let capturedExtra = 'SENTINEL';
+    const fakeAgent = {
+      stream: jest.fn(async () => (async function* () {})()),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    };
+    (buildAgent as jest.Mock).mockImplementation(
+      (opts: { systemPromptExtra?: string }) => {
+        capturedExtra = opts.systemPromptExtra ?? '';
+        return fakeAgent;
+      },
+    );
+
+    const proc = new AgentProcessor(prisma, streamSvc, commands, {}, queue);
+    await proc.process({
+      data: { conversationId: 'c4', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+
+    expect(capturedExtra).not.toContain('已加载技能');
+  });
+
   it('已有任务计划时，把既定计划注入系统提示并要求按计划逐步执行、不重新拆解', async () => {
     const history = [
       { role: 'user', content: { text: '帮我规划上线流程' } },

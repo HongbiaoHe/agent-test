@@ -5,11 +5,12 @@ import { Job, Queue } from 'bullmq';
 import { buildAgent } from '../agent/agent.factory';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
 import { normalize, RawEvent } from '../agent/event-normalizer';
+import type { CommandDef } from '../commands/command-registry.service';
 import { CommandRegistryService } from '../commands/command-registry.service';
 import { parseCommand } from '../commands/parse-command';
 import { StreamService } from '../events/stream.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { buildSkillFiles } from './skill-files';
+import { absolutizeRefPaths, buildSkillFiles } from './skill-files';
 
 interface JobData {
   conversationId: string;
@@ -91,7 +92,9 @@ export class AgentProcessor extends WorkerHost {
         }
         runName = lastLabel || runName;
         input = { messages, files };
-        systemPromptExtra = await this.buildPlanPrompt(conversationId);
+        systemPromptExtra =
+          (await this.buildPlanPrompt(conversationId)) +
+          this.buildSkillPrompt(messages);
       }
 
       const agent = buildAgent({
@@ -219,6 +222,50 @@ export class AgentProcessor extends WorkerHost {
       `- 不要重新拆解，不要新增、删除或改写步骤内容，保持步骤文本与顺序不变；\n` +
       `- 仅用 write_todos 更新每一步的状态（pending → in_progress → completed）；\n` +
       `- 开始某一步前标记为 in_progress，完成后立即标记为 completed。`
+    );
+  }
+
+  /**
+   * 多轮续跑时，上一轮 read_file 读到的 SKILL.md 不会回到上下文里：loadHistory 只重放
+   * user/assistant 文本消息，read_file 的调用与结果落在 tool_start/tool_end（见 ROLE_BY_TYPE）
+   * 被排除，且 deepagents 跑完一轮不在 state 保留对话消息。于是每个后续轮次模型都缺少已激活
+   * 技能的 SKILL.md，只能反复 read_file 同一个 /skills/<name>/SKILL.md（用户观察到的「重复读取」）。
+   *
+   * 这里：若本会话在**之前的轮次**已通过 /command 激活了某技能（即最近一次能解析到已知技能的
+   * /command 不是本轮当前请求），就把该技能的 SKILL.md 全文注入系统提示，并显式告知无需再
+   * read_file 读取它——从根上消除重复读取。引用文档/子技能仍按需 read_file（progressive disclosure）。
+   * 本轮才首次发起的 /command 不注入，交由基础系统提示按 read_file 完成首次加载。
+   * SKILL.md 经 absolutizeRefPaths 改写相对引用，保证注入后正文里的 references 路径仍能命中虚拟 FS。
+   */
+  private buildSkillPrompt(
+    messages: { role: string; content: string }[],
+  ): string {
+    const users = messages.filter((m) => m.role === 'user');
+    if (users.length === 0) return '';
+    const current = users[users.length - 1];
+
+    let active: CommandDef | undefined;
+    let activeMsg: { role: string; content: string } | undefined;
+    for (const m of users) {
+      const cmd = parseCommand(m.content);
+      if (!cmd) continue;
+      const def = this.commands.get(cmd.name);
+      if (!def) continue;
+      active = def;
+      activeMsg = m;
+    }
+    // 没有激活任何技能，或激活就发生在本轮（首次加载，交给 read_file）→ 不注入
+    if (!active || activeMsg === current) return '';
+
+    const skillMd = active.files['SKILL.md'];
+    if (!skillMd) return '';
+    const content = absolutizeRefPaths(active.name, skillMd);
+    return (
+      `\n\n## 已加载技能：${active.name}（SKILL.md 已提供，请勿重复读取）\n` +
+      `本会话在之前的轮次已通过 \`/${active.name}\` 激活该技能，其 SKILL.md 全文见下。` +
+      `请直接据此继续，**不要再 read_file 读取 \`/skills/${active.name}/SKILL.md\`**；` +
+      `仅当需要其引用的 references/ 子技能等子文件时，才按需 read_file 那些子文件。\n\n` +
+      `<skill name="${active.name}">\n${content}\n</skill>`
     );
   }
 
