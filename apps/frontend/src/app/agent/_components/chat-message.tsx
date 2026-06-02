@@ -26,6 +26,16 @@ const TOOL_ICON: Record<string, LucideIcon> = {
   get_weather: CloudSun,
 };
 
+/**
+ * 文件类工具（read_file / write_file / edit_file 等）的参数统一带 file_path，
+ * 返回完整路径显示在 chip 上；非文件工具无 file_path 时返回 null。
+ */
+function filePath(args: unknown): string | null {
+  if (!args || typeof args !== "object") return null;
+  const path = (args as Record<string, unknown>).file_path;
+  return typeof path === "string" ? path : null;
+}
+
 /** 助手侧内容的左缩进，对齐头像（size-7 + gap-3 ≈ pl-10）。 */
 const INDENT = "pl-10";
 
@@ -61,6 +71,7 @@ export function ChatMessage({
   if (item.kind === "tool") {
     const Icon = TOOL_ICON[item.name] ?? Wrench;
     const active = activeDetailId === item.id;
+    const path = filePath(item.args);
     return (
       <div className={INDENT}>
         <button
@@ -78,7 +89,15 @@ export function ChatMessage({
           ) : (
             <Loader className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
           )}
-          <span className="truncate font-medium">{item.name}</span>
+          <span className="shrink-0 font-medium">{item.name}</span>
+          {path && (
+            <span
+              className="truncate font-mono text-muted-foreground"
+              title={path}
+            >
+              {path}
+            </span>
+          )}
           <span className="shrink-0 text-[10px] tracking-wide text-muted-foreground uppercase">
             {item.done ? "工具" : "调用中"}
           </span>
