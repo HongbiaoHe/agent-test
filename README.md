@@ -154,4 +154,4 @@ agent-test/
 - `2026-05-29-deepagents-task-automation-agent-design.md` —— 完整第一期设计
 - `docs/superpowers/specs/` —— walking skeleton 设计 spec
 - `docs/superpowers/HANDOFF-*.md` —— 各阶段交接（含运行方式、已知坑、未做项）
-- `LangChain-DeepAgents-完整的开发文档.md` —— deepagents 开发参考
+- `.claude/skills/deepagents-dev/` —— deepagents 开发参考 skill（`reference.md` 官方文档全文 + `section.mjs` 分节抽取；`/deepagents-dev` 调用）
