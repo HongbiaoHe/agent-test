@@ -17,6 +17,7 @@ import { ConversationSidebar, SidebarContent } from "./conversation-sidebar";
 import { DetailPanel } from "./detail-panel";
 import { useConversation } from "../_hooks/use-conversation";
 import { useIsDesktop } from "../_hooks/use-is-desktop";
+import { useModelPreference } from "../_hooks/use-model-preference";
 import { useTheme } from "../_hooks/use-theme";
 import type { ThreadItem } from "../_lib/thread";
 
@@ -36,6 +37,8 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   const [manualPanel, setManualPanel] = useState<boolean | null>(null);
   const [activeDetailId, setActiveDetailId] = useState<string | null>(null);
   const [search, setSearch] = useState("");
+  // 回答模型（前端可切换），发消息时随 create/append 带给后端；选择缓存到 localStorage（刷新保留）
+  const [model, setModel] = useModelPreference();
 
   // 切换会话（含 [id1]→[id2] 不重挂载的情况）时清掉详情面板选择
   const [trackedId, setTrackedId] = useState(conversationId);
@@ -53,14 +56,15 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   const thread = useConversation(conversationId);
 
   const createMut = useMutation({
-    mutationFn: (text: string) => createConversation(text),
+    mutationFn: (text: string) => createConversation(text, model),
     onSuccess: ({ conversationId: newId }) => {
       void qc.invalidateQueries({ queryKey: ["conversations"] });
       router.push(`/agent/${newId}`); // 跳到新会话路由，URL 持有 id，刷新可恢复
     },
   });
   const appendMut = useMutation({
-    mutationFn: (text: string) => appendMessage(conversationId as string, text),
+    mutationFn: (text: string) =>
+      appendMessage(conversationId as string, text, model),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["conversations"] }),
   });
 
@@ -168,6 +172,8 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
         onOpenDetail={openDetail}
         onDecide={thread.respondApproval}
         onSend={handleSend}
+        model={model}
+        onModelChange={setModel}
         panelOpen={panelOpen}
         onTogglePanel={togglePanel}
         onOpenSidebar={() => setSidebarOpen(true)}

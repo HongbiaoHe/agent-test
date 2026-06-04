@@ -24,6 +24,7 @@ import { listCommands } from "@/lib/api";
 import type { Approval, Decision, ThreadItem } from "../_lib/thread";
 import { ApprovalCard } from "./approval-card";
 import { ChatMessage } from "./chat-message";
+import { ModelSwitcher } from "./model-switcher";
 import { TaskPlanPanel } from "./task-plan-panel";
 
 export function ChatThread({
@@ -37,6 +38,8 @@ export function ChatThread({
   onOpenDetail,
   onDecide,
   onSend,
+  model,
+  onModelChange,
   panelOpen,
   onTogglePanel,
   onOpenSidebar,
@@ -51,6 +54,8 @@ export function ChatThread({
   onOpenDetail: (id: string) => void;
   onDecide: (d: Decision) => void;
   onSend: (text: string) => void;
+  model: string;
+  onModelChange: (model: string) => void;
   panelOpen: boolean;
   onTogglePanel: () => void;
   onOpenSidebar: () => void;
@@ -257,7 +262,7 @@ export function ChatThread({
               ))}
             </div>
           )}
-          <div className="relative rounded-2xl border bg-card shadow-sm transition-colors focus-within:border-ring">
+          <div className="rounded-2xl border bg-card shadow-sm transition-colors focus-within:border-ring">
             <Textarea
               ref={inputRef}
               rows={1}
@@ -265,17 +270,25 @@ export function ChatThread({
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onKeyDown}
               placeholder={busy ? "Agent 正在处理…" : "给 Agent 发消息…（试试输入 /）"}
-              className="max-h-40 min-h-0 resize-none border-0 bg-transparent px-4 py-3.5 pr-14 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
+              className="max-h-40 min-h-0 resize-none border-0 bg-transparent px-4 pt-3.5 pb-1.5 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
             />
-            <Button
-              size="icon-sm"
-              aria-label="发送"
-              disabled={busy || !draft.trim()}
-              onClick={submit}
-              className="absolute right-2.5 bottom-2.5 rounded-lg"
-            >
-              <ArrowUp />
-            </Button>
+            {/* 工具条：左侧模型切换，右侧发送 */}
+            <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
+              <ModelSwitcher
+                value={model}
+                onChange={onModelChange}
+                disabled={busy}
+              />
+              <Button
+                size="icon-sm"
+                aria-label="发送"
+                disabled={busy || !draft.trim()}
+                onClick={submit}
+                className="rounded-lg"
+              >
+                <ArrowUp />
+              </Button>
+            </div>
           </div>
           <p className="mt-2 text-center text-xs text-muted-foreground">
             Agent 可能会出错，请核对重要信息。

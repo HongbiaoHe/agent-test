@@ -23,13 +23,18 @@ export class ConversationsService {
     }
   }
 
-  async create(goal: string, tenantId: string, userId: string) {
+  async create(
+    goal: string,
+    tenantId: string,
+    userId: string,
+    model?: string,
+  ) {
     if (!goal?.trim()) {
       throw new BusinessException(ErrorCodes.CONVERSATION_GOAL_EMPTY);
     }
     this.assertKnownCommand(goal);
     const conv = await this.prisma.conversation.create({
-      data: { goal, status: 'queued', tenantId, userId },
+      data: { goal, status: 'queued', tenantId, userId, model },
     });
     // 把首轮目标落成 user message（seq 0），与追加轮统一；worker 每轮从 DB 重放完整对话历史
     await this.prisma.message.create({
@@ -49,7 +54,12 @@ export class ConversationsService {
    * 在已有会话里追加一条用户消息并续跑（多轮对话）。
    * 同一个 thread_id（= 会话 id）+ checkpointer，agent 自动带上历史上下文。
    */
-  async appendMessage(id: string, content: string, tenantId: string) {
+  async appendMessage(
+    id: string,
+    content: string,
+    tenantId: string,
+    model?: string,
+  ) {
     if (!content?.trim()) {
       throw new BusinessException(ErrorCodes.CONVERSATION_GOAL_EMPTY);
     }
@@ -68,6 +78,14 @@ export class ConversationsService {
     // 并发守卫：仅在空闲（done/failed）时允许追加，避免对同一 thread 并发续跑
     if (conv.status !== 'done' && conv.status !== 'failed') {
       throw new BusinessException(ErrorCodes.CONVERSATION_BUSY);
+    }
+
+    // 本轮选定的模型落到会话上，worker 据此续跑（含审批 resume / 超时兜底都复用同一模型）
+    if (model) {
+      await this.prisma.conversation.update({
+        where: { id },
+        data: { model },
+      });
     }
 
     // 落一条 user message（seq 接续，worker 续跑时再从当前 count 接着排）

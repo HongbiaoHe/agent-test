@@ -55,10 +55,11 @@ export interface ConversationListItem {
 
 export function createConversation(
   goal: string,
+  model?: string,
 ): Promise<{ conversationId: string }> {
   return request("/conversations", {
     method: "POST",
-    body: JSON.stringify({ goal }),
+    body: JSON.stringify({ goal, model }),
   });
 }
 
@@ -85,10 +86,11 @@ export function getConversation(id: string): Promise<Conversation> {
 export function appendMessage(
   id: string,
   content: string,
+  model?: string,
 ): Promise<{ conversationId: string }> {
   return request(`/conversations/${id}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content }),
+    body: JSON.stringify({ content, model }),
   });
 }
 

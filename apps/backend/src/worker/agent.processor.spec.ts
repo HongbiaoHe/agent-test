@@ -228,29 +228,31 @@ describe('AgentProcessor 多轮重放', () => {
 
     const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
 
-    // 在 mock 里捕获传给 buildAgent 的 systemPromptExtra
-    let capturedExtra = '';
+    // 既有计划现在经 runtime context（context.activePlan）传入，不再塞进 systemPromptExtra；
+    // 由 planContinuationMiddleware 在系统提示末尾注入（盖过 todoListMiddleware 的「随时重订」）。
+    let capturedContext: { activePlan?: string } | undefined;
     const fakeAgent = {
-      stream: jest.fn(async () => (async function* () {})()),
+      stream: jest.fn(
+        async (_input: unknown, cfg: { context?: { activePlan?: string } }) => {
+          capturedContext = cfg?.context;
+          return (async function* () {})();
+        },
+      ),
       getState: jest.fn(async () => ({ tasks: [] })),
     };
-    (buildAgent as jest.Mock).mockImplementation(
-      (opts: { systemPromptExtra?: string }) => {
-        capturedExtra = opts.systemPromptExtra ?? '';
-        return fakeAgent;
-      },
-    );
+    (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
 
     const proc = new AgentProcessor(prisma, streamSvc, commands, {}, queue);
     await proc.process({
       data: { conversationId: 'c2', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
 
-    // 三个步骤连同状态都进了提示
-    expect(capturedExtra).toContain('写迁移脚本');
-    expect(capturedExtra).toContain('[in_progress] 灰度发布');
-    expect(capturedExtra).toContain('全量发布');
+    const planText = capturedContext?.activePlan ?? '';
+    // 三个步骤连同状态都进了计划文本
+    expect(planText).toContain('写迁移脚本');
+    expect(planText).toContain('[in_progress] 灰度发布');
+    expect(planText).toContain('全量发布');
     // 明确要求不要重新拆解
-    expect(capturedExtra).toContain('请勿重新拆解');
+    expect(planText).toContain('请勿重新拆解');
   });
 });

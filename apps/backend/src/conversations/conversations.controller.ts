@@ -12,7 +12,12 @@ export class ConversationsController {
 
   @Post()
   create(@Body() dto: CreateConversationDto, @CurrentUser() user: AuthUser) {
-    return this.conversations.create(dto.goal, user.tenantId, user.userId);
+    return this.conversations.create(
+      dto.goal,
+      user.tenantId,
+      user.userId,
+      dto.model,
+    );
   }
 
   @Get()
@@ -31,6 +36,11 @@ export class ConversationsController {
     @Body() dto: AppendMessageDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.conversations.appendMessage(id, dto.content, user.tenantId);
+    return this.conversations.appendMessage(
+      id,
+      dto.content,
+      user.tenantId,
+      dto.model,
+    );
   }
 }

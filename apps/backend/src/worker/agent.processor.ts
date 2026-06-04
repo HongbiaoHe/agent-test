@@ -56,7 +56,8 @@ export class AgentProcessor extends WorkerHost {
     const config = { configurable: { thread_id: conversationId } };
 
     try {
-      await this.prisma.conversation.update({
+      // update 返回整条记录，顺带取本会话选定的模型（前端可切换）传给 buildAgent
+      const conv = await this.prisma.conversation.update({
         where: { id: conversationId },
         data: { status: 'running' },
       });
@@ -65,7 +66,6 @@ export class AgentProcessor extends WorkerHost {
       // 因为 deepagents 跑完一轮后不在持久化 state 保留对话消息（同 thread_id 续跑拿不到上文）。
       let runName = `审批续跑 · ${conversationId}`;
       let input: unknown;
-      // 仅非 resume（新一轮重放）时按需注入既有任务计划，避免每轮重新拆解（详见 buildPlanPrompt）。
       let systemPromptExtra = '';
       if (kind === 'resume') {
         input = new Command({ resume: { decisions } });
@@ -92,14 +92,18 @@ export class AgentProcessor extends WorkerHost {
         }
         runName = lastLabel || runName;
         input = { messages, files };
-        systemPromptExtra =
-          (await this.buildPlanPrompt(conversationId)) +
-          this.buildSkillPrompt(messages);
+        systemPromptExtra = this.buildSkillPrompt(messages);
       }
+
+      // 既有任务计划经 runtime context 注入：planContinuationMiddleware 会把它追加到系统提示
+      // **末尾**（盖过 todoListMiddleware 的「随时重订」），根治多轮 todos 被整表替换、没执行完
+      // 就换新列表。run/resume 都注入（resume 续跑同一轮，回注既有计划同样有益）。
+      const activePlan = await this.buildActivePlan(conversationId);
 
       const agent = buildAgent({
         checkpointer: this.checkpointer,
         systemPromptExtra,
+        model: conv.model ?? undefined,
       });
 
       // runName/tags/metadata → LangSmith 里按此命名/过滤，而非只显示 "LangGraph"
@@ -108,6 +112,7 @@ export class AgentProcessor extends WorkerHost {
         runName,
         tags: ['buzz-agent', kind ?? 'run'],
         metadata: { conversationId, kind: kind ?? 'run' },
+        context: { activePlan },
         streamMode: ['updates', 'messages'],
         subgraphs: true,
       } as never);
@@ -194,15 +199,17 @@ export class AgentProcessor extends WorkerHost {
   }
 
   /**
-   * 多轮重放时，模型在提示和消息里都看不到上一轮的任务计划：write_todos 产生的
-   * plan_update / tool 消息不在 loadHistory 的重放范围内，langchain 的 todoListMiddleware
-   * 也只注入「如何使用 write_todos」的说明、从不注入当前 todos 列表。叠加系统提示「收到目标后
-   * 先 write_todos 拆解计划」，会导致每一轮都从零重新规划、计划不断变化。
+   * 算出该会话「当前任务计划」文本，供 worker 经 runtime context 传给 planContinuationMiddleware
+   * 注入系统提示末尾（见 agent.factory）。计划尚未产生（首轮）时返回空串，让模型自由完成首次拆解。
    *
-   * 这里取该会话最近一次计划注入系统提示，并要求按既定计划逐步执行、只更新状态，避免重新拆解。
-   * 计划尚未产生（首轮）时返回空串，交由基础系统提示完成首次拆解。
+   * 为什么需要它：多轮重放时模型在提示和消息里都看不到上一轮的任务计划——write_todos 产生的
+   * plan_update / tool 消息不在 loadHistory 的重放范围内，langchain 的 todoListMiddleware 也只注入
+   * 「如何使用 write_todos」的说明、从不注入当前 todos 列表，且其文案还鼓励「随时重订计划」。不回注
+   * 既有计划，模型每轮都会整表重写 todos、把没执行完的步骤冲掉（用户观察到的「频繁换新 todos」）。
+   *
+   * 措辞刻意只锁「整表替换/删改重排」，仍允许末尾追加新发现的子任务，避免过度僵化。
    */
-  private async buildPlanPrompt(conversationId: string): Promise<string> {
+  private async buildActivePlan(conversationId: string): Promise<string> {
     const row = await this.prisma.message.findFirst({
       where: { conversationId, type: 'plan_update' },
       orderBy: { seq: 'desc' },
@@ -217,11 +224,11 @@ export class AgentProcessor extends WorkerHost {
       .map((t, i) => `${i + 1}. [${t.status}] ${t.content}`)
       .join('\n');
     return (
-      `\n\n## 当前任务计划（已存在，请勿重新拆解）\n${lines}\n\n` +
-      `本会话已有上面这份既定计划。请直接按它继续逐步执行：\n` +
-      `- 不要重新拆解，不要新增、删除或改写步骤内容，保持步骤文本与顺序不变；\n` +
-      `- 仅用 write_todos 更新每一步的状态（pending → in_progress → completed）；\n` +
-      `- 开始某一步前标记为 in_progress，完成后立即标记为 completed。`
+      `## 当前任务计划（已存在，继续执行，请勿重新拆解）\n${lines}\n\n` +
+      `本会话已有上面这份既定计划，请在它的基础上继续：\n` +
+      `- 保留已有步骤的文本与顺序不变，逐步用 write_todos 推进状态（pending → in_progress → completed）；\n` +
+      `- 开始某一步前标记为 in_progress，完成后立即标记为 completed；\n` +
+      `- 不要把整张列表替换成新的，也不要删除、改写或重排已有步骤；仅当确实发现新子任务时，可在末尾追加。`
     );
   }
 
