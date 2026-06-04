@@ -256,3 +256,96 @@ describe('AgentProcessor 多轮重放', () => {
     expect(planText).toContain('请勿重新拆解');
   });
 });
+
+describe('AgentProcessor 流式聚合落库', () => {
+  const aiChunk = (content: string) => ({ _getType: () => 'ai', content, tool_calls: [] });
+  const aiToolMsg = (tool_calls: { name: string; args: unknown }[]) => ({
+    _getType: () => 'ai',
+    content: '',
+    tool_calls,
+  });
+  const toolMsg = (name: string, content: string) => ({
+    _getType: () => 'tool',
+    name,
+    content,
+    status: 'success',
+  });
+
+  it('把逐字 token 累积成完整 message 落库；token 本身只推流不落库；工具调用前的叙述文本也保留', async () => {
+    // 一轮里：先吐叙述文本(分两个 token chunk) → 调工具 → 工具结果 → 再吐最终答案
+    const chunks: unknown[] = [
+      [['agent'], 'messages', [aiChunk('你好')]],
+      [['agent'], 'messages', [aiChunk('，世界')]],
+      [[], 'updates', { model_request: { messages: [aiToolMsg([{ name: 'search', args: { q: 'x' } }])] } }],
+      [['tools'], 'messages', [toolMsg('search', '{"r":1}')]],
+      [['agent'], 'messages', [aiChunk('最终答案')]],
+      [[], 'updates', { model_request: { messages: [aiChunk('最终答案')] } }],
+    ];
+
+    const created: { type: string; content: unknown; role: string }[] = [];
+    const prisma = {
+      conversation: { update: jest.fn().mockResolvedValue({}) },
+      message: {
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(0),
+        create: jest.fn((arg: { data: { type: string; content: unknown; role: string } }) => {
+          created.push({
+            type: arg.data.type,
+            content: arg.data.content,
+            role: arg.data.role,
+          });
+          return Promise.resolve({});
+        }),
+      },
+    } as unknown as PrismaService;
+
+    const published: { type: string }[] = [];
+    const streamSvc = {
+      publish: jest.fn((_c: string, raw: { type: string }) => {
+        published.push({ type: raw.type });
+        return Promise.resolve(undefined);
+      }),
+    } as unknown as StreamService;
+
+    const commands = {
+      all: jest.fn(() => [] as CommandDef[]),
+      get: jest.fn(() => undefined),
+    } as unknown as CommandRegistryService;
+
+    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+
+    const fakeAgent = {
+      stream: jest.fn(async () =>
+        (async function* () {
+          for (const c of chunks) yield c;
+        })(),
+      ),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    };
+    (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
+
+    const proc = new AgentProcessor(prisma, streamSvc, commands, {}, queue);
+    await proc.process({
+      data: { conversationId: 'agg1', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+
+    // token 只推流，不落库
+    expect(published.some((p) => p.type === 'token')).toBe(true);
+    expect(created.some((c) => c.type === 'token')).toBe(false);
+
+    const messages = created.filter((c) => c.type === 'message');
+    const texts = messages.map((m) => (m.content as { text?: string }).text);
+    // 工具前的叙述文本被收口成一条完整 assistant message（此前会被整段丢弃）
+    expect(texts).toContain('你好，世界');
+    // 最终答案也作为完整 message 落库
+    expect(texts).toContain('最终答案');
+    // 叙述 message 落在 tool_start 之前（顺序正确）
+    const order = created.map((c) => c.type);
+    expect(order.indexOf('message')).toBeLessThan(order.indexOf('tool_start'));
+    // 工具调用与结果照常落库，运行结束落 result
+    expect(order).toContain('tool_start');
+    expect(order).toContain('tool_end');
+    expect(order).toContain('result');
+  });
+});

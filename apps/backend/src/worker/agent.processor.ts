@@ -119,13 +119,40 @@ export class AgentProcessor extends WorkerHost {
 
       // resume 续跑时从已有消息数接着排 seq
       let seq = await this.prisma.message.count({ where: { conversationId } });
+      // 逐字 token 实时推流但不逐条落库（否则每条 token 一行、表爆炸）；改为按助手文本段累积，
+      // 在遇到边界（工具调用/结果/计划/审批）或流结束时，把累积文本收口成一条完整 message：
+      // 推流 + 落库都用「用户实际看到的累积文本」，从而 live 与刷新恢复一致、结尾不再被更短的聚合覆盖。
+      let buf = '';
+      const flush = async (override?: string) => {
+        const text = override ?? buf;
+        buf = '';
+        if (!text) return;
+        const msg: RawEvent = { type: 'message', payload: { text } };
+        await this.stream.publish(conversationId, msg);
+        await this.persist(conversationId, msg, seq++);
+      };
       for await (const chunk of stream as AsyncIterable<unknown>) {
         const [ns, mode, data] = chunk as [string[], string, unknown];
         const raw = normalize(ns, mode, data);
         if (!raw) continue;
+        if (raw.type === 'token') {
+          buf += String((raw.payload as { text?: string }).text ?? '');
+          await this.stream.publish(conversationId, raw);
+          continue;
+        }
+        // updates 聚合出的 message 文本可能短于逐字流（如思考/工具叙述被裁剪）：优先用累积的 buf
+        // 收口；buf 为空（非流式模型，未产生 token）时才退回 updates 文本，避免文本丢失。
+        if (raw.type === 'message') {
+          await flush(buf || String((raw.payload as { text?: string }).text ?? ''));
+          continue;
+        }
+        // 其余非文本事件（tool_start/tool_end/plan_update/control_request）是文本段边界：
+        // 先把已累积文本收口成 message，再推送并落库该事件。
+        await flush();
         await this.stream.publish(conversationId, raw);
-        if (raw.type !== 'token') await this.persist(conversationId, raw, seq++);
+        await this.persist(conversationId, raw, seq++);
       }
+      await flush(); // 流自然结束、末段文本无后继事件触发时收尾
 
       // 流结束后检测审批中断（state.tasks 是 LangGraph 内部概念，勿与业务表混淆）
       const state = (await agent.getState(config)) as {

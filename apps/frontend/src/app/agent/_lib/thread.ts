@@ -73,8 +73,10 @@ export function reduce(state: ThreadState, ev: NormalizedEvent): ThreadState {
       if (ev.role === "user") {
         items.push({ kind: "user", id: id(), text });
       } else if (last?.kind === "assistant" && last.streaming) {
-        // 之前流式 token 攒出的气泡，用这条完整文本收口
-        items[items.length - 1] = { ...last, text, streaming: false };
+        // 之前流式 token 攒出的气泡，用这条完整文本收口。后端送来的 message 文本即累积 token，
+        // 二者应一致；防御性地取较长者，绝不让收口把已显示内容缩短（曾因聚合文本更短而「变少」）。
+        const finalText = text.length >= last.text.length ? text : last.text;
+        items[items.length - 1] = { ...last, text: finalText, streaming: false };
       } else {
         items.push({ kind: "assistant", id: id(), text, streaming: false });
       }
