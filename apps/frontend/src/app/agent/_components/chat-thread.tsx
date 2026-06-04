@@ -26,6 +26,7 @@ import { ApprovalCard } from "./approval-card";
 import { ChatMessage } from "./chat-message";
 import { ModelSwitcher } from "./model-switcher";
 import { TaskPlanPanel } from "./task-plan-panel";
+import { ThinkingIndicator } from "./thinking-indicator";
 
 export function ChatThread({
   title,
@@ -132,13 +133,23 @@ export function ChatThread({
     }
   }
 
-  const showEmpty = !isLoading && items.length === 0;
+  // 忙碌时不显示空状态占位，让首轮的思考指示器接管
+  const showEmpty = !isLoading && items.length === 0 && !busy;
 
   // 任务计划独立固定在输入框上方，故从消息流中剔除，避免重复渲染
   const plan = items.find(
     (it): it is Extract<ThreadItem, { kind: "plan" }> => it.kind === "plan",
   );
   const streamItems = items.filter((it) => it.kind !== "plan");
+
+  // 思考指示器仅在「忙、非审批、且末项不是正在流式的气泡/调用中的工具卡」时可见——
+  // 填补发送→首 token/工具前、工具完成→下段文本前、两段之间的空档；有实时内容时自动让位。
+  // 整轮 busy 期间都挂载（见下方渲染），仅切显隐，使秒数跨空档连续。
+  const lastItem = streamItems[streamItems.length - 1];
+  const lastActive =
+    (lastItem?.kind === "assistant" && lastItem.streaming) ||
+    (lastItem?.kind === "tool" && !lastItem.done);
+  const thinkingVisible = busy && !approval && !lastActive;
 
   return (
     <section className="flex h-full min-w-0 flex-1 flex-col bg-background">
@@ -205,6 +216,7 @@ export function ChatThread({
                   <ApprovalCard approval={approval} onDecide={onDecide} />
                 </div>
               )}
+              {busy && <ThinkingIndicator visible={thinkingVisible} />}
             </>
           )}
           <div ref={bottomRef} />
