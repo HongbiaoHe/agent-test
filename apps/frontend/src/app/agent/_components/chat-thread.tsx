@@ -27,6 +27,8 @@ import { ChatMessage } from "./chat-message";
 import { ModelSwitcher } from "./model-switcher";
 import { TaskPlanPanel } from "./task-plan-panel";
 import { ThinkingIndicator } from "./thinking-indicator";
+import type { ToolItem } from "./tool-chip";
+import { ToolGroup } from "./tool-group";
 
 export function ChatThread({
   title,
@@ -98,9 +100,16 @@ export function ChatThread({
     setActiveIndex(0);
   }
 
-  // 新消息 / 审批出现时滚动到底
+  // 新消息 / 审批出现时滚动到底。只滚 ScrollArea 自己的 viewport（直接置 scrollTop），
+  // 不用 bottomRef.scrollIntoView：后者会向上遍历、把每一个可滚祖先都滚动以露出锚点，
+  // 在 busy 重渲染、内层 viewport 尚未 clamp 到最终高度的那一帧触发时，会误把外层
+  // overflow:hidden 的 .h-screen/外壳一起滚动 → 整个 section 连同顶栏被顶上去、且因父级
+  // 是 hidden 无法滚回（间歇性复现）。直接操作 viewport 物理上不可能移动任何祖先。
   useEffect(() => {
-    bottomRef.current?.scrollIntoView({ behavior: "smooth" });
+    const vp = bottomRef.current?.closest<HTMLElement>(
+      '[data-slot="scroll-area-viewport"]',
+    );
+    if (vp) vp.scrollTop = vp.scrollHeight;
   }, [items, approval]);
 
   function submit() {
@@ -141,6 +150,22 @@ export function ChatThread({
     (it): it is Extract<ThreadItem, { kind: "plan" }> => it.kind === "plan",
   );
   const streamItems = items.filter((it) => it.kind !== "plan");
+
+  // 把相邻的工具调用收成一组，交给 ToolGroup 渲染（≥2 折叠、单个仍按原 chip）；
+  // 其余消息照常一条一条交给 ChatMessage。
+  type Row =
+    | { row: "msg"; item: ThreadItem }
+    | { row: "tools"; id: string; tools: ToolItem[] };
+  const rows: Row[] = [];
+  for (const it of streamItems) {
+    const last = rows[rows.length - 1];
+    if (it.kind === "tool") {
+      if (last?.row === "tools") last.tools.push(it);
+      else rows.push({ row: "tools", id: it.id, tools: [it] });
+    } else {
+      rows.push({ row: "msg", item: it });
+    }
+  }
 
   // 思考指示器仅在「忙、非审批、且末项不是正在流式的气泡/调用中的工具卡」时可见——
   // 填补发送→首 token/工具前、工具完成→下段文本前、两段之间的空档；有实时内容时自动让位。
@@ -203,14 +228,18 @@ export function ChatThread({
             </div>
           ) : (
             <>
-              {streamItems.map((item) => (
-                <ChatMessage
-                  key={item.id}
-                  item={item}
-                  activeDetailId={activeDetailId}
-                  onOpenDetail={onOpenDetail}
-                />
-              ))}
+              {rows.map((r) =>
+                r.row === "tools" ? (
+                  <ToolGroup
+                    key={r.id}
+                    tools={r.tools}
+                    activeDetailId={activeDetailId}
+                    onOpenDetail={onOpenDetail}
+                  />
+                ) : (
+                  <ChatMessage key={r.item.id} item={r.item} />
+                ),
+              )}
               {approval && (
                 <div className="pl-10">
                   <ApprovalCard approval={approval} onDecide={onDecide} />

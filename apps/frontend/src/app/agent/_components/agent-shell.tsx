@@ -145,7 +145,7 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   };
 
   return (
-    <div className="flex h-full w-full overflow-hidden">
+    <div className="flex h-full w-full overflow-clip">
       {/* desktop 常驻侧边栏 */}
       <ConversationSidebar {...sidebarProps} />
 

@@ -1,14 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import {
-  CloudSun,
-  Loader,
-  Mail,
-  Sparkles,
-  Wrench,
-  type LucideIcon,
-} from "lucide-react";
+import { Sparkles } from "lucide-react";
 
 import {
   Tooltip,
@@ -16,38 +9,14 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { listCommands } from "@/lib/api";
-import { cn } from "@/lib/utils";
 
 import type { ThreadItem } from "../_lib/thread";
 import { Markdown } from "./markdown";
 
-const TOOL_ICON: Record<string, LucideIcon> = {
-  send_email: Mail,
-  get_weather: CloudSun,
-};
-
-/**
- * 文件类工具（read_file / write_file / edit_file 等）的参数统一带 file_path，
- * 返回完整路径显示在 chip 上；非文件工具无 file_path 时返回 null。
- */
-function filePath(args: unknown): string | null {
-  if (!args || typeof args !== "object") return null;
-  const path = (args as Record<string, unknown>).file_path;
-  return typeof path === "string" ? path : null;
-}
-
 /** 助手侧内容的左缩进，对齐头像（size-7 + gap-3 ≈ pl-10）。 */
 const INDENT = "pl-10";
 
-export function ChatMessage({
-  item,
-  activeDetailId,
-  onOpenDetail,
-}: {
-  item: ThreadItem;
-  activeDetailId: string | null;
-  onOpenDetail: (id: string) => void;
-}) {
+export function ChatMessage({ item }: { item: ThreadItem }) {
   if (item.kind === "user") {
     return <UserMessage text={item.text} />;
   }
@@ -68,43 +37,7 @@ export function ChatMessage({
     );
   }
 
-  if (item.kind === "tool") {
-    const Icon = TOOL_ICON[item.name] ?? Wrench;
-    const active = activeDetailId === item.id;
-    const path = filePath(item.args);
-    return (
-      <div className={INDENT}>
-        <button
-          type="button"
-          onClick={() => onOpenDetail(item.id)}
-          className={cn(
-            "inline-flex max-w-full cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors",
-            active
-              ? "border-ring bg-accent"
-              : "bg-card hover:bg-accent hover:text-accent-foreground",
-          )}
-        >
-          {item.done ? (
-            <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-          ) : (
-            <Loader className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
-          )}
-          <span className="shrink-0 font-medium">{item.name}</span>
-          {path && (
-            <span
-              className="truncate font-mono text-muted-foreground"
-              title={path}
-            >
-              {path}
-            </span>
-          )}
-          <span className="shrink-0 text-[10px] tracking-wide text-muted-foreground uppercase">
-            {item.done ? "工具" : "调用中"}
-          </span>
-        </button>
-      </div>
-    );
-  }
+  // 工具调用（含连续多个的聚合）由 ChatThread 收集后交给 ToolGroup 渲染，此处不处理。
 
   if (item.kind === "error") {
     return (
