@@ -1,16 +1,20 @@
+import type { BaseStore } from '@langchain/langgraph';
 import { Command } from '@langchain/langgraph';
 import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
 import { Job, Queue } from 'bullmq';
 import { buildAgent } from '../agent/agent.factory';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
+import { getThreadSandbox } from '../agent/sandbox';
 import { normalize, RawEvent } from '../agent/event-normalizer';
-import type { CommandDef } from '../commands/command-registry.service';
-import { CommandRegistryService } from '../commands/command-registry.service';
 import { parseCommand } from '../commands/parse-command';
 import { StreamService } from '../events/stream.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { absolutizeRefPaths, buildSkillFiles } from './skill-files';
+import { absolutizeRefPaths } from '../skills/skill-files';
+import { seedSkillsStore } from '../skills/skill-store.seed';
+import { SKILLS_STORE } from '../skills/skill-store.provider';
+import type { SkillDef } from '../skills/skills.service';
+import { SkillsService } from '../skills/skills.service';
 
 interface JobData {
   conversationId: string;
@@ -38,9 +42,10 @@ export class AgentProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly stream: StreamService,
-    private readonly commands: CommandRegistryService,
+    private readonly skills: SkillsService,
     @Inject(CHECKPOINTER) private readonly checkpointer: unknown,
     @InjectQueue('agent-run') private readonly queue: Queue,
+    @Inject(SKILLS_STORE) private readonly store: BaseStore,
   ) {
     super();
   }
@@ -53,14 +58,37 @@ export class AgentProcessor extends WorkerHost {
       return;
     }
 
-    const config = { configurable: { thread_id: conversationId } };
-
     try {
       // update 返回整条记录，顺带取本会话选定的模型（前端可切换）传给 buildAgent
       const conv = await this.prisma.conversation.update({
         where: { id: conversationId },
         data: { status: 'running' },
       });
+
+      // config 在 conv 加载后定义，以便 getState 和 stream 均携带 userId
+      // （StoreBackend namespace factory 在 state 读取时也可能被调用，保持一致）
+      const config = {
+        configurable: { thread_id: conversationId, userId: conv.userId },
+      };
+
+      // ① 播种：该用户生效技能 → InMemoryStore（diff 同步）
+      // run/resume 共享：worker 重启后 InMemoryStore 为空，resume 不播种 → namespace 空、技能静默失效
+      const defs = await this.skills.effectiveSkillsFor(conv.userId);
+      await seedSkillsStore(this.store, conv.userId, defs);
+
+      // ② 沙箱：thread-scoped find-or-create；无 key/创建失败 → 回退 StateBackend
+      let sandbox: Awaited<ReturnType<typeof getThreadSandbox>> = null;
+      try {
+        sandbox = await getThreadSandbox(conversationId);
+      } catch (e) {
+        // 降级而非失败整个 run；提示用户本轮无执行能力（设计 §8）
+        await this.stream.publish(conversationId, {
+          type: 'message',
+          payload: { text: '⚠️ 沙箱创建失败，本轮无命令执行能力（文件与技能阅读不受影响）。' },
+        } as RawEvent);
+      }
+      // sandbox 为 null 时不传 defaultBackend，buildAgent 内部 new StateBackend() 兜底（避免在 processor 引入 deepagents 直接依赖）
+      const defaultBackend = sandbox ?? undefined;
 
       // resume 续跑沿用 checkpointer 的中断态；run/追加则从 DB 重放完整对话历史，
       // 因为 deepagents 跑完一轮后不在持久化 state 保留对话消息（同 thread_id 续跑拿不到上文）。
@@ -71,28 +99,23 @@ export class AgentProcessor extends WorkerHost {
         input = new Command({ resume: { decisions } });
       } else {
         const messages = await this.loadHistory(conversationId);
-        // 把所有技能文件注入 per-thread state 的 /skills/ 下，供 deepagents SkillsMiddleware 发现/列出，
-        // agent 据系统提示用 read_file 按需加载（原生 progressive disclosure）。files 随 thread_id 隔离。
-        const files = buildSkillFiles(
-          this.commands.all(),
-          new Date().toISOString(),
-        );
         // 历史按原样重放，不改写任何用户消息：/command 该触发哪个技能由 system prompt 约束
-        // （见 agent.factory）。改写历史会让旧命令每轮被重新注入「先 read_file 读 SKILL.md」祈使，
-        // 导致多轮里重复触发同一技能、重复读同一文件。这里只取末条 user 消息做 LangSmith runName。
+        // （见 agent.factory）。技能文件现在通过 InMemoryStore 播种（seedSkillsStore），
+        // 不再全量注入 state.files——避免每轮刷新全部文件的写放大，且 store 已按 userId namespace 隔离。
+        // 这里只取末条 user 消息做 LangSmith runName。
         let lastLabel = '';
         for (const m of messages) {
           if (m.role !== 'user') continue;
           lastLabel = `Agent · ${m.content.slice(0, 60)}`;
           const cmd = parseCommand(m.content);
           if (!cmd) continue;
-          const def = this.commands.get(cmd.name);
+          const def = await this.skills.getFor(conv.userId, cmd.name);
           if (!def) continue;
           lastLabel = `技能:${def.name} · ${cmd.args}`.slice(0, 60);
         }
         runName = lastLabel || runName;
-        input = { messages, files };
-        systemPromptExtra = this.buildSkillPrompt(messages);
+        input = { messages };
+        systemPromptExtra = await this.buildSkillPrompt(conv.userId, messages);
       }
 
       // 既有任务计划经 runtime context 注入：planContinuationMiddleware 会把它追加到系统提示
@@ -100,19 +123,24 @@ export class AgentProcessor extends WorkerHost {
       // 就换新列表。run/resume 都注入（resume 续跑同一轮，回注既有计划同样有益）。
       const activePlan = await this.buildActivePlan(conversationId);
 
+      // ③ 装配
       const agent = buildAgent({
         checkpointer: this.checkpointer,
         systemPromptExtra,
         model: conv.model ?? undefined,
+        defaultBackend,
+        store: this.store,
+        hasSandbox: !!sandbox,
       });
 
+      // ④ stream config：userId 同时进 configurable（StoreBackend namespace 用）与 context（中间件用）
       // runName/tags/metadata → LangSmith 里按此命名/过滤，而非只显示 "LangGraph"
       const stream = await agent.stream(input, {
         ...config,
         runName,
         tags: ['buzz-agent', kind ?? 'run'],
         metadata: { conversationId, kind: kind ?? 'run' },
-        context: { activePlan },
+        context: { activePlan, userId: conv.userId },
         streamMode: ['updates', 'messages'],
         subgraphs: true,
       } as never);
@@ -271,19 +299,20 @@ export class AgentProcessor extends WorkerHost {
    * 本轮才首次发起的 /command 不注入，交由基础系统提示按 read_file 完成首次加载。
    * SKILL.md 经 absolutizeRefPaths 改写相对引用，保证注入后正文里的 references 路径仍能命中虚拟 FS。
    */
-  private buildSkillPrompt(
+  private async buildSkillPrompt(
+    userId: string,
     messages: { role: string; content: string }[],
-  ): string {
+  ): Promise<string> {
     const users = messages.filter((m) => m.role === 'user');
     if (users.length === 0) return '';
     const current = users[users.length - 1];
 
-    let active: CommandDef | undefined;
+    let active: SkillDef | undefined;
     let activeMsg: { role: string; content: string } | undefined;
     for (const m of users) {
       const cmd = parseCommand(m.content);
       if (!cmd) continue;
-      const def = this.commands.get(cmd.name);
+      const def = await this.skills.getFor(userId, cmd.name);
       if (!def) continue;
       active = def;
       activeMsg = m;

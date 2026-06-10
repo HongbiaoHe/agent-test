@@ -1,21 +1,44 @@
+import { InMemoryStore } from '@langchain/langgraph';
 import type { Job, Queue } from 'bullmq';
 import { buildAgent } from '../agent/agent.factory';
-import type { CommandDef } from '../commands/command-registry.service';
-import { CommandRegistryService } from '../commands/command-registry.service';
 import { StreamService } from '../events/stream.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { seedSkillsStore } from '../skills/skill-store.seed';
+import type { SkillDef } from '../skills/skills.service';
+import { SkillsService } from '../skills/skills.service';
 import { AgentProcessor } from './agent.processor';
 
 // 避免加载 deepagents / google-genai 等重依赖，并能捕获传给 agent 的 input
 jest.mock('../agent/agent.factory', () => ({ buildAgent: jest.fn() }));
 
+// getThreadSandbox 是模块级函数，需 jest.mock 拦截，否则会真的调 Daytona SDK
+jest.mock('../agent/sandbox', () => ({
+  getThreadSandbox: jest.fn().mockResolvedValue(null),
+  findThreadSandbox: jest.fn().mockResolvedValue(null),
+}));
+
+// seedSkillsStore spy：验证 run 前确实调了播种，且入参正确
+jest.mock('../skills/skill-store.seed', () => ({
+  seedSkillsStore: jest.fn().mockResolvedValue(undefined),
+}));
+
+/** 构造 conv 记录（userId 固定为 'u1'，model 可选） */
+const makeConv = (extra: Record<string, unknown> = {}) => ({
+  id: 'c1',
+  userId: 'u1',
+  model: null,
+  status: 'running',
+  ...extra,
+});
+
 describe('AgentProcessor 多轮重放', () => {
   it('重放历史时原样传递用户的 /command 消息，不注入 read_file/请使用技能 祈使（否则每轮重复触发同一技能、重复 read_file 同一文件）', async () => {
-    const def: CommandDef = {
+    const def: SkillDef = {
       name: 'tvc-director',
       description: '',
       domain: 'tvc',
-      raw: '# tvc',
+      source: 'builtin',
+      enabled: true,
       files: { 'SKILL.md': '# tvc' },
     };
 
@@ -27,7 +50,7 @@ describe('AgentProcessor 多轮重放', () => {
     ];
 
     const prisma = {
-      conversation: { update: jest.fn().mockResolvedValue({}) },
+      conversation: { update: jest.fn().mockResolvedValue(makeConv()) },
       message: {
         findMany: jest.fn().mockResolvedValue(history),
         findFirst: jest.fn().mockResolvedValue(null),
@@ -40,12 +63,15 @@ describe('AgentProcessor 多轮重放', () => {
       publish: jest.fn().mockResolvedValue(undefined),
     } as unknown as StreamService;
 
-    const commands = {
-      all: jest.fn(() => [def]),
-      get: jest.fn((n: string) => (n === 'tvc-director' ? def : undefined)),
-    } as unknown as CommandRegistryService;
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([def]),
+      getFor: jest.fn(async (_userId: string, name: string) =>
+        name === 'tvc-director' ? def : undefined,
+      ),
+    } as unknown as SkillsService;
 
     const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+    const store = new InMemoryStore();
 
     // 捕获传给 agent.stream 的 input，断言其中的 messages 未被改写
     let captured: { messages: { role: string; content: string }[] } | undefined;
@@ -58,7 +84,7 @@ describe('AgentProcessor 多轮重放', () => {
     };
     (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
 
-    const proc = new AgentProcessor(prisma, streamSvc, commands, {}, queue);
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
     await proc.process({
       data: { conversationId: 'c1', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
@@ -73,14 +99,18 @@ describe('AgentProcessor 多轮重放', () => {
     // 没有任何用户消息被改写成「请使用…技能…先用 read_file 读取 SKILL.md」祈使
     expect(sent.every((m) => !m.content.includes('read_file'))).toBe(true);
     expect(sent.every((m) => !m.content.includes('请使用「'))).toBe(true);
+
+    // input 不含 files 键（技能现在经 store 播种，不再全量注入 state.files）
+    expect((captured as unknown as Record<string, unknown>)['files']).toBeUndefined();
   });
 
   it('续跑时把之前轮次激活的技能 SKILL.md 注入系统提示，并要求不要再 read_file 读取它', async () => {
-    const def: CommandDef = {
+    const def: SkillDef = {
       name: 'tvc-director',
       description: '',
       domain: 'tvc',
-      raw: '# tvc',
+      source: 'builtin',
+      enabled: true,
       files: { 'SKILL.md': '# TVC Director\n详见 `./references/treatment.md`' },
     };
     // 第 1 轮 /command 激活技能，第 3 轮是普通追问（当前请求） → 应注入
@@ -91,7 +121,7 @@ describe('AgentProcessor 多轮重放', () => {
     ];
 
     const prisma = {
-      conversation: { update: jest.fn().mockResolvedValue({}) },
+      conversation: { update: jest.fn().mockResolvedValue(makeConv()) },
       message: {
         findMany: jest.fn().mockResolvedValue(history),
         findFirst: jest.fn().mockResolvedValue(null),
@@ -104,12 +134,15 @@ describe('AgentProcessor 多轮重放', () => {
       publish: jest.fn().mockResolvedValue(undefined),
     } as unknown as StreamService;
 
-    const commands = {
-      all: jest.fn(() => [def]),
-      get: jest.fn((n: string) => (n === 'tvc-director' ? def : undefined)),
-    } as unknown as CommandRegistryService;
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([def]),
+      getFor: jest.fn(async (_userId: string, name: string) =>
+        name === 'tvc-director' ? def : undefined,
+      ),
+    } as unknown as SkillsService;
 
     const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+    const store = new InMemoryStore();
 
     let capturedExtra = '';
     const fakeAgent = {
@@ -123,7 +156,7 @@ describe('AgentProcessor 多轮重放', () => {
       },
     );
 
-    const proc = new AgentProcessor(prisma, streamSvc, commands, {}, queue);
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
     await proc.process({
       data: { conversationId: 'c3', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
@@ -140,11 +173,12 @@ describe('AgentProcessor 多轮重放', () => {
   });
 
   it('本轮当前请求才首次发起 /command 时不注入 SKILL.md（首次加载交给 read_file）', async () => {
-    const def: CommandDef = {
+    const def: SkillDef = {
       name: 'tvc-director',
       description: '',
       domain: 'tvc',
-      raw: '# tvc',
+      source: 'builtin',
+      enabled: true,
       files: { 'SKILL.md': '# TVC Director' },
     };
     // 只有一轮，且当前请求就是 /command → 首次加载，不注入
@@ -153,7 +187,7 @@ describe('AgentProcessor 多轮重放', () => {
     ];
 
     const prisma = {
-      conversation: { update: jest.fn().mockResolvedValue({}) },
+      conversation: { update: jest.fn().mockResolvedValue(makeConv()) },
       message: {
         findMany: jest.fn().mockResolvedValue(history),
         findFirst: jest.fn().mockResolvedValue(null),
@@ -166,12 +200,15 @@ describe('AgentProcessor 多轮重放', () => {
       publish: jest.fn().mockResolvedValue(undefined),
     } as unknown as StreamService;
 
-    const commands = {
-      all: jest.fn(() => [def]),
-      get: jest.fn((n: string) => (n === 'tvc-director' ? def : undefined)),
-    } as unknown as CommandRegistryService;
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([def]),
+      getFor: jest.fn(async (_userId: string, name: string) =>
+        name === 'tvc-director' ? def : undefined,
+      ),
+    } as unknown as SkillsService;
 
     const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+    const store = new InMemoryStore();
 
     let capturedExtra = 'SENTINEL';
     const fakeAgent = {
@@ -185,7 +222,7 @@ describe('AgentProcessor 多轮重放', () => {
       },
     );
 
-    const proc = new AgentProcessor(prisma, streamSvc, commands, {}, queue);
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
     await proc.process({
       data: { conversationId: 'c4', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
@@ -208,7 +245,7 @@ describe('AgentProcessor 多轮重放', () => {
     };
 
     const prisma = {
-      conversation: { update: jest.fn().mockResolvedValue({}) },
+      conversation: { update: jest.fn().mockResolvedValue(makeConv()) },
       message: {
         findMany: jest.fn().mockResolvedValue(history),
         findFirst: jest.fn().mockResolvedValue({ content: plan }),
@@ -221,12 +258,13 @@ describe('AgentProcessor 多轮重放', () => {
       publish: jest.fn().mockResolvedValue(undefined),
     } as unknown as StreamService;
 
-    const commands = {
-      all: jest.fn(() => [] as CommandDef[]),
-      get: jest.fn(() => undefined),
-    } as unknown as CommandRegistryService;
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([] as SkillDef[]),
+      getFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as SkillsService;
 
     const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+    const store = new InMemoryStore();
 
     // 既有计划现在经 runtime context（context.activePlan）传入，不再塞进 systemPromptExtra；
     // 由 planContinuationMiddleware 在系统提示末尾注入（盖过 todoListMiddleware 的「随时重订」）。
@@ -242,7 +280,7 @@ describe('AgentProcessor 多轮重放', () => {
     };
     (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
 
-    const proc = new AgentProcessor(prisma, streamSvc, commands, {}, queue);
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
     await proc.process({
       data: { conversationId: 'c2', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
@@ -254,6 +292,149 @@ describe('AgentProcessor 多轮重放', () => {
     expect(planText).toContain('全量发布');
     // 明确要求不要重新拆解
     expect(planText).toContain('请勿重新拆解');
+  });
+
+  it('run 前播种：seedSkillsStore 以 (store, userId, defs) 调用', async () => {
+    const def: SkillDef = {
+      name: 'tvc-director',
+      description: '',
+      domain: 'tvc',
+      source: 'builtin',
+      enabled: true,
+      files: { 'SKILL.md': '# tvc' },
+    };
+    const history = [{ role: 'user', content: { text: '测试播种' } }];
+
+    const prisma = {
+      conversation: { update: jest.fn().mockResolvedValue(makeConv()) },
+      message: {
+        findMany: jest.fn().mockResolvedValue(history),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(history.length),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+
+    const streamSvc = {
+      publish: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StreamService;
+
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([def]),
+      getFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as SkillsService;
+
+    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+    const store = new InMemoryStore();
+
+    const fakeAgent = {
+      stream: jest.fn(async () => (async function* () {})()),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    };
+    (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
+
+    (seedSkillsStore as jest.Mock).mockClear();
+
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
+    await proc.process({
+      data: { conversationId: 'seed1', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+
+    // 播种必须以 (store, userId, defs) 调用
+    expect(seedSkillsStore).toHaveBeenCalledWith(store, 'u1', [def]);
+  });
+
+  it('stream config 的 configurable.userId === conv.userId', async () => {
+    const history = [{ role: 'user', content: { text: '测试' } }];
+
+    const prisma = {
+      conversation: { update: jest.fn().mockResolvedValue(makeConv({ userId: 'user-99' })) },
+      message: {
+        findMany: jest.fn().mockResolvedValue(history),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(history.length),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+
+    const streamSvc = {
+      publish: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StreamService;
+
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([]),
+      getFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as SkillsService;
+
+    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+    const store = new InMemoryStore();
+
+    let capturedConfig: { configurable?: { userId?: string } } | undefined;
+    const fakeAgent = {
+      stream: jest.fn(
+        async (_input: unknown, cfg: { configurable?: { userId?: string } }) => {
+          capturedConfig = cfg;
+          return (async function* () {})();
+        },
+      ),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    };
+    (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
+
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
+    await proc.process({
+      data: { conversationId: 'uid1', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+
+    expect(capturedConfig?.configurable?.userId).toBe('user-99');
+  });
+
+  it('buildAgent 收到 hasSandbox:false 和 store（无沙箱时降级）', async () => {
+    const history = [{ role: 'user', content: { text: '测试' } }];
+
+    const prisma = {
+      conversation: { update: jest.fn().mockResolvedValue(makeConv()) },
+      message: {
+        findMany: jest.fn().mockResolvedValue(history),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(history.length),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+
+    const streamSvc = {
+      publish: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StreamService;
+
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([]),
+      getFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as SkillsService;
+
+    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+    const store = new InMemoryStore();
+
+    let capturedOpts: { hasSandbox?: boolean; store?: unknown } | undefined;
+    const fakeAgent = {
+      stream: jest.fn(async () => (async function* () {})()),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    };
+    (buildAgent as jest.Mock).mockImplementation(
+      (opts: { hasSandbox?: boolean; store?: unknown }) => {
+        capturedOpts = opts;
+        return fakeAgent;
+      },
+    );
+
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
+    await proc.process({
+      data: { conversationId: 'ha1', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+
+    // getThreadSandbox mock 返回 null，所以 hasSandbox 应为 false
+    expect(capturedOpts?.hasSandbox).toBe(false);
+    // store 实例传入，以便 ReadOnlyStoreBackend namespace factory 可用
+    expect(capturedOpts?.store).toBe(store);
   });
 });
 
@@ -284,7 +465,7 @@ describe('AgentProcessor 流式聚合落库', () => {
 
     const created: { type: string; content: unknown; role: string }[] = [];
     const prisma = {
-      conversation: { update: jest.fn().mockResolvedValue({}) },
+      conversation: { update: jest.fn().mockResolvedValue(makeConv()) },
       message: {
         findMany: jest.fn().mockResolvedValue([]),
         findFirst: jest.fn().mockResolvedValue(null),
@@ -308,12 +489,13 @@ describe('AgentProcessor 流式聚合落库', () => {
       }),
     } as unknown as StreamService;
 
-    const commands = {
-      all: jest.fn(() => [] as CommandDef[]),
-      get: jest.fn(() => undefined),
-    } as unknown as CommandRegistryService;
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([] as SkillDef[]),
+      getFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as SkillsService;
 
     const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+    const store = new InMemoryStore();
 
     const fakeAgent = {
       stream: jest.fn(async () =>
@@ -325,7 +507,7 @@ describe('AgentProcessor 流式聚合落库', () => {
     };
     (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
 
-    const proc = new AgentProcessor(prisma, streamSvc, commands, {}, queue);
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
     await proc.process({
       data: { conversationId: 'agg1', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
