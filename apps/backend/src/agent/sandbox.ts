@@ -15,6 +15,10 @@
 
 import { Daytona } from '@daytonaio/sdk';
 import { DaytonaSandbox } from '@langchain/daytona';
+import { GuardedSandbox } from './guarded-sandbox';
+
+/** agent 专用工作区目录名（相对于沙箱 home） */
+export const AGENT_WORKSPACE_DIR = 'agent-workspace';
 
 // ─── 验证过的 API 事实 ─────────────────────────────────────────────
 // @daytonaio/sdk 0.185.0 Daytona.d.ts:
@@ -49,8 +53,10 @@ import { DaytonaSandbox } from '@langchain/daytona';
  *    调用方（agent worker）会捕获并降级为 StateBackend，行为正确。
  *    如果日后需要区分，可检查 error.code === "AUTHENTICATION_FAILED"（DaytonaSandboxError）。
  */
-export async function getUserSandbox(userId: string): Promise<DaytonaSandbox | null> {
+export async function getUserSandbox(userId: string): Promise<GuardedSandbox | null> {
   if (!process.env.DAYTONA_API_KEY) return null;
+
+  let sb: DaytonaSandbox;
 
   try {
     // 用底层 Daytona SDK 查找已有沙箱（DaytonaSandbox 无 list 能力，需原生 SDK）
@@ -60,27 +66,34 @@ export async function getUserSandbox(userId: string): Promise<DaytonaSandbox | n
 
     if (!done && existing) {
       // 找到已有沙箱：用 LangChain wrapper 连接，以便 execute/upload 等高级方法可用
-      const sb = await DaytonaSandbox.fromId(existing.id);
+      sb = await DaytonaSandbox.fromId(existing.id);
       if (!sb.isRunning) {
         // 停机沙箱须先显式拉起（停机时 execute/downloadFiles 会失败）
         await sb.start();
       }
-      return sb;
+    } else {
+      // 列表为空时创建新沙箱
+      sb = await DaytonaSandbox.create({
+        labels: { user_id: userId },
+        autoStopInterval: 5, // 闲置 5 分钟自动停机，停机态只计存储费用
+        autoDeleteInterval: 30, // 停机 30 分钟后自动删除
+      });
     }
   } catch {
-    // 任何查找错误（网络、鉴权、未找到等）均降级到下面的 create 路径
+    // 任何查找错误（网络、鉴权、未找到等）均降级到 create 路径
+    // autoStopInterval / autoDeleteInterval 单位：分钟（已验证），数值为用户指定
+    sb = await DaytonaSandbox.create({
+      labels: { user_id: userId },
+      autoStopInterval: 5,
+      autoDeleteInterval: 30,
+    });
   }
 
-  // 创建新沙箱，绑定 user_id 标签供下次查找
-  // 已知竞态（实测）：Daytona list 按标签查询有 1-2 秒索引延迟——同一用户两次调用
-  // 间隔极短时可能各建一个沙箱。代价可接受：多余实例闲置即停、30 分钟自动删除；
-  // 不为此加锁/重试（会拖慢所有正常首启）。
-  // autoStopInterval / autoDeleteInterval 单位：分钟（已验证），数值为用户指定
-  return DaytonaSandbox.create({
-    labels: { user_id: userId },
-    autoStopInterval: 5, // 闲置 5 分钟自动停机，停机态只计存储费用
-    autoDeleteInterval: 30, // 停机 30 分钟后自动删除
-  });
+  // 建立（或确认）工作区目录，返回守卫 wrapper
+  const home = await sb.getWorkDir();
+  const ws = `${home}/${AGENT_WORKSPACE_DIR}`;
+  await sb.execute(`mkdir -p '${ws}'`);
+  return new GuardedSandbox(sb, ws);
 }
 
 /**
@@ -91,7 +104,7 @@ export async function getUserSandbox(userId: string): Promise<DaytonaSandbox | n
  * - 未找到       → 返回 null。
  * - 任何错误     → 返回 null（调用方做好 null 检查即可）。
  */
-export async function findUserSandbox(userId: string): Promise<DaytonaSandbox | null> {
+export async function findUserSandbox(userId: string): Promise<GuardedSandbox | null> {
   if (!process.env.DAYTONA_API_KEY) return null;
 
   try {
@@ -105,7 +118,11 @@ export async function findUserSandbox(userId: string): Promise<DaytonaSandbox | 
     if (!sb.isRunning) {
       await sb.start();
     }
-    return sb;
+    // 建立工作区目录后返回守卫 wrapper
+    const home = await sb.getWorkDir();
+    const ws = `${home}/${AGENT_WORKSPACE_DIR}`;
+    await sb.execute(`mkdir -p '${ws}'`);
+    return new GuardedSandbox(sb, ws);
   } catch {
     return null;
   }

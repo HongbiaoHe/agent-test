@@ -54,6 +54,7 @@ const SANDBOX_SYSTEM_PROMPT_BLOCK = `
 ## 沙箱执行（execute）
 - 技能 \`scripts/*\` 下的脚本用 \`execute\` 在沙箱内运行；运行前先读 SKILL.md 中对应脚本的运行说明。
 - 缺依赖就在沙箱内安装（pip install / npm install）。
+- 文件操作仅限工作区目录（工具会拒绝区外路径）；execute 默认在工作区执行，技能脚本用 /skills/ 下的绝对路径运行。
 - 产物文件写入工作区路径；/skills/ 是只读技能库，禁止向它写入。
 - 命令失败时把 stderr 关键行告诉用户，不要静默重试超过 2 次。`;
 
