@@ -2,6 +2,8 @@ packages:
   - apps/*
 
 allowBuilds:
+  # @google/genai 无需 postinstall 构建（纯 JS SDK，已实测生图/生视频可用）
+  '@google/genai': false
   '@nestjs/core': true
   '@prisma/client': true
   '@prisma/engines': true
