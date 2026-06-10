@@ -145,7 +145,8 @@ export class MediaService {
   }
 
   /**
-   * 校验参考图版本：每个 id 必须存在、status=done、generation.type=image、归属同 userId。
+   * 校验参考图版本的「合法性」：每个 id 必须存在、generation.type=image、归属同 userId。
+   * status 允许 queued / generating / done（就绪性由 processor 执行时等待）；status=failed 仍拒绝。
    * 任一不满足抛 MEDIA_REF_INVALID。空/未传则直接通过（参考图可选）。
    * 为什么一次 findMany 而非逐个查：减少往返，并用「查到数 < 传入数」捕获「不存在」。
    */
@@ -165,10 +166,9 @@ export class MediaService {
       throw new BusinessException(ErrorCodes.MEDIA_REF_INVALID, HttpStatus.BAD_REQUEST);
     }
     for (const v of found) {
-      const ok =
-        v.status === 'done' &&
-        v.generation.type === 'image' &&
-        v.generation.userId === userId;
+      // status=failed 明确拒绝；queued/generating/done 均视为合法（就绪性由 processor 等待）
+      const validStatus = v.status === 'queued' || v.status === 'generating' || v.status === 'done';
+      const ok = validStatus && v.generation.type === 'image' && v.generation.userId === userId;
       if (!ok) {
         throw new BusinessException(ErrorCodes.MEDIA_REF_INVALID, HttpStatus.BAD_REQUEST);
       }

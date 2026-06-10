@@ -186,14 +186,47 @@ describe('MediaService', () => {
       expect(mockPrisma.mediaGeneration.create).not.toHaveBeenCalled();
     });
 
-    it('参考版本未完成（非 done）→ MEDIA_REF_INVALID', async () => {
+    it('参考版本 queued → 校验通过（就绪性由 processor 等待）', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        { id: 'ref-1', status: 'queued', generation: { type: 'image', userId: 'user-1' } },
+      ]);
+      mockPrisma.mediaGeneration.create.mockResolvedValue({
+        id: 'gen-1',
+        conversationId: 'conv-1',
+        type: 'video',
+        versions: [{ id: 'ver-1' }],
+      });
+
+      const r = await service.createGeneration('conv-1', 'user-1', 'video', '霓虹水母视频', ['ref-1']);
+      expect(r).toEqual({ generationId: 'gen-1', versionId: 'ver-1' });
+      expect(mockPrisma.mediaGeneration.create).toHaveBeenCalled();
+    });
+
+    it('参考版本 generating → 校验通过（就绪性由 processor 等待）', async () => {
       mockPrisma.mediaVersion.findMany.mockResolvedValue([
         { id: 'ref-1', status: 'generating', generation: { type: 'image', userId: 'user-1' } },
       ]);
+      mockPrisma.mediaGeneration.create.mockResolvedValue({
+        id: 'gen-1',
+        conversationId: 'conv-1',
+        type: 'video',
+        versions: [{ id: 'ver-1' }],
+      });
+
+      const r = await service.createGeneration('conv-1', 'user-1', 'video', '霓虹水母视频', ['ref-1']);
+      expect(r).toEqual({ generationId: 'gen-1', versionId: 'ver-1' });
+      expect(mockPrisma.mediaGeneration.create).toHaveBeenCalled();
+    });
+
+    it('参考版本 failed → MEDIA_REF_INVALID', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        { id: 'ref-1', status: 'failed', generation: { type: 'image', userId: 'user-1' } },
+      ]);
 
       await expect(
-        service.createGeneration('conv-1', 'user-1', 'image', 'p', ['ref-1']),
+        service.createGeneration('conv-1', 'user-1', 'video', 'p', ['ref-1']),
       ).rejects.toMatchObject({ errCode: ErrorCodes.MEDIA_REF_INVALID.code });
+      expect(mockPrisma.mediaGeneration.create).not.toHaveBeenCalled();
     });
 
     it('参考版本非 image 类型（video）→ MEDIA_REF_INVALID', async () => {

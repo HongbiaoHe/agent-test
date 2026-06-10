@@ -38,9 +38,9 @@ export function mimeForExt(filePath: string): string {
  * 流程：load version+generation → generating(推流) → 调 google client → 落盘 → done/failed(推流)。
  * 只在状态变更时推流（generating / done|failed），轮询 tick 不推（避免前端失效风暴，设计 Issue 9）。
  */
-// lockDuration ≥ 视频轮询上限（10min）：BullMQ 默认 30s 锁靠续租维持，worker 短暂卡顿即判 stalled
-// 重跑 → 重复付费生成。显式拉长锁时长消除该风险。
-@Processor('media-gen', { lockDuration: 660_000 })
+// lockDuration 提高到 1320_000（22 分钟）：参考图等待最长 5 分钟 + 视频生成最长 10 分钟，
+// 两者串联最坏情况约 15 分钟，1320s 留足余量，避免 BullMQ 判 stalled 重跑（重复付费）。
+@Processor('media-gen', { lockDuration: 1_320_000 })
 export class MediaProcessor extends WorkerHost {
   private readonly logger = new Logger(MediaProcessor.name);
 
@@ -117,29 +117,64 @@ export class MediaProcessor extends WorkerHost {
 
   /**
    * 把参考版本 id 列表解析为 base64 字节 + MIME。
-   * filePath 缺失（版本未落盘）或磁盘文件读不到 → 抛错（不静默忽略，让本版本 failed 并把原因带给前端）。
+   * 若参考版本尚未 done（queued/generating），轮询 DB 等待（默认每 5s，上限 5 分钟）。
+   * 变 failed 或超时 → 抛错，让本版本 failed 并把原因带给前端。
+   * filePath 缺失或磁盘文件读不到 → 同样抛错（不静默忽略）。
    * 顺序与传入 id 一致（视频首帧依赖第一张）。
    */
-  private async loadRefs(referenceVersionIds: unknown): Promise<MediaRef[]> {
+  private async loadRefs(
+    referenceVersionIds: unknown,
+    opts: { pollIntervalMs?: number; timeoutMs?: number } = {},
+  ): Promise<MediaRef[]> {
     const ids = Array.isArray(referenceVersionIds) ? (referenceVersionIds as string[]) : [];
     if (ids.length === 0) return [];
 
-    const versions = await this.prisma.mediaVersion.findMany({
-      where: { id: { in: ids } },
-    });
-    const byId = new Map(versions.map((v) => [v.id, v]));
-    const dir = mediaDataDir();
+    const pollIntervalMs = opts.pollIntervalMs ?? 5_000;
+    const timeoutMs = opts.timeoutMs ?? 5 * 60_000; // 5 分钟
 
+    const dir = mediaDataDir();
     const refs: MediaRef[] = [];
+
     for (const id of ids) {
-      const v = byId.get(id);
-      if (!v?.filePath) {
-        throw new Error(`参考图版本资产缺失（versionId=${id} 无 filePath）`);
-      }
-      const data = await readFile(join(dir, v.filePath)); // 文件不存在会抛 ENOENT → 本版本 failed
-      refs.push({ data: data.toString('base64'), mimeType: mimeForExt(v.filePath) });
+      const v = await this.waitForRef(id, pollIntervalMs, timeoutMs);
+      const data = await readFile(join(dir, v.filePath!)); // 文件不存在会抛 ENOENT → 本版本 failed
+      refs.push({ data: data.toString('base64'), mimeType: mimeForExt(v.filePath!) });
     }
     return refs;
+  }
+
+  /**
+   * 等待单个参考版本就绪（status=done）。
+   * queued/generating → 轮询；done → 立即返回；failed/超时 → 抛错。
+   * 抽成独立方法便于单测（可注入小间隔参数）。
+   */
+  async waitForRef(
+    refId: string,
+    pollIntervalMs: number,
+    timeoutMs: number,
+  ): Promise<{ id: string; filePath: string | null }> {
+    const deadline = Date.now() + timeoutMs;
+
+    while (true) {
+      const v = await this.prisma.mediaVersion.findUnique({ where: { id: refId } });
+      if (!v) {
+        throw new Error(`参考图版本不存在（versionId=${refId}）`);
+      }
+      if (v.status === 'done') {
+        if (!v.filePath) {
+          throw new Error(`参考图版本资产缺失（versionId=${refId} 无 filePath）`);
+        }
+        return v;
+      }
+      if (v.status === 'failed') {
+        throw new Error(`参考图未能就绪：${refId} ${v.status}`);
+      }
+      // queued / generating：继续等待
+      if (Date.now() >= deadline) {
+        throw new Error(`参考图未能就绪：${refId} ${v.status}（等待超时 ${timeoutMs}ms）`);
+      }
+      await sleep(pollIntervalMs);
+    }
   }
 
   private async publish(
@@ -155,4 +190,9 @@ export class MediaProcessor extends WorkerHost {
       payload: { generationId, versionId, type, status, error },
     });
   }
+}
+
+/** 简单异步等待（用于轮询间隔；慢路径沙箱外逻辑，直接 setTimeout 即可）。 */
+function sleep(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
 }
