@@ -1,3 +1,6 @@
+import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Injectable, Logger } from '@nestjs/common';
 import { GoogleGenAI } from '@google/genai';
 
@@ -61,8 +64,10 @@ export class GoogleMediaClient {
   /**
    * 文生视频：start 一个长任务 operation，按 10s 间隔轮询直到 done 或超时（上限 10min）。
    * SDK 轮询样例见 genai.d.ts:8626-8640（generateVideos → while(!done) getVideosOperation）。
-   * 完成后取 response.generatedVideos[0].video（genai.d.ts:5139-5140、4980-4983、13427-13435）：
-   * video.videoBytes 是 base64 字符串，直接解码，无需走 ai.files.download 落盘再读。
+   * 完成后取 response.generatedVideos[0].video（genai.d.ts:5139-5140、4980-4983、13427-13435）。
+   * 真实 API（已实测复现）：完成的 operation 里 video 只有 `uri`（files 下载链接），
+   * **没有** videoBytes —— 必须走 `ai.files.download({ file: video, downloadPath })` 落盘再读。
+   * videoBytes 分支保留作快路径（SDK 类型声明它可能存在）。
    */
   async generateVideoBytes(
     prompt: string,
@@ -91,12 +96,27 @@ export class GoogleMediaClient {
       throw new Error(`视频生成失败：${JSON.stringify(op.error)}`);
     }
     const video = op.response?.generatedVideos?.[0]?.video;
-    if (!video?.videoBytes) {
-      throw new Error('视频生成失败：operation 完成但无视频数据');
+    if (video?.videoBytes) {
+      // 快路径：极少数情况下 SDK 直接内联 base64
+      return {
+        bytes: Buffer.from(video.videoBytes, 'base64'),
+        mimeType: video.mimeType ?? 'video/mp4',
+      };
     }
-    return {
-      bytes: Buffer.from(video.videoBytes, 'base64'),
-      mimeType: video.mimeType ?? 'video/mp4',
-    };
+    if (video?.uri) {
+      // 常规路径：经 files.download 落到临时文件再读回（实测 5.3MB mp4 可用）
+      const tmp = mkdtempSync(join(tmpdir(), 'veo-'));
+      const downloadPath = join(tmp, 'video.mp4');
+      try {
+        await ai.files.download({ file: video, downloadPath });
+        return {
+          bytes: readFileSync(downloadPath),
+          mimeType: video.mimeType ?? 'video/mp4',
+        };
+      } finally {
+        rmSync(tmp, { recursive: true, force: true });
+      }
+    }
+    throw new Error('视频生成失败：operation 完成但无视频数据（无 videoBytes 也无 uri）');
   }
 }
