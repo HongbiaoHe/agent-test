@@ -22,7 +22,10 @@ export type ThreadItem =
       done: boolean;
     }
   | { kind: "plan"; id: string; todos: Todo[] }
-  | { kind: "error"; id: string; text: string };
+  | { kind: "error"; id: string; text: string }
+  // 生图/生视频卡片：由 generate_image/generate_video 的 tool_end 锚点原位转化而来。
+  // 卡片状态一律从 React Query（GET /conversations/:id/media）读，这里只保留 generationId 锚点。
+  | { kind: "media"; id: string; generationId: string; mediaType: "image" | "video" };
 
 /**
  * 归一事件：DB 历史 Message 与 socket ConversationEvent 都先转成这个形状，
@@ -105,6 +108,32 @@ export function reduce(state: ThreadState, ev: NormalizedEvent): ThreadState {
     }
     case "tool_end": {
       const name = ev.payload?.name;
+      // 生图/生视频工具：LangChain 把工具返回值序列化为 JSON 字符串，content 形如
+      // '{"generationId":"...","versionId":"...","status":"queued"}'。解析出 generationId 后，
+      // 把锚点那条 kind:'tool' item **原位**替换为 kind:'media'（同数组位置，保持会话顺序、不新增 item）。
+      const mediaType =
+        name === "generate_image" ? "image" : name === "generate_video" ? "video" : null;
+      if (mediaType) {
+        let generationId: string | null = null;
+        try {
+          const parsed = JSON.parse(String(ev.payload?.content ?? ""));
+          if (parsed && typeof parsed.generationId === "string") {
+            generationId = parsed.generationId;
+          }
+        } catch {
+          // 解析失败：回退到下方普通 tool chip 收尾逻辑
+        }
+        if (generationId) {
+          for (let i = items.length - 1; i >= 0; i--) {
+            const it = items[i];
+            if (it.kind === "tool" && it.name === name && !it.done) {
+              items[i] = { kind: "media", id: it.id, generationId, mediaType };
+              break;
+            }
+          }
+          return { ...state, items, nextId };
+        }
+      }
       for (let i = items.length - 1; i >= 0; i--) {
         const it = items[i];
         if (it.kind === "tool" && it.name === name && !it.done) {

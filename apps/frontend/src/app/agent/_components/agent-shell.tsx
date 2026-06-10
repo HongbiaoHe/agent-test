@@ -163,6 +163,7 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
 
       <ChatThread
         title={title}
+        conversationId={conversationId}
         items={thread.items}
         approval={thread.approval}
         busy={busy}

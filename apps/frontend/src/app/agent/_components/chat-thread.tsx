@@ -24,6 +24,7 @@ import { listCommands } from "@/lib/api";
 import type { Approval, Decision, ThreadItem } from "../_lib/thread";
 import { ApprovalCard } from "./approval-card";
 import { ChatMessage } from "./chat-message";
+import { MediaCard } from "./media-card";
 import { ModelSwitcher } from "./model-switcher";
 import { TaskPlanPanel } from "./task-plan-panel";
 import { ThinkingIndicator } from "./thinking-indicator";
@@ -32,6 +33,7 @@ import { ToolGroup } from "./tool-group";
 
 export function ChatThread({
   title,
+  conversationId,
   items,
   approval,
   busy,
@@ -48,6 +50,7 @@ export function ChatThread({
   onOpenSidebar,
 }: {
   title: string;
+  conversationId: string | null;
   items: ThreadItem[];
   approval: Approval | null;
   busy: boolean;
@@ -236,6 +239,15 @@ export function ChatThread({
                     activeDetailId={activeDetailId}
                     onOpenDetail={onOpenDetail}
                   />
+                ) : r.item.kind === "media" ? (
+                  // 媒体卡片与助手内容左对齐（pl-10），conversationId 必有（卡片只在已有会话里出现）。
+                  <div key={r.item.id} className="pl-10">
+                    <MediaCard
+                      conversationId={conversationId as string}
+                      generationId={r.item.generationId}
+                      mediaType={r.item.mediaType}
+                    />
+                  </div>
                 ) : (
                   <ChatMessage key={r.item.id} item={r.item} />
                 ),

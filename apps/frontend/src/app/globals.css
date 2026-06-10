@@ -110,3 +110,14 @@
     @apply bg-background text-foreground font-sans;
   }
 }
+
+/* 媒体卡片生成中的 shimmer：高光横扫。keyframe 必须在全局样式里声明——
+   写在 React 组件里的 <style> 标签客户端不会注入（React 跳过组件内 style/script）。 */
+@keyframes media-card-shimmer {
+  100% {
+    transform: translateX(200%);
+  }
+}
+.animate-media-shimmer {
+  animation: media-card-shimmer 1.6s ease-in-out infinite;
+}

@@ -103,6 +103,68 @@ export function appendMessage(
   });
 }
 
+// ——— 生图/生视频 媒体 ———
+
+export type MediaType = "image" | "video";
+export type MediaStatus = "queued" | "generating" | "done" | "failed";
+
+/** 一次生成尝试（版本）。重新生成在同一 generation 下叠新 version，旧版永不删除。 */
+export interface MediaVersion {
+  id: string;
+  prompt: string;
+  model: string;
+  status: MediaStatus;
+  error: string | null;
+  createdAt: string;
+  completedAt: string | null;
+}
+
+/** 一个生成位 = 对话里的一张媒体卡片。versions 按 createdAt desc（versions[0] 为最新版）。 */
+export interface MediaGeneration {
+  id: string;
+  type: MediaType;
+  createdAt: string;
+  versions: MediaVersion[];
+}
+
+/** 列出会话下全部生成位（含全部版本，desc）。卡片状态的唯一数据源。 */
+export function listConversationMedia(
+  conversationId: string,
+): Promise<MediaGeneration[]> {
+  return request(`/conversations/${conversationId}/media`);
+}
+
+/** 重新生成：同 generation 叠新版本。前端总是回传当前看到的 prompt（即使未改动，语义一致）。 */
+export function regenerateMedia(
+  generationId: string,
+  prompt?: string,
+): Promise<{ generationId: string; versionId: string }> {
+  return request(`/media/generations/${generationId}/regenerate`, {
+    method: "POST",
+    body: JSON.stringify({ prompt }),
+  });
+}
+
+/**
+ * 取某版本资产的二进制 Blob（图片/视频）。
+ * 注意：asset 路由用 StreamableFile 原样返回二进制（不裹 {code,message,data}），
+ * 故不能走 request() 的 JSON 解析路径——这里手动 fetch、带 Authorization、读 Blob。
+ */
+export async function fetchMediaAssetBlob(versionId: string): Promise<Blob> {
+  const session = (await getSession()) as { backendToken?: string } | null;
+  const token = session?.backendToken;
+  const res = await fetch(`${API_BASE}/media/versions/${versionId}/asset`, {
+    headers: {
+      "ngrok-skip-browser-warning": "1",
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
+  });
+  if (!res.ok) {
+    throw new Error(`资产加载失败 (${res.status})`);
+  }
+  return res.blob();
+}
+
 // ——— Skills 技能管理 ———
 
 /** 技能注册表条目（GET /skills）。source==='builtin' 为内置（不可启停/删除）。 */

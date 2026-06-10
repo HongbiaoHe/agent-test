@@ -14,7 +14,9 @@ export type ConversationEventType =
   | "plan_update"
   | "control_request"
   | "result"
-  | "error";
+  | "error"
+  // 媒体生成状态变更（不落 messages 表，仅实时下发）；前端据此 invalidate media query。
+  | "media_update";
 
 export interface ConversationEvent {
   seq: string;

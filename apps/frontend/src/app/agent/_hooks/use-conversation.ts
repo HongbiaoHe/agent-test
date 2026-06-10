@@ -1,6 +1,6 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useState } from "react";
 
 import { getConversation } from "@/lib/api";
@@ -21,6 +21,7 @@ import {
  * 两段折叠进同一个 reducer。提供乐观追加与审批 4 决策。
  */
 export function useConversation(conversationId: string | null) {
+  const queryClient = useQueryClient();
   const [liveEvents, setLiveEvents] = useState<NormalizedEvent[]>([]);
   // 乐观 in-flight：创建/追加后置 true，收到 result/error 置 false（控制发送禁用与状态徽标）
   const [pending, setPending] = useState(false);
@@ -58,6 +59,14 @@ export function useConversation(conversationId: string | null) {
     const unsub = subscribeConversation(
       conversationId,
       (e) => {
+        // media_update 不进 thread reducer（卡片状态一律从 media query 读，设计 §前端职责）：
+        // 只做一件事——invalidate media query，触发卡片重新拉最新版本状态。
+        if (e.type === "media_update") {
+          void queryClient.invalidateQueries({
+            queryKey: ["conversation-media", conversationId],
+          });
+          return;
+        }
         setLiveEvents((prev) => [
           ...prev,
           { type: e.type, payload: (e.payload ?? {}) as Record<string, unknown> },
@@ -68,7 +77,7 @@ export function useConversation(conversationId: string | null) {
       () => void refetch(),
     );
     return unsub;
-  }, [conversationId, refetch]);
+  }, [conversationId, refetch, queryClient]);
 
   const base = useMemo(
     () => (conversationId && query.data ? buildBaseState(query.data) : emptyState),
