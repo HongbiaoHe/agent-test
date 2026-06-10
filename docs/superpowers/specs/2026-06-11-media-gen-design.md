@@ -64,19 +64,22 @@ media/
 - **MediaService.createGeneration(conversationId, userId, type, prompt)**：建 generation+version(queued) → `queue.add('generate', { versionId })` → 返回 `{ generationId, versionId }`。
 - **regenerate(generationId, userId, prompt?)**：校验归属 → 同 generation 新 version（prompt 缺省沿用上一版）→ 入队 → 返回新 versionId。旧版本行与资产文件不动（历史可见）。
 - **MediaProcessor**：version → generating（推流）→ google-media.client 生成 → 资产写 `MEDIA_DATA_DIR`（默认 `data/media/`）`/<versionId>.<png|mp4>` → done/failed + completedAt/error → 推流。
-  - 视频是长任务：SDK operation 轮询（10s 间隔，上限 10min）。
-  - 推流事件：`{ type: 'media_update', payload: { generationId, versionId, type, status, prompt, error? } }` 经 StreamService 进会话流。
-- **media_update 不落 messages 表**（规避与 agent processor 的 seq 竞争）：历史渲染数据源是 `GET /conversations/:id/media`；live 事件只负责把卡片状态推给前端 + 触发该 query 失效。卡片在对话流中的**锚点**是 `generate_image/generate_video` 的 tool_end 消息（其 content 含 generationId，已持久化）。
+  - 视频是长任务：SDK operation 轮询（10s 间隔，上限 10min）。**只在状态变更时推流**（每 version 至多 generating/done|failed 两次 + 入队时一次 queued），轮询 tick 不推送——避免前端失效风暴（评审 Issue 9）。
+  - 推流事件：`{ type: 'media_update', payload: { generationId, versionId, type, status, error? } }` 经 StreamService 进会话流（与 agent 事件同一 Redis Stream key，EventsGateway 原样下发——评审已核实跨模块 publish 运行时可达）。
+  - `'media_update'` 必须加入 `ConversationEventType` 联合（types.ts:1-9 是闭合联合，不加 publish 编译不过——评审 Issue 1）。
+- **media_update 不落 messages 表**（规避与 agent processor 的 seq 竞争）。**前端职责划分（评审 Issue 3/4/7 决议）**：
+  - **锚点**：`generate_image/generate_video` 的 tool_end 消息（role:tool 已持久化，前端 GET /conversations/:id 会返回）。注意 LangChain 把工具返回值序列化为 **JSON 字符串**——reducer 需 `JSON.parse(content)`（try/catch，失败回退普通 tool chip）取 `generationId`，并把该 `kind:'tool'` item **原位变为 `kind:'media'`**（同数组位置，保持会话顺序；不产生第二个 item）。
+  - **卡片状态一律来自 React Query**（`GET /conversations/:id/media`），reducer 不存储生成状态：`media_update` 事件处理只做一件事——invalidate 该 query。由此 media_update 先于 tool_end 到达的竞态自然消解（锚点何时出现都从 query 读到最新状态）；每 version 至多 3 次事件 → 至多 3 次 refetch，无风暴。
 - **REST**：
   - `GET /conversations/:id/media` → generation 列表（含全部 versions，desc）
-  - `POST /media/generations/:id/regenerate` `{ prompt? }`
-  - `GET /media/versions/:id/asset` → 二进制流（正确 Content-Type）；前端 fetch+Authorization → blob URL 给 `<img>/<video>`（不开放无鉴权静态路由）
+  - `POST /media/generations/:id/regenerate` `{ prompt? }`（≤2000 字符；缺省沿用上一版 prompt）
+  - `GET /media/versions/:id/asset` → 二进制流：JwtAuthGuard + 归属校验后用 `@Res()` 原始响应（StreamableFile 或 res.sendFile）**绕过 JSON ResponseInterceptor**（评审 Issue 10）；前端 fetch+Authorization → blob URL 给 `<img>/<video>`（不开放无鉴权静态路由）
 - **事件类型**：`'media_update'` 加入 `ConversationEventType`（types.ts）；不进 ROLE_BY_TYPE（不落库）。
 
-## Agent 接线（低耦合：工具经选项注入，agent 模块不依赖 media 模块）
+## Agent 接线（低耦合：agent.factory 不依赖 media 模块；耦合点收敛在 worker）
 
-- `agent.factory.ts`：`BuildAgentOptions.extraTools?: unknown[]`，`tools: [...内置, ...(opts.extraTools ?? [])]`。
-- worker：注入 MediaService → `createMediaTools(svc, conversationId, userId)`（闭包带上下文）→ 传 extraTools。
+- `agent.factory.ts`：新增 `BuildAgentOptions.extraTools?: unknown[]`（现无此字段，tools 现为硬编码数组——评审 Issue 6），`tools: [...内置, ...(opts.extraTools ?? [])]`。
+- worker：`WorkerModule` **imports MediaModule**（这是有意接受的模块依赖，耦合点只在 worker——评审 Issue 5 决议）；注入 MediaService → `createMediaTools(svc, conversationId, userId)`（闭包带上下文）→ 传 extraTools。
 - 工具定义（media.tools.ts，langchain `tool()` + zod，与 get-weather.tool 同款）：
   - `generate_image({ prompt })` / `generate_video({ prompt })`：调 svc.createGeneration，**立即**返回 `{ generationId, versionId, status: 'queued' }` JSON——不等待生成完成。
   - description 写清触发与禁区（§7 规范）："仅在用户明确确认要生成时调用；拟好提示词但用户尚未确认时，先把提示词展示给用户并询问，不要调用本工具"。
@@ -92,7 +95,7 @@ media/
   - 生成中：shimmer 渐变 + 转圈（CSS 动画，与现有 chat 动效体系一致）；类型图标（lucide Image/Video）。
   - 完成：fetch asset（带 token）→ blob URL → `<img>` / `<video controls>`。
   - 失败：错误文案 + 重试（= regenerate）。
-  - 操作：「重新生成」按钮（可改 prompt 的小输入）；**版本切换**（‹ v2/3 ›），旧版本资产可随时回看。
+  - 操作（评审 Issue 8 决议）：「重新生成」点击后在卡片内**行内展开**一个 Textarea（默认值 = 当前所看版本的 prompt）+「生成/取消」；提交时**总是发送输入框当前值**作为 prompt（即使未改动——语义一致，后端 `prompt?` 的缺省路径只服务 API 直调）。**版本切换**（‹ v2/3 ›）在 generation.versions 内切换，旧版本资产可随时回看。
 - `lib/api.ts`：listConversationMedia / regenerateMedia / fetchMediaAsset(blob)。
 
 ## 安全 / 约束
