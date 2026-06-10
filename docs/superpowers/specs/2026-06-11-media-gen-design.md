@@ -118,3 +118,21 @@ media/
 - M3 agent/worker 接线（extraTools + 系统提示区块 + worker 闭包注入）+ processor spec 增断言 → jest 全绿
 - M4 前端（thread reduce + media-card + api + regenerate/版本切换）→ tsc/lint/build
 - M5 e2e：真实会话「帮我想一张海报的提示词」→ agent 拟词并询问 → 用户确认 → generate_image → 卡片 queued→generating→done 展示图片 → 重新生成 → 版本历史可回看上一版。preview 浏览器验证 + 截图。视频链路同流程（若 Veo 因付费层失败，验证 failed 卡片 + 重试 UX 并如实汇报）。
+
+---
+
+## 增补（2026-06-11 验收反馈）：参考图 + 工具调用可见性
+
+用户验收反馈三点：工具调用要可见、生图/生视频要支持参考图、模型传参要可见。
+
+### 参考图（reference images）
+- 工具 schema 增 `referenceVersionIds?: string[]`：引用**本会话此前生成的图片版本**（status=done、type=image、归属同 user）。典型链路：先 generate_image 出图 → 把该 versionId 作为参考生成视频（Veo 首帧）或改图（Nano Banana 图生图）。
+- 落库：`MediaVersion.referenceVersionIds Json?`（迁移）；regenerate 缺省继承上一版引用。
+- client：图——generateContent parts = [text, ...inlineData(参考图bytes)]；视频——`generateVideos({ model, prompt, image: { imageBytes, mimeType } })`（d.ts:5150 已核实 image 参数；多参考时视频只取第一张，文档注明）。
+- service 校验：版本存在、done、image 类型、同 user，否则业务错（新错误码 60004 MEDIA_REF_INVALID）。
+- list 接口返回 referenceVersionIds；卡片显示参考图缩略行（经 asset 接口取 blob）。
+- 系统提示生图区块补充：「可用 referenceVersionIds 引用此前生成的图片（图生图/视频首帧）；工具结果里的 versionId 即引用键」。
+
+### 工具调用可见性（推翻早前「原位替换」决议）
+- reducer 改为：**保留** generate_* 的 `kind:'tool'` chip（与 read_file 一样进工具组、可见参数），并在其后**追加** `kind:'media'` 卡片项。
+- 卡片增「调用参数」可折叠区：模型 / 类型 / 完整 prompt（已有）/ 参考图缩略 + versionId。
