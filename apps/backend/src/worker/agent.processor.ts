@@ -9,6 +9,8 @@ import { getThreadSandbox } from '../agent/sandbox';
 import { normalize, RawEvent } from '../agent/event-normalizer';
 import { parseCommand } from '../commands/parse-command';
 import { StreamService } from '../events/stream.service';
+import { MediaService } from '../media/media.service';
+import { createMediaTools } from '../media/media.tools';
 import { PrismaService } from '../prisma/prisma.service';
 import { absolutizeRefPaths } from '../skills/skill-files';
 import { seedSkillsStore } from '../skills/skill-store.seed';
@@ -46,6 +48,7 @@ export class AgentProcessor extends WorkerHost {
     @Inject(CHECKPOINTER) private readonly checkpointer: unknown,
     @InjectQueue('agent-run') private readonly queue: Queue,
     @Inject(SKILLS_STORE) private readonly store: BaseStore,
+    private readonly media: MediaService,
   ) {
     super();
   }
@@ -123,7 +126,11 @@ export class AgentProcessor extends WorkerHost {
       // 就换新列表。run/resume 都注入（resume 续跑同一轮，回注既有计划同样有益）。
       const activePlan = await this.buildActivePlan(conversationId);
 
-      // ③ 装配
+      // ③ 装配：media 工具闭包注入——conversationId/userId 由 worker 上下文提供，不经模型传递（无注入风险）
+      const extraTools = createMediaTools(this.media, {
+        conversationId,
+        userId: conv.userId,
+      });
       const agent = buildAgent({
         checkpointer: this.checkpointer,
         systemPromptExtra,
@@ -131,6 +138,7 @@ export class AgentProcessor extends WorkerHost {
         defaultBackend,
         store: this.store,
         hasSandbox: !!sandbox,
+        extraTools,
       });
 
       // ④ stream config：userId 同时进 configurable（StoreBackend namespace 用）与 context（中间件用）

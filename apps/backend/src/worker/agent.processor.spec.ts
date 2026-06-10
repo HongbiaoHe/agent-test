@@ -2,6 +2,8 @@ import { InMemoryStore } from '@langchain/langgraph';
 import type { Job, Queue } from 'bullmq';
 import { buildAgent } from '../agent/agent.factory';
 import { StreamService } from '../events/stream.service';
+import { MediaService } from '../media/media.service';
+import { createMediaTools } from '../media/media.tools';
 import { PrismaService } from '../prisma/prisma.service';
 import { seedSkillsStore } from '../skills/skill-store.seed';
 import type { SkillDef } from '../skills/skills.service';
@@ -21,6 +23,15 @@ jest.mock('../agent/sandbox', () => ({
 jest.mock('../skills/skill-store.seed', () => ({
   seedSkillsStore: jest.fn().mockResolvedValue(undefined),
 }));
+
+// createMediaTools mock：拦截媒体工具构造，避免依赖真实 MediaService
+jest.mock('../media/media.tools', () => ({
+  createMediaTools: jest.fn().mockReturnValue([{ name: 'generate_image' }, { name: 'generate_video' }]),
+}));
+
+/** 构造 MediaService mock（仅需 createGeneration 存在，spec 里不验证实际调用） */
+const makeMediaService = () =>
+  ({ createGeneration: jest.fn() }) as unknown as MediaService;
 
 /** 构造 conv 记录（userId 固定为 'u1'，model 可选） */
 const makeConv = (extra: Record<string, unknown> = {}) => ({
@@ -84,7 +95,7 @@ describe('AgentProcessor 多轮重放', () => {
     };
     (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
 
-    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store, makeMediaService());
     await proc.process({
       data: { conversationId: 'c1', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
@@ -156,7 +167,7 @@ describe('AgentProcessor 多轮重放', () => {
       },
     );
 
-    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store, makeMediaService());
     await proc.process({
       data: { conversationId: 'c3', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
@@ -222,7 +233,7 @@ describe('AgentProcessor 多轮重放', () => {
       },
     );
 
-    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store, makeMediaService());
     await proc.process({
       data: { conversationId: 'c4', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
@@ -280,7 +291,7 @@ describe('AgentProcessor 多轮重放', () => {
     };
     (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
 
-    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store, makeMediaService());
     await proc.process({
       data: { conversationId: 'c2', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
@@ -335,7 +346,7 @@ describe('AgentProcessor 多轮重放', () => {
 
     (seedSkillsStore as jest.Mock).mockClear();
 
-    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store, makeMediaService());
     await proc.process({
       data: { conversationId: 'seed1', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
@@ -381,7 +392,7 @@ describe('AgentProcessor 多轮重放', () => {
     };
     (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
 
-    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store, makeMediaService());
     await proc.process({
       data: { conversationId: 'uid1', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
@@ -434,7 +445,7 @@ describe('AgentProcessor 多轮重放', () => {
     (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
     (seedSkillsStore as jest.Mock).mockClear();
 
-    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store, makeMediaService());
     await proc.process({
       data: { conversationId: 'res1', kind: 'resume', decisions: [{ type: 'approve' }] },
     } as Job<{ conversationId: string; kind: 'resume'; decisions: unknown[] }>);
@@ -481,7 +492,7 @@ describe('AgentProcessor 多轮重放', () => {
       },
     );
 
-    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store, makeMediaService());
     await proc.process({
       data: { conversationId: 'ha1', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
@@ -490,6 +501,54 @@ describe('AgentProcessor 多轮重放', () => {
     expect(capturedOpts?.hasSandbox).toBe(false);
     // store 实例传入，以便 ReadOnlyStoreBackend namespace factory 可用
     expect(capturedOpts?.store).toBe(store);
+  });
+
+  it('buildAgent 收到 extraTools（包含 generate_image + generate_video 两个工具）', async () => {
+    const history = [{ role: 'user', content: { text: '测试媒体工具注入' } }];
+
+    const prisma = {
+      conversation: { update: jest.fn().mockResolvedValue(makeConv()) },
+      message: {
+        findMany: jest.fn().mockResolvedValue(history),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(history.length),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+
+    const streamSvc = {
+      publish: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StreamService;
+
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([]),
+      getFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as SkillsService;
+
+    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+    const store = new InMemoryStore();
+
+    let capturedOpts: { extraTools?: unknown[] } | undefined;
+    const fakeAgent = {
+      stream: jest.fn(async () => (async function* () {})()),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    };
+    (buildAgent as jest.Mock).mockImplementation((opts: { extraTools?: unknown[] }) => {
+      capturedOpts = opts;
+      return fakeAgent;
+    });
+
+    // createMediaTools mock 已在顶层 jest.mock 返回 2 个工具占位对象
+    (createMediaTools as jest.Mock).mockClear();
+
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store, makeMediaService());
+    await proc.process({
+      data: { conversationId: 'mt1', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+
+    // worker 闭包注入的媒体工具必须传给 buildAgent
+    expect(capturedOpts?.extraTools).toHaveLength(2);
+    expect(createMediaTools).toHaveBeenCalledTimes(1);
   });
 });
 
@@ -562,7 +621,7 @@ describe('AgentProcessor 流式聚合落库', () => {
     };
     (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
 
-    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store, makeMediaService());
     await proc.process({
       data: { conversationId: 'agg1', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
