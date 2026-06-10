@@ -75,3 +75,17 @@ model Approval {
 
   @@index([conversationId])
 }
+
+/** 用户安装的技能（内置技能不入库）。落盘目录 SKILLS_DATA_DIR/<userId>/<name>/。 */
+model Skill {
+  id          String   @id @default(cuid())
+  name        String
+  description String   @db.Text
+  source      String // 如 "github:anthropics/skills#document-skills/docx@main"
+  userId      String // 非空：MySQL 可空唯一键允许重复 NULL，不留可空层（见设计文档 §2）
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, name])
+}
