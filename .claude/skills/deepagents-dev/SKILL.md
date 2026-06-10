@@ -78,11 +78,13 @@ node .claude/skills/deepagents-dev/section.mjs 记忆 流式
 
 | 文档能力 | 本项目实现 |
 | --- | --- |
-| `createDeepAgent` 装配 | [apps/backend/src/agent/agent.factory.ts](apps/backend/src/agent/agent.factory.ts) —— Gemini + `StateBackend` + `skills:['/skills/']` + `interruptOn:{send_email:true}` + Redis checkpointer |
+| `createDeepAgent` 装配 | [apps/backend/src/agent/agent.factory.ts](apps/backend/src/agent/agent.factory.ts) —— Gemini + `CompositeBackend(沙箱/StateBackend, {'/skills/': 只读 StoreBackend})` + `skills:['/skills/']` + `interruptOn:{send_email:true}` + Redis checkpointer + extraTools 注入 |
 | checkpointer 持久化（§5.3） | [apps/backend/src/agent/checkpointer.provider.ts](apps/backend/src/agent/checkpointer.provider.ts) |
 | 流式 `streamMode`+`subgraphs`（§16） | [apps/backend/src/worker/agent.processor.ts](apps/backend/src/worker/agent.processor.ts) 的 `agent.stream(...)` |
 | 人审中断+`Command` 恢复（§12） | 同上 `agent.processor.ts`：检查 `state.tasks[].interrupts`，`new Command({ resume })` 续跑 |
-| 技能 per-thread 注入 `/skills/`（§14.3） | [apps/backend/src/worker/skill-files.ts](apps/backend/src/worker/skill-files.ts) + 每轮经 `invoke` 的 `files` 注入 |
+| 技能存储与播种（§14.4 + CompositeBackend 挂载） | [apps/backend/src/skills/](apps/backend/src/skills/) —— SkillsService（内置+用户安装+DB）+ `skill-store.seed.ts` 每 run 前 diff 播种 InMemoryStore（键为**挂载点相对路径** `/<name>/<rel>`，CompositeBackend 委派前剥路由前缀） |
+| 沙箱后端（§15，Daytona thread-scoped） | [apps/backend/src/agent/sandbox.ts](apps/backend/src/agent/sandbox.ts)（无 `DAYTONA_API_KEY` 回退 StateBackend）+ [apps/backend/src/agent/skills-backend.ts](apps/backend/src/agent/skills-backend.ts) 的 `beforeAgent` 技能同步（上传路径补回 `/skills` 前缀，官方 §14.8 模式） |
+| 政策钩子只读后端（§9.5） | `skills-backend.ts` 的 `ReadOnlyStoreBackend`（write/edit 返回 error） |
 | 事件归一化（流的 4 种 mode） | [apps/backend/src/agent/event-normalizer.ts](apps/backend/src/agent/event-normalizer.ts) |
 
 ## Gotchas（本项目真实踩过的坑，文档没写）
@@ -91,6 +93,8 @@ node .claude/skills/deepagents-dev/section.mjs 记忆 流式
 - **多轮里任务计划/已读 SKILL.md 不回上下文**：`write_todos` 的 plan、`read_file` 读到的 SKILL.md 都不在重放范围；不处理会导致每轮重新拆解计划、反复读同一个 SKILL.md。本项目在 system prompt 里回注既有计划与已激活技能的 SKILL.md（见 `buildPlanPrompt` / `buildSkillPrompt`）。
 - **跑测试/脚本前先切 node 22**：默认 shell 可能是 node 14，直接跑会静默失败。
 - **`9.7 工厂模式已废弃`**：`backend: (config)=>new StateBackend(config)` 旧写法别再用，直接 `new StateBackend()`。
+- **CompositeBackend 会剥路由前缀再委派**（dist 注释："stripped_key has the route prefix removed (but keeps leading slash)"）：挂载在 `/skills/` 下的 StoreBackend，其存储键必须是**挂载点相对路径**（`/docx/SKILL.md`），带上 `/skills/` 前缀会出现 `/skills/skills/` 双前缀 + read_file 404（本项目实测踩过）。同理 `uploadFiles` 进沙箱时要把挂载前缀**补回去**。
+- **StoreBackend namespace 工厂的实际入参是 `{ state, config, assistantId }`**（非文档写的 runtime context）：per-user 数据要走 `config.configurable`（worker 在 stream config 里传），`runtime.context` 在 namespace 工厂里拿不到。
 
 ## Troubleshooting
 
