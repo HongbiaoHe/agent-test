@@ -23,4 +23,6 @@ export const ErrorCodes = {
   SKILL_INSTALL_PATH_TRAVERSAL: { code: 40003, message: 'tarball 含非法路径，拒绝解压' },
   SKILL_INSTALL_TOO_LARGE: { code: 40004, message: '技能目录超出 20MB 大小限制' },
   SKILL_NOT_FOUND: { code: 40005, message: '技能不存在' },
+  SANDBOX_NOT_FOUND: { code: 40006, message: '会话沙箱不存在或已回收' },
+  INVALID_PATH: { code: 40007, message: '路径含非法字符（不允许 .. 或绝对路径）' },
 } as const satisfies Record<string, ErrorDef>;
