@@ -20,7 +20,9 @@
     "test:e2e": "jest --config ./test/jest-e2e.json"
   },
   "dependencies": {
+    "@daytonaio/sdk": "^0.185.0",
     "@langchain/core": "^1.1.48",
+    "@langchain/daytona": "^0.2.0",
     "@langchain/google-genai": "^2.1.31",
     "@langchain/langgraph": "^1.3.2",
     "@langchain/langgraph-checkpoint-redis": "^1.0.6",
