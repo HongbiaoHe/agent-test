@@ -66,7 +66,7 @@ pnpm install
 
 ### 3. 配置环境变量
 
-- 后端：复制 `apps/backend/.env.example` → `apps/backend/.env`，填入 `GOOGLE_API_KEY`（其余本机默认即可）
+- 后端：复制 `apps/backend/.env.example` → `apps/backend/.env`，填入 `GOOGLE_API_KEY`（其余本机默认即可，生图/生视频共用此 key）；如需技能脚本沙箱执行，另填 `DAYTONA_API_KEY`（https://app.daytona.io 免费层 $200 额度，留空自动回退为无命令执行能力）
 - 前端：复制 `apps/frontend/.env.example` → `apps/frontend/.env.local`
 
 ### 4. 初始化数据库
