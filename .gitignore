@@ -21,3 +21,6 @@ coverage/
 # misc
 *.log
 .DS_Store
+
+# agent 运行时数据（安装技能落盘 + 生成媒体资产），不入库
+apps/backend/data/
