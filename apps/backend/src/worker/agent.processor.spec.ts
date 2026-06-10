@@ -389,6 +389,61 @@ describe('AgentProcessor 多轮重放', () => {
     expect(capturedConfig?.configurable?.userId).toBe('user-99');
   });
 
+  it('resume 续跑同样播种技能并携带 configurable.userId（worker 重启后 store 为空，不播种会技能静默失效）', async () => {
+    const def: SkillDef = {
+      name: 'tvc-director',
+      description: '',
+      domain: 'tvc',
+      source: 'builtin',
+      enabled: true,
+      files: { 'SKILL.md': '# tvc' },
+    };
+
+    const prisma = {
+      conversation: { update: jest.fn().mockResolvedValue(makeConv({ userId: 'user-resume' })) },
+      message: {
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(0),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+
+    const streamSvc = {
+      publish: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StreamService;
+
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([def]),
+      getFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as SkillsService;
+
+    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+    const store = new InMemoryStore();
+
+    let capturedConfig: { configurable?: { userId?: string } } | undefined;
+    const fakeAgent = {
+      stream: jest.fn(
+        async (_input: unknown, cfg: { configurable?: { userId?: string } }) => {
+          capturedConfig = cfg;
+          return (async function* () {})();
+        },
+      ),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    };
+    (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
+    (seedSkillsStore as jest.Mock).mockClear();
+
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store);
+    await proc.process({
+      data: { conversationId: 'res1', kind: 'resume', decisions: [{ type: 'approve' }] },
+    } as Job<{ conversationId: string; kind: 'resume'; decisions: unknown[] }>);
+
+    // ①播种与④userId 接线必须发生在 run/resume 共用作用域（设计「关键时序与接线」）
+    expect(seedSkillsStore).toHaveBeenCalledWith(store, 'user-resume', [def]);
+    expect(capturedConfig?.configurable?.userId).toBe('user-resume');
+  });
+
   it('buildAgent 收到 hasSandbox:false 和 store（无沙箱时降级）', async () => {
     const history = [{ role: 'user', content: { text: '测试' } }];
 

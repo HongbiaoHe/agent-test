@@ -64,14 +64,12 @@ export function buildSystemPrompt(hasSandbox: boolean): string {
 /**
  * 运行时 context schema：
  * - activePlan：worker 经 `context.activePlan` 传入「当前任务计划」文本。
- * - userId：worker 传入的用户 ID（供 StoreBackend namespace factory 使用）。
- *   TODO(Task 10)：worker 接线任务会在 stream config 里传入 userId；
- *   namespace factory 内已有 throw 守卫，缺失时会在运行时抛出，而非静默共享技能库。
- *   此处标 optional 仅为保持旧 worker 调用点在过渡期内可以编译通过。
+ * - userId：必填。技能库按用户隔离（StoreBackend namespace = [userId, 'skills']），
+ *   缺失即 schema 校验报错（双保险：namespace factory 内还有 throw 守卫，杜绝静默共享技能库）。
  */
 const contextSchema = z.object({
   activePlan: z.string().optional(),
-  userId: z.string().optional(),
+  userId: z.string(),
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
