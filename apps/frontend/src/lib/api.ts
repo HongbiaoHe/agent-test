@@ -23,7 +23,16 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers ?? {}),
     },
   });
-  const body = (await res.json()) as ApiEnvelope<T>;
+  // 后端正常返回 {code,message,data} JSON；但 5xx / 网关错误可能回纯文本或 HTML，
+  // 直接 res.json() 会抛 "Unexpected token ..." 这种晦涩报错，故先按文本读、再尝试解析，
+  // 解析失败时退化成带状态码的清晰错误，便于 UI 直接展示。
+  const text = await res.text();
+  let body: ApiEnvelope<T>;
+  try {
+    body = JSON.parse(text) as ApiEnvelope<T>;
+  } catch {
+    throw new Error(`请求失败 (${res.status})`);
+  }
   if (body.code !== 0) {
     throw new Error(body.message || `请求失败 (${res.status})`);
   }
@@ -91,6 +100,51 @@ export function appendMessage(
   return request(`/conversations/${id}/messages`, {
     method: "POST",
     body: JSON.stringify({ content, model }),
+  });
+}
+
+// ——— Skills 技能管理 ———
+
+/** 技能注册表条目（GET /skills）。source==='builtin' 为内置（不可启停/删除）。 */
+export interface SkillInfo {
+  name: string;
+  description: string;
+  domain: string;
+  source: "builtin" | string;
+  enabled: boolean;
+}
+
+/** 从 GitHub 安装技能的入参。path 指向仓库内含 SKILL.md 的子目录；ref 可选（分支/标签/commit）。 */
+export interface InstallSkillInput {
+  repo: string;
+  path: string;
+  ref?: string;
+}
+
+export function listSkills(): Promise<SkillInfo[]> {
+  return request("/skills");
+}
+
+export function installSkill(input: InstallSkillInput): Promise<SkillInfo> {
+  return request("/skills/install", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+export function toggleSkill(
+  name: string,
+  enabled: boolean,
+): Promise<SkillInfo> {
+  return request(`/skills/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export function deleteSkill(name: string): Promise<unknown> {
+  return request(`/skills/${encodeURIComponent(name)}`, {
+    method: "DELETE",
   });
 }
 

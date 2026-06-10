@@ -1,0 +1,136 @@
+"use client";
+
+import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { Download, Loader2 } from "lucide-react";
+import { useState } from "react";
+
+import { Button } from "@/components/ui/button";
+import {
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { installSkill } from "@/lib/api";
+
+import { SKILLS_QUERY_KEY } from "./skill-list";
+
+/** 从 GitHub 安装技能的表单卡片：repo / path / ref 三栏 + 安装按钮，含 pending 与错误展示。 */
+export function InstallForm() {
+  const qc = useQueryClient();
+  const [repo, setRepo] = useState("");
+  const [path, setPath] = useState("");
+  const [ref, setRef] = useState("");
+
+  const installMut = useMutation({
+    mutationFn: () =>
+      installSkill({
+        repo: repo.trim(),
+        path: path.trim(),
+        // ref 为空则不传，让后端用默认分支
+        ref: ref.trim() || undefined,
+      }),
+    onSuccess: () => {
+      // 安装成功后刷新列表并清空表单
+      void qc.invalidateQueries({ queryKey: SKILLS_QUERY_KEY });
+      setRepo("");
+      setPath("");
+      setRef("");
+    },
+  });
+
+  // repo 与 path 是后端必填项，缺一不可提交
+  const canSubmit = repo.trim() !== "" && path.trim() !== "";
+
+  function submit() {
+    if (!canSubmit || installMut.isPending) return;
+    installMut.mutate();
+  }
+
+  return (
+    <Card>
+      <CardHeader>
+        <CardTitle className="text-base">从 GitHub 安装技能</CardTitle>
+        <CardDescription>
+          填写仓库（owner/repo）与含 SKILL.md 的子目录路径，可选指定分支/标签。
+        </CardDescription>
+      </CardHeader>
+      <CardContent className="space-y-4">
+        <div className="grid gap-4 sm:grid-cols-3">
+          <div className="space-y-1.5">
+            <label
+              htmlFor="skill-repo"
+              className="text-sm font-medium text-foreground"
+            >
+              仓库
+            </label>
+            <Input
+              id="skill-repo"
+              placeholder="anthropics/skills"
+              value={repo}
+              onChange={(e) => setRepo(e.target.value)}
+              disabled={installMut.isPending}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label
+              htmlFor="skill-path"
+              className="text-sm font-medium text-foreground"
+            >
+              路径
+            </label>
+            <Input
+              id="skill-path"
+              placeholder="document-skills/docx"
+              value={path}
+              onChange={(e) => setPath(e.target.value)}
+              disabled={installMut.isPending}
+            />
+          </div>
+          <div className="space-y-1.5">
+            <label
+              htmlFor="skill-ref"
+              className="text-sm font-medium text-foreground"
+            >
+              分支/标签（可选）
+            </label>
+            <Input
+              id="skill-ref"
+              placeholder="main"
+              value={ref}
+              onChange={(e) => setRef(e.target.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") submit();
+              }}
+              disabled={installMut.isPending}
+            />
+          </div>
+        </div>
+
+        {installMut.isError && (
+          <p className="text-sm text-destructive" role="alert">
+            {installMut.error instanceof Error
+              ? installMut.error.message
+              : "安装失败，请重试"}
+          </p>
+        )}
+
+        <div className="flex justify-end">
+          <Button onClick={submit} disabled={!canSubmit || installMut.isPending}>
+            {installMut.isPending ? (
+              <>
+                <Loader2 className="size-4 animate-spin" /> 安装中…
+              </>
+            ) : (
+              <>
+                <Download className="size-4" /> 安装
+              </>
+            )}
+          </Button>
+        </div>
+      </CardContent>
+    </Card>
+  );
+}
