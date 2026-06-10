@@ -117,6 +117,8 @@ export interface MediaVersion {
   error: string | null;
   createdAt: string;
   completedAt: string | null;
+  /** 此版本引用的图片版本 id（图生图/视频首帧）。无引用时为 []（后端已归一）。 */
+  referenceVersionIds: string[];
 }
 
 /** 一个生成位 = 对话里的一张媒体卡片。versions 按 createdAt desc（versions[0] 为最新版）。 */
@@ -134,14 +136,18 @@ export function listConversationMedia(
   return request(`/conversations/${conversationId}/media`);
 }
 
-/** 重新生成：同 generation 叠新版本。前端总是回传当前看到的 prompt（即使未改动，语义一致）。 */
+/**
+ * 重新生成：同 generation 叠新版本。前端总是回传当前看到的 prompt（即使未改动，语义一致）。
+ * referenceVersionIds 可选：卡片重生成时沿用当前版本的参考图，行为可预期；缺省时后端继承上一版。
+ */
 export function regenerateMedia(
   generationId: string,
   prompt?: string,
+  referenceVersionIds?: string[],
 ): Promise<{ generationId: string; versionId: string }> {
   return request(`/media/generations/${generationId}/regenerate`, {
     method: "POST",
-    body: JSON.stringify({ prompt }),
+    body: JSON.stringify({ prompt, referenceVersionIds }),
   });
 }
 

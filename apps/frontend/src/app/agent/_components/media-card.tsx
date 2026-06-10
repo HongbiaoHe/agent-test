@@ -113,7 +113,8 @@ function MediaCardBody({
     setSubmitting(true);
     try {
       // 总是回传输入框当前值（即使未改动，语义一致——后端 prompt? 缺省路径只服务 API 直调）。
-      await regenerateMedia(generation.id, draft);
+      // 沿用当前版本的参考图，让重生成行为可预期（不传则后端继承上一版，但显式传更明确）。
+      await regenerateMedia(generation.id, draft, version.referenceVersionIds);
       setEditing(false);
       onAfterRegenerate();
     } finally {
@@ -133,6 +134,9 @@ function MediaCardBody({
 
       {/* prompt（常驻）：当前版本完整传参，默认折叠 2 行可展开。 */}
       <PromptBlock prompt={version.prompt} />
+
+      {/* 参考图（仅当前版本有引用时）：调用参数的一部分，缩略展示每张参考图。 */}
+      <ReferenceRow referenceVersionIds={version.referenceVersionIds} />
 
       {/* 底栏：类型徽标 + 版本切换 + 重新生成 */}
       <div className="flex items-center gap-2 border-t px-3 py-2">
@@ -300,6 +304,62 @@ function PromptBlock({ prompt }: { prompt: string }) {
         </p>
       </button>
     </div>
+  );
+}
+
+/**
+ * 参考图区（调用参数的一部分）：当前版本引用了图片时展示一行小缩略图。
+ * 引用的必是 type=image 的版本（后端校验），故每张都用 <img>。悬停 title 显示 versionId。
+ */
+function ReferenceRow({ referenceVersionIds }: { referenceVersionIds: string[] }) {
+  if (referenceVersionIds.length === 0) return null;
+
+  return (
+    <div className="flex items-center gap-2 border-t px-3 py-2.5">
+      <span className="shrink-0 text-xs font-medium text-foreground">参考图</span>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {referenceVersionIds.map((id) => (
+          <ReferenceThumb key={id} versionId={id} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/** 单张参考图缩略：复用 fetchMediaAssetBlob 取 blob → objectURL。28px 方块，加载中 shimmer。 */
+function ReferenceThumb({ versionId }: { versionId: string }) {
+  const { data: blob } = useQuery({
+    queryKey: ["media-asset", versionId],
+    queryFn: () => fetchMediaAssetBlob(versionId),
+    staleTime: Infinity, // 同一 version 资产不可变
+    refetchOnWindowFocus: false,
+  });
+
+  // blob → objectURL（渲染期 useMemo 派生，不在 effect 里 setState）；revoke 只在真正卸载时做，
+  // 据 ref 取最新 url，避免 Strict Mode memo 双跑误伤正在显示的 URL（见 media-card AssetSurface 注）。
+  const url = useMemo(() => (blob ? URL.createObjectURL(blob) : null), [blob]);
+  const urlRef = useRef<string | null>(null);
+  useEffect(() => {
+    urlRef.current = url;
+  }, [url]);
+  useEffect(() => {
+    return () => {
+      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
+    };
+  }, []);
+
+  if (!url) {
+    return <Skeleton className="size-7 rounded-md" />;
+  }
+  return (
+    // 参考图同样是带鉴权 fetch 的 blob objectURL，next/image 无法优化，用原生 <img>。
+    // eslint-disable-next-line @next/next/no-img-element
+    <img
+      src={url}
+      alt="参考图"
+      title={versionId}
+      className="size-7 rounded-md border object-cover"
+    />
   );
 }
 
