@@ -10,6 +10,7 @@ import { RedisModule } from './redis/redis.module';
 import { AuthModule } from './auth/auth.module';
 import { CommandsModule } from './commands/commands.module';
 import { ConversationsModule } from './conversations/conversations.module';
+import { MediaModule } from './media/media.module';
 import { SkillsModule } from './skills/skills.module';
 import { WorkerModule } from './worker/worker.module';
 
@@ -44,6 +45,7 @@ import { WorkerModule } from './worker/worker.module';
     EventsModule,
     WorkerModule,
     ConversationsModule,
+    MediaModule,
   ],
   controllers: [AppController],
   providers: [AppService],

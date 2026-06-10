@@ -25,4 +25,7 @@ export const ErrorCodes = {
   SKILL_NOT_FOUND: { code: 40005, message: '技能不存在' },
   SANDBOX_NOT_FOUND: { code: 40006, message: '会话沙箱不存在或已回收' },
   INVALID_PATH: { code: 40007, message: '路径含非法字符（不允许 .. 或绝对路径）' },
+  MEDIA_GENERATION_NOT_FOUND: { code: 60001, message: '媒体生成记录不存在' },
+  MEDIA_VERSION_NOT_FOUND: { code: 60002, message: '媒体版本不存在' },
+  MEDIA_ASSET_NOT_READY: { code: 60003, message: '媒体资产尚未生成完成' },
 } as const satisfies Record<string, ErrorDef>;

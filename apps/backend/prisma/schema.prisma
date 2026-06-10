@@ -76,6 +76,34 @@ model Approval {
   @@index([conversationId])
 }
 
+/** 一个"生成位"= 对话里的一张媒体卡片；重新生成在同一 generation 下叠 version。 */
+model MediaGeneration {
+  id             String         @id @default(cuid())
+  conversationId String
+  userId         String
+  type           String // image | video
+  versions       MediaVersion[]
+  createdAt      DateTime       @default(now())
+
+  @@index([conversationId])
+}
+
+/** 一次生成尝试；历史版本永不删除（用户要求重生成后仍可看旧版）。 */
+model MediaVersion {
+  id           String          @id @default(cuid())
+  generationId String
+  generation   MediaGeneration @relation(fields: [generationId], references: [id])
+  prompt       String          @db.Text
+  model        String
+  status       String          @default("queued") // queued | generating | done | failed
+  filePath     String? // MEDIA_DATA_DIR 下相对路径，如 <versionId>.png / .mp4
+  error        String?         @db.Text
+  createdAt    DateTime        @default(now())
+  completedAt  DateTime?
+
+  @@index([generationId])
+}
+
 /** 用户安装的技能（内置技能不入库）。落盘目录 SKILLS_DATA_DIR/<userId>/<name>/。 */
 model Skill {
   id          String   @id @default(cuid())
