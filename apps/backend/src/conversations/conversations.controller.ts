@@ -40,6 +40,7 @@ export class ConversationsController {
       id,
       dto.content,
       user.tenantId,
+      user.userId,
       dto.model,
     );
   }

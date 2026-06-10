@@ -10,6 +10,7 @@ import { RedisModule } from './redis/redis.module';
 import { AuthModule } from './auth/auth.module';
 import { CommandsModule } from './commands/commands.module';
 import { ConversationsModule } from './conversations/conversations.module';
+import { SkillsModule } from './skills/skills.module';
 import { WorkerModule } from './worker/worker.module';
 
 @Module({
@@ -39,6 +40,7 @@ import { WorkerModule } from './worker/worker.module';
     PrismaModule,
     RedisModule,
     CommandsModule,
+    SkillsModule,
     EventsModule,
     WorkerModule,
     ConversationsModule,

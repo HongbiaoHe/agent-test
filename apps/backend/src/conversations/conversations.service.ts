@@ -1,24 +1,28 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { HttpStatus, Injectable } from '@nestjs/common';
 import { Queue } from 'bullmq';
-import { CommandRegistryService } from '../commands/command-registry.service';
 import { parseCommand } from '../commands/parse-command';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
 import { PrismaService } from '../prisma/prisma.service';
+import { SkillsService } from '../skills/skills.service';
 
 @Injectable()
 export class ConversationsService {
   constructor(
     private readonly prisma: PrismaService,
-    private readonly commands: CommandRegistryService,
+    private readonly skills: SkillsService,
     @InjectQueue('agent-run') private readonly queue: Queue,
   ) {}
 
-  /** 若是 /command，校验命令存在；未知则报错（worker 运行时再注入对应技能正文）。 */
-  private assertKnownCommand(text: string) {
+  /**
+   * 若是 /command，校验对该用户有效的技能中存在对应命令；
+   * 未知则报错（worker 运行时再注入对应技能正文）。
+   * 数据源已从静态 CommandRegistryService 切换为 SkillsService（内置 + 用户安装合并）。
+   */
+  private async assertKnownCommand(text: string, userId: string) {
     const cmd = parseCommand(text);
-    if (cmd && !this.commands.get(cmd.name)) {
+    if (cmd && !(await this.skills.getFor(userId, cmd.name))) {
       throw new BusinessException(ErrorCodes.COMMAND_NOT_FOUND);
     }
   }
@@ -32,7 +36,7 @@ export class ConversationsService {
     if (!goal?.trim()) {
       throw new BusinessException(ErrorCodes.CONVERSATION_GOAL_EMPTY);
     }
-    this.assertKnownCommand(goal);
+    await this.assertKnownCommand(goal, userId);
     const conv = await this.prisma.conversation.create({
       data: { goal, status: 'queued', tenantId, userId, model },
     });
@@ -58,12 +62,13 @@ export class ConversationsService {
     id: string,
     content: string,
     tenantId: string,
+    userId: string,
     model?: string,
   ) {
     if (!content?.trim()) {
       throw new BusinessException(ErrorCodes.CONVERSATION_GOAL_EMPTY);
     }
-    this.assertKnownCommand(content);
+    await this.assertKnownCommand(content, userId);
     // 租户隔离：只能往自己租户的会话追加
     const conv = await this.prisma.conversation.findFirst({
       where: { id, tenantId },

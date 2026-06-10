@@ -22,4 +22,5 @@ export const ErrorCodes = {
   SKILL_INSTALL_INVALID: { code: 40002, message: '技能校验失败' },
   SKILL_INSTALL_PATH_TRAVERSAL: { code: 40003, message: 'tarball 含非法路径，拒绝解压' },
   SKILL_INSTALL_TOO_LARGE: { code: 40004, message: '技能目录超出 20MB 大小限制' },
+  SKILL_NOT_FOUND: { code: 40005, message: '技能不存在' },
 } as const satisfies Record<string, ErrorDef>;
