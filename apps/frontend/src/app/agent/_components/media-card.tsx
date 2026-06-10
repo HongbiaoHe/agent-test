@@ -2,6 +2,9 @@
 
 import { useQuery } from "@tanstack/react-query";
 import {
+  AlertCircle,
+  CheckCircle2,
+  ChevronDown,
   ChevronLeft,
   ChevronRight,
   Image as ImageIcon,
@@ -12,6 +15,7 @@ import {
 } from "lucide-react";
 import { useEffect, useMemo, useRef, useState } from "react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
@@ -19,14 +23,15 @@ import {
   fetchMediaAssetBlob,
   listConversationMedia,
   type MediaGeneration,
+  type MediaStatus,
   type MediaVersion,
   regenerateMedia,
 } from "@/lib/api";
 
-/** 类型 → 图标 / 文案，生成中占位与失败态共用。 */
+/** 类型 → 图标 / 文案 / 工具名。卡片头部、生成中占位与失败态共用。 */
 const TYPE_META = {
-  image: { Icon: ImageIcon, label: "图片" },
-  video: { Icon: VideoIcon, label: "视频" },
+  image: { Icon: ImageIcon, label: "图片", tool: "generate_image" },
+  video: { Icon: VideoIcon, label: "视频", tool: "generate_video" },
 } as const;
 
 /**
@@ -120,8 +125,14 @@ function MediaCardBody({
 
   return (
     <div className="overflow-hidden rounded-xl border bg-card">
+      {/* 头部（常驻）：工具名 + 模型 + 状态。信息随当前查看的 version 联动。 */}
+      <CardHeader version={version} mediaType={mediaType} />
+
       {/* 资产 / 状态区 */}
       <MediaSurface version={version} mediaType={mediaType} />
+
+      {/* prompt（常驻）：当前版本完整传参，默认折叠 2 行可展开。 */}
+      <PromptBlock prompt={version.prompt} />
 
       {/* 底栏：类型徽标 + 版本切换 + 重新生成 */}
       <div className="flex items-center gap-2 border-t px-3 py-2">
@@ -210,6 +221,88 @@ function MediaCardBody({
   );
 }
 
+/** 状态 → 指示图标 + 文案 + badge 变体。头部状态指示共用。 */
+const STATUS_META: Record<
+  MediaStatus,
+  { label: string; variant: "secondary" | "outline" | "destructive"; spin?: boolean }
+> = {
+  queued: { label: "排队中", variant: "secondary", spin: true },
+  generating: { label: "生成中", variant: "secondary", spin: true },
+  done: { label: "完成", variant: "outline" },
+  failed: { label: "失败", variant: "destructive" },
+};
+
+/**
+ * 卡片头部（所有状态常驻）：类型图标 + 工具名（等宽小字）+ 模型 badge + 状态指示。
+ * 让用户一眼看清这是一次什么工具调用、用的哪个模型。信息全部取自当前查看的 version，
+ * 故版本切换时随之联动。
+ */
+function CardHeader({
+  version,
+  mediaType,
+}: {
+  version: MediaVersion;
+  mediaType: "image" | "video";
+}) {
+  const { Icon, tool } = TYPE_META[mediaType];
+  const status = STATUS_META[version.status];
+  const StatusIcon = status.spin
+    ? Loader2
+    : version.status === "failed"
+      ? AlertCircle
+      : CheckCircle2;
+
+  return (
+    <div className="flex items-center gap-2 border-b px-3 py-2">
+      <Icon className="size-4 shrink-0 text-muted-foreground" />
+      <span className="font-mono text-xs text-foreground">{tool}</span>
+      {version.model && (
+        <Badge variant="outline" className="font-mono">
+          {version.model}
+        </Badge>
+      )}
+      <Badge variant={status.variant} className="ml-auto">
+        <StatusIcon className={status.spin ? "animate-spin" : undefined} />
+        {status.label}
+      </Badge>
+    </div>
+  );
+}
+
+/**
+ * prompt 区（所有状态常驻）：当前版本的完整 prompt（传参/参考资源主体）。
+ * 默认折叠为 2 行（line-clamp），可展开看全文。
+ */
+function PromptBlock({ prompt }: { prompt: string }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!prompt) return null;
+
+  return (
+    <div className="border-t px-3 py-2.5">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="flex w-full items-start gap-1.5 text-left"
+      >
+        <ChevronDown
+          className={`mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform ${
+            expanded ? "" : "-rotate-90"
+          }`}
+        />
+        <p
+          className={`text-xs leading-relaxed text-muted-foreground ${
+            expanded ? "" : "line-clamp-2"
+          }`}
+        >
+          <span className="font-medium text-foreground">Prompt：</span>
+          {prompt}
+        </p>
+      </button>
+    </div>
+  );
+}
+
 /** 按版本状态渲染资产区：queued/generating → shimmer；done → 资产；failed → 错误。 */
 function MediaSurface({
   version,
@@ -219,7 +312,8 @@ function MediaSurface({
   mediaType: "image" | "video";
 }) {
   if (version.status === "queued" || version.status === "generating") {
-    return <ShimmerPlaceholder mediaType={mediaType} prompt={version.prompt} />;
+    // prompt 已由卡片的 PromptBlock 常驻展示，这里不再重复一行摘要。
+    return <ShimmerPlaceholder mediaType={mediaType} prompt={null} />;
   }
   if (version.status === "failed") {
     return <FailedSurface error={version.error} />;
