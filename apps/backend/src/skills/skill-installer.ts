@@ -122,6 +122,13 @@ export async function extractSkillFromTarball(opts: {
         // 路径安全断言（注：tar.x 会在 filter 里抛出时中止并传播）
         assertSafeEntryPath(entryPath);
 
+        // 条目类型白名单：只允许普通文件与目录。符号链接/硬链接/设备等一律丢弃——
+        // 安装的是任意用户提供的仓库，symlink 指向树外（如 /etc/passwd）是经典 tarball 攻击面，
+        // 路径断言只看条目名、防不住链接目标。
+        if (entry && entry.type !== 'File' && entry.type !== 'Directory') {
+          return false;
+        }
+
         // 只展开属于目标子路径的条目（含子目录条目本身 entryPrefix 去掉末尾 /）
         if (!entryPath.startsWith(entryPrefix) && entryPath !== entryPrefix.slice(0, -1)) {
           return false;

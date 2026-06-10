@@ -5,7 +5,7 @@ export interface ErrorDef {
 
 /**
  * 业务错误集中定义，按域分段：
- * 1xxxx 会话域 / 2xxxx agent 域 / 5xxxx 系统域
+ * 1xxxx 会话域 / 2xxxx agent 域 / 3xxxx 认证域(passkey) / 4xxxx 技能域 / 5xxxx 系统域
  * 新增业务错误只需往这里加一条。
  */
 export const ErrorCodes = {
