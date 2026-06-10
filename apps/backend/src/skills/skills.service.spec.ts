@@ -3,7 +3,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { SkillsService } from './skills.service';
 
-const prismaMock = { skill: { findMany: jest.fn() } } as never;
+// 具体类型保留 skill.findMany 的 jest.Mock 形状，注入处再断言成 PrismaService（never 可赋给任意参数）
+const prismaMock = { skill: { findMany: jest.fn() } };
 
 function makeSkill(root: string, name: string, desc = 'd') {
   mkdirSync(join(root, name), { recursive: true });
@@ -23,7 +24,7 @@ describe('SkillsService.effectiveSkillsFor', () => {
     dataDir = mkdtempSync(join(tmpdir(), 'data-'));
     process.env.SKILLS_DIR = builtinDir;
     process.env.SKILLS_DATA_DIR = dataDir;
-    svc = new SkillsService(prismaMock);
+    svc = new SkillsService(prismaMock as never);
   });
   afterEach(() => {
     rmSync(builtinDir, { recursive: true, force: true });
