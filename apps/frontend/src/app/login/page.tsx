@@ -7,7 +7,7 @@ import {
 import { Fingerprint, KeyRound, Loader2, Mail, Sparkles } from "lucide-react";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
@@ -30,6 +30,17 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState("");
+  // iOS Safari 的自动填充会直接写 DOM、不触发 React onChange——受控 state 仍是空串，
+  // 提交/校验若只看 state 会误判"没填"。这里提交时经 ref 兜底读 DOM 真实值。
+  const emailInputRef = useRef<HTMLInputElement>(null);
+
+  /** 提交时的有效邮箱：DOM 真实值优先（覆盖自动填充场景），并回写 state 保持受控一致。 */
+  function effectiveEmail(): string {
+    const domValue = emailInputRef.current?.value?.trim() ?? "";
+    const value = domValue || email.trim();
+    if (value !== email) setEmail(value);
+    return value;
+  }
 
   // 挂载时回填上次登录的邮箱（仅客户端读 localStorage，避免 SSR 水合不一致）
   useEffect(() => {
@@ -43,9 +54,9 @@ export default function LoginPage() {
   }, []);
 
   // 登录/注册成功后记下当前邮箱（只留最新一个）
-  function rememberEmail() {
+  function rememberEmail(value: string) {
     try {
-      localStorage.setItem(LAST_EMAIL_KEY, email);
+      localStorage.setItem(LAST_EMAIL_KEY, value);
     } catch {
       /* localStorage 不可用时忽略 */
     }
@@ -58,29 +69,30 @@ export default function LoginPage() {
     return e instanceof Error ? e.message : "操作失败，请重试";
   }
 
-  async function finishWithToken(token: string) {
+  async function finishWithToken(token: string, value: string) {
     const res = await signIn("credentials", { token, redirect: false });
     if (res?.error) {
       setError("登录失败，请重试");
       setBusy(null);
     } else {
-      rememberEmail();
+      rememberEmail(value);
       router.push("/agent");
     }
   }
 
   async function passkeyLogin() {
     setError("");
-    if (!EMAIL_RE.test(email)) {
+    const value = effectiveEmail();
+    if (!EMAIL_RE.test(value)) {
       setError("使用 Passkey 登录前请先填写邮箱");
       return;
     }
     setBusy("passkey-login");
     try {
-      const { flowId, options } = await passkeyLoginOptions(email);
+      const { flowId, options } = await passkeyLoginOptions(value);
       const response = await startAuthentication({ optionsJSON: options });
       const { token } = await passkeyLoginVerify(flowId, response);
-      await finishWithToken(token);
+      await finishWithToken(token, value);
     } catch (e) {
       setError(friendly(e));
       setBusy(null);
@@ -89,16 +101,17 @@ export default function LoginPage() {
 
   async function passkeyRegister() {
     setError("");
-    if (!EMAIL_RE.test(email)) {
+    const value = effectiveEmail();
+    if (!EMAIL_RE.test(value)) {
       setError("注册 Passkey 需要先填写邮箱");
       return;
     }
     setBusy("passkey-register");
     try {
-      const options = await passkeyRegisterOptions(email);
+      const options = await passkeyRegisterOptions(value);
       const response = await startRegistration({ optionsJSON: options });
-      const { token } = await passkeyRegisterVerify(email, response);
-      await finishWithToken(token);
+      const { token } = await passkeyRegisterVerify(value, response);
+      await finishWithToken(token, value);
     } catch (e) {
       setError(friendly(e));
       setBusy(null);
@@ -107,17 +120,18 @@ export default function LoginPage() {
 
   async function emailLogin() {
     setError("");
-    if (!EMAIL_RE.test(email)) {
+    const value = effectiveEmail();
+    if (!EMAIL_RE.test(value)) {
       setError("请输入有效的邮箱地址");
       return;
     }
     setBusy("email");
-    const res = await signIn("credentials", { email, redirect: false });
+    const res = await signIn("credentials", { email: value, redirect: false });
     if (res?.error) {
       setError("登录失败，请重试");
       setBusy(null);
     } else {
-      rememberEmail();
+      rememberEmail(value);
       router.push("/agent");
     }
   }
@@ -176,6 +190,7 @@ export default function LoginPage() {
                 type="email"
                 autoComplete="email"
                 placeholder="you@example.com"
+                ref={emailInputRef}
                 value={email}
                 onChange={(e) => {
                   setEmail(e.target.value);
@@ -200,7 +215,9 @@ export default function LoginPage() {
             variant="secondary"
             className="h-11 w-full text-sm"
             onClick={() => void emailLogin()}
-            disabled={busy !== null || !email}
+            // 不再依赖 state 判空禁用：iOS 自动填充不触发 onChange，state 为空会把按钮永久锁灰。
+            // 改为点击后校验（effectiveEmail 经 ref 读 DOM 真实值），无效时给出错误提示。
+            disabled={busy !== null}
           >
             {busy === "email" ? (
               <>
@@ -221,7 +238,7 @@ export default function LoginPage() {
             variant="ghost"
             className="h-9 w-full text-sm"
             onClick={() => void passkeyRegister()}
-            disabled={busy !== null || !email}
+            disabled={busy !== null} // 同邮箱登录按钮：判空交给点击后校验（iOS 自动填充兼容）
           >
             {busy === "passkey-register" ? (
               <>
