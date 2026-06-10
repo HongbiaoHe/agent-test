@@ -1,11 +1,11 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Logger } from '@nestjs/common';
-import { mkdir, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Job } from 'bullmq';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
-import { GoogleMediaClient } from './google-media.client';
+import { GoogleMediaClient, MediaRef } from './google-media.client';
 import { mediaDataDir, MediaType } from './media.service';
 
 interface MediaJobData {
@@ -22,6 +22,15 @@ export function decideExt(mimeType: string): string {
   if (mimeType === 'image/png') return 'png';
   // 其余未知图像类型兜底 png（generateContent 图像分支才会走到这）
   return 'png';
+}
+
+/** 由参考资产文件后缀推 MIME（图生图/视频首帧的 inlineData/image 需要它）。 */
+export function mimeForExt(filePath: string): string {
+  if (filePath.endsWith('.png')) return 'image/png';
+  if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) return 'image/jpeg';
+  if (filePath.endsWith('.webp')) return 'image/webp';
+  // 参考图只允许 image 类型版本（service 已校验），兜底 png
+  return 'image/png';
 }
 
 /**
@@ -63,11 +72,17 @@ export class MediaProcessor extends WorkerHost {
       });
       await this.publish(generation.conversationId, generation.id, versionId, type, 'generating');
 
-      // 按类型调对应生成；图片快、视频长任务内部轮询
+      // 参考图：从 DB 取引用版本的 filePath → 读盘转 base64。资产缺失则抛错使本版本 failed（不静默忽略）。
+      const refs = await this.loadRefs(version.referenceVersionIds);
+
+      // 按类型调对应生成；图片快、视频长任务内部轮询。
+      // 图生图：refs 全传；视频首帧：仅取第一张参考图。
       const result =
         type === 'image'
-          ? await this.client.generateImageBytes(version.prompt, version.model)
-          : await this.client.generateVideoBytes(version.prompt, version.model);
+          ? await this.client.generateImageBytes(version.prompt, version.model, refs)
+          : await this.client.generateVideoBytes(version.prompt, version.model, {
+              firstFrame: refs[0],
+            });
 
       // 落盘：文件名 = <versionId>.<ext>（cuid 不可枚举）；filePath 存相对路径
       const ext = decideExt(result.mimeType);
@@ -98,6 +113,33 @@ export class MediaProcessor extends WorkerHost {
         message,
       );
     }
+  }
+
+  /**
+   * 把参考版本 id 列表解析为 base64 字节 + MIME。
+   * filePath 缺失（版本未落盘）或磁盘文件读不到 → 抛错（不静默忽略，让本版本 failed 并把原因带给前端）。
+   * 顺序与传入 id 一致（视频首帧依赖第一张）。
+   */
+  private async loadRefs(referenceVersionIds: unknown): Promise<MediaRef[]> {
+    const ids = Array.isArray(referenceVersionIds) ? (referenceVersionIds as string[]) : [];
+    if (ids.length === 0) return [];
+
+    const versions = await this.prisma.mediaVersion.findMany({
+      where: { id: { in: ids } },
+    });
+    const byId = new Map(versions.map((v) => [v.id, v]));
+    const dir = mediaDataDir();
+
+    const refs: MediaRef[] = [];
+    for (const id of ids) {
+      const v = byId.get(id);
+      if (!v?.filePath) {
+        throw new Error(`参考图版本资产缺失（versionId=${id} 无 filePath）`);
+      }
+      const data = await readFile(join(dir, v.filePath)); // 文件不存在会抛 ENOENT → 本版本 failed
+      refs.push({ data: data.toString('base64'), mimeType: mimeForExt(v.filePath) });
+    }
+    return refs;
   }
 
   private async publish(

@@ -22,6 +22,7 @@ const mockPrisma = {
   mediaVersion: {
     create: jest.fn(),
     findUnique: jest.fn(),
+    findMany: jest.fn(),
   },
 };
 const mockQueue = { add: jest.fn() };
@@ -135,6 +136,112 @@ describe('MediaService', () => {
         errCode: ErrorCodes.MEDIA_GENERATION_NOT_FOUND.code,
       });
       expect(mockPrisma.mediaVersion.create).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('referenceVersionIds 校验', () => {
+    // 合法参考：status=done、type=image、归属同 user
+    function okRef(id: string) {
+      return {
+        id,
+        status: 'done',
+        generation: { type: 'image', userId: 'user-1' },
+      };
+    }
+
+    it('createGeneration 合法参考通过并落库 referenceVersionIds', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([okRef('ref-1'), okRef('ref-2')]);
+      mockPrisma.mediaGeneration.create.mockResolvedValue({
+        id: 'gen-1',
+        conversationId: 'conv-1',
+        type: 'image',
+        versions: [{ id: 'ver-1' }],
+      });
+
+      const r = await service.createGeneration('conv-1', 'user-1', 'image', '改图', [
+        'ref-1',
+        'ref-2',
+      ]);
+
+      expect(r).toEqual({ generationId: 'gen-1', versionId: 'ver-1' });
+      // 落库：referenceVersionIds 写到新 version 行
+      expect(mockPrisma.mediaGeneration.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({
+            versions: {
+              create: expect.objectContaining({ referenceVersionIds: ['ref-1', 'ref-2'] }),
+            },
+          }),
+        }),
+      );
+    });
+
+    it('参考版本不存在 → MEDIA_REF_INVALID（不建 generation）', async () => {
+      // 传 2 个 id 但只查到 1 个
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([okRef('ref-1')]);
+
+      await expect(
+        service.createGeneration('conv-1', 'user-1', 'image', 'p', ['ref-1', 'ref-missing']),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.MEDIA_REF_INVALID.code });
+      expect(mockPrisma.mediaGeneration.create).not.toHaveBeenCalled();
+    });
+
+    it('参考版本未完成（非 done）→ MEDIA_REF_INVALID', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        { id: 'ref-1', status: 'generating', generation: { type: 'image', userId: 'user-1' } },
+      ]);
+
+      await expect(
+        service.createGeneration('conv-1', 'user-1', 'image', 'p', ['ref-1']),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.MEDIA_REF_INVALID.code });
+    });
+
+    it('参考版本非 image 类型（video）→ MEDIA_REF_INVALID', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        { id: 'ref-1', status: 'done', generation: { type: 'video', userId: 'user-1' } },
+      ]);
+
+      await expect(
+        service.createGeneration('conv-1', 'user-1', 'image', 'p', ['ref-1']),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.MEDIA_REF_INVALID.code });
+    });
+
+    it('参考版本属于他人 → MEDIA_REF_INVALID', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        { id: 'ref-1', status: 'done', generation: { type: 'image', userId: 'owner' } },
+      ]);
+
+      await expect(
+        service.createGeneration('conv-1', 'attacker', 'image', 'p', ['ref-1']),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.MEDIA_REF_INVALID.code });
+    });
+
+    it('regenerate 未传参考时继承上一版 referenceVersionIds', async () => {
+      mockPrisma.mediaGeneration.findUnique.mockResolvedValue({
+        id: 'gen-1',
+        conversationId: 'conv-1',
+        userId: 'user-1',
+        type: 'image',
+        versions: [
+          {
+            id: 'ver-old',
+            prompt: '旧提示词',
+            model: 'm',
+            referenceVersionIds: ['ref-1'],
+          },
+        ],
+      });
+      // 继承的参考仍需通过校验
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([okRef('ref-1')]);
+      mockPrisma.mediaVersion.create.mockResolvedValue({ id: 'ver-new' });
+
+      await service.regenerate('gen-1', 'user-1');
+
+      expect(mockPrisma.mediaVersion.create).toHaveBeenCalledWith(
+        expect.objectContaining({
+          data: expect.objectContaining({ referenceVersionIds: ['ref-1'] }),
+        }),
+      );
     });
   });
 

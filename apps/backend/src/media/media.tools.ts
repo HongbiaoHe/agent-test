@@ -11,6 +11,15 @@ export interface MediaToolContext {
 const promptSchema = z.object({
   // 设计 §安全：prompt 上限 2000 字符（schema 层兜底，超长由 zod 直接拒绝）
   prompt: z.string().max(2000).describe('图像/视频生成提示词（已与用户确认）'),
+  // 参考图：引用本会话此前生成且已完成的图片版本 id（工具结果里的 versionId）。
+  // 图生图可传多张；视频仅取第一张作为首帧。上限 4 张。
+  referenceVersionIds: z
+    .array(z.string())
+    .max(4)
+    .optional()
+    .describe(
+      '引用本会话此前生成且已完成的图片版本 id（工具结果里的 versionId）；图生图可传多张，视频仅首张作为首帧',
+    ),
 });
 
 /**
@@ -31,35 +40,53 @@ function discipline(media: string): string {
  */
 export function createMediaTools(svc: MediaService, ctx: MediaToolContext) {
   const generateImageTool = tool(
-    async ({ prompt }: { prompt: string }) => {
+    async ({
+      prompt,
+      referenceVersionIds,
+    }: {
+      prompt: string;
+      referenceVersionIds?: string[];
+    }) => {
       const r = await svc.createGeneration(
         ctx.conversationId,
         ctx.userId,
         'image',
         prompt,
+        referenceVersionIds,
       );
       return JSON.stringify({ ...r, status: 'queued' });
     },
     {
       name: 'generate_image',
-      description: `根据提示词生成图像（异步）。${discipline('图像')}`,
+      description:
+        `根据提示词生成图像（异步）。可用 referenceVersionIds 引用此前生成的图片做图生图（工具结果里的 versionId 即引用键）。` +
+        discipline('图像'),
       schema: promptSchema,
     },
   );
 
   const generateVideoTool = tool(
-    async ({ prompt }: { prompt: string }) => {
+    async ({
+      prompt,
+      referenceVersionIds,
+    }: {
+      prompt: string;
+      referenceVersionIds?: string[];
+    }) => {
       const r = await svc.createGeneration(
         ctx.conversationId,
         ctx.userId,
         'video',
         prompt,
+        referenceVersionIds,
       );
       return JSON.stringify({ ...r, status: 'queued' });
     },
     {
       name: 'generate_video',
-      description: `根据提示词生成视频（异步，长任务）。${discipline('视频')}`,
+      description:
+        `根据提示词生成视频（异步，长任务）。可用 referenceVersionIds 引用此前生成的图片作为视频首帧（仅取第一张）。` +
+        discipline('视频'),
       schema: promptSchema,
     },
   );

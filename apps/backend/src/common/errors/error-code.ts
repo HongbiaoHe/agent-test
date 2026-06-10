@@ -28,4 +28,5 @@ export const ErrorCodes = {
   MEDIA_GENERATION_NOT_FOUND: { code: 60001, message: '媒体生成记录不存在' },
   MEDIA_VERSION_NOT_FOUND: { code: 60002, message: '媒体版本不存在' },
   MEDIA_ASSET_NOT_READY: { code: 60003, message: '媒体资产尚未生成完成' },
+  MEDIA_REF_INVALID: { code: 60004, message: '参考图无效（需为本人已生成完成的图片版本）' },
 } as const satisfies Record<string, ErrorDef>;

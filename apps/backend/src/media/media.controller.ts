@@ -37,7 +37,12 @@ export class MediaController {
     @Body() dto: RegenerateMediaDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.media.regenerate(generationId, user.userId, dto.prompt);
+    return this.media.regenerate(
+      generationId,
+      user.userId,
+      dto.prompt,
+      dto.referenceVersionIds,
+    );
   }
 
   /**

@@ -96,6 +96,9 @@ model MediaVersion {
   prompt       String          @db.Text
   model        String
   status       String          @default("queued") // queued | generating | done | failed
+  // 参考图：引用本会话此前生成的图片版本 id 数组（图生图多张 / 视频取首张作首帧）。
+  // 用 Json 存数组：版本数 ≤4、只整体读写、不需要按元素查询，Json 比关联表更简单（YAGNI）。
+  referenceVersionIds Json? // string[] | null
   filePath     String? // MEDIA_DATA_DIR 下相对路径，如 <versionId>.png / .mp4
   error        String?         @db.Text
   createdAt    DateTime        @default(now())

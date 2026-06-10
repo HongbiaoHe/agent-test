@@ -10,6 +10,12 @@ export interface MediaBytes {
   mimeType: string;
 }
 
+/** 参考图入参：base64 字节 + MIME（processor 从磁盘读出参考资产后传入）。 */
+export interface MediaRef {
+  data: string; // base64
+  mimeType: string;
+}
+
 /**
  * @google/genai 的薄封装——本文件是整个项目里**唯一**触碰 @google/genai 的地方
  * （设计 §「不做」：将来换/加提供商只动这一个文件）。
@@ -37,10 +43,31 @@ export class GoogleMediaClient {
    * inlineData.data 是 base64 字符串（genai.d.ts:1535-1543 Blob.data @remarks base64）。
    * 若所有 part 都没有 inlineData，多半是模型拒答——把文本 part 当作拒绝原因抛出。
    */
-  async generateImageBytes(prompt: string, model: string): Promise<MediaBytes> {
+  async generateImageBytes(
+    prompt: string,
+    model: string,
+    refs?: MediaRef[],
+  ): Promise<MediaBytes> {
+    // 无参考图：保持原 contents=prompt 字符串路径（最简）；
+    // 有参考图（图生图）：contents = 单条 user Content，parts = [文本, ...参考图 inlineData]
+    // （genai.d.ts:2262 ContentListUnion 接受单个 Content；9211 Part.inlineData:Blob_2；1535 Blob.data 为 base64）。
+    const contents =
+      refs && refs.length > 0
+        ? [
+            {
+              role: 'user',
+              parts: [
+                { text: prompt },
+                ...refs.map((r) => ({
+                  inlineData: { data: r.data, mimeType: r.mimeType },
+                })),
+              ],
+            },
+          ]
+        : prompt;
     const res = await this.client().models.generateContent({
       model,
-      contents: prompt,
+      contents,
     });
     // GenerateContentResponse.candidates[0].content.parts（genai.d.ts:4769/4774、2227-2233、9196-9211）
     const parts = res.candidates?.[0]?.content?.parts ?? [];
@@ -72,14 +99,23 @@ export class GoogleMediaClient {
   async generateVideoBytes(
     prompt: string,
     model: string,
-    opts?: { intervalMs?: number; timeoutMs?: number },
+    opts?: { intervalMs?: number; timeoutMs?: number; firstFrame?: MediaRef },
   ): Promise<MediaBytes> {
     const intervalMs = opts?.intervalMs ?? 10_000;
     const timeoutMs = opts?.timeoutMs ?? 600_000; // 10min
     const ai = this.client();
 
+    // 参考图（首帧）：传 image={ imageBytes, mimeType }（genai.d.ts:5162 GenerateVideosParameters.image:Image；
+    // 6393 Image.imageBytes 为 base64）。多张参考时上层只传第一张。
+    const firstFrame = opts?.firstFrame;
     // generateVideos 返回 GenerateVideosOperation（genai.d.ts:8643、5130-5147）
-    let op = await ai.models.generateVideos({ model, prompt });
+    let op = await ai.models.generateVideos({
+      model,
+      prompt,
+      ...(firstFrame
+        ? { image: { imageBytes: firstFrame.data, mimeType: firstFrame.mimeType } }
+        : {}),
+    });
     this.logger.log(`视频生成已提交 operation=${op.name}`);
 
     const deadline = Date.now() + timeoutMs;
