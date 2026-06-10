@@ -21,6 +21,7 @@
   },
   "dependencies": {
     "@daytonaio/sdk": "^0.185.0",
+    "@google/genai": "^2.8.0",
     "@langchain/core": "^1.1.48",
     "@langchain/daytona": "^0.2.0",
     "@langchain/google-genai": "^2.1.31",
