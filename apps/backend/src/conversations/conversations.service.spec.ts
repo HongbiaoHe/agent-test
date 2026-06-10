@@ -34,10 +34,10 @@ const mockPrisma = {
 const mockSkills = { getFor: jest.fn() };
 const mockQueue = { add: jest.fn() };
 
-// 拦截 findThreadSandbox：在路径校验测试中不应该被调用到
+// 拦截 findUserSandbox：在路径校验测试中不应该被调用到
 jest.mock('../agent/sandbox', () => ({
-  findThreadSandbox: jest.fn(),
-  getThreadSandbox: jest.fn(),
+  findUserSandbox: jest.fn(),
+  getUserSandbox: jest.fn(),
 }));
 
 describe('ConversationsService – downloadFile 路径校验', () => {

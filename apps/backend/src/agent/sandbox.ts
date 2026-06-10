@@ -1,10 +1,14 @@
 /**
- * 设计 §5 thread-scoped 沙箱工厂。
+ * 用户级（user-scoped）沙箱工厂。
+ *
+ * 分配粒度：**一个用户一个沙箱**（标签 user_id）——同一用户的所有会话共享同一个
+ * 工作区（已装依赖、生成产物跨会话可见）；不同用户之间完全隔离。
+ * （此前为 thread-scoped 每会话一个，按用户要求 2026-06-11 改为用户级。）
  *
  * 为什么单独抽成一个文件？
- * - 沙箱生命周期管理（查找→复用→补拉起 / 创建）对 agent.factory 和 conversations
+ * - 沙箱生命周期管理（查找→复用→补拉起 / 创建）对 agent worker 和 conversations
  *   文件接口都有用，抽出来避免循环依赖。
- * - `getThreadSandbox` 是幂等的：同一 threadId 只维护一个沙箱；如果已停机，
+ * - `getUserSandbox` 是幂等的：同一 userId 只维护一个沙箱；如果已停机，
  *   拉起后再返回；如果不存在，新建。
  * - 无 DAYTONA_API_KEY 时静默返回 null，调用方回退到 StateBackend（纯内存/DB）。
  */
@@ -29,14 +33,14 @@ import { DaytonaSandbox } from '@langchain/daytona';
 // ──────────────────────────────────────────────────────────────────
 
 /**
- * 按 threadId 获取（或创建）对应的 Daytona 沙箱。
+ * 按 userId 获取（或创建）该用户的 Daytona 沙箱。
  *
  * 逻辑：
  *  1. 无 DAYTONA_API_KEY → 立即返回 null（调用方用 StateBackend 兜底）。
- *  2. 用 Daytona SDK list() 按 thread_id 标签查找已有沙箱。
+ *  2. 用 Daytona SDK list() 按 user_id 标签查找已有沙箱。
  *  3. 找到 → fromId 拿 DaytonaSandbox wrapper；若沙箱停机，先 start() 再返回。
  *     （停机实例 execute/downloadFiles 会失败，必须先拉起——设计 §5 停机恢复）
- *  4. 未找到（list 为空）→ create 新沙箱，绑 thread_id 标签。
+ *  4. 未找到（list 为空）→ create 新沙箱，绑 user_id 标签。
  *
  * 错误处理策略（设计 §5）：
  *  - "未找到" 和 "其他错误" 在 SDK 里均抛出异常（list 迭代不返回 undefined）。
@@ -45,13 +49,13 @@ import { DaytonaSandbox } from '@langchain/daytona';
  *    调用方（agent worker）会捕获并降级为 StateBackend，行为正确。
  *    如果日后需要区分，可检查 error.code === "AUTHENTICATION_FAILED"（DaytonaSandboxError）。
  */
-export async function getThreadSandbox(threadId: string): Promise<DaytonaSandbox | null> {
+export async function getUserSandbox(userId: string): Promise<DaytonaSandbox | null> {
   if (!process.env.DAYTONA_API_KEY) return null;
 
   try {
     // 用底层 Daytona SDK 查找已有沙箱（DaytonaSandbox 无 list 能力，需原生 SDK）
     const client = new Daytona();
-    const iter = client.list({ labels: { thread_id: threadId } });
+    const iter = client.list({ labels: { user_id: userId } });
     const { value: existing, done } = await iter.next();
 
     if (!done && existing) {
@@ -67,30 +71,32 @@ export async function getThreadSandbox(threadId: string): Promise<DaytonaSandbox
     // 任何查找错误（网络、鉴权、未找到等）均降级到下面的 create 路径
   }
 
-  // 创建新沙箱，绑定 thread_id 标签供下次查找
-  // autoStopInterval: 15 分钟空闲即停（单位：分钟，已验证）
-  // autoDeleteInterval: 60 分钟后自动删除（单位：分钟，已验证；设计 §5 要求 1h）
+  // 创建新沙箱，绑定 user_id 标签供下次查找
+  // 已知竞态（实测）：Daytona list 按标签查询有 1-2 秒索引延迟——同一用户两次调用
+  // 间隔极短时可能各建一个沙箱。代价可接受：多余实例闲置即停、30 分钟自动删除；
+  // 不为此加锁/重试（会拖慢所有正常首启）。
+  // autoStopInterval / autoDeleteInterval 单位：分钟（已验证），数值为用户指定
   return DaytonaSandbox.create({
-    labels: { thread_id: threadId },
-    autoStopInterval: 15,   // 闲置 15 分钟自动停机，停机态只计存储费用
-    autoDeleteInterval: 60, // 停机 60 分钟后自动删除（设计 §5）
+    labels: { user_id: userId },
+    autoStopInterval: 5, // 闲置 5 分钟自动停机，停机态只计存储费用
+    autoDeleteInterval: 30, // 停机 30 分钟后自动删除
   });
 }
 
 /**
- * 只查不建（conversations 文件接口用）。
+ * 只查不建（conversations 文件接口用），按 userId 查找。
  *
  * - 找到且在运行 → 直接返回。
  * - 找到但停机   → start() 拉起后返回（downloadFiles 对停机实例会失败）。
  * - 未找到       → 返回 null。
  * - 任何错误     → 返回 null（调用方做好 null 检查即可）。
  */
-export async function findThreadSandbox(threadId: string): Promise<DaytonaSandbox | null> {
+export async function findUserSandbox(userId: string): Promise<DaytonaSandbox | null> {
   if (!process.env.DAYTONA_API_KEY) return null;
 
   try {
     const client = new Daytona();
-    const iter = client.list({ labels: { thread_id: threadId } });
+    const iter = client.list({ labels: { user_id: userId } });
     const { value: existing, done } = await iter.next();
 
     if (done || !existing) return null;

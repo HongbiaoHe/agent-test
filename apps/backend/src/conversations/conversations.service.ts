@@ -8,7 +8,7 @@ import { ErrorCodes } from '../common/errors/error-code';
 import { PrismaService } from '../prisma/prisma.service';
 import { SkillsService } from '../skills/skills.service';
 import { assertSafeEntryPath } from '../skills/skill-installer';
-import { findThreadSandbox } from '../agent/sandbox';
+import { findUserSandbox } from '../agent/sandbox';
 
 @Injectable()
 export class ConversationsService {
@@ -143,10 +143,11 @@ export class ConversationsService {
    * 断言会话归属当前租户（复用 findOne 逻辑的精简版，不拉 messages）。
    * 文件接口不需要消息列表，只需确认会话存在且属于当前租户。
    */
-  private async assertConversationOwner(id: string, tenantId: string) {
+  /** 返回会话归属的 userId：沙箱现按用户分配，文件接口需要它定位沙箱。 */
+  private async assertConversationOwner(id: string, tenantId: string): Promise<string> {
     const conv = await this.prisma.conversation.findFirst({
       where: { id, tenantId },
-      select: { id: true },
+      select: { id: true, userId: true },
     });
     if (!conv) {
       throw new BusinessException(
@@ -154,6 +155,7 @@ export class ConversationsService {
         HttpStatus.NOT_FOUND,
       );
     }
+    return conv.userId;
   }
 
   /**
@@ -164,9 +166,9 @@ export class ConversationsService {
    * /skills/ 路径是 agent worker 注入的技能代码，不属于用户产物，排除之。
    */
   async listFiles(id: string, tenantId: string) {
-    await this.assertConversationOwner(id, tenantId);
+    const ownerUserId = await this.assertConversationOwner(id, tenantId);
 
-    const sb = await findThreadSandbox(id);
+    const sb = await findUserSandbox(ownerUserId);
     if (!sb) {
       throw new BusinessException(
         ErrorCodes.SANDBOX_NOT_FOUND,
@@ -203,7 +205,7 @@ export class ConversationsService {
    * 而不是与列表合用 /files?path= 的查询参数分支，避免 controller 逻辑分叉。
    */
   async downloadFile(id: string, tenantId: string, relPath: string) {
-    await this.assertConversationOwner(id, tenantId);
+    const ownerUserId = await this.assertConversationOwner(id, tenantId);
 
     // 路径安全断言：复用 skill-installer 的纯函数，避免重复实现
     // assertSafeEntryPath 对 '..' 片段和绝对路径抛出 SKILL_INSTALL_PATH_TRAVERSAL，
@@ -217,7 +219,7 @@ export class ConversationsService {
       );
     }
 
-    const sb = await findThreadSandbox(id);
+    const sb = await findUserSandbox(ownerUserId);
     if (!sb) {
       throw new BusinessException(
         ErrorCodes.SANDBOX_NOT_FOUND,

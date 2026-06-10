@@ -5,7 +5,7 @@ import { Inject, Logger } from '@nestjs/common';
 import { Job, Queue } from 'bullmq';
 import { buildAgent } from '../agent/agent.factory';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
-import { getThreadSandbox } from '../agent/sandbox';
+import { getUserSandbox } from '../agent/sandbox';
 import { normalize, RawEvent } from '../agent/event-normalizer';
 import { parseCommand } from '../commands/parse-command';
 import { StreamService } from '../events/stream.service';
@@ -79,10 +79,10 @@ export class AgentProcessor extends WorkerHost {
       const defs = await this.skills.effectiveSkillsFor(conv.userId);
       await seedSkillsStore(this.store, conv.userId, defs);
 
-      // ② 沙箱：thread-scoped find-or-create；无 key/创建失败 → 回退 StateBackend
-      let sandbox: Awaited<ReturnType<typeof getThreadSandbox>> = null;
+      // ② 沙箱：user-scoped find-or-create（同一用户全部会话共享工作区）；无 key/创建失败 → 回退 StateBackend
+      let sandbox: Awaited<ReturnType<typeof getUserSandbox>> = null;
       try {
-        sandbox = await getThreadSandbox(conversationId);
+        sandbox = await getUserSandbox(conv.userId);
       } catch (e) {
         // 降级而非失败整个 run；提示用户本轮无执行能力（设计 §8）
         await this.stream.publish(conversationId, {

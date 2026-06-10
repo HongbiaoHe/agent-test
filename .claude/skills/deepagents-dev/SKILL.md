@@ -83,7 +83,7 @@ node .claude/skills/deepagents-dev/section.mjs 记忆 流式
 | 流式 `streamMode`+`subgraphs`（§16） | [apps/backend/src/worker/agent.processor.ts](apps/backend/src/worker/agent.processor.ts) 的 `agent.stream(...)` |
 | 人审中断+`Command` 恢复（§12） | 同上 `agent.processor.ts`：检查 `state.tasks[].interrupts`，`new Command({ resume })` 续跑 |
 | 技能存储与播种（§14.4 + CompositeBackend 挂载） | [apps/backend/src/skills/](apps/backend/src/skills/) —— SkillsService（内置+用户安装+DB）+ `skill-store.seed.ts` 每 run 前 diff 播种 InMemoryStore（键为**挂载点相对路径** `/<name>/<rel>`，CompositeBackend 委派前剥路由前缀） |
-| 沙箱后端（§15，Daytona thread-scoped） | [apps/backend/src/agent/sandbox.ts](apps/backend/src/agent/sandbox.ts)（无 `DAYTONA_API_KEY` 回退 StateBackend）+ [apps/backend/src/agent/skills-backend.ts](apps/backend/src/agent/skills-backend.ts) 的 `beforeAgent` 技能同步（上传路径补回 `/skills` 前缀，官方 §14.8 模式） |
+| 沙箱后端（§15，Daytona user-scoped：一个用户一个，停 5min/删 30min） | [apps/backend/src/agent/sandbox.ts](apps/backend/src/agent/sandbox.ts)（无 `DAYTONA_API_KEY` 回退 StateBackend）+ [apps/backend/src/agent/skills-backend.ts](apps/backend/src/agent/skills-backend.ts) 的 `beforeAgent` 技能同步（上传路径补回 `/skills` 前缀，官方 §14.8 模式） |
 | 政策钩子只读后端（§9.5） | `skills-backend.ts` 的 `ReadOnlyStoreBackend`（write/edit 返回 error） |
 | 事件归一化（流的 4 种 mode） | [apps/backend/src/agent/event-normalizer.ts](apps/backend/src/agent/event-normalizer.ts) |
 

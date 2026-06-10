@@ -13,10 +13,10 @@ import { AgentProcessor } from './agent.processor';
 // 避免加载 deepagents / google-genai 等重依赖，并能捕获传给 agent 的 input
 jest.mock('../agent/agent.factory', () => ({ buildAgent: jest.fn() }));
 
-// getThreadSandbox 是模块级函数，需 jest.mock 拦截，否则会真的调 Daytona SDK
+// getUserSandbox 是模块级函数，需 jest.mock 拦截，否则会真的调 Daytona SDK
 jest.mock('../agent/sandbox', () => ({
-  getThreadSandbox: jest.fn().mockResolvedValue(null),
-  findThreadSandbox: jest.fn().mockResolvedValue(null),
+  getUserSandbox: jest.fn().mockResolvedValue(null),
+  findUserSandbox: jest.fn().mockResolvedValue(null),
 }));
 
 // seedSkillsStore spy：验证 run 前确实调了播种，且入参正确
@@ -500,7 +500,7 @@ describe('AgentProcessor 多轮重放', () => {
       data: { conversationId: 'ha1', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
 
-    // getThreadSandbox mock 返回 null，所以 hasSandbox 应为 false
+    // getUserSandbox mock 返回 null，所以 hasSandbox 应为 false
     expect(capturedOpts?.hasSandbox).toBe(false);
     // store 实例传入，以便 ReadOnlyStoreBackend namespace factory 可用
     expect(capturedOpts?.store).toBe(store);
