@@ -119,6 +119,10 @@ export class AgentProcessor extends WorkerHost {
         runName = lastLabel || runName;
         input = { messages };
         systemPromptExtra = await this.buildSkillPrompt(conv.userId, messages);
+        const mediaInventory = await this.buildMediaInventory(conversationId, conv.userId);
+        if (mediaInventory) {
+          systemPromptExtra += mediaInventory;
+        }
       }
 
       // 既有任务计划经 runtime context 注入：planContinuationMiddleware 会把它追加到系统提示
@@ -337,6 +341,31 @@ export class AgentProcessor extends WorkerHost {
       `请直接据此继续，**不要再 read_file 读取 \`/skills/${active.name}/SKILL.md\`**；` +
       `仅当需要其引用的 references/ 子技能等子文件时，才按需 read_file 那些子文件。\n\n` +
       `<skill name="${active.name}">\n${content}\n</skill>`
+    );
+  }
+
+  /**
+   * 构建本会话已生成的媒体资产清单，注入系统提示让模型正确引用 versionId，避免编造。
+   * 空会话（无生成位）返回空串，不注入。
+   */
+  private async buildMediaInventory(conversationId: string, userId: string): Promise<string> {
+    const generations = await this.media.listForConversation(conversationId, userId);
+    if (!generations || generations.length === 0) return '';
+
+    const lines = generations
+      .map((g) => {
+        const v = g.versions[0]; // 最新版本（已按 createdAt desc）
+        if (!v) return null;
+        const promptPreview = v.prompt.slice(0, 40) + (v.prompt.length > 40 ? '…' : '');
+        return `- versionId=${v.id} [${g.type}][${v.status}] ${promptPreview}`;
+      })
+      .filter(Boolean)
+      .join('\n');
+    if (!lines) return '';
+
+    return (
+      `\n\n## 本会话已生成的媒体资产（引用参考图必须用此表的 versionId）\n${lines}\n` +
+      `规则：referenceVersionIds 只能填上表或 generate_image 工具结果中的真实 versionId（cuid 格式），禁止自造名称；表中已有的资产不要重复生成。`
     );
   }
 

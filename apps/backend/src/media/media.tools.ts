@@ -1,5 +1,6 @@
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
+import { BusinessException } from '../common/errors/business.exception';
 import { MediaService } from './media.service';
 
 /** 工具运行上下文：worker 闭包注入当前会话与可信 userId（不经模型，无注入风险）。 */
@@ -47,14 +48,24 @@ export function createMediaTools(svc: MediaService, ctx: MediaToolContext) {
       prompt: string;
       referenceVersionIds?: string[];
     }) => {
-      const r = await svc.createGeneration(
-        ctx.conversationId,
-        ctx.userId,
-        'image',
-        prompt,
-        referenceVersionIds,
-      );
-      return JSON.stringify({ ...r, status: 'queued' });
+      try {
+        const r = await svc.createGeneration(
+          ctx.conversationId,
+          ctx.userId,
+          'image',
+          prompt,
+          referenceVersionIds,
+        );
+        return JSON.stringify({ ...r, status: 'queued' });
+      } catch (e) {
+        if (e instanceof BusinessException) {
+          return JSON.stringify({
+            error: (e as BusinessException).getResponse(),
+            hint: '请改用本会话媒体资产清单或工具结果中的真实 versionId 后重试',
+          });
+        }
+        throw e;
+      }
     },
     {
       name: 'generate_image',
@@ -73,14 +84,24 @@ export function createMediaTools(svc: MediaService, ctx: MediaToolContext) {
       prompt: string;
       referenceVersionIds?: string[];
     }) => {
-      const r = await svc.createGeneration(
-        ctx.conversationId,
-        ctx.userId,
-        'video',
-        prompt,
-        referenceVersionIds,
-      );
-      return JSON.stringify({ ...r, status: 'queued' });
+      try {
+        const r = await svc.createGeneration(
+          ctx.conversationId,
+          ctx.userId,
+          'video',
+          prompt,
+          referenceVersionIds,
+        );
+        return JSON.stringify({ ...r, status: 'queued' });
+      } catch (e) {
+        if (e instanceof BusinessException) {
+          return JSON.stringify({
+            error: (e as BusinessException).getResponse(),
+            hint: '请改用本会话媒体资产清单或工具结果中的真实 versionId 后重试',
+          });
+        }
+        throw e;
+      }
     },
     {
       name: 'generate_video',

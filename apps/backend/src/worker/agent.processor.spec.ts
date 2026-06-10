@@ -29,9 +29,12 @@ jest.mock('../media/media.tools', () => ({
   createMediaTools: jest.fn().mockReturnValue([{ name: 'generate_image' }, { name: 'generate_video' }]),
 }));
 
-/** 构造 MediaService mock（仅需 createGeneration 存在，spec 里不验证实际调用） */
-const makeMediaService = () =>
-  ({ createGeneration: jest.fn() }) as unknown as MediaService;
+/** 构造 MediaService mock（仅需 createGeneration 和 listForConversation 存在） */
+const makeMediaService = (generations: unknown[] = []) =>
+  ({
+    createGeneration: jest.fn(),
+    listForConversation: jest.fn().mockResolvedValue(generations),
+  }) as unknown as MediaService;
 
 /** 构造 conv 记录（userId 固定为 'u1'，model 可选） */
 const makeConv = (extra: Record<string, unknown> = {}) => ({
@@ -549,6 +552,99 @@ describe('AgentProcessor 多轮重放', () => {
     // worker 闭包注入的媒体工具必须传给 buildAgent
     expect(capturedOpts?.extraTools).toHaveLength(2);
     expect(createMediaTools).toHaveBeenCalledTimes(1);
+  });
+
+  it('有媒体资产时 buildAgent 收到的 systemPromptExtra 含「媒体资产」与 versionId', async () => {
+    const history = [{ role: 'user', content: { text: '继续' } }];
+    const fakeGenerations = [
+      {
+        id: 'gen-abc',
+        type: 'image',
+        versions: [
+          {
+            id: 'ver-cuid1234567890',
+            status: 'done',
+            prompt: '银色跑车影棚特写',
+          },
+        ],
+      },
+    ];
+
+    const prisma = {
+      conversation: { update: jest.fn().mockResolvedValue(makeConv()) },
+      message: {
+        findMany: jest.fn().mockResolvedValue(history),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(history.length),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+
+    const streamSvc = { publish: jest.fn().mockResolvedValue(undefined) } as unknown as StreamService;
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([]),
+      getFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as SkillsService;
+    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+    const store = new InMemoryStore();
+
+    let capturedExtra = '';
+    const fakeAgent = {
+      stream: jest.fn(async () => (async function* () {})()),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    };
+    (buildAgent as jest.Mock).mockImplementation((opts: { systemPromptExtra?: string }) => {
+      capturedExtra = opts.systemPromptExtra ?? '';
+      return fakeAgent;
+    });
+
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store, makeMediaService(fakeGenerations));
+    await proc.process({
+      data: { conversationId: 'media1', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+
+    expect(capturedExtra).toContain('媒体资产');
+    expect(capturedExtra).toContain('ver-cuid1234567890');
+  });
+
+  it('无媒体资产时 buildAgent 收到的 systemPromptExtra 不含「媒体资产」', async () => {
+    const history = [{ role: 'user', content: { text: '继续' } }];
+
+    const prisma = {
+      conversation: { update: jest.fn().mockResolvedValue(makeConv()) },
+      message: {
+        findMany: jest.fn().mockResolvedValue(history),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(history.length),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+
+    const streamSvc = { publish: jest.fn().mockResolvedValue(undefined) } as unknown as StreamService;
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([]),
+      getFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as SkillsService;
+    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+    const store = new InMemoryStore();
+
+    let capturedExtra = '';
+    const fakeAgent = {
+      stream: jest.fn(async () => (async function* () {})()),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    };
+    (buildAgent as jest.Mock).mockImplementation((opts: { systemPromptExtra?: string }) => {
+      capturedExtra = opts.systemPromptExtra ?? '';
+      return fakeAgent;
+    });
+
+    // 空资产列表
+    const proc = new AgentProcessor(prisma, streamSvc, skills, {}, queue, store, makeMediaService([]));
+    await proc.process({
+      data: { conversationId: 'media2', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+
+    expect(capturedExtra).not.toContain('媒体资产');
   });
 });
 
