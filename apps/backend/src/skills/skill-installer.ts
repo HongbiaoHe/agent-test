@@ -216,7 +216,6 @@ export async function installSkillFromGithub(opts: {
   const refExplicit = opts.ref !== undefined;
   const refsToTry = refExplicit ? [opts.ref!] : ['main', 'master'];
 
-  let lastStatus = 0;
   let tarball: Buffer | null = null;
   let usedRef = '';
 
@@ -229,7 +228,6 @@ export async function installSkillFromGithub(opts: {
       usedRef = ref;
       break;
     }
-    lastStatus = resp.status;
     // 只在 404 时继续尝试下一个 ref；其他错误直接退出循环
     if (resp.status !== 404) break;
   }
