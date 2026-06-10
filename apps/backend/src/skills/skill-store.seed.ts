@@ -10,8 +10,14 @@ import type { SkillDef } from './skills.service';
  *   破坏 deepagents 模型侧感知文件"是否刚写入"的语义，也造成不必要的写放大。
  * - diff 语义：delete 消失的键、put 内容有变化的键、跳过内容完全相同的键（保留原时间戳）。
  *
- * namespace 格式：[userId, 'skills']，key = /skills/<name>/<rel>（与 StoreBackend 约定一致）。
- * SKILL.md 的相对路径引用经 absolutizeRefPaths 改写为绝对路径，确保模型调用 read_file 时精确命中。
+ * namespace 格式：[userId, 'skills']，key = /<name>/<rel>（**挂载点相对路径**）。
+ * 为什么不带 /skills/ 前缀：本 Store 经 CompositeBackend 挂载在 '/skills/' 路由下，
+ * CompositeBackend 委派前会剥掉路由前缀（dist 注释原文 "stripped_key has the route prefix
+ * removed (but keeps leading slash)"）——read_file('/skills/docx/SKILL.md') 到达 StoreBackend
+ * 时 key 是 '/docx/SKILL.md'。键若带 /skills/ 前缀会整体偏移出 '/skills/skills/...' 双前缀
+ * （已实测复现：File '/docx/SKILL.md' not found + ls 列出 /skills/skills/）。
+ * SKILL.md 的相对路径引用经 absolutizeRefPaths 改写为 /skills/<name>/... ——那是**模型视角**
+ * 的路径空间（含挂载前缀），与本处的存储键空间是两回事。
  */
 export async function seedSkillsStore(
   store: BaseStore,
@@ -27,7 +33,7 @@ export async function seedSkillsStore(
     for (const [rel, content] of Object.entries(def.files)) {
       // 只对 SKILL.md 做相对路径改写，其余文件（如引用的子文件）保持原样
       const injected = rel === 'SKILL.md' ? absolutizeRefPaths(def.name, content) : content;
-      want.set(`/skills/${def.name}/${rel}`, injected);
+      want.set(`/${def.name}/${rel}`, injected);
     }
   }
 

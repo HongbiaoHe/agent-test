@@ -33,8 +33,10 @@ export class ReadOnlyStoreBackend extends StoreBackend {
  * beforeAgent 同步用：把 store 内该 userId namespace 下全部技能文件
  * 转换成 uploadFiles 所需的 [path, Uint8Array][] 格式。
  *
- * store.search 返回的 Item.key 即文件路径，Item.value.content 是行数组（StoreBackend 写入格式）。
- * join('\n') 还原文本内容，TextEncoder 转 Uint8Array。
+ * store.search 返回的 Item.key 是**挂载点相对路径**（如 '/docx/SKILL.md'，见 skill-store.seed），
+ * 上传到沙箱时要补回 '/skills' 挂载前缀——SKILL.md 指示模型 execute 的脚本路径是
+ * /skills/<name>/scripts/*（模型视角路径空间），沙箱文件系统里必须落在同一路径。
+ * 官方文档同款写法：files.push([`/skills${normalized}`, ...])。
  */
 export async function buildSkillSyncFiles(
   store: BaseStore,
@@ -43,7 +45,7 @@ export async function buildSkillSyncFiles(
   const enc = new TextEncoder();
   const items = await store.search([userId, 'skills'], { limit: 1000 });
   return items.map((i) => [
-    String(i.key),
+    `/skills${String(i.key)}`,
     enc.encode(((i.value as { content?: string[] }).content ?? []).join('\n')),
   ]);
 }

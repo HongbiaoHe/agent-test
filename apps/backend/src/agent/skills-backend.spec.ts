@@ -47,10 +47,10 @@ describe('buildSkillSyncFiles', () => {
     const userId = 'u123';
 
     // 模拟 StoreBackend 写入技能文件时的数据结构：value.content 是行数组
-    await store.put([userId, 'skills'], '/skills/skill-a.md', {
+    await store.put([userId, 'skills'], '/skill-a.md', {
       content: ['# Skill A', 'line2'],
     });
-    await store.put([userId, 'skills'], '/skills/skill-b.md', {
+    await store.put([userId, 'skills'], '/skill-b.md', {
       content: ['# Skill B'],
     });
 
@@ -61,7 +61,7 @@ describe('buildSkillSyncFiles', () => {
 
     // 每条是 [string, Uint8Array]
     const paths = files.map(([p]) => p).sort();
-    expect(paths).toEqual(['/skills/skill-a.md', '/skills/skill-b.md'].sort());
+    expect(paths).toEqual(['/skills/skill-a.md', '/skills/skill-b.md'].sort()); // 入参键挂载点相对，上传路径补回 /skills 前缀
 
     // Uint8Array 内容是 content 数组 join('\n') 的 UTF-8 编码
     const enc = new TextEncoder();
