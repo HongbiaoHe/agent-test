@@ -13,5 +13,6 @@ export class InstallSkillDto {
   /** git ref（branch/tag/SHA），不传时自动尝试 main → master */
   @IsOptional()
   @IsString()
+  @Matches(/^[\w./-]+$/)
   ref?: string;
 }

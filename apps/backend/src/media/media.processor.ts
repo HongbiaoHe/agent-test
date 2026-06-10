@@ -29,7 +29,9 @@ export function decideExt(mimeType: string): string {
  * 流程：load version+generation → generating(推流) → 调 google client → 落盘 → done/failed(推流)。
  * 只在状态变更时推流（generating / done|failed），轮询 tick 不推（避免前端失效风暴，设计 Issue 9）。
  */
-@Processor('media-gen')
+// lockDuration ≥ 视频轮询上限（10min）：BullMQ 默认 30s 锁靠续租维持，worker 短暂卡顿即判 stalled
+// 重跑 → 重复付费生成。显式拉长锁时长消除该风险。
+@Processor('media-gen', { lockDuration: 660_000 })
 export class MediaProcessor extends WorkerHost {
   private readonly logger = new Logger(MediaProcessor.name);
 

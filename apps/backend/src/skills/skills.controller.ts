@@ -91,7 +91,14 @@ export class SkillsController {
       },
     });
 
-    return row;
+    // 只回前端列表同款字段（SkillInfo 形状），不泄漏 userId 等内部列
+    return {
+      name: row.name,
+      description: row.description,
+      domain: row.name.includes('-') ? row.name.split('-')[0] : 'general',
+      source: row.source,
+      enabled: row.enabled,
+    };
   }
 
   /**

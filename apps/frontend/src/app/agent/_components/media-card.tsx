@@ -224,7 +224,7 @@ function MediaSurface({
   if (version.status === "failed") {
     return <FailedSurface error={version.error} />;
   }
-  return <AssetSurface versionId={version.id} mediaType={mediaType} />;
+  return <AssetSurface key={version.id} versionId={version.id} mediaType={mediaType} />;
 }
 
 /** 生成中：shimmer 渐变 + 转圈 + 类型图标 + prompt 摘要一行。 */
