@@ -28,6 +28,7 @@ const STATUS_BADGE: Record<
   waiting_approval: { label: "待审批", variant: "default" },
   done: { label: "已完成", variant: "outline" },
   failed: { label: "失败", variant: "destructive" },
+  stopped: { label: "已停止", variant: "outline" },
 };
 
 export type SidebarProps = {

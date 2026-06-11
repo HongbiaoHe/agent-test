@@ -197,9 +197,13 @@ export function buildBaseState(conv: Conversation): ThreadState {
   for (const m of conv.messages) {
     state = reduce(state, messageToEvent(m));
   }
-  // 历史里没有 result 事件（未持久化）；会话已终态时收尾未完成的工具 chip，避免历史也卡「调用中」。
+  // 会话已终态时收尾未完成的工具 chip，避免历史也卡「调用中」。
   // waiting_approval 不收尾——send_email 此时确实在等审批。
-  if (conv.status === "done" || conv.status === "failed") {
+  if (
+    conv.status === "done" ||
+    conv.status === "failed" ||
+    conv.status === "stopped"
+  ) {
     state = {
       ...state,
       items: state.items.map((it) =>

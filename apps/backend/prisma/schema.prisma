@@ -42,7 +42,7 @@ model Authenticator {
 model Conversation {
   id        String    @id @default(cuid())
   goal      String    @db.Text
-  status    String    @default("queued") // queued | running | waiting_approval | done | failed
+  status    String    @default("queued") // queued | running | waiting_approval | done | failed | stopped
   model     String?   // 本会话回答模型（前端可切换）；为空则 worker 回退 env/默认
   tenantId  String
   userId    String

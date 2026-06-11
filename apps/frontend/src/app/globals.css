@@ -39,6 +39,14 @@
   --border: oklch(0.916 0.004 75);
   --input: oklch(0.916 0.004 75);
   --ring: oklch(0.68 0.01 60);
+
+  /* 代码高亮语法色（highlight.js 用，亮色一套，.dark 另一套） */
+  --syntax-comment: oklch(0.55 0.01 240);
+  --syntax-keyword: oklch(0.55 0.2 25);
+  --syntax-string: oklch(0.42 0.1 150);
+  --syntax-number: oklch(0.45 0.15 255);
+  --syntax-function: oklch(0.51 0.19 295);
+  --syntax-property: oklch(0.45 0.12 240);
 }
 
 .dark {
@@ -69,6 +77,13 @@
   --border: oklch(1 0 0 / 8%);
   --input: oklch(1 0 0 / 12%);
   --ring: oklch(0.55 0.01 70);
+
+  --syntax-comment: oklch(0.66 0.01 240);
+  --syntax-keyword: oklch(0.72 0.15 25);
+  --syntax-string: oklch(0.85 0.14 150);
+  --syntax-number: oklch(0.77 0.1 245);
+  --syntax-function: oklch(0.79 0.12 300);
+  --syntax-property: oklch(0.85 0.07 240);
 }
 
 @theme inline {
@@ -120,4 +135,49 @@
 }
 .animate-media-shimmer {
   animation: media-card-shimmer 1.6s ease-in-out infinite;
+}
+
+/* highlight.js 语法配色：统一映射到上方 --syntax-* token（亮暗自适应）。
+   只挑常用 scope，未覆盖的类沿用容器文字色。 */
+.hljs-comment,
+.hljs-quote {
+  color: var(--syntax-comment);
+  font-style: italic;
+}
+.hljs-keyword,
+.hljs-selector-tag,
+.hljs-literal,
+.hljs-type,
+.hljs-deletion {
+  color: var(--syntax-keyword);
+}
+.hljs-string,
+.hljs-regexp,
+.hljs-addition,
+.hljs-meta .hljs-string {
+  color: var(--syntax-string);
+}
+.hljs-number,
+.hljs-symbol,
+.hljs-bullet,
+.hljs-template-variable,
+.hljs-variable.constant_ {
+  color: var(--syntax-number);
+}
+.hljs-title,
+.hljs-title.function_,
+.hljs-title.class_,
+.hljs-section,
+.hljs-name {
+  color: var(--syntax-function);
+}
+.hljs-attr,
+.hljs-attribute,
+.hljs-property,
+.hljs-built_in,
+.hljs-selector-attr,
+.hljs-selector-class,
+.hljs-selector-id,
+.hljs-meta {
+  color: var(--syntax-property);
 }

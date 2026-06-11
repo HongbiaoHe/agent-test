@@ -8,6 +8,7 @@
  */
 import { getQueueToken } from '@nestjs/bullmq';
 import { Test } from '@nestjs/testing';
+import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
 import { MediaService } from './media.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
@@ -38,6 +39,7 @@ describe('MediaService', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('media-gen'), useValue: mockQueue },
+        { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
       ],
     }).compile();
     service = module.get(MediaService);
@@ -68,7 +70,7 @@ describe('MediaService', () => {
           }),
         }),
       );
-      expect(mockQueue.add).toHaveBeenCalledWith('generate', { versionId: 'ver-1' });
+      expect(mockQueue.add).toHaveBeenCalledWith('generate', { versionId: 'ver-1' }, { jobId: 'ver-1' });
       // 入队后推 queued 事件
       expect(mockStream.publish).toHaveBeenCalledWith(
         'conv-1',
@@ -104,7 +106,7 @@ describe('MediaService', () => {
           }),
         }),
       );
-      expect(mockQueue.add).toHaveBeenCalledWith('generate', { versionId: 'ver-new' });
+      expect(mockQueue.add).toHaveBeenCalledWith('generate', { versionId: 'ver-new' }, { jobId: 'ver-new' });
     });
 
     it('显式 prompt 覆盖上一版', async () => {
@@ -304,5 +306,83 @@ describe('MediaService', () => {
         errCode: ErrorCodes.MEDIA_ASSET_NOT_READY.code,
       });
     });
+  });
+});
+
+describe('MediaService – cancelByConversation（停止功能）', () => {
+  let service: MediaService;
+  let aborts: AbortRegistry;
+  const findManyVersions = jest.fn();
+  const updateVersion = jest.fn();
+  const getJob = jest.fn();
+
+  beforeEach(async () => {
+    aborts = new AbortRegistry();
+    const prisma = {
+      mediaVersion: { findMany: findManyVersions, update: updateVersion },
+    };
+    const module = await Test.createTestingModule({
+      providers: [
+        MediaService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: StreamService, useValue: mockStream },
+        { provide: getQueueToken('media-gen'), useValue: { add: jest.fn(), getJob } },
+        { provide: MEDIA_ABORTS, useValue: aborts },
+      ],
+    }).compile();
+    service = module.get(MediaService);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  const gen = { type: 'image' };
+
+  it('queued 版本：移除 job + 置 failed(用户已停止) + 推流', async () => {
+    const remove = jest.fn();
+    getJob.mockResolvedValue({ remove });
+    findManyVersions.mockResolvedValue([
+      { id: 'v1', status: 'queued', generationId: 'g1', generation: gen },
+    ]);
+
+    await service.cancelByConversation('conv-1');
+
+    expect(remove).toHaveBeenCalled();
+    expect(updateVersion).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'v1' },
+        data: expect.objectContaining({ status: 'failed', error: '用户已停止' }),
+      }),
+    );
+    expect(mockStream.publish).toHaveBeenCalledWith(
+      'conv-1',
+      expect.objectContaining({
+        payload: expect.objectContaining({ versionId: 'v1', status: 'failed' }),
+      }),
+    );
+  });
+
+  it('generating 版本：协作 abort（signal 变 aborted），不直接改库', async () => {
+    const { signal } = aborts.register('v2');
+    findManyVersions.mockResolvedValue([
+      { id: 'v2', status: 'generating', generationId: 'g1', generation: gen },
+    ]);
+
+    await service.cancelByConversation('conv-1');
+
+    expect(signal.aborted).toBe(true);
+    expect(updateVersion).not.toHaveBeenCalled();
+  });
+
+  it('queued 但 remove 抛错（刚被拾取为 active）→ 落到协作 abort 分支', async () => {
+    getJob.mockResolvedValue({ remove: jest.fn().mockRejectedValue(new Error('locked')) });
+    const { signal } = aborts.register('v3');
+    findManyVersions.mockResolvedValue([
+      { id: 'v3', status: 'queued', generationId: 'g1', generation: gen },
+    ]);
+
+    await service.cancelByConversation('conv-1');
+
+    expect(signal.aborted).toBe(true);
+    expect(updateVersion).not.toHaveBeenCalled();
   });
 });

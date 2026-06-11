@@ -99,7 +99,13 @@ export class GoogleMediaClient {
   async generateVideoBytes(
     prompt: string,
     model: string,
-    opts?: { intervalMs?: number; timeoutMs?: number; firstFrame?: MediaRef },
+    opts?: {
+      intervalMs?: number;
+      timeoutMs?: number;
+      firstFrame?: MediaRef;
+      /** 协作取消（停止功能）：轮询每轮检查，aborted 即抛错退出 */
+      signal?: AbortSignal;
+    },
   ): Promise<MediaBytes> {
     const intervalMs = opts?.intervalMs ?? 10_000;
     const timeoutMs = opts?.timeoutMs ?? 600_000; // 10min
@@ -120,6 +126,10 @@ export class GoogleMediaClient {
 
     const deadline = Date.now() + timeoutMs;
     while (!op.done) {
+      // 协作取消：用户停止后不再继续轮询（已提交的云端任务由 Google 侧自行完成/过期）
+      if (opts?.signal?.aborted) {
+        throw new Error(`视频生成已取消 operation=${op.name}`);
+      }
       if (Date.now() >= deadline) {
         throw new Error(`视频生成超时（>${timeoutMs}ms）operation=${op.name}`);
       }

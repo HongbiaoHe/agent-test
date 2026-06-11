@@ -3,6 +3,7 @@ import { Command } from '@langchain/langgraph';
 import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
 import { Job, Queue } from 'bullmq';
+import { AbortRegistry, AGENT_ABORTS } from '../agent/abort-registry';
 import { buildAgent } from '../agent/agent.factory';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
 import { getUserSandbox } from '../agent/sandbox';
@@ -49,6 +50,7 @@ export class AgentProcessor extends WorkerHost {
     @InjectQueue('agent-run') private readonly queue: Queue,
     @Inject(SKILLS_STORE) private readonly store: BaseStore,
     private readonly media: MediaService,
+    @Inject(AGENT_ABORTS) private readonly aborts: AbortRegistry,
   ) {
     super();
   }
@@ -61,11 +63,26 @@ export class AgentProcessor extends WorkerHost {
       return;
     }
 
+    // 注册可中止句柄——必须在 timeout 早退之后：timeout job 与 resume run 可共存，
+    // 在早退前注册会覆盖正在跑的 resume 的注册（停止设计 §worker 接入顺序）。
+    const { signal, dispose } = this.aborts.register(conversationId);
+    // 流式文本缓冲提升到 try 外：停止收尾（catch 分支）需要 flush 残余文本
+    let buf = '';
     try {
-      // update 返回整条记录，顺带取本会话选定的模型（前端可切换）传给 buildAgent
-      const conv = await this.prisma.conversation.update({
-        where: { id: conversationId },
+      // CAS 门：排队期间被 stop 端点置为 stopped 的 job 不起跑。
+      // 竞态规则：端点 abort() 返回 true ⇒ 由 worker 发 result（此处或流中 catch）；
+      // false ⇒ 端点已按 CAS 补发，这里静默退出（设计 §竞态规则）。
+      const gate = await this.prisma.conversation.updateMany({
+        where: { id: conversationId, status: { not: 'stopped' } },
         data: { status: 'running' },
+      });
+      if (gate.count === 0) {
+        if (signal.aborted) await this.finalizeStopped(conversationId, '');
+        return;
+      }
+      // CAS（updateMany）不返回记录，补一次读取拿本会话的 userId / 选定模型
+      const conv = await this.prisma.conversation.findUniqueOrThrow({
+        where: { id: conversationId },
       });
 
       // config 在 conv 加载后定义，以便 getState 和 stream 均携带 userId
@@ -150,6 +167,7 @@ export class AgentProcessor extends WorkerHost {
       // runName/tags/metadata → LangSmith 里按此命名/过滤，而非只显示 "LangGraph"
       const stream = await agent.stream(input, {
         ...config,
+        signal, // stop 端点 abort 后整条 runnable 链中止（RunnableConfig.signal）
         runName,
         tags: ['buzz-agent', kind ?? 'run'],
         metadata: { conversationId, kind: kind ?? 'run' },
@@ -163,7 +181,7 @@ export class AgentProcessor extends WorkerHost {
       // 逐字 token 实时推流但不逐条落库（否则每条 token 一行、表爆炸）；改为按助手文本段累积，
       // 在遇到边界（工具调用/结果/计划/审批）或流结束时，把累积文本收口成一条完整 message：
       // 推流 + 落库都用「用户实际看到的累积文本」，从而 live 与刷新恢复一致、结尾不再被更短的聚合覆盖。
-      let buf = '';
+      // （buf 声明在 try 外，停止收尾需要它）
       const flush = async (override?: string) => {
         const text = override ?? buf;
         buf = '';
@@ -203,10 +221,15 @@ export class AgentProcessor extends WorkerHost {
       if (interrupts.length > 0) {
         const value = interrupts[0]?.value;
         this.logger.log(`conversation=${conversationId} 命中审批中断，等待用户决策`);
-        await this.prisma.conversation.update({
-          where: { id: conversationId },
+        // CAS：流自然结束后、走到这里前被停止（status 已是 stopped）→ 不进审批流程，按停止收尾
+        const toApproval = await this.prisma.conversation.updateMany({
+          where: { id: conversationId, status: 'running' },
           data: { status: 'waiting_approval' },
         });
+        if (toApproval.count === 0) {
+          await this.finalizeStopped(conversationId, '');
+          return;
+        }
         const evt: RawEvent = { type: 'control_request', payload: value };
         await this.stream.publish(conversationId, evt);
         await this.persist(conversationId, evt, seq++);
@@ -218,16 +241,27 @@ export class AgentProcessor extends WorkerHost {
         return; // job 结束，释放 worker slot
       }
 
-      await this.prisma.conversation.update({
-        where: { id: conversationId },
+      // CAS：流自然结束后、走到这里前被停止 → 不覆盖 stopped 终态，按停止收尾
+      const toDone = await this.prisma.conversation.updateMany({
+        where: { id: conversationId, status: 'running' },
         data: { status: 'done' },
       });
+      if (toDone.count === 0) {
+        await this.finalizeStopped(conversationId, '');
+        return;
+      }
       // 持久化 result：历史据此收尾未完成的工具卡、置为 done；实时丢失/重连也能从历史对齐。
       const resultEvt: RawEvent = { type: 'result', payload: { status: 'done' } };
       await this.stream.publish(conversationId, resultEvt);
       await this.persist(conversationId, resultEvt, seq++);
       this.logger.log(`agent 完成: conversation=${conversationId}`);
     } catch (e) {
+      // 用户主动停止：AbortError 不是失败——flush 残余文本 + 发 stopped result（状态已由端点置好）
+      if (signal.aborted) {
+        this.logger.log(`agent 停止: conversation=${conversationId}`);
+        await this.finalizeStopped(conversationId, buf);
+        return;
+      }
       this.logger.error(`agent 失败: conversation=${conversationId} ${String(e)}`);
       await this.prisma.conversation.update({
         where: { id: conversationId },
@@ -241,7 +275,26 @@ export class AgentProcessor extends WorkerHost {
       // catch 作用域取不到 try 内的 seq，重新计数后持久化
       const seq = await this.prisma.message.count({ where: { conversationId } });
       await this.persist(conversationId, errorEvt, seq);
+    } finally {
+      dispose();
     }
+  }
+
+  /**
+   * 停止收尾：保留已累积的流式文本（leftover），补发并持久化 result{status:'stopped'}。
+   * 会话状态已由 stop 端点 CAS 置为 stopped，此处不改写（设计 §竞态规则）。
+   */
+  private async finalizeStopped(conversationId: string, leftover: string) {
+    let seq = await this.prisma.message.count({ where: { conversationId } });
+    if (leftover) {
+      const msg: RawEvent = { type: 'message', payload: { text: leftover } };
+      await this.stream.publish(conversationId, msg);
+      await this.persist(conversationId, msg, seq++);
+    }
+    const evt: RawEvent = { type: 'result', payload: { status: 'stopped' } };
+    await this.stream.publish(conversationId, evt);
+    await this.persist(conversationId, evt, seq);
+    this.logger.log(`agent 已停止收尾: conversation=${conversationId}`);
   }
 
   /**

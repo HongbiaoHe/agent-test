@@ -30,6 +30,12 @@ export class ConversationsController {
     return this.conversations.findOne(id, user.tenantId);
   }
 
+  /** 主动停止当前运行（幂等；返回 { stopped } 表示本次是否实际停掉了什么）。 */
+  @Post(':id/stop')
+  stop(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.conversations.stop(id, user.tenantId);
+  }
+
   @Post(':id/messages')
   append(
     @Param('id') id: string,

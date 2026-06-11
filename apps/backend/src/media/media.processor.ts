@@ -1,8 +1,9 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
-import { Logger } from '@nestjs/common';
+import { Inject, Logger } from '@nestjs/common';
 import { mkdir, readFile, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Job } from 'bullmq';
+import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { GoogleMediaClient, MediaRef } from './google-media.client';
@@ -48,6 +49,7 @@ export class MediaProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly stream: StreamService,
     private readonly client: GoogleMediaClient,
+    @Inject(MEDIA_ABORTS) private readonly aborts: AbortRegistry,
   ) {
     super();
   }
@@ -65,6 +67,9 @@ export class MediaProcessor extends WorkerHost {
     const { generation } = version;
     const type = generation.type as MediaType;
 
+    // 协作取消句柄：stop 端点经 MediaService.cancelByConversation → abort(versionId)。
+    // 视频轮询与参考图等待循环每轮检查 signal；图片单次短调用，结束后检查并丢弃结果。
+    const { signal, dispose } = this.aborts.register(versionId);
     try {
       await this.prisma.mediaVersion.update({
         where: { id: versionId },
@@ -73,7 +78,7 @@ export class MediaProcessor extends WorkerHost {
       await this.publish(generation.conversationId, generation.id, versionId, type, 'generating');
 
       // 参考图：从 DB 取引用版本的 filePath → 读盘转 base64。资产缺失则抛错使本版本 failed（不静默忽略）。
-      const refs = await this.loadRefs(version.referenceVersionIds);
+      const refs = await this.loadRefs(version.referenceVersionIds, { signal });
 
       // 按类型调对应生成；图片快、视频长任务内部轮询。
       // 图生图：refs 全传；视频首帧：仅取第一张参考图。
@@ -82,7 +87,10 @@ export class MediaProcessor extends WorkerHost {
           ? await this.client.generateImageBytes(version.prompt, version.model, refs)
           : await this.client.generateVideoBytes(version.prompt, version.model, {
               firstFrame: refs[0],
+              signal,
             });
+      // 图片调用期间被停止：结果作废（不落盘），统一走 catch 的「用户已停止」收尾
+      if (signal.aborted) throw new Error('用户已停止');
 
       // 落盘：文件名 = <versionId>.<ext>（cuid 不可枚举）；filePath 存相对路径
       const ext = decideExt(result.mimeType);
@@ -98,8 +106,17 @@ export class MediaProcessor extends WorkerHost {
       await this.publish(generation.conversationId, generation.id, versionId, type, 'done');
       this.logger.log(`media 生成完成 versionId=${versionId} file=${fileName}`);
     } catch (e) {
-      const message = e instanceof Error ? e.message : String(e);
-      this.logger.error(`media 生成失败 versionId=${versionId} ${message}`);
+      // 协作取消统一在此落 failed(用户已停止)；其余按原始报错落 failed
+      const message = signal.aborted
+        ? '用户已停止'
+        : e instanceof Error
+          ? e.message
+          : String(e);
+      if (signal.aborted) {
+        this.logger.log(`media 生成已取消 versionId=${versionId}`);
+      } else {
+        this.logger.error(`media 生成失败 versionId=${versionId} ${message}`);
+      }
       await this.prisma.mediaVersion.update({
         where: { id: versionId },
         data: { status: 'failed', error: message, completedAt: new Date() },
@@ -112,6 +129,8 @@ export class MediaProcessor extends WorkerHost {
         'failed',
         message,
       );
+    } finally {
+      dispose();
     }
   }
 
@@ -124,7 +143,7 @@ export class MediaProcessor extends WorkerHost {
    */
   private async loadRefs(
     referenceVersionIds: unknown,
-    opts: { pollIntervalMs?: number; timeoutMs?: number } = {},
+    opts: { pollIntervalMs?: number; timeoutMs?: number; signal?: AbortSignal } = {},
   ): Promise<MediaRef[]> {
     const ids = Array.isArray(referenceVersionIds) ? (referenceVersionIds as string[]) : [];
     if (ids.length === 0) return [];
@@ -136,7 +155,7 @@ export class MediaProcessor extends WorkerHost {
     const refs: MediaRef[] = [];
 
     for (const id of ids) {
-      const v = await this.waitForRef(id, pollIntervalMs, timeoutMs);
+      const v = await this.waitForRef(id, pollIntervalMs, timeoutMs, opts.signal);
       const data = await readFile(join(dir, v.filePath!)); // 文件不存在会抛 ENOENT → 本版本 failed
       refs.push({ data: data.toString('base64'), mimeType: mimeForExt(v.filePath!) });
     }
@@ -152,10 +171,13 @@ export class MediaProcessor extends WorkerHost {
     refId: string,
     pollIntervalMs: number,
     timeoutMs: number,
+    signal?: AbortSignal,
   ): Promise<{ id: string; filePath: string | null }> {
     const deadline = Date.now() + timeoutMs;
 
     while (true) {
+      // 协作取消：参考图等待最长 5 分钟，停止后不再干等
+      if (signal?.aborted) throw new Error('用户已停止');
       const v = await this.prisma.mediaVersion.findUnique({ where: { id: refId } });
       if (!v) {
         throw new Error(`参考图版本不存在（versionId=${refId}）`);

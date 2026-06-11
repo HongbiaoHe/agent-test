@@ -4,6 +4,7 @@
  * - waitForRef 等待逻辑（参考图就绪性轮询）
  */
 import { Test } from '@nestjs/testing';
+import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
 import { decideExt, MediaProcessor } from './media.processor';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
@@ -29,6 +30,7 @@ describe('MediaProcessor.waitForRef', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: StreamService, useValue: mockStream },
         { provide: GoogleMediaClient, useValue: mockClient },
+        { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
       ],
     }).compile();
     processor = module.get(MediaProcessor);

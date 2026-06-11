@@ -1,7 +1,8 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { join } from 'node:path';
 import { Queue } from 'bullmq';
+import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
 import { PrismaService } from '../prisma/prisma.service';
@@ -23,10 +24,13 @@ export function mediaDataDir(): string {
  */
 @Injectable()
 export class MediaService {
+  private readonly logger = new Logger(MediaService.name);
+
   constructor(
     private readonly prisma: PrismaService,
     private readonly stream: StreamService,
     @InjectQueue('media-gen') private readonly queue: Queue,
+    @Inject(MEDIA_ABORTS) private readonly aborts: AbortRegistry,
   ) {}
 
   /**
@@ -68,7 +72,8 @@ export class MediaService {
     });
     const version = generation.versions[0];
 
-    await this.queue.add('generate', { versionId: version.id });
+    // jobId=versionId：stop 时可按版本号定位并移除排队中的 job
+    await this.queue.add('generate', { versionId: version.id }, { jobId: version.id });
     // 入队后推流：前端据此 invalidate media query（设计 §前端职责）。仅状态变更推流。
     await this.publishUpdate(conversationId, generation.id, version.id, type, 'queued');
 
@@ -132,7 +137,8 @@ export class MediaService {
       },
     });
 
-    await this.queue.add('generate', { versionId: version.id });
+    // jobId=versionId：stop 时可按版本号定位并移除排队中的 job
+    await this.queue.add('generate', { versionId: version.id }, { jobId: version.id });
     await this.publishUpdate(
       generation.conversationId,
       generationId,
@@ -142,6 +148,54 @@ export class MediaService {
     );
 
     return { generationId, versionId: version.id };
+  }
+
+  /**
+   * 会话级取消所有未完成的媒体生成（stop 端点用，设计见
+   * docs/superpowers/specs/2026-06-11-stop-run-design.md）。
+   *
+   * - queued：先尝试从队列移除 job（jobId=versionId）；移除失败（job 刚被拾取为
+   *   active，BullMQ 不允许 remove）则落到协作 abort 分支，由 processor 收尾。
+   *   移除成功后本层直接把版本置 failed(用户已停止) 并推流。
+   * - generating：mediaAborts.abort(versionId) 协作取消——视频轮询/参考图等待循环
+   *   每轮检查 signal，processor 的 catch 统一落 failed。
+   */
+  async cancelByConversation(conversationId: string): Promise<void> {
+    const versions = await this.prisma.mediaVersion.findMany({
+      where: {
+        status: { in: ['queued', 'generating'] },
+        generation: { conversationId },
+      },
+      include: { generation: true },
+    });
+
+    for (const v of versions) {
+      if (v.status === 'queued') {
+        try {
+          const job = await this.queue.getJob(v.id);
+          if (job) {
+            await job.remove();
+            await this.prisma.mediaVersion.update({
+              where: { id: v.id },
+              data: { status: 'failed', error: '用户已停止', completedAt: new Date() },
+            });
+            await this.publishUpdate(
+              conversationId,
+              v.generationId,
+              v.id,
+              v.generation.type as MediaType,
+              'failed',
+              '用户已停止',
+            );
+            continue;
+          }
+        } catch (e) {
+          // job 刚被拾取为 active 时 remove 会抛错——落到下面的协作 abort 分支
+          this.logger.warn(`media job 移除失败，转协作取消 versionId=${v.id}: ${String(e)}`);
+        }
+      }
+      this.aborts.abort(v.id);
+    }
   }
 
   /**

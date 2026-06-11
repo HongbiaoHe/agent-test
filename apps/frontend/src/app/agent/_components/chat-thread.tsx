@@ -3,11 +3,13 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowUp,
+  Loader,
   PanelLeft,
   PanelRightClose,
   PanelRightOpen,
   Slash,
   Sparkles,
+  Square,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -44,6 +46,8 @@ export function ChatThread({
   onOpenDetail,
   onDecide,
   onSend,
+  onStop,
+  stopping,
   model,
   onModelChange,
   panelOpen,
@@ -61,6 +65,9 @@ export function ChatThread({
   onOpenDetail: (id: string) => void;
   onDecide: (d: Decision) => void;
   onSend: (text: string) => void;
+  onStop: () => void;
+  /** 停止指令请求中（HTTP 在途）：按钮转圈并禁用，防重复点击 */
+  stopping: boolean;
   model: string;
   onModelChange: (model: string) => void;
   panelOpen: boolean;
@@ -336,15 +343,33 @@ export function ChatThread({
                 onChange={onModelChange}
                 disabled={busy}
               />
-              <Button
-                size="icon-sm"
-                aria-label="发送"
-                disabled={busy || !draft.trim()}
-                onClick={submit}
-                className="rounded-lg"
-              >
-                <ArrowUp />
-              </Button>
+              {busy ? (
+                // 运行中：发送位变停止——立即中止本轮所有操作（LLM 流式/工具等待/媒体生成）
+                <Button
+                  size="icon-sm"
+                  variant="destructive"
+                  aria-label="停止"
+                  disabled={stopping}
+                  onClick={onStop}
+                  className="rounded-lg"
+                >
+                  {stopping ? (
+                    <Loader className="animate-spin" />
+                  ) : (
+                    <Square className="fill-current" />
+                  )}
+                </Button>
+              ) : (
+                <Button
+                  size="icon-sm"
+                  aria-label="发送"
+                  disabled={!draft.trim()}
+                  onClick={submit}
+                  className="rounded-lg"
+                >
+                  <ArrowUp />
+                </Button>
+              )}
             </div>
           </div>
           <p className="mt-2 text-center text-xs text-muted-foreground">

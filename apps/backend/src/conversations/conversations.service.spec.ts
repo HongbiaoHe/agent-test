@@ -11,6 +11,9 @@
 import { HttpStatus } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getQueueToken } from '@nestjs/bullmq';
+import { AbortRegistry, AGENT_ABORTS } from '../agent/abort-registry';
+import { StreamService } from '../events/stream.service';
+import { MediaService } from '../media/media.service';
 import { ConversationsService } from './conversations.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SkillsService } from '../skills/skills.service';
@@ -50,6 +53,9 @@ describe('ConversationsService – downloadFile 路径校验', () => {
         { provide: PrismaService, useValue: mockPrisma },
         { provide: SkillsService, useValue: mockSkills },
         { provide: getQueueToken('agent-run'), useValue: mockQueue },
+        { provide: StreamService, useValue: { publish: jest.fn() } },
+        { provide: MediaService, useValue: { cancelByConversation: jest.fn() } },
+        { provide: AGENT_ABORTS, useValue: new AbortRegistry() },
       ],
     }).compile();
 
@@ -83,5 +89,74 @@ describe('ConversationsService – downloadFile 路径校验', () => {
     ).rejects.toMatchObject({
       errCode: ErrorCodes.INVALID_PATH.code,
     });
+  });
+});
+
+describe('ConversationsService – stop（主动停止）', () => {
+  let service: ConversationsService;
+  let aborts: AbortRegistry;
+  let mockStream: { publish: jest.Mock };
+  let mockMedia: { cancelByConversation: jest.Mock };
+  const updateMany = jest.fn();
+
+  beforeEach(async () => {
+    aborts = new AbortRegistry();
+    mockStream = { publish: jest.fn() };
+    mockMedia = { cancelByConversation: jest.fn() };
+    const prisma = {
+      conversation: { findFirst: jest.fn().mockResolvedValue({ id: 'conv-1', userId: 'u1' }), updateMany },
+      message: { count: jest.fn().mockResolvedValue(3), create: jest.fn() },
+    };
+    const module = await Test.createTestingModule({
+      providers: [
+        ConversationsService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: SkillsService, useValue: mockSkills },
+        { provide: getQueueToken('agent-run'), useValue: mockQueue },
+        { provide: StreamService, useValue: mockStream },
+        { provide: MediaService, useValue: mockMedia },
+        { provide: AGENT_ABORTS, useValue: aborts },
+      ],
+    }).compile();
+    service = module.get(ConversationsService);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  it('运行中（worker 已注册）：abort=true，端点不补发 result（由 worker 收尾），状态 CAS 到 stopped', async () => {
+    const { signal } = aborts.register('conv-1');
+    updateMany.mockResolvedValue({ count: 1 });
+
+    const r = await service.stop('conv-1', 'tenant-1');
+
+    expect(r).toEqual({ stopped: true });
+    expect(signal.aborted).toBe(true);
+    expect(mockMedia.cancelByConversation).toHaveBeenCalledWith('conv-1');
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({ data: { status: 'stopped' } }),
+    );
+    // worker 负责发 result：端点不重复补发
+    expect(mockStream.publish).not.toHaveBeenCalled();
+  });
+
+  it('排队/审批中（无 worker 注册）：abort=false 且 CAS 命中 → 端点补发并持久化 result{stopped}', async () => {
+    updateMany.mockResolvedValue({ count: 1 });
+
+    const r = await service.stop('conv-1', 'tenant-1');
+
+    expect(r).toEqual({ stopped: true });
+    expect(mockStream.publish).toHaveBeenCalledWith('conv-1', {
+      type: 'result',
+      payload: { status: 'stopped' },
+    });
+  });
+
+  it('已结束（无注册、CAS 不命中）：幂等返回 stopped:false，不发事件', async () => {
+    updateMany.mockResolvedValue({ count: 0 });
+
+    const r = await service.stop('conv-1', 'tenant-1');
+
+    expect(r).toEqual({ stopped: false });
+    expect(mockStream.publish).not.toHaveBeenCalled();
   });
 });

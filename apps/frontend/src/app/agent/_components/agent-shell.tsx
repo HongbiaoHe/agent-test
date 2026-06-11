@@ -10,6 +10,7 @@ import {
   appendMessage,
   createConversation,
   listConversations,
+  stopConversation,
 } from "@/lib/api";
 
 import { ChatThread } from "./chat-thread";
@@ -67,8 +68,27 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
       appendMessage(conversationId as string, text, model),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["conversations"] }),
   });
+  // 主动停止：busy 收尾由后端 result{status:'stopped'} 事件驱动（SSE），这里只发指令。
+  // stopRequested 让按钮的 loading 从点击持续到运行真正结束（HTTP 返回 ≠ 收尾完成）；
+  // 失败则复位允许重试（全局 MutationCache 已 toast 错误）。
+  const [stopRequested, setStopRequested] = useState(false);
+  const stopMut = useMutation({
+    mutationFn: () => stopConversation(conversationId as string),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["conversations"] }),
+    onError: () => setStopRequested(false),
+  });
 
   const busy = thread.busy || createMut.isPending;
+  // 运行已结束 → 复位（render-time reset，同 trackedId 模式，避免 effect 里 setState）
+  if (stopRequested && !busy) {
+    setStopRequested(false);
+  }
+
+  function handleStop() {
+    if (!conversationId || stopRequested) return;
+    setStopRequested(true);
+    stopMut.mutate();
+  }
 
   function handleSend(text: string) {
     if (!conversationId) {
@@ -173,6 +193,8 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
         onOpenDetail={openDetail}
         onDecide={thread.respondApproval}
         onSend={handleSend}
+        onStop={handleStop}
+        stopping={stopRequested}
         model={model}
         onModelChange={setModel}
         panelOpen={panelOpen}

@@ -1,10 +1,13 @@
 import { InjectQueue } from '@nestjs/bullmq';
-import { HttpStatus, Injectable } from '@nestjs/common';
+import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { join } from 'node:path';
 import { Queue } from 'bullmq';
+import { AbortRegistry, AGENT_ABORTS } from '../agent/abort-registry';
 import { parseCommand } from '../commands/parse-command';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
+import { StreamService } from '../events/stream.service';
+import { MediaService } from '../media/media.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SkillsService } from '../skills/skills.service';
 import { assertSafeEntryPath } from '../skills/skill-installer';
@@ -16,6 +19,9 @@ export class ConversationsService {
     private readonly prisma: PrismaService,
     private readonly skills: SkillsService,
     @InjectQueue('agent-run') private readonly queue: Queue,
+    private readonly stream: StreamService,
+    private readonly media: MediaService,
+    @Inject(AGENT_ABORTS) private readonly aborts: AbortRegistry,
   ) {}
 
   /**
@@ -83,18 +89,22 @@ export class ConversationsService {
         HttpStatus.NOT_FOUND,
       );
     }
-    // 并发守卫：仅在空闲（done/failed）时允许追加，避免对同一 thread 并发续跑
-    if (conv.status !== 'done' && conv.status !== 'failed') {
+    // 并发守卫：仅在空闲（done/failed/stopped）时允许追加，避免对同一 thread 并发续跑
+    if (
+      conv.status !== 'done' &&
+      conv.status !== 'failed' &&
+      conv.status !== 'stopped'
+    ) {
       throw new BusinessException(ErrorCodes.CONVERSATION_BUSY);
     }
 
-    // 本轮选定的模型落到会话上，worker 据此续跑（含审批 resume / 超时兜底都复用同一模型）
-    if (model) {
-      await this.prisma.conversation.update({
-        where: { id },
-        data: { model },
-      });
-    }
+    // 状态重置为 queued（必须）：上一轮若是 stopped 终态，不重置会让新 job 撞 worker 的
+    // CAS 门（where status != 'stopped'）被误判「排队期间被停止」——一次停止永久封死会话。
+    // 顺带把本轮选定的模型落到会话上（含审批 resume / 超时兜底都复用同一模型）。
+    await this.prisma.conversation.update({
+      where: { id },
+      data: { status: 'queued', ...(model ? { model } : {}) },
+    });
 
     // 落一条 user message（seq 接续，worker 续跑时再从当前 count 接着排）
     const seq = await this.prisma.message.count({
@@ -113,6 +123,40 @@ export class ConversationsService {
     // 复用 'run'：worker 用 { messages:[新用户消息] } + 同 thread_id 续跑
     await this.queue.add('run', { conversationId: id, goal: content });
     return { conversationId: id };
+  }
+
+  /**
+   * 主动停止当前运行（设计见 docs/superpowers/specs/2026-06-11-stop-run-design.md）。
+   *
+   * 竞态规则（result 事件恰好一份）：abort() 返回 true ⇒ worker 一定观察到
+   * signal.aborted，由 worker 发停止收尾事件；false ⇒ worker 未注册（排队/审批中
+   * 无 worker 在跑）或已结束，由这里按 CAS 命中数补发。幂等：重复停/已结束 → stopped:false。
+   */
+  async stop(id: string, tenantId: string) {
+    await this.assertConversationOwner(id, tenantId);
+
+    const aborted = this.aborts.abort(id);
+    // 会话级取消媒体任务（含上一轮仍在生成中的视频——「停止所有操作」的有意语义）
+    await this.media.cancelByConversation(id);
+
+    const cas = await this.prisma.conversation.updateMany({
+      where: { id, status: { in: ['queued', 'running', 'waiting_approval'] } },
+      data: { status: 'stopped' },
+    });
+
+    if (!aborted && cas.count > 0) {
+      const seq = await this.prisma.message.count({
+        where: { conversationId: id },
+      });
+      const payload = { status: 'stopped' };
+      await this.stream.publish(id, { type: 'result', payload });
+      // role 与 worker 的 ROLE_BY_TYPE 一致（result → assistant），历史回放行为统一
+      await this.prisma.message.create({
+        data: { conversationId: id, role: 'assistant', type: 'result', content: payload, seq },
+      });
+    }
+
+    return { stopped: aborted || cas.count > 0 };
   }
 
   /** 列出当前租户的会话（SSR 列表用）。 */

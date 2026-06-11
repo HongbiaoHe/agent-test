@@ -103,6 +103,11 @@ export function appendMessage(
   });
 }
 
+/** 主动停止当前运行（幂等；stopped 表示本次是否实际停掉了什么）。 */
+export function stopConversation(id: string): Promise<{ stopped: boolean }> {
+  return request(`/conversations/${id}/stop`, { method: "POST" });
+}
+
 // ——— 生图/生视频 媒体 ———
 
 export type MediaType = "image" | "video";
