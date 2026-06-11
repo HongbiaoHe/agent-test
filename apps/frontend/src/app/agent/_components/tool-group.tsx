@@ -7,9 +7,6 @@ import { cn } from "@/lib/utils";
 
 import { ToolChip, type ToolItem } from "./tool-chip";
 
-/** 助手侧内容左缩进，对齐头像（size-7 + gap-3 ≈ pl-10）。 */
-const INDENT = "pl-10";
-
 /**
  * 连续工具调用的聚合块：≥2 个折叠成一个可展开块（默认收起，概述行按顺序逐条列出工具名，
  * 运行中显示转圈 + 「调用中」）；单个工具直接渲染原 chip、不套折叠壳。
@@ -29,7 +26,7 @@ export function ToolGroup({
   if (tools.length === 1) {
     const t = tools[0];
     return (
-      <div className={INDENT}>
+      <div>
         <ToolChip
           item={t}
           active={activeDetailId === t.id}
@@ -43,7 +40,7 @@ export function ToolGroup({
   const names = tools.map((t) => t.name).join(" · ");
 
   return (
-    <div className={INDENT}>
+    <div>
       <div className="overflow-hidden rounded-lg border bg-card">
         <button
           type="button"

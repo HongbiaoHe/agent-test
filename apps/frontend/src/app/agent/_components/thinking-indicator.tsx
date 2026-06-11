@@ -58,7 +58,7 @@ export function ThinkingIndicator({ visible }: { visible: boolean }) {
   const secs = Math.floor(ms / 1000);
 
   return (
-    <div className="flex items-center gap-2 pl-10 text-sm">
+    <div className="flex items-center gap-2 text-sm">
       {/* 给屏幕阅读器一条稳定播报，避免逐帧/逐秒刷屏 */}
       <span role="status" className="sr-only">
         Agent 正在思考…

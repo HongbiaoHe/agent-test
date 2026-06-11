@@ -13,6 +13,7 @@ import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import {
   Tooltip,
@@ -217,7 +218,9 @@ export function ChatThread({
       {/* 消息流 */}
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto max-w-3xl space-y-6 px-5 py-8">
-          {showEmpty ? (
+          {isLoading ? (
+            <ThreadSkeleton />
+          ) : showEmpty ? (
             <div className="flex flex-col items-center gap-3 py-24 text-center">
               <div className="flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
                 <Sparkles className="size-6" />
@@ -240,8 +243,8 @@ export function ChatThread({
                     onOpenDetail={onOpenDetail}
                   />
                 ) : r.item.kind === "media" ? (
-                  // 媒体卡片与助手内容左对齐（pl-10），conversationId 必有（卡片只在已有会话里出现）。
-                  <div key={r.item.id} className="pl-10">
+                  // 媒体卡片与助手内容同列左对齐，conversationId 必有（卡片只在已有会话里出现）。
+                  <div key={r.item.id}>
                     <MediaCard
                       conversationId={conversationId as string}
                       generationId={r.item.generationId}
@@ -253,7 +256,7 @@ export function ChatThread({
                 ),
               )}
               {approval && (
-                <div className="pl-10">
+                <div>
                   <ApprovalCard approval={approval} onDecide={onDecide} />
                 </div>
               )}
@@ -323,7 +326,8 @@ export function ChatThread({
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onKeyDown}
               placeholder={busy ? "Agent 正在处理…" : "给 Agent 发消息…（试试输入 /）"}
-              className="max-h-40 min-h-0 resize-none border-0 bg-transparent px-4 pt-3.5 pb-1.5 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
+              // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
+              className="max-h-40 min-h-0 resize-none border-0 bg-transparent px-4 pt-3.5 pb-1.5 text-base shadow-none focus-visible:border-0 focus-visible:ring-0 md:text-sm dark:bg-transparent"
             />
             {/* 工具条：左侧模型切换，右侧发送 */}
             <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
@@ -349,5 +353,40 @@ export function ChatThread({
         </div>
       </div>
     </section>
+  );
+}
+
+/**
+ * 刷新/加载已有会话时的消息列表骨架屏。
+ * 首屏 isLoading 即为 true，SSR 输出的 HTML 就带骨架——刷新先出骨架而非白屏。
+ * 形态模拟真实消息流：右侧用户气泡 + 左侧助手文本行 + 工具 chip 行。
+ */
+function ThreadSkeleton() {
+  return (
+    <div aria-hidden className="space-y-6">
+      <div className="flex justify-end">
+        <Skeleton className="h-10 w-1/2 rounded-2xl rounded-br-md" />
+      </div>
+      <div className="space-y-2.5">
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-11/12" />
+        <Skeleton className="h-4 w-3/5" />
+      </div>
+      <div className="flex gap-2">
+        <Skeleton className="h-8 w-40 rounded-lg" />
+        <Skeleton className="h-8 w-32 rounded-lg" />
+      </div>
+      <div className="space-y-2.5">
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-2/3" />
+      </div>
+      <div className="flex justify-end">
+        <Skeleton className="h-8 w-2/5 rounded-2xl rounded-br-md" />
+      </div>
+      <div className="space-y-2.5">
+        <Skeleton className="h-4 w-10/12" />
+        <Skeleton className="h-4 w-1/2" />
+      </div>
+    </div>
   );
 }
