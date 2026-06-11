@@ -1,25 +1,31 @@
 /**
- * GuardedSandbox — agent 专用目录守卫（官方 §9.5 policy hook 模式）。
+ * GuardedSandbox — agent 专用目录守卫 + 虚拟根目录（官方 §9.5 policy hook 模式）。
  *
- * 包装一个 DaytonaSandbox（或任意 SandboxBackendProtocolV2 实现），
- * 对带路径的文件方法做路径守卫：路径必须等于 workspaceRoot 或以
- * `workspaceRoot + '/'` 开头，否则返回该方法的 error 形状，不 throw。
+ * 包装一个 DaytonaSandbox（或任意 SandboxBackendProtocolV2 实现），把工作区
+ * （workspaceRoot，如 /home/daytona/agent-workspace）虚拟化为 agent 眼中的 `/`：
  *
- * execute：把命令包装为 `cd '<workspaceRoot>' && ( <cmd> )`，锚定 cwd，
- * 使 agent 的相对路径操作天然落在工作区。
+ *  - 入站（agent → 沙箱）：文件方法的路径按虚拟根解析——
+ *      `/` 或 ''        → workspaceRoot
+ *      `/foo`、`foo`    → `${workspaceRoot}/foo`
+ *      真实工作区路径    → 原样接受（兼容 agent 从 execute 输出等处拿到的真实路径）
+ *      `../` 逃逸到区外 → 返回 error 形状（不 throw），消息不含真实路径
+ *  - 出站（沙箱 → agent）：结果对象深度遍历，把字符串里的 workspaceRoot 前缀
+ *      替换回 `/`（ls/glob/grep 的文件路径、write/edit 的回显路径、execute 输出里的
+ *      pwd 等），agent 全程看不到真实路径。readRaw 的 data（二进制/base64）不做替换。
  *
  * ⚠️  execute 的安全边界说明：
  *   路径守卫只作用于文件工具（ls/read/readRaw/write/edit/glob/grep）。
- *   execute 仅做 cwd 锚定——绝对路径仍可逃逸工作区（如 `cat /etc/passwd`）。
+ *   execute 仅做 cwd 锚定 + 输出脱敏——绝对路径仍可逃逸工作区（如 `cat /etc/passwd`）。
  *   真正的隔离边界是沙箱本身（Daytona 用户级容器）；本守卫的目标是：
  *     1) 文件工具层面的硬限制（agent 调 write_file/read_file 无法出域）；
- *     2) execute 工作目录锚定（相对路径安全，绝对路径由沙箱隔离保证）。
+ *     2) execute 工作目录锚定（相对路径安全，绝对路径由沙箱隔离保证）；
+ *     3) 真实路径不进入模型上下文（理解为「工作目录就是 /」即可）。
  *
  * isSandboxProtocol duck-typing 检测：execute 是 function、id 是非空 string。
  * GuardedSandbox 满足两者（委托 inner.execute，id getter 委托 inner.id）。
  *
- * getWorkDir() 覆写为直接返回 workspaceRoot——conversations 文件接口的
- * listFiles/downloadFile 调用 sb.getWorkDir() 后自动只看工作区，无需其他改动。
+ * getWorkDir() 覆写为直接返回 workspaceRoot（真实路径）——它只被宿主侧代码使用
+ * （conversations 文件接口的 listFiles/downloadFile），不进入模型上下文。
  *
  * uploadFiles / downloadFiles / start / isRunning / id 等 host 侧方法原样透传——
  * 技能同步要传 /skills/...，文件接口要下载产物，这些是宿主代码（可信路径）。
@@ -56,42 +62,78 @@ export class GuardedSandbox {
     readonly workspaceRoot: string,
   ) {}
 
-  // ─── 路径守卫辅助 ─────────────────────────────────────────────────────────
+  // ─── 虚拟根映射 ───────────────────────────────────────────────────────────
 
   /**
-   * 检查路径是否在工作区内。
-   * 规范化（posix resolve）后必须等于 workspaceRoot 或以 `workspaceRoot + '/'` 开头。
-   * 使用 path.posix.resolve 防 `../` 逃逸。
+   * 入站：agent 的（虚拟/相对/真实）路径 → 工作区内真实路径；逃逸到区外 → null。
+   * posix.resolve 规范化 `../`，防逃逸。
    */
-  private isAllowed(p: string): boolean {
-    const normalized = path.posix.resolve(this.workspaceRoot, p.startsWith('/') ? p : `/${p}`);
-    return normalized === this.workspaceRoot || normalized.startsWith(this.workspaceRoot + '/');
+  private toReal(p: string): string | null {
+    let real: string;
+    if (p === '' || p === '/') {
+      real = this.workspaceRoot;
+    } else if (p === this.workspaceRoot || p.startsWith(this.workspaceRoot + '/')) {
+      // agent 可能从 execute 输出（pwd 等）拿到真实路径，原样接受
+      real = path.posix.resolve(p);
+    } else {
+      // 虚拟绝对路径 `/foo` 与相对路径 `foo` 都按工作区根解析
+      real = path.posix.resolve(this.workspaceRoot, p.startsWith('/') ? `.${p}` : p);
+    }
+    if (real === this.workspaceRoot || real.startsWith(this.workspaceRoot + '/')) return real;
+    return null;
   }
 
+  /** 出站：字符串里的真实工作区前缀替换回虚拟根 `/`。 */
+  private toVirtual(s: string): string {
+    return s.replaceAll(this.workspaceRoot + '/', '/').replaceAll(this.workspaceRoot, '/');
+  }
+
+  /** 出站：结果对象深度遍历脱敏（字符串 → toVirtual；数组/对象递归；其余原样）。 */
+  private sanitize<T>(value: T): T {
+    if (typeof value === 'string') return this.toVirtual(value) as T;
+    if (Array.isArray(value)) return value.map((v) => this.sanitize(v)) as unknown as T;
+    if (value && typeof value === 'object') {
+      return Object.fromEntries(
+        Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, this.sanitize(v)]),
+      ) as T;
+    }
+    return value;
+  }
+
+  /** 拒绝消息：不暴露真实路径，按虚拟根口径表述（回显的入参路径同样脱敏）。 */
   private denyMsg(p: string): string {
-    return `路径超出 agent 工作区（仅允许 ${this.workspaceRoot} 内）：${p}`;
+    return `路径超出 agent 工作目录（你的工作目录是 /，仅可访问其中的路径）：${this.toVirtual(p)}`;
   }
 
-  // ─── 文件方法（含路径守卫）────────────────────────────────────────────────
+  // ─── 文件方法（含路径守卫 + 出入站映射）──────────────────────────────────
 
   async ls(p: string): Promise<LsResult> {
-    if (!this.isAllowed(p)) return { error: this.denyMsg(p) };
-    return this.inner.ls(p);
+    const real = this.toReal(p);
+    if (!real) return { error: this.denyMsg(p) };
+    return this.sanitize(await this.inner.ls(real));
   }
 
   async read(filePath: string, offset?: number, limit?: number): Promise<ReadResult> {
-    if (!this.isAllowed(filePath)) return { error: this.denyMsg(filePath) };
-    return this.inner.read(filePath, offset, limit);
+    const real = this.toReal(filePath);
+    if (!real) return { error: this.denyMsg(filePath) };
+    return this.sanitize(await this.inner.read(real, offset, limit));
   }
 
   async readRaw(filePath: string): Promise<ReadRawResult> {
-    if (!this.isAllowed(filePath)) return { error: this.denyMsg(filePath) };
-    return this.inner.readRaw(filePath);
+    const real = this.toReal(filePath);
+    if (!real) return { error: this.denyMsg(filePath) };
+    // data 可能是二进制/base64，不做字符串替换；仅 error 字段脱敏
+    const result = await this.inner.readRaw(real);
+    if (typeof (result as { error?: unknown }).error === 'string') {
+      return { ...result, error: this.toVirtual((result as { error: string }).error) };
+    }
+    return result;
   }
 
   async write(filePath: string, content: string): Promise<WriteResult> {
-    if (!this.isAllowed(filePath)) return { error: this.denyMsg(filePath) };
-    return this.inner.write(filePath, content);
+    const real = this.toReal(filePath);
+    if (!real) return { error: this.denyMsg(filePath) };
+    return this.sanitize(await this.inner.write(real, content));
   }
 
   async edit(
@@ -100,14 +142,16 @@ export class GuardedSandbox {
     newString: string,
     replaceAll?: boolean,
   ): Promise<EditResult> {
-    if (!this.isAllowed(filePath)) return { error: this.denyMsg(filePath) };
-    return this.inner.edit(filePath, oldString, newString, replaceAll);
+    const real = this.toReal(filePath);
+    if (!real) return { error: this.denyMsg(filePath) };
+    return this.sanitize(await this.inner.edit(real, oldString, newString, replaceAll));
   }
 
   async glob(pattern: string, searchPath?: string): Promise<GlobResult> {
-    const p = searchPath ?? this.workspaceRoot;
-    if (!this.isAllowed(p)) return { error: this.denyMsg(p) };
-    return this.inner.glob(pattern, searchPath);
+    // 缺省 searchPath 显式锚定工作区根（而非交给 inner 的默认 workdir）
+    const real = this.toReal(searchPath ?? '/');
+    if (!real) return { error: this.denyMsg(searchPath ?? '/') };
+    return this.sanitize(await this.inner.glob(pattern, real));
   }
 
   async grep(
@@ -115,21 +159,21 @@ export class GuardedSandbox {
     searchPath?: string | null,
     glob?: string | null,
   ): Promise<GrepResult> {
-    const p = searchPath ?? this.workspaceRoot;
-    if (p !== null && p !== undefined && !this.isAllowed(p)) {
-      return { error: this.denyMsg(p) };
-    }
-    return this.inner.grep(pattern, searchPath ?? undefined, glob ?? undefined);
+    const real = this.toReal(searchPath ?? '/');
+    if (!real) return { error: this.denyMsg(searchPath ?? '/') };
+    return this.sanitize(await this.inner.grep(pattern, real, glob ?? undefined));
   }
 
-  // ─── execute（cwd 锚定，无路径级硬隔离——见文件顶部说明）─────────────────
+  // ─── execute（cwd 锚定 + 输出脱敏，无路径级硬隔离——见文件顶部说明）──────
 
   async execute(command: string): Promise<ExecuteResponse> {
     // 用单引号包围路径防空格，workspaceRoot 本身不含单引号（Daytona 路径约定）
-    return this.inner.execute(`cd '${this.workspaceRoot}' && ( ${command} )`);
+    const result = await this.inner.execute(`cd '${this.workspaceRoot}' && ( ${command} )`);
+    // 输出里的真实工作区路径（pwd、报错栈等）替换回虚拟根，避免模型学到真实路径
+    return this.sanitize(result);
   }
 
-  // ─── getWorkDir 覆写——conversations 文件接口通过此方法确定下载根路径 ────
+  // ─── getWorkDir 覆写——仅宿主侧使用（conversations 文件接口），返回真实路径 ─
 
   async getWorkDir(): Promise<string> {
     return this.workspaceRoot;

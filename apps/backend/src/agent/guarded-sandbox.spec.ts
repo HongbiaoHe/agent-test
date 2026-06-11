@@ -1,12 +1,13 @@
 /**
- * GuardedSandbox 单测
+ * GuardedSandbox 单测（虚拟根目录语义）
  *
  * inner 用手写 mock（不依赖 deepagents 运行时）。
  * 规则：
- *  - 工作区内路径 → 委托调用（inner 收到原路径）
- *  - 工作区外路径（绝对 /etc/passwd、../逃逸）→ 返回 error 形状、inner 未被调用
- *  - execute → inner 收到 `cd '<ws>' && ( 原命令 )`
- *  - getWorkDir → 返回 workspaceRoot
+ *  - 入站映射：'/'→ws、'/foo'→ws/foo、相对 'foo'→ws/foo、真实 ws 路径原样接受
+ *  - `../` 逃逸到区外 → 返回 error 形状、inner 未被调用、错误消息不含真实路径
+ *  - 出站脱敏：结果里的真实 ws 前缀替换回 '/'（含 execute 输出）；readRaw.data 不动
+ *  - execute → inner 收到 `cd '<ws>' && ( 原命令 )`，输出脱敏
+ *  - getWorkDir → 返回真实 workspaceRoot（宿主侧用）
  *  - uploadFiles → 透传（/skills/... 路径不拦截）
  */
 
@@ -37,7 +38,7 @@ function makeMockInner() {
   };
 }
 
-describe('GuardedSandbox — 路径守卫', () => {
+describe('GuardedSandbox — 入站虚拟路径映射', () => {
   let inner: ReturnType<typeof makeMockInner>;
   let guard: GuardedSandbox;
 
@@ -46,135 +47,148 @@ describe('GuardedSandbox — 路径守卫', () => {
     guard = new GuardedSandbox(inner as any, WS);
   });
 
-  // ── ls ──────────────────────────────────────────────────────────────────
+  it("ls('/') → 映射到工作区根", async () => {
+    await guard.ls('/');
+    expect(inner.ls).toHaveBeenCalledWith(WS);
+  });
 
-  it('ls: 工作区内路径 → 委托 inner，传入原路径', async () => {
+  it("ls('/sub') 虚拟绝对路径 → ws/sub", async () => {
+    await guard.ls('/sub');
+    expect(inner.ls).toHaveBeenCalledWith(`${WS}/sub`);
+  });
+
+  it("ls('sub') 相对路径 → ws/sub", async () => {
+    await guard.ls('sub');
+    expect(inner.ls).toHaveBeenCalledWith(`${WS}/sub`);
+  });
+
+  it('ls: 真实工作区路径原样接受（兼容 execute 输出里学到的路径）', async () => {
     const p = `${WS}/subdir`;
     await guard.ls(p);
     expect(inner.ls).toHaveBeenCalledWith(p);
   });
 
-  it('ls: 工作区根路径 → 委托 inner', async () => {
-    await guard.ls(WS);
-    expect(inner.ls).toHaveBeenCalledWith(WS);
+  it("ls('/etc/passwd') → 虚拟化进工作区（ws/etc/passwd），不会触及真实 /etc", async () => {
+    await guard.ls('/etc/passwd');
+    expect(inner.ls).toHaveBeenCalledWith(`${WS}/etc/passwd`);
   });
 
-  it('ls: /etc/passwd → error，inner 未被调用', async () => {
-    const result = await guard.ls('/etc/passwd');
-    expect(result.error).toMatch(/工作区/);
-    expect(inner.ls).not.toHaveBeenCalled();
-  });
-
-  it('ls: ../逃逸路径 → error，inner 未被调用', async () => {
+  it('ls: ../ 逃逸 → error，inner 未被调用，且错误不含真实路径', async () => {
     const result = await guard.ls(`${WS}/../secret`);
-    expect(result.error).toMatch(/工作区/);
+    expect(result.error).toMatch(/工作目录/);
+    expect(result.error).not.toContain(WS);
     expect(inner.ls).not.toHaveBeenCalled();
   });
 
-  // ── read ─────────────────────────────────────────────────────────────────
-
-  it('read: 工作区内路径 → 委托 inner', async () => {
-    const p = `${WS}/file.txt`;
-    await guard.read(p, 0, 100);
-    expect(inner.read).toHaveBeenCalledWith(p, 0, 100);
+  it("ls('/a/../../etc') 虚拟路径里的 ../ 逃逸 → error", async () => {
+    const result = await guard.ls('/a/../../etc');
+    expect(result.error).toMatch(/工作目录/);
+    expect(result.error).not.toContain(WS);
+    expect(inner.ls).not.toHaveBeenCalled();
   });
 
-  it('read: /etc/passwd → error，inner 未被调用', async () => {
-    const result = await guard.read('/etc/passwd');
-    expect(result.error).toMatch(/工作区/);
+  it("read('../secret.txt') 相对逃逸 → error，inner 未被调用", async () => {
+    const result = await guard.read('../secret.txt');
+    expect(result.error).toMatch(/工作目录/);
     expect(inner.read).not.toHaveBeenCalled();
   });
 
-  it('read: ../逃逸 → error，inner 未被调用', async () => {
-    const result = await guard.read(`${WS}/../secret.txt`);
-    expect(result.error).toMatch(/工作区/);
-    expect(inner.read).not.toHaveBeenCalled();
+  it('read: 虚拟路径 + offset/limit 透传', async () => {
+    await guard.read('/file.txt', 0, 100);
+    expect(inner.read).toHaveBeenCalledWith(`${WS}/file.txt`, 0, 100);
   });
 
-  // ── readRaw ───────────────────────────────────────────────────────────────
-
-  it('readRaw: 工作区内 → 委托 inner', async () => {
-    const p = `${WS}/image.png`;
-    await guard.readRaw(p);
-    expect(inner.readRaw).toHaveBeenCalledWith(p);
+  it('write: 虚拟路径映射 + 内容透传', async () => {
+    await guard.write('/out.txt', 'hello');
+    expect(inner.write).toHaveBeenCalledWith(`${WS}/out.txt`, 'hello');
   });
 
-  it('readRaw: 区外 → error，inner 未被调用', async () => {
-    const result = await guard.readRaw('/tmp/evil');
-    expect(result.error).toMatch(/工作区/);
-    expect(inner.readRaw).not.toHaveBeenCalled();
-  });
-
-  // ── write ─────────────────────────────────────────────────────────────────
-
-  it('write: 工作区内 → 委托 inner', async () => {
-    const p = `${WS}/out.txt`;
-    await guard.write(p, 'hello');
-    expect(inner.write).toHaveBeenCalledWith(p, 'hello');
-  });
-
-  it('write: /etc/evil.txt → error，inner 未被调用', async () => {
-    const result = await guard.write('/etc/evil.txt', 'x');
-    expect(result.error).toMatch(/工作区/);
-    expect(inner.write).not.toHaveBeenCalled();
-  });
-
-  it('write: ../逃逸 → error，inner 未被调用', async () => {
+  it('write: ../ 逃逸 → error，inner 未被调用', async () => {
     const result = await guard.write(`${WS}/../evil.txt`, 'x');
-    expect(result.error).toMatch(/工作区/);
+    expect(result.error).toMatch(/工作目录/);
     expect(inner.write).not.toHaveBeenCalled();
   });
 
-  // ── edit ─────────────────────────────────────────────────────────────────
-
-  it('edit: 工作区内 → 委托 inner', async () => {
-    const p = `${WS}/file.txt`;
-    await guard.edit(p, 'old', 'new', false);
-    expect(inner.edit).toHaveBeenCalledWith(p, 'old', 'new', false);
+  it('edit: 虚拟路径映射 + 参数透传', async () => {
+    await guard.edit('/file.txt', 'old', 'new', false);
+    expect(inner.edit).toHaveBeenCalledWith(`${WS}/file.txt`, 'old', 'new', false);
   });
 
-  it('edit: 区外 → error，inner 未被调用', async () => {
-    const result = await guard.edit('/etc/hosts', 'a', 'b');
-    expect(result.error).toMatch(/工作区/);
-    expect(inner.edit).not.toHaveBeenCalled();
+  it('readRaw: 虚拟路径映射', async () => {
+    await guard.readRaw('/image.png');
+    expect(inner.readRaw).toHaveBeenCalledWith(`${WS}/image.png`);
   });
 
-  // ── glob ─────────────────────────────────────────────────────────────────
-
-  it('glob: 工作区内路径 → 委托 inner', async () => {
-    const p = `${WS}/src`;
-    await guard.glob('**/*.ts', p);
-    expect(inner.glob).toHaveBeenCalledWith('**/*.ts', p);
-  });
-
-  it('glob: 无 searchPath → 使用 workspaceRoot，委托 inner', async () => {
+  it('glob: 缺省 searchPath → 显式锚定工作区根', async () => {
     await guard.glob('**/*.ts');
-    expect(inner.glob).toHaveBeenCalledWith('**/*.ts', undefined);
+    expect(inner.glob).toHaveBeenCalledWith('**/*.ts', WS);
   });
 
-  it('glob: 区外 searchPath → error，inner 未被调用', async () => {
-    const result = await guard.glob('**/*', '/etc');
-    expect(result.error).toMatch(/工作区/);
-    expect(inner.glob).not.toHaveBeenCalled();
+  it('glob: 虚拟 searchPath → 映射进工作区', async () => {
+    await guard.glob('**/*.ts', '/src');
+    expect(inner.glob).toHaveBeenCalledWith('**/*.ts', `${WS}/src`);
   });
 
-  // ── grep ─────────────────────────────────────────────────────────────────
-
-  it('grep: 工作区内路径 → 委托 inner', async () => {
-    const p = `${WS}/src`;
-    await guard.grep('TODO', p);
-    expect(inner.grep).toHaveBeenCalledWith('TODO', p, undefined);
-  });
-
-  it('grep: null path → 委托 inner（inner 用工作区默认）', async () => {
+  it('grep: null searchPath → 显式锚定工作区根', async () => {
     await guard.grep('TODO', null);
-    expect(inner.grep).toHaveBeenCalledWith('TODO', undefined, undefined);
+    expect(inner.grep).toHaveBeenCalledWith('TODO', WS, undefined);
   });
 
-  it('grep: 区外路径 → error，inner 未被调用', async () => {
-    const result = await guard.grep('secret', '/var/log');
-    expect(result.error).toMatch(/工作区/);
+  it('grep: 逃逸 searchPath → error，inner 未被调用', async () => {
+    const result = await guard.grep('secret', '../..');
+    expect(result.error).toMatch(/工作目录/);
     expect(inner.grep).not.toHaveBeenCalled();
+  });
+});
+
+describe('GuardedSandbox — 出站脱敏（真实路径 → 虚拟 /）', () => {
+  let inner: ReturnType<typeof makeMockInner>;
+  let guard: GuardedSandbox;
+
+  beforeEach(() => {
+    inner = makeMockInner();
+    guard = new GuardedSandbox(inner as any, WS);
+  });
+
+  it('ls 结果里的真实路径替换回虚拟 /', async () => {
+    inner.ls.mockResolvedValue({
+      files: [
+        { path: `${WS}/a.txt`, isDir: false },
+        { path: `${WS}/sub`, isDir: true },
+      ],
+    });
+    const result = await guard.ls('/');
+    expect(result).toEqual({
+      files: [
+        { path: '/a.txt', isDir: false },
+        { path: '/sub', isDir: true },
+      ],
+    });
+  });
+
+  it('write 回显路径脱敏', async () => {
+    inner.write.mockResolvedValue({ path: `${WS}/out.txt` });
+    const result = await guard.write('/out.txt', 'x');
+    expect(result).toEqual({ path: '/out.txt' });
+  });
+
+  it('inner 返回的 error 消息里出现真实路径也被脱敏', async () => {
+    inner.read.mockResolvedValue({ error: `file not found: ${WS}/nope.txt` });
+    const result = await guard.read('/nope.txt');
+    expect(result).toEqual({ error: 'file not found: /nope.txt' });
+  });
+
+  it('execute 输出里的真实路径（如 pwd）替换为 /', async () => {
+    inner.execute.mockResolvedValue({ output: `${WS}\n${WS}/dist/out.docx\n`, exitCode: 0, truncated: false });
+    const result = await guard.execute('pwd && ls dist');
+    expect(result.output).toBe('/\n/dist/out.docx\n');
+  });
+
+  it('readRaw 的 data 字段不做字符串替换（二进制/base64 安全）', async () => {
+    const data = { base64: `${WS}-looking-string-stays` };
+    inner.readRaw.mockResolvedValue({ data });
+    const result = (await guard.readRaw('/image.png')) as unknown as { data: typeof data };
+    expect(result.data).toBe(data);
   });
 });
 
@@ -187,7 +201,7 @@ describe('GuardedSandbox — execute cwd 锚定', () => {
     guard = new GuardedSandbox(inner as any, WS);
   });
 
-  it('execute: inner 收到 `cd \'<ws>\' && ( 原命令 )`', async () => {
+  it("execute: inner 收到 `cd '<ws>' && ( 原命令 )`", async () => {
     await guard.execute('ls -la');
     expect(inner.execute).toHaveBeenCalledWith(`cd '${WS}' && ( ls -la )`);
   });
@@ -200,7 +214,7 @@ describe('GuardedSandbox — execute cwd 锚定', () => {
 });
 
 describe('GuardedSandbox — getWorkDir', () => {
-  it('getWorkDir 返回 workspaceRoot', async () => {
+  it('getWorkDir 返回真实 workspaceRoot（仅宿主侧使用）', async () => {
     const inner = makeMockInner();
     const guard = new GuardedSandbox(inner as any, WS);
     const result = await guard.getWorkDir();
