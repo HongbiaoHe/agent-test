@@ -39,7 +39,7 @@ export function SkillList() {
     return (
       <Card>
         <CardContent className="py-8 text-center text-sm text-destructive">
-          {query.error instanceof Error ? query.error.message : "加载技能失败"}
+          {query.error instanceof Error ? query.error.message : "Failed to load skills"}
         </CardContent>
       </Card>
     );
@@ -53,7 +53,7 @@ export function SkillList() {
         <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
           <PackageOpen className="size-6 text-muted-foreground" />
           <p className="text-sm text-muted-foreground">
-            还没有任何技能，先从上方安装一个吧。
+            No skills yet — install one from the form above.
           </p>
         </CardContent>
       </Card>
@@ -93,17 +93,17 @@ function SkillCard({ skill }: { skill: SkillInfo }) {
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-semibold">{skill.name}</span>
             <Badge variant={isBuiltin ? "secondary" : "outline"}>
-              {isBuiltin ? "内置" : "GitHub"}
+              {isBuiltin ? "Built-in" : "GitHub"}
             </Badge>
           </div>
           <p className="line-clamp-2 text-sm text-muted-foreground">
-            {skill.description || "（无描述）"}
+            {skill.description || "(No description)"}
           </p>
           {(toggleMut.isError || deleteMut.isError) && (
             <p className="text-xs text-destructive" role="alert">
               {(toggleMut.error ?? deleteMut.error) instanceof Error
                 ? (toggleMut.error ?? deleteMut.error)?.message
-                : "操作失败"}
+                : "Action failed"}
             </p>
           )}
         </div>
@@ -112,7 +112,7 @@ function SkillCard({ skill }: { skill: SkillInfo }) {
         {!isBuiltin && (
           <div className="flex shrink-0 items-center gap-3">
             <Switch
-              aria-label={skill.enabled ? "停用技能" : "启用技能"}
+              aria-label={skill.enabled ? "Disable skill" : "Enable skill"}
               checked={skill.enabled}
               disabled={toggleMut.isPending}
               onCheckedChange={(checked) => toggleMut.mutate(checked)}
@@ -128,7 +128,7 @@ function SkillCard({ skill }: { skill: SkillInfo }) {
                   {deleteMut.isPending ? (
                     <Loader2 className="size-4 animate-spin" />
                   ) : (
-                    "确认删除"
+                    "Confirm delete"
                   )}
                 </Button>
                 <Button
@@ -137,14 +137,14 @@ function SkillCard({ skill }: { skill: SkillInfo }) {
                   disabled={deleteMut.isPending}
                   onClick={() => setConfirming(false)}
                 >
-                  取消
+                  Cancel
                 </Button>
               </div>
             ) : (
               <Button
                 variant="ghost"
                 size="icon-sm"
-                aria-label="删除技能"
+                aria-label="Delete skill"
                 onClick={() => setConfirming(true)}
               >
                 <Trash2 />

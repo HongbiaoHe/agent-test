@@ -38,15 +38,15 @@ export default async function ConversationsPage() {
 
   return (
     <main className="mx-auto max-w-2xl space-y-4 p-8 font-sans">
-      <h1 className="text-2xl font-bold">我的会话</h1>
+      <h1 className="text-2xl font-bold">My conversations</h1>
       <p className="text-sm text-muted-foreground">
-        本页为 Server Component，在服务端用 next-auth session 鉴权并取数（SSR）。
+        This page is a Server Component, authenticated and fetched server-side via the next-auth session (SSR).
       </p>
 
       {items.length === 0 ? (
         <p className="rounded-lg border bg-card p-4 text-sm text-muted-foreground">
-          还没有会话，去 <code className="rounded bg-muted px-1">/agent</code>{" "}
-          提交一个吧。
+          No conversations yet. Head to{" "}
+          <code className="rounded bg-muted px-1">/agent</code> to start one.
         </p>
       ) : (
         <ul className="space-y-2">

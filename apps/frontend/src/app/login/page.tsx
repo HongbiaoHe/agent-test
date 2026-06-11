@@ -65,14 +65,14 @@ export default function LoginPage() {
   // passkey 仪式被用户取消时浏览器抛 NotAllowedError，统一成友好提示
   function friendly(e: unknown): string {
     const name = (e as { name?: string })?.name;
-    if (name === "NotAllowedError" || name === "AbortError") return "已取消";
-    return e instanceof Error ? e.message : "操作失败，请重试";
+    if (name === "NotAllowedError" || name === "AbortError") return "Cancelled";
+    return e instanceof Error ? e.message : "Something went wrong, please try again";
   }
 
   async function finishWithToken(token: string, value: string) {
     const res = await signIn("credentials", { token, redirect: false });
     if (res?.error) {
-      setError("登录失败，请重试");
+      setError("Sign-in failed, please try again");
       setBusy(null);
     } else {
       rememberEmail(value);
@@ -84,7 +84,7 @@ export default function LoginPage() {
     setError("");
     const value = effectiveEmail();
     if (!EMAIL_RE.test(value)) {
-      setError("使用 Passkey 登录前请先填写邮箱");
+      setError("Enter your email before signing in with a passkey");
       return;
     }
     setBusy("passkey-login");
@@ -103,7 +103,7 @@ export default function LoginPage() {
     setError("");
     const value = effectiveEmail();
     if (!EMAIL_RE.test(value)) {
-      setError("注册 Passkey 需要先填写邮箱");
+      setError("Enter your email before registering a passkey");
       return;
     }
     setBusy("passkey-register");
@@ -122,13 +122,13 @@ export default function LoginPage() {
     setError("");
     const value = effectiveEmail();
     if (!EMAIL_RE.test(value)) {
-      setError("请输入有效的邮箱地址");
+      setError("Enter a valid email address");
       return;
     }
     setBusy("email");
     const res = await signIn("credentials", { email: value, redirect: false });
     if (res?.error) {
-      setError("登录失败，请重试");
+      setError("Sign-in failed, please try again");
       setBusy(null);
     } else {
       rememberEmail(value);
@@ -145,8 +145,8 @@ export default function LoginPage() {
             <Sparkles className="size-5" />
           </div>
           <div className="space-y-1">
-            <h1 className="text-xl font-semibold tracking-tight">欢迎回来</h1>
-            <p className="text-sm text-muted-foreground">登录到任务自动化平台</p>
+            <h1 className="text-xl font-semibold tracking-tight">Welcome back</h1>
+            <p className="text-sm text-muted-foreground">Sign in to the task automation platform</p>
           </div>
         </div>
 
@@ -158,11 +158,11 @@ export default function LoginPage() {
         >
           {busy === "passkey-login" ? (
             <>
-              <Loader2 className="size-4 animate-spin" /> 验证中…
+              <Loader2 className="size-4 animate-spin" /> Verifying…
             </>
           ) : (
             <>
-              <Fingerprint className="size-4" /> 使用 Passkey 登录
+              <Fingerprint className="size-4" /> Sign in with passkey
             </>
           )}
         </Button>
@@ -170,7 +170,7 @@ export default function LoginPage() {
         {/* 分隔 */}
         <div className="my-6 flex items-center gap-3 text-xs text-muted-foreground">
           <Separator className="flex-1" />
-          或使用邮箱
+          or use email
           <Separator className="flex-1" />
         </div>
 
@@ -181,7 +181,7 @@ export default function LoginPage() {
               htmlFor="email"
               className="text-sm font-medium text-foreground"
             >
-              邮箱
+              Email
             </label>
             <div className="relative">
               <Mail className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
@@ -221,10 +221,10 @@ export default function LoginPage() {
           >
             {busy === "email" ? (
               <>
-                <Loader2 className="size-4 animate-spin" /> 登录中…
+                <Loader2 className="size-4 animate-spin" /> Signing in…
               </>
             ) : (
-              "邮箱登录"
+              "Sign in with email"
             )}
           </Button>
         </div>
@@ -232,7 +232,7 @@ export default function LoginPage() {
         {/* 注册（弱化为底部入口） */}
         <div className="mt-6 space-y-3 border-t pt-5 text-center">
           <p className="text-xs text-muted-foreground">
-            首次使用？填写邮箱后注册 Passkey，之后即可一键登录。
+            First time here? Enter your email and register a passkey for one-tap sign-in next time.
           </p>
           <Button
             variant="ghost"
@@ -242,11 +242,11 @@ export default function LoginPage() {
           >
             {busy === "passkey-register" ? (
               <>
-                <Loader2 className="size-4 animate-spin" /> 注册中…
+                <Loader2 className="size-4 animate-spin" /> Registering…
               </>
             ) : (
               <>
-                <KeyRound className="size-4" /> 用该邮箱注册 Passkey
+                <KeyRound className="size-4" /> Register a passkey for this email
               </>
             )}
           </Button>

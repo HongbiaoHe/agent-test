@@ -24,12 +24,12 @@ import { cn } from "@/lib/utils";
 
 /** 沙箱状态 → 展示语义（点的颜色 / 徽标文案）。 */
 function toneOf(data: SandboxStatus | undefined) {
-  if (!data?.exists) return { dot: "bg-muted-foreground/40", label: "无沙箱", variant: "outline" as const };
+  if (!data?.exists) return { dot: "bg-muted-foreground/40", label: "No sandbox", variant: "outline" as const };
   if (data.state === "started")
-    return { dot: "bg-success", label: "运行中", variant: "secondary" as const };
+    return { dot: "bg-success", label: "Running", variant: "secondary" as const };
   if (data.state === "stopped")
-    return { dot: "bg-warning", label: "已停机", variant: "outline" as const };
-  return { dot: "bg-warning", label: data.state ?? "未知", variant: "outline" as const };
+    return { dot: "bg-warning", label: "Stopped", variant: "outline" as const };
+  return { dot: "bg-warning", label: data.state ?? "Unknown", variant: "outline" as const };
 }
 
 /** 每秒跳动的当前时间（active=false 时不起 interval，面板关闭零开销）。 */
@@ -44,7 +44,7 @@ function useNow(active: boolean) {
 }
 
 function formatRemain(ms: number): string {
-  if (ms <= 0) return "随时回收";
+  if (ms <= 0) return "Reclaiming soon";
   const s = Math.floor(ms / 1000);
   const mm = Math.floor(s / 60);
   const ss = s % 60;
@@ -100,7 +100,7 @@ export function SandboxStatusButton() {
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="沙箱状态"
+              aria-label="Sandbox status"
               onClick={openPanel}
             />
           }
@@ -119,7 +119,7 @@ export function SandboxStatusButton() {
             )}
           </span>
         </TooltipTrigger>
-        <TooltipContent>沙箱：{tone.label}</TooltipContent>
+        <TooltipContent>Sandbox: {tone.label}</TooltipContent>
       </Tooltip>
 
       <Sheet open={open} onOpenChange={setOpen}>
@@ -127,11 +127,11 @@ export function SandboxStatusButton() {
           <SheetHeader className="border-b">
             <SheetTitle className="flex items-center gap-2">
               <Server className="size-4" />
-              沙箱
+              Sandbox
               <Badge variant={tone.variant}>{tone.label}</Badge>
             </SheetTitle>
             <SheetDescription>
-              每个用户一个专属沙箱，所有会话共享同一工作区。
+              Each user gets a dedicated sandbox; all conversations share the same workspace.
             </SheetDescription>
           </SheetHeader>
           <ScrollArea className="min-h-0 flex-1">
@@ -169,12 +169,12 @@ function SandboxDetail({
   const now = useNow(panelOpen && deleteAt !== null);
 
   if (!data) {
-    return <p className="px-4 py-6 text-sm text-muted-foreground">加载中…</p>;
+    return <p className="px-4 py-6 text-sm text-muted-foreground">Loading…</p>;
   }
   if (!data.exists) {
     return (
       <p className="px-4 py-6 text-sm text-muted-foreground">
-        暂无沙箱。发送需要执行能力的消息后会自动创建。
+        No sandbox yet. One is created automatically when you send a message that needs execution.
       </p>
     );
   }
@@ -190,7 +190,7 @@ function SandboxDetail({
               {formatRemain(deleteAt - now)}
             </span>
             <span className="text-muted-foreground">
-              {deleteAt - now > 0 ? " 后自动删除（工作区文件将一并回收）" : "（已到期，将被回收）"}
+              {deleteAt - now > 0 ? " until auto-delete (workspace files will be reclaimed too)" : " (expired, will be reclaimed)"}
             </span>
           </div>
         </div>
@@ -198,29 +198,29 @@ function SandboxDetail({
 
       <div className="space-y-2">
         <InfoRow label="ID" value={<code className="font-mono text-xs">{data.id}</code>} />
-        <InfoRow label="创建时间" value={formatTime(data.createdAt)} />
-        <InfoRow label="最近状态变更" value={formatTime(data.updatedAt)} />
+        <InfoRow label="Created" value={formatTime(data.createdAt)} />
+        <InfoRow label="Last state change" value={formatTime(data.updatedAt)} />
         {data.autoStopMinutes != null && data.autoStopMinutes > 0 && (
-          <InfoRow label="自动停机" value={`闲置 ${data.autoStopMinutes} 分钟后`} />
+          <InfoRow label="Auto-stop" value={`After ${data.autoStopMinutes} min idle`} />
         )}
         {data.autoDeleteMinutes != null && data.autoDeleteMinutes >= 0 && (
-          <InfoRow label="自动删除" value={`停机 ${data.autoDeleteMinutes} 分钟后`} />
+          <InfoRow label="Auto-delete" value={`${data.autoDeleteMinutes} min after stop`} />
         )}
       </div>
 
       <div className="space-y-2">
         <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-          工作区文件
+          Workspace files
         </h3>
         {data.state !== "started" ? (
           <p className="text-sm text-muted-foreground">
-            沙箱停机中，文件在下次运行时可见。
+            Sandbox is stopped; files will be visible on the next run.
           </p>
         ) : !data.files ? (
           // files=null：详情查询（?files=1）还没返回，心跳数据不含文件
-          <p className="text-sm text-muted-foreground">文件加载中…</p>
+          <p className="text-sm text-muted-foreground">Loading files…</p>
         ) : data.files.length === 0 ? (
-          <p className="text-sm text-muted-foreground">工作区暂无产物文件。</p>
+          <p className="text-sm text-muted-foreground">No output files in the workspace yet.</p>
         ) : (
           <ul className="space-y-1">
             {data.files.map((f) => (

@@ -29,7 +29,7 @@ export function TaskPlanPanel({ todos }: { todos: Todo[] }) {
         className="flex w-full cursor-pointer items-center gap-1.5 px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
       >
         <ListChecks className="size-3.5 shrink-0" />
-        <span>任务计划</span>
+        <span>Game plan</span>
         <span className="text-muted-foreground/70">
           {done}/{todos.length}
         </span>

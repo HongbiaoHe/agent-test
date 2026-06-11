@@ -47,7 +47,7 @@ export function toolFilePath(args: unknown): string | null {
   return typeof path === "string" ? path : null;
 }
 
-/** 单个工具调用 chip：点击打开右侧详情面板；done=false 时图标转圈、标签显示「调用中」。 */
+/** 单个工具调用 chip：点击打开右侧详情面板；done=false 时图标转圈、标签显示「cooking…」。 */
 export function ToolChip({
   item,
   active,
@@ -82,7 +82,7 @@ export function ToolChip({
         </span>
       )}
       <span className="shrink-0 text-[10px] tracking-wide text-muted-foreground uppercase">
-        {item.done ? "工具" : "调用中"}
+        {item.done ? "tool" : "cooking…"}
       </span>
     </button>
   );

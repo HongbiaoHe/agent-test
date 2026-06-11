@@ -32,7 +32,7 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   const isDesktop = useIsDesktop();
   const qc = useQueryClient();
   const { data: session } = useSession();
-  const userEmail = (session?.user?.email as string | undefined) ?? "用户";
+  const userEmail = (session?.user?.email as string | undefined) ?? "User";
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [manualPanel, setManualPanel] = useState<boolean | null>(null);
@@ -138,7 +138,7 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
     : undefined;
 
   const activeConv = conversations.find((c) => c.id === conversationId);
-  const title = conversationId ? (activeConv?.goal ?? "对话") : "新对话";
+  const title = conversationId ? (activeConv?.goal ?? "Conversation") : "New conversation";
 
   const filtered = search.trim()
     ? conversations.filter((c) =>
@@ -176,7 +176,7 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
           showCloseButton={false}
           className="w-72 gap-0 bg-background p-0"
         >
-          <SheetTitle className="sr-only">会话列表</SheetTitle>
+          <SheetTitle className="sr-only">Conversations</SheetTitle>
           <SidebarContent {...sidebarProps} />
         </SheetContent>
       </Sheet>

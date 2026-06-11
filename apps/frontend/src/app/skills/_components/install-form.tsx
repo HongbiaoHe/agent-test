@@ -52,9 +52,9 @@ export function InstallForm() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">从 GitHub 安装技能</CardTitle>
+        <CardTitle className="text-base">Install a skill from GitHub</CardTitle>
         <CardDescription>
-          填写仓库（owner/repo）与含 SKILL.md 的子目录路径，可选指定分支/标签。
+          Enter the repository (owner/repo) and the subdirectory path containing SKILL.md. A branch/tag is optional.
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
@@ -64,7 +64,7 @@ export function InstallForm() {
               htmlFor="skill-repo"
               className="text-sm font-medium text-foreground"
             >
-              仓库
+              Repository
             </label>
             <Input
               id="skill-repo"
@@ -79,7 +79,7 @@ export function InstallForm() {
               htmlFor="skill-path"
               className="text-sm font-medium text-foreground"
             >
-              路径
+              Path
             </label>
             <Input
               id="skill-path"
@@ -94,7 +94,7 @@ export function InstallForm() {
               htmlFor="skill-ref"
               className="text-sm font-medium text-foreground"
             >
-              分支/标签（可选）
+              Branch/tag (optional)
             </label>
             <Input
               id="skill-ref"
@@ -113,7 +113,7 @@ export function InstallForm() {
           <p className="text-sm text-destructive" role="alert">
             {installMut.error instanceof Error
               ? installMut.error.message
-              : "安装失败，请重试"}
+              : "Install failed, please try again"}
           </p>
         )}
 
@@ -121,11 +121,11 @@ export function InstallForm() {
           <Button onClick={submit} disabled={!canSubmit || installMut.isPending}>
             {installMut.isPending ? (
               <>
-                <Loader2 className="size-4 animate-spin" /> 安装中…
+                <Loader2 className="size-4 animate-spin" /> Installing…
               </>
             ) : (
               <>
-                <Download className="size-4" /> 安装
+                <Download className="size-4" /> Install
               </>
             )}
           </Button>

@@ -103,7 +103,7 @@ export function useConversation(conversationId: string | null) {
     if (decision === "edit") {
       decisions = approval.actionRequests.map((a) => {
         const input = window.prompt(
-          `编辑 ${a.name} 的参数 (JSON):`,
+          `Edit arguments for ${a.name} (JSON):`,
           JSON.stringify(a.args),
         );
         if (input === null) return { type: "reject" };
@@ -114,7 +114,7 @@ export function useConversation(conversationId: string | null) {
         }
       });
     } else if (decision === "respond") {
-      const input = window.prompt("回复内容（作为工具结果返回给 agent）:") ?? "";
+      const input = window.prompt("Reply (returned to the agent as the tool result):") ?? "";
       decisions = approval.actionRequests.map(() => ({ type: "respond", message: input }));
     } else {
       decisions = approval.actionRequests.map(() => ({ type: decision }));

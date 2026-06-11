@@ -31,10 +31,10 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   try {
     body = JSON.parse(text) as ApiEnvelope<T>;
   } catch {
-    throw new Error(`请求失败 (${res.status})`);
+    throw new Error(`Request failed (${res.status})`);
   }
   if (body.code !== 0) {
-    throw new Error(body.message || `请求失败 (${res.status})`);
+    throw new Error(body.message || `Request failed (${res.status})`);
   }
   return body.data;
 }
@@ -194,7 +194,7 @@ export async function fetchMediaAssetBlob(versionId: string): Promise<Blob> {
     },
   });
   if (!res.ok) {
-    throw new Error(`资产加载失败 (${res.status})`);
+    throw new Error(`Failed to load asset (${res.status})`);
   }
   return res.blob();
 }

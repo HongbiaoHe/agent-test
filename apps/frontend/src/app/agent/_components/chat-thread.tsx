@@ -197,7 +197,7 @@ export function ChatThread({
             variant="ghost"
             size="icon-sm"
             className="lg:hidden"
-            aria-label="打开会话列表"
+            aria-label="Open conversations"
             onClick={onOpenSidebar}
           >
             <PanelLeft />
@@ -214,14 +214,14 @@ export function ChatThread({
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  aria-label={panelOpen ? "收起详情面板" : "展开详情面板"}
+                  aria-label={panelOpen ? "Hide details panel" : "Show details panel"}
                   onClick={onTogglePanel}
                 />
               }
             >
               {panelOpen ? <PanelRightClose /> : <PanelRightOpen />}
             </TooltipTrigger>
-            <TooltipContent>{panelOpen ? "收起详情" : "展开详情"}</TooltipContent>
+            <TooltipContent>{panelOpen ? "Hide details" : "Show details"}</TooltipContent>
           </Tooltip>
         </div>
       </header>
@@ -237,10 +237,12 @@ export function ChatThread({
                 <Sparkles className="size-6" />
               </div>
               <p className="text-base font-medium">
-                {isNewChat ? "开始一个新对话" : "这个会话还没有内容"}
+                {isNewChat ? "Start a new conversation" : "Nothing here yet"}
               </p>
               <p className="max-w-sm text-sm text-muted-foreground">
-                把目标告诉 Agent，它会拆解任务并逐步执行。需要发邮件等敏感操作时会先请你审批。
+                Tell the agent your goal — it will break it down and work
+                through it step by step, asking for your sign-off before
+                sensitive actions like sending email.
               </p>
             </div>
           ) : (
@@ -336,7 +338,7 @@ export function ChatThread({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder={busy ? "Agent 正在处理…" : "给 Agent 发消息…（试试输入 /）"}
+              placeholder={busy ? "Agent is on the case…" : "Message the agent… (try typing /)"}
               // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
               className="max-h-40 min-h-0 resize-none border-0 bg-transparent px-4 pt-3.5 pb-1.5 text-base shadow-none focus-visible:border-0 focus-visible:ring-0 md:text-sm dark:bg-transparent"
             />
@@ -352,7 +354,7 @@ export function ChatThread({
                 <Button
                   size="icon-sm"
                   variant="destructive"
-                  aria-label="停止"
+                  aria-label="Stop"
                   disabled={stopping}
                   onClick={onStop}
                   className="rounded-lg"
@@ -366,7 +368,7 @@ export function ChatThread({
               ) : (
                 <Button
                   size="icon-sm"
-                  aria-label="发送"
+                  aria-label="Send"
                   disabled={!draft.trim()}
                   onClick={submit}
                   className="rounded-lg"
@@ -377,7 +379,7 @@ export function ChatThread({
             </div>
           </div>
           <p className="mt-2 text-center text-xs text-muted-foreground">
-            Agent 可能会出错，请核对重要信息。
+            The agent can make mistakes — double-check important info.
           </p>
         </div>
       </div>

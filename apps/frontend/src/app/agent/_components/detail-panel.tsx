@@ -95,7 +95,7 @@ function jsonLangIfParses(text: string): string | undefined {
  * 非 block 结构按原文展示（同样剥行号）。
  */
 function ResultView({ result, language }: { result?: string; language?: string }) {
-  if (!result) return <CodeBlock>（暂无结果）</CodeBlock>;
+  if (!result) return <CodeBlock>(No result yet)</CodeBlock>;
   const blocks = parseContentBlocks(result);
   if (!blocks) {
     const text = stripLineNumbers(result);
@@ -181,7 +181,7 @@ export function DetailPanel({
       <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b px-4">
         <div className="flex min-w-0 flex-col">
           <span className="text-[11px] tracking-wide text-muted-foreground uppercase">
-            工具调用
+            Tool call
           </span>
           <span className="truncate text-sm font-medium">{tool.name}</span>
         </div>
@@ -193,13 +193,13 @@ export function DetailPanel({
               onClick={() => triggerDownload(file.name, file.content)}
             >
               <Download />
-              下载
+              Download
             </Button>
           )}
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label="关闭详情面板"
+            aria-label="Close detail panel"
             onClick={onClose}
           >
             <X />
@@ -219,22 +219,22 @@ export function DetailPanel({
             {tool.done ? (
               <Badge variant="outline">
                 <Check />
-                完成
+                Done
               </Badge>
             ) : (
               <Badge variant="secondary">
                 <Loader className="animate-spin" />
-                运行中
+                Running
               </Badge>
             )}
           </div>
         </div>
         <TabsList className="w-full">
           <TabsTrigger value="result" className="flex-1">
-            结果
+            Result
           </TabsTrigger>
           <TabsTrigger value="args" className="flex-1">
-            参数
+            Arguments
           </TabsTrigger>
         </TabsList>
         <TabsContent value="result" className="mt-3 min-h-0 flex-1">

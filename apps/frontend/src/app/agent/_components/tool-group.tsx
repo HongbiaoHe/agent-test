@@ -9,7 +9,7 @@ import { ToolChip, type ToolItem } from "./tool-chip";
 
 /**
  * 连续工具调用的聚合块：≥2 个折叠成一个可展开块（默认收起，概述行按顺序逐条列出工具名，
- * 运行中显示转圈 + 「调用中」）；单个工具直接渲染原 chip、不套折叠壳。
+ * 运行中显示转圈 + 「cooking…」）；单个工具直接渲染原 chip、不套折叠壳。
  * 展开后每个工具仍可点击打开右侧详情面板。
  */
 export function ToolGroup({
@@ -60,7 +60,7 @@ export function ToolGroup({
             {names}
           </span>
           <span className="shrink-0 text-[10px] tracking-wide text-muted-foreground uppercase">
-            {running ? "调用中" : `${tools.length} 个`}
+            {running ? "cooking…" : `${tools.length} tools`}
           </span>
           <ChevronDown
             className={cn(

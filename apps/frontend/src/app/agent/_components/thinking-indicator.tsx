@@ -6,15 +6,15 @@ import { cn } from "@/lib/utils";
 
 // Claude Code 招牌的盲文点阵 spinner 帧（unicode 文本字形，非 emoji）。
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
-// 轮换的中文动词，营造「正在动脑」的交互感。
+// 轮换的趣味动词短语，营造「正在动脑」的交互感。
 const WORDS = [
-  "思考中",
-  "推理中",
-  "整理思路",
-  "组织语言",
-  "梳理细节",
-  "斟酌措辞",
-  "盘算中",
+  "Pondering",
+  "Brewing ideas",
+  "Connecting the dots",
+  "Cooking up a plan",
+  "Herding thoughts",
+  "Polishing words",
+  "Reticulating splines",
 ];
 
 function subscribeReducedMotion(callback: () => void) {
@@ -61,7 +61,7 @@ export function ThinkingIndicator({ visible }: { visible: boolean }) {
     <div className="flex items-center gap-2 text-sm">
       {/* 给屏幕阅读器一条稳定播报，避免逐帧/逐秒刷屏 */}
       <span role="status" className="sr-only">
-        Agent 正在思考…
+        Agent is thinking…
       </span>
       <span aria-hidden className="font-mono text-primary">
         {frame}

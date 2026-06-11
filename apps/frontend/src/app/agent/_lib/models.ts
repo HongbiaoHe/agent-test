@@ -10,18 +10,18 @@ export interface ModelOption {
 }
 
 export const MODEL_OPTIONS: ModelOption[] = [
-  { value: "google-genai:gemini-3.5-flash", hint: "快 · 默认" },
-  { value: "google-genai:gemini-3-flash-preview", hint: "快 · Gemini 3 预览" },
-  { value: "google-genai:gemini-3-pro-preview", hint: "强" },
-  { value: "google-genai:gemini-3.1-pro-preview", hint: "最强" },
-  { value: "google-genai:gemini-3.1-pro-preview-customtools", hint: "工具调用优化" },
-  { value: "google-genai:gemini-2.5-pro", hint: "上一代旗舰" },
-  { value: "google-genai:gemini-2.5-flash", hint: "上一代快档" },
-  { value: "google-genai:gemini-flash-lite-latest", hint: "最快 · 最弱" },
-  { value: "deepseek:deepseek-v4-flash", hint: "DeepSeek · V4 快档" },
-  { value: "deepseek:deepseek-v4-pro", hint: "DeepSeek · V4 旗舰" },
-  { value: "deepseek:deepseek-chat", hint: "DeepSeek · 通用对话（兼容别名）" },
-  { value: "deepseek:deepseek-reasoner", hint: "DeepSeek · 深度推理（兼容别名）" },
+  { value: "google-genai:gemini-3.5-flash", hint: "Fast · default" },
+  { value: "google-genai:gemini-3-flash-preview", hint: "Fast · Gemini 3 preview" },
+  { value: "google-genai:gemini-3-pro-preview", hint: "Powerful" },
+  { value: "google-genai:gemini-3.1-pro-preview", hint: "Most powerful" },
+  { value: "google-genai:gemini-3.1-pro-preview-customtools", hint: "Tool-call optimized" },
+  { value: "google-genai:gemini-2.5-pro", hint: "Previous-gen flagship" },
+  { value: "google-genai:gemini-2.5-flash", hint: "Previous-gen fast tier" },
+  { value: "google-genai:gemini-flash-lite-latest", hint: "Fastest · least capable" },
+  { value: "deepseek:deepseek-v4-flash", hint: "DeepSeek · V4 fast tier" },
+  { value: "deepseek:deepseek-v4-pro", hint: "DeepSeek · V4 flagship" },
+  { value: "deepseek:deepseek-chat", hint: "DeepSeek · general chat (compat alias)" },
+  { value: "deepseek:deepseek-reasoner", hint: "DeepSeek · deep reasoning (compat alias)" },
 ];
 
 export const DEFAULT_MODEL = "google-genai:gemini-3.5-flash";

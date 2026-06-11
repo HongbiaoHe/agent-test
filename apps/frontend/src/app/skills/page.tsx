@@ -22,12 +22,12 @@ export default function SkillsPage() {
           render={<Link href="/agent" />}
           className="-ml-2 text-muted-foreground"
         >
-          <ArrowLeft className="size-4" /> 返回会话
+          <ArrowLeft className="size-4" /> Back to conversations
         </Button>
-        <h1 className="text-2xl font-bold tracking-tight">技能</h1>
+        <h1 className="text-2xl font-bold tracking-tight">Skills</h1>
         <p className="text-sm text-muted-foreground">
-          管理 agent 可用的技能：内置技能随系统提供，亦可从 GitHub
-          安装第三方技能并按需启停或删除。
+          Manage the skills available to the agent: built-in skills ship with the
+          system, and you can install third-party skills from GitHub, then enable, disable, or remove them as needed.
         </p>
       </header>
 

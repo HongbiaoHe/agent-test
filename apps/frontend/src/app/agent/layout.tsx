@@ -3,8 +3,8 @@ import type { Metadata } from "next";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 export const metadata: Metadata = {
-  title: "Agent 会话",
-  description: "AI agent 三栏对话界面（manus 风格）",
+  title: "Agent Chat",
+  description: "Three-column AI agent chat interface (manus style)",
 };
 
 export default function AgentLayout({

@@ -8,10 +8,10 @@ import { Card } from "@/components/ui/card";
 import type { Approval, Decision } from "../_lib/thread";
 
 const DECISION_LABEL: Record<Decision, string> = {
-  approve: "批准",
-  reject: "拒绝",
-  edit: "编辑",
-  respond: "回复",
+  approve: "Approve",
+  reject: "Reject",
+  edit: "Edit",
+  respond: "Reply",
 };
 
 export function ApprovalCard({
@@ -30,13 +30,13 @@ export function ApprovalCard({
     <Card className="gap-3 border-primary/40 bg-card p-4">
       <div className="flex items-center gap-2 text-sm font-semibold">
         <ShieldAlert className="size-4 text-primary" />
-        需要你的审批
+        Needs your sign-off
       </div>
       <div className="space-y-2">
         {approval.actionRequests.map((a, i) => (
           <div key={i} className="text-sm">
             <div className="text-muted-foreground">
-              工具：
+              Tool:{" "}
               <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
                 {a.name}
               </code>
@@ -66,7 +66,7 @@ export function ApprovalCard({
         ))}
         {!allowed.includes("respond") && (
           <Button size="sm" variant="secondary" onClick={() => onDecide("respond")}>
-            回复
+            Reply
           </Button>
         )}
       </div>

@@ -30,8 +30,8 @@ import {
 
 /** 类型 → 图标 / 文案 / 工具名。卡片头部、生成中占位与失败态共用。 */
 const TYPE_META = {
-  image: { Icon: ImageIcon, label: "图片", tool: "generate_image" },
-  video: { Icon: VideoIcon, label: "视频", tool: "generate_video" },
+  image: { Icon: ImageIcon, label: "Image", tool: "generate_image" },
+  video: { Icon: VideoIcon, label: "Video", tool: "generate_video" },
 } as const;
 
 /**
@@ -148,7 +148,7 @@ function MediaCardBody({
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="上一个版本"
+              aria-label="Previous version"
               disabled={safeIndex >= versions.length - 1}
               onClick={() => setVersionIndex((i) => Math.min(i + 1, versions.length - 1))}
             >
@@ -160,7 +160,7 @@ function MediaCardBody({
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="下一个版本"
+              aria-label="Next version"
               disabled={safeIndex <= 0}
               onClick={() => setVersionIndex((i) => Math.max(i - 1, 0))}
             >
@@ -177,7 +177,7 @@ function MediaCardBody({
             onClick={openRegenerate}
           >
             <RefreshCw className="size-3.5" />
-            重新生成
+            Regenerate
           </Button>
         )}
       </div>
@@ -190,7 +190,7 @@ function MediaCardBody({
             onChange={(e) => setDraft(e.target.value)}
             rows={3}
             maxLength={2000}
-            placeholder="描述你想要的画面…"
+            placeholder="Describe the image you want…"
             // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
             className="resize-none text-base md:text-sm"
             autoFocus
@@ -204,7 +204,7 @@ function MediaCardBody({
               onClick={() => setEditing(false)}
             >
               <X className="size-3.5" />
-              取消
+              Cancel
             </Button>
             <Button
               size="sm"
@@ -217,7 +217,7 @@ function MediaCardBody({
               ) : (
                 <RefreshCw className="size-3.5" />
               )}
-              生成
+              Generate
             </Button>
           </div>
         </div>
@@ -231,10 +231,10 @@ const STATUS_META: Record<
   MediaStatus,
   { label: string; variant: "secondary" | "outline" | "destructive"; spin?: boolean }
 > = {
-  queued: { label: "排队中", variant: "secondary", spin: true },
-  generating: { label: "生成中", variant: "secondary", spin: true },
-  done: { label: "完成", variant: "outline" },
-  failed: { label: "失败", variant: "destructive" },
+  queued: { label: "Queued", variant: "secondary", spin: true },
+  generating: { label: "Generating", variant: "secondary", spin: true },
+  done: { label: "Done", variant: "outline" },
+  failed: { label: "Failed", variant: "destructive" },
 };
 
 /**
@@ -302,7 +302,7 @@ function PromptBlock({ prompt }: { prompt: string }) {
             expanded ? "" : "line-clamp-2"
           }`}
         >
-          <span className="font-medium text-foreground">Prompt：</span>
+          <span className="font-medium text-foreground">Prompt: </span>
           {prompt}
         </p>
       </button>
@@ -319,7 +319,7 @@ function ReferenceRow({ referenceVersionIds }: { referenceVersionIds: string[] }
 
   return (
     <div className="flex items-center gap-2 border-t px-3 py-2.5">
-      <span className="shrink-0 text-xs font-medium text-foreground">参考图</span>
+      <span className="shrink-0 text-xs font-medium text-foreground">Reference</span>
       <div className="flex flex-wrap items-center gap-1.5">
         {referenceVersionIds.map((id) => (
           <ReferenceThumb key={id} versionId={id} />
@@ -359,7 +359,7 @@ function ReferenceThumb({ versionId }: { versionId: string }) {
     // eslint-disable-next-line @next/next/no-img-element
     <img
       src={url}
-      alt="参考图"
+      alt="Reference image"
       title={versionId}
       className="size-7 rounded-md border object-cover"
     />
@@ -421,9 +421,9 @@ function ShimmerPlaceholder({
 function FailedSurface({ error }: { error: string | null }) {
   return (
     <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 border-2 border-destructive/40 bg-destructive/5 px-4 text-center">
-      <p className="text-sm font-medium text-destructive">生成失败</p>
+      <p className="text-sm font-medium text-destructive">Generation failed</p>
       <p className="line-clamp-3 text-xs text-muted-foreground">
-        {error || "未知错误，请点击下方「重新生成」重试。"}
+        {error || "Unknown error. Click “Regenerate” below to retry."}
       </p>
     </div>
   );
@@ -477,6 +477,6 @@ function AssetSurface({
   return (
     // 资产是 blob objectURL（运行时生成、带鉴权 fetch），next/image 无法优化此类源，故用原生 <img>。
     // eslint-disable-next-line @next/next/no-img-element
-    <img src={url} alt="生成的图片" className="w-full bg-muted object-contain" />
+    <img src={url} alt="Generated image" className="w-full bg-muted object-contain" />
   );
 }

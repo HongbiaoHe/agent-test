@@ -15,9 +15,9 @@ const META: Record<
   ThemeSetting,
   { Icon: typeof Monitor; label: string; next: string }
 > = {
-  system: { Icon: Monitor, label: "跟随系统", next: "浅色" },
-  light: { Icon: Sun, label: "浅色", next: "暗色" },
-  dark: { Icon: Moon, label: "暗色", next: "跟随系统" },
+  system: { Icon: Monitor, label: "System", next: "Light" },
+  light: { Icon: Sun, label: "Light", next: "Dark" },
+  dark: { Icon: Moon, label: "Dark", next: "System" },
 };
 
 /**
@@ -39,7 +39,7 @@ export function ThemeToggle({
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label={`主题：${label}，点击切换到${next}`}
+            aria-label={`Theme: ${label}. Click to switch to ${next}`}
             onClick={onCycle}
           />
         }
@@ -47,7 +47,7 @@ export function ThemeToggle({
         <Icon />
       </TooltipTrigger>
       <TooltipContent>
-        {label} · 点击切到{next}
+        {label} · click to switch to {next}
       </TooltipContent>
     </Tooltip>
   );
