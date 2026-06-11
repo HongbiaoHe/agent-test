@@ -5,7 +5,7 @@ import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
 
-import { MODEL_OPTIONS } from "../_lib/models";
+import { MODEL_OPTIONS, modelDisplayName } from "../_lib/models";
 
 /**
  * 回答模型切换器：紧凑下拉，置于输入框工具条左侧。
@@ -36,7 +36,7 @@ export function ModelSwitcher({
         className="text-muted-foreground hover:text-foreground"
       >
         <Cpu />
-        <span className="max-w-56 truncate font-mono">{value}</span>
+        <span className="max-w-56 truncate font-mono">{modelDisplayName(value)}</span>
         <ChevronDown className="opacity-60" />
       </Button>
 
@@ -77,7 +77,7 @@ export function ModelSwitcher({
                   />
                   <span className="min-w-0 flex-1">
                     <span className="block truncate font-mono text-sm font-medium">
-                      {m.value}
+                      {modelDisplayName(m.value)}
                     </span>
                     <span className="block truncate text-xs text-muted-foreground">
                       {m.hint}

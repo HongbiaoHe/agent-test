@@ -1,5 +1,5 @@
-import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import type { BaseStore } from '@langchain/langgraph';
+import { initChatModel } from 'langchain/chat_models/universal';
 import { CompositeBackend, createDeepAgent, StateBackend, StoreBackend } from 'deepagents';
 import { createMiddleware } from 'langchain';
 import { z } from 'zod';
@@ -110,6 +110,24 @@ const skillReadPolicyMiddleware = createMiddleware({
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
+// 模型解析（LangChain initChatModel 多提供商动态切换）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/**
+ * 把模型标识解析为 LangChain Chat Model：
+ * - `provider:model`（如 `deepseek:deepseek-chat` / `google-genai:gemini-3.5-flash`）
+ *   → initChatModel 按前缀动态加载对应 provider 包；
+ * - 裸名（旧 DB 会话、env GOOGLE_GENAI_MODEL 的存量值）→ 兼容回退 google-genai
+ *   （不能靠 initChatModel 自动推断：它会把 `gemini-*` 推到 google-vertexai）。
+ * API key 由各 provider 包从 env 自取（GOOGLE_API_KEY / DEEPSEEK_API_KEY）。
+ */
+function resolveChatModel(model?: string) {
+  const name = model ?? process.env.GOOGLE_GENAI_MODEL ?? 'gemini-3.5-flash';
+  if (name.includes(':')) return initChatModel(name);
+  return initChatModel(name, { modelProvider: 'google-genai' });
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // BuildAgentOptions
 // ─────────────────────────────────────────────────────────────────────────────
 
@@ -118,7 +136,10 @@ export interface BuildAgentOptions {
   checkpointer?: unknown;
   /** 追加到系统提示末尾（如 /command 强制使用某技能的指令）。 */
   systemPromptExtra?: string;
-  /** 本次回答模型（前端可切换）；缺省时回退 env GOOGLE_GENAI_MODEL / 代码默认。 */
+  /**
+   * 本次回答模型（前端可切换），`provider:model` 形式（见 models.ts 白名单）；
+   * 裸名按 google-genai 兼容处理；缺省时回退 env GOOGLE_GENAI_MODEL / 代码默认。
+   */
   model?: string;
 
   // ── 过渡期软选项（Task 10 worker 接线任务会显式传入，此前保持旧调用点可编译）──
@@ -153,7 +174,7 @@ export interface BuildAgentOptions {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 装配主 agent：Gemini + 内置工具 + get_weather + 需审批的 send_email。
+ * 装配主 agent：多提供商模型（initChatModel 动态切换）+ 内置工具 + get_weather + 需审批的 send_email。
  *
  * Skills backend 路由：
  *   /skills/ → ReadOnlyStoreBackend（只读，防 agent 污染技能库）
@@ -167,11 +188,8 @@ export interface BuildAgentOptions {
  *   defaultBackend / store / hasSandbox 均为可选，缺省值与旧行为完全一致，
  *   旧 worker 调用点（不传这三项）可正常编译。Task 10 worker 接线任务会显式传入。
  */
-export function buildAgent(opts: BuildAgentOptions = {}): any {
-  const model = new ChatGoogleGenerativeAI({
-    model: opts.model ?? process.env.GOOGLE_GENAI_MODEL ?? 'gemini-3.5-flash',
-    apiKey: process.env.GOOGLE_API_KEY,
-  });
+export async function buildAgent(opts: BuildAgentOptions = {}): Promise<any> {
+  const model = await resolveChatModel(opts.model);
 
   // /skills/ 只读 backend：namespace factory 在运行时从 config.configurable.userId 取用户 ID。
   // dist 已核实：工厂入参是 { state, config, assistantId }，userId 走 config.configurable。

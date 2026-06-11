@@ -153,7 +153,7 @@ export class AgentProcessor extends WorkerHost {
         conversationId,
         userId: conv.userId,
       });
-      const agent = buildAgent({
+      const agent = await buildAgent({
         checkpointer: this.checkpointer,
         systemPromptExtra,
         model: conv.model ?? undefined,
