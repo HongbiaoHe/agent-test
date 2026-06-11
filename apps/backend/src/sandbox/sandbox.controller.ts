@@ -1,4 +1,4 @@
-import { Controller, Get, UseGuards } from '@nestjs/common';
+import { Controller, Get, Query, UseGuards } from '@nestjs/common';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { type AuthUser, JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { SandboxStatusService } from './sandbox.service';
@@ -9,8 +9,9 @@ import { SandboxStatusService } from './sandbox.service';
 export class SandboxController {
   constructor(private readonly sandbox: SandboxStatusService) {}
 
+  /** ?files=1 才连沙箱列工作区文件（会刷新 Daytona 活动事件，见 service 注释）。 */
   @Get('status')
-  status(@CurrentUser() user: AuthUser) {
-    return this.sandbox.status(user.userId);
+  status(@CurrentUser() user: AuthUser, @Query('files') files?: string) {
+    return this.sandbox.status(user.userId, files === '1');
   }
 }

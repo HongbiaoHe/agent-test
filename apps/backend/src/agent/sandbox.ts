@@ -34,8 +34,8 @@ export const AGENT_WORKSPACE_DIR = 'agent-workspace';
 //     fromId 之后恒为 true，与沙箱真实运行状态无关（dist/index.js:254）。
 //     判断是否需要 start() 必须用 SDK list() 返回的 sandbox.state === 'started'。
 //   · DaytonaSandbox.start(timeout?)                                      — 实例方法，委托 SDK start 并等待 started
-//   · DaytonaSandboxOptions.autoStopInterval / autoDeleteInterval          — 单位：分钟
-//     （JSDoc: "Auto-stop interval in minutes", "Auto-delete interval in minutes"）
+//   · DaytonaSandboxOptions.autoStopInterval / autoArchiveInterval / autoDeleteInterval — 单位：分钟
+//     （JSDoc: "Auto-stop interval in minutes" 等；三者 wrapper 均透传给 SDK create）
 // ──────────────────────────────────────────────────────────────────
 
 /** Daytona list() 返回项中本模块及状态接口用到的字段（避免 SDK 类型深耦合）。 */
@@ -107,11 +107,12 @@ export async function getUserSandbox(userId: string): Promise<GuardedSandbox | n
       await sb.start();
     }
   } else {
-    // 确认列表为空才创建（autoStopInterval / autoDeleteInterval 单位：分钟，已验证）
+    // 确认列表为空才创建（auto*Interval 单位：分钟，已验证；archive/delete 均从停机时刻起算）
     sb = await DaytonaSandbox.create({
       labels: { user_id: userId },
       autoStopInterval: 5, // 闲置 5 分钟自动停机，停机态只计存储费用
-      autoDeleteInterval: 30, // 停机 30 分钟后自动删除
+      autoArchiveInterval: 8, // 停机 8 分钟后自动归档（文件系统转冷存储）
+      autoDeleteInterval: 10, // 停机 10 分钟后自动删除
     });
   }
 

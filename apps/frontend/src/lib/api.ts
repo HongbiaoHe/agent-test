@@ -119,12 +119,16 @@ export interface SandboxStatus {
   updatedAt?: string | null;
   autoStopMinutes?: number | null;
   autoDeleteMinutes?: number | null;
-  /** 仅 started 时返回；停机态为 null */
+  /** 仅 includeFiles 且 started 时返回；其余为 null */
   files?: { path: string }[] | null;
 }
 
-export function fetchSandboxStatus(): Promise<SandboxStatus> {
-  return request("/sandbox/status");
+/**
+ * includeFiles=false（心跳轮询用）只查状态，不连沙箱——连沙箱（GET by id）会刷新
+ * Daytona 活动事件导致永不自动停机；文件列表仅详情面板打开时传 true 拉取。
+ */
+export function fetchSandboxStatus(includeFiles = false): Promise<SandboxStatus> {
+  return request(`/sandbox/status${includeFiles ? "?files=1" : ""}`);
 }
 
 // ——— 生图/生视频 媒体 ———

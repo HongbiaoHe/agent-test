@@ -60,14 +60,16 @@ function formatTime(iso: string | null | undefined): string {
  * 沙箱状态按钮（心跳指示）+ 详情侧栏。
  * 自包含：内部轮询 GET /sandbox/status（15s），不依赖父级状态。
  * 查询只读、绝不唤醒停机沙箱（见后端 SandboxStatusService）。
+ *
+ * 心跳与文件列表分离：心跳轮询不带 files（后端只 list()，不产生 Daytona 活动
+ * 事件——否则沙箱永不自动停机）；文件列表仅面板打开时单独 5s 轮询（?files=1）。
  */
 export function SandboxStatusButton() {
   const [open, setOpen] = useState(false);
-  const { data, refetch } = useQuery({
+  const { data } = useQuery({
     queryKey: ["sandbox-status"],
-    queryFn: fetchSandboxStatus,
-    // 面板打开时加密轮询（详情要新鲜），平时 15s 维持心跳点
-    refetchInterval: open ? 5_000 : 15_000,
+    queryFn: () => fetchSandboxStatus(),
+    refetchInterval: 15_000,
     // React Query 默认窗口未聚焦就暂停 interval——Electron 预览/部分 WebView 的
     // focus 事件不标准会让轮询长期停摆（表现为「要刷新页面状态才变」）。
     // 这是 15s 级的轻量只读查询，后台照常轮询。
@@ -75,13 +77,19 @@ export function SandboxStatusButton() {
     // 沙箱状态属于环境信息，失败不该全局 toast 刷屏（providers 的 QueryCache onError
     // 用 toast id 去重，这里再加 meta 静默会引入分叉——直接依赖 exists:false 降级即可）
   });
+  // 详情查询（含文件列表）：仅面板打开时启用，关闭即停（不在后台续命沙箱）
+  const { data: detail } = useQuery({
+    queryKey: ["sandbox-status", "files"],
+    queryFn: () => fetchSandboxStatus(true),
+    enabled: open,
+    refetchInterval: open ? 5_000 : false,
+  });
   const tone = toneOf(data);
   const running = data?.exists && data.state === "started";
 
   function openPanel() {
+    // enabled:open 翻转后 React Query 立即发起详情查询，无需手动 refetch
     setOpen(true);
-    // 点开详情立刻拉一遍最新状态，不等下一个轮询 tick
-    void refetch();
   }
 
   return (
@@ -127,7 +135,8 @@ export function SandboxStatusButton() {
             </SheetDescription>
           </SheetHeader>
           <ScrollArea className="min-h-0 flex-1">
-            <SandboxDetail data={data} panelOpen={open} />
+            {/* 详情数据未到时先用心跳数据兜底（除 files 外字段一致） */}
+            <SandboxDetail data={detail ?? data} panelOpen={open} />
           </ScrollArea>
         </SheetContent>
       </Sheet>
@@ -207,7 +216,10 @@ function SandboxDetail({
           <p className="text-sm text-muted-foreground">
             沙箱停机中，文件在下次运行时可见。
           </p>
-        ) : !data.files || data.files.length === 0 ? (
+        ) : !data.files ? (
+          // files=null：详情查询（?files=1）还没返回，心跳数据不含文件
+          <p className="text-sm text-muted-foreground">文件加载中…</p>
+        ) : data.files.length === 0 ? (
           <p className="text-sm text-muted-foreground">工作区暂无产物文件。</p>
         ) : (
           <ul className="space-y-1">

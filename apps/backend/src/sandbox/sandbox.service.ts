@@ -26,13 +26,19 @@ export interface SandboxStatus {
  * 与 getUserSandbox/findUserSandbox 的关键区别：**绝不唤醒停机沙箱**——
  * 状态、时间戳、auto-stop/delete 配置全部来自 Daytona list() 的 DTO
  * （@daytonaio/api-client sandbox.d.ts:157/169/193），不 fromId、不 start。
- * 仅当 state=started 时才连上去列工作区文件（此时本就在运行，无唤醒副作用）。
+ *
+ * includeFiles 默认 false（心跳轮询专用）：**默认路径只调 list()**。
+ * 实测（2026-06-11 对照实验）：GET /sandbox/:id（fromId 内部调用）会刷新
+ * lastActivityAt（服务端 ~60s 节流），15s 心跳若每次都 fromId+exec 列文件，
+ * 沙箱闲置计时永远凑不满 autoStop（5min）→ 永不自动停机/回收；list() 则不产生
+ * 活动事件。文件列表只在详情面板打开（?files=1）且 state=started 时拉取——
+ * 此时用户正在查看，续命副作用可接受。
  */
 @Injectable()
 export class SandboxStatusService {
   private readonly logger = new Logger(SandboxStatusService.name);
 
-  async status(userId: string): Promise<SandboxStatus> {
+  async status(userId: string, includeFiles = false): Promise<SandboxStatus> {
     if (!process.env.DAYTONA_API_KEY) return { exists: false };
 
     try {
@@ -51,7 +57,7 @@ export class SandboxStatusService {
         files: null,
       };
 
-      if (sb.state === 'started') {
+      if (includeFiles && sb.state === 'started') {
         // 文件列举失败不影响状态主体（如沙箱刚好在停机过渡态）
         try {
           const guarded = await findUserSandbox(userId);
