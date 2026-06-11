@@ -108,6 +108,25 @@ export function stopConversation(id: string): Promise<{ stopped: boolean }> {
   return request(`/conversations/${id}/stop`, { method: "POST" });
 }
 
+// ——— 沙箱状态 ———
+
+/** GET /sandbox/status（user 级只读，不唤醒停机沙箱）。 */
+export interface SandboxStatus {
+  exists: boolean;
+  id?: string;
+  state?: string;
+  createdAt?: string | null;
+  updatedAt?: string | null;
+  autoStopMinutes?: number | null;
+  autoDeleteMinutes?: number | null;
+  /** 仅 started 时返回；停机态为 null */
+  files?: { path: string }[] | null;
+}
+
+export function fetchSandboxStatus(): Promise<SandboxStatus> {
+  return request("/sandbox/status");
+}
+
 // ——— 生图/生视频 媒体 ———
 
 export type MediaType = "image" | "video";

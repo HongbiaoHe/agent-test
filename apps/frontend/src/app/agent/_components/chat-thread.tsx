@@ -29,6 +29,7 @@ import { ApprovalCard } from "./approval-card";
 import { ChatMessage } from "./chat-message";
 import { MediaCard } from "./media-card";
 import { ModelSwitcher } from "./model-switcher";
+import { SandboxStatusButton } from "./sandbox-panel";
 import { TaskPlanPanel } from "./task-plan-panel";
 import { ThinkingIndicator } from "./thinking-indicator";
 import type { ToolItem } from "./tool-chip";
@@ -205,21 +206,24 @@ export function ChatThread({
             {title}
           </h1>
         </div>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={panelOpen ? "收起详情面板" : "展开详情面板"}
-                onClick={onTogglePanel}
-              />
-            }
-          >
-            {panelOpen ? <PanelRightClose /> : <PanelRightOpen />}
-          </TooltipTrigger>
-          <TooltipContent>{panelOpen ? "收起详情" : "展开详情"}</TooltipContent>
-        </Tooltip>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <SandboxStatusButton />
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={panelOpen ? "收起详情面板" : "展开详情面板"}
+                  onClick={onTogglePanel}
+                />
+              }
+            >
+              {panelOpen ? <PanelRightClose /> : <PanelRightOpen />}
+            </TooltipTrigger>
+            <TooltipContent>{panelOpen ? "收起详情" : "展开详情"}</TooltipContent>
+          </Tooltip>
+        </div>
       </header>
 
       {/* 消息流 */}

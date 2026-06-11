@@ -11,7 +11,7 @@ import { MediaService } from '../media/media.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SkillsService } from '../skills/skills.service';
 import { assertSafeEntryPath } from '../skills/skill-installer';
-import { findUserSandbox } from '../agent/sandbox';
+import { findUserSandbox, listWorkspaceFiles } from '../agent/sandbox';
 
 @Injectable()
 export class ConversationsService {
@@ -204,10 +204,7 @@ export class ConversationsService {
 
   /**
    * 列出会话对应沙箱工作目录下的产物文件。
-   *
-   * 为什么用 find 而不是 ls：find 支持 -maxdepth 限制深度、-type f 只列文件、
-   * -not -path 排除 node_modules 和隐藏目录，一条命令搞定，避免递归实现。
-   * /skills/ 路径是 agent worker 注入的技能代码，不属于用户产物，排除之。
+   * find 命令细节与路径整形收敛在 listWorkspaceFiles（与沙箱状态接口共用）。
    */
   async listFiles(id: string, tenantId: string) {
     const ownerUserId = await this.assertConversationOwner(id, tenantId);
@@ -220,23 +217,7 @@ export class ConversationsService {
       );
     }
 
-    const workdir = await sb.getWorkDir();
-    // find 命令：从 workdir 出发，最多 4 层，只列普通文件，排除 node_modules / 隐藏路径 / skills 目录
-    const cmd = `find "${workdir}" -maxdepth 4 -type f -not -path '*/node_modules/*' -not -path '*/.*' -not -path '*/skills/*'`;
-    const result = await sb.execute(cmd);
-
-    const files = result.output
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      // 转成相对于 workdir 的路径，去掉前导 /
-      .map((abs) => ({
-        path: abs.startsWith(workdir)
-          ? abs.slice(workdir.length).replace(/^\//, '')
-          : abs,
-      }));
-
-    return { files };
+    return { files: await listWorkspaceFiles(sb) };
   }
 
   /**

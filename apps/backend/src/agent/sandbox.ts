@@ -38,58 +38,80 @@ export const AGENT_WORKSPACE_DIR = 'agent-workspace';
 //     （JSDoc: "Auto-stop interval in minutes", "Auto-delete interval in minutes"）
 // ──────────────────────────────────────────────────────────────────
 
+/** Daytona list() 返回项中本模块及状态接口用到的字段（避免 SDK 类型深耦合）。 */
+export interface SandboxListing {
+  id: string;
+  state?: string;
+  createdAt?: string;
+  updatedAt?: string;
+  autoStopInterval?: number;
+  autoDeleteInterval?: number;
+}
+
+/**
+ * 在用户的全部沙箱中确定性选择一个（纯函数，便于单测）。
+ *
+ * 为什么需要选择而不是取 list 第一个：历史 bug 曾让同一用户裂变出多个沙箱
+ * （见 getUserSandbox 错误处理说明），list 顺序又不确定——worker 写文件连 A、
+ * 状态面板查 B，表现为「文件消失」。规则：
+ *  - started 优先（可直接用），其次 stopped（可拉起），过渡/异常态最后；
+ *  - 同级取 createdAt 最早（最可能持有历史工作区文件）。
+ */
+export function pickPreferredSandbox<T extends SandboxListing>(all: T[]): T | null {
+  if (all.length === 0) return null;
+  const rank = (s: SandboxListing) =>
+    s.state === 'started' ? 0 : s.state === 'stopped' ? 1 : 2;
+  return [...all].sort(
+    (a, b) => rank(a) - rank(b) || (a.createdAt ?? '').localeCompare(b.createdAt ?? ''),
+  )[0];
+}
+
+/** list 该用户全部沙箱并确定性选择（getUserSandbox / findUserSandbox / 状态接口共用）。 */
+export async function pickUserSandbox(userId: string): Promise<SandboxListing | null> {
+  const client = new Daytona();
+  const all: SandboxListing[] = [];
+  for await (const s of client.list({ labels: { user_id: userId } })) {
+    all.push(s as unknown as SandboxListing);
+  }
+  return pickPreferredSandbox(all);
+}
+
 /**
  * 按 userId 获取（或创建）该用户的 Daytona 沙箱。
  *
  * 逻辑：
  *  1. 无 DAYTONA_API_KEY → 立即返回 null（调用方用 StateBackend 兜底）。
- *  2. 用 Daytona SDK list() 按 user_id 标签查找已有沙箱。
- *  3. 找到 → fromId 拿 DaytonaSandbox wrapper；若沙箱停机，先 start() 再返回。
+ *  2. pickUserSandbox 确定性选择已有沙箱（started 优先、createdAt 最早）。
+ *  3. 找到 → fromId 拿 DaytonaSandbox wrapper；非 started 先 start() 再返回。
  *     （停机实例 execute/downloadFiles 会失败，必须先拉起——设计 §5 停机恢复）
- *  4. 未找到（list 为空）→ create 新沙箱，绑 user_id 标签。
+ *  4. 确认列表为空 → create 新沙箱，绑 user_id 标签。
  *
- * 错误处理策略（设计 §5）：
- *  - "未找到" 和 "其他错误" 在 SDK 里均抛出异常（list 迭代不返回 undefined）。
- *    为简化起见，任何异常都进入 create 路径——与官方文档示例一致。
- *    这样做的代价：鉴权失败时也会尝试 create，而 create 同样会失败并向上抛出，
- *    调用方（agent worker）会捕获并降级为 StateBackend，行为正确。
- *    如果日后需要区分，可检查 error.code === "AUTHENTICATION_FAILED"（DaytonaSandboxError）。
+ * 错误处理策略（2026-06-11 修订）：
+ *  - 查找/连接/启动失败一律**向上抛**，由调用方降级（worker → StateBackend + 提示）。
+ *  - ⚠️ 此前任何异常都落到 create 路径——start() 超时等瞬时错误会凭空裂变新沙箱
+ *    （同一用户多沙箱、文件“消失”，已实际发生），create 仅在确认无沙箱时执行。
  */
 export async function getUserSandbox(userId: string): Promise<GuardedSandbox | null> {
   if (!process.env.DAYTONA_API_KEY) return null;
 
   let sb: DaytonaSandbox;
 
-  try {
-    // 用底层 Daytona SDK 查找已有沙箱（DaytonaSandbox 无 list 能力，需原生 SDK）
-    const client = new Daytona();
-    const iter = client.list({ labels: { user_id: userId } });
-    const { value: existing, done } = await iter.next();
-
-    if (!done && existing) {
-      // 找到已有沙箱：用 LangChain wrapper 连接，以便 execute/upload 等高级方法可用
-      sb = await DaytonaSandbox.fromId(existing.id);
-      // ⚠️ 不能用 sb.isRunning 判断（fromId 后恒为 true，见文件顶部 API 事实），
-      // 须用 SDK list() 返回的 state；非 started（stopped/starting 等）都走 start()
-      // 等待就绪（停机沙箱不拉起，后续 getWorkDir/execute 会 400 "no IP address found"）。
-      if (existing.state !== 'started') {
-        await sb.start();
-      }
-    } else {
-      // 列表为空时创建新沙箱
-      sb = await DaytonaSandbox.create({
-        labels: { user_id: userId },
-        autoStopInterval: 5, // 闲置 5 分钟自动停机，停机态只计存储费用
-        autoDeleteInterval: 30, // 停机 30 分钟后自动删除
-      });
+  const existing = await pickUserSandbox(userId);
+  if (existing) {
+    // 找到已有沙箱：用 LangChain wrapper 连接，以便 execute/upload 等高级方法可用
+    sb = await DaytonaSandbox.fromId(existing.id);
+    // ⚠️ 不能用 sb.isRunning 判断（fromId 后恒为 true，见文件顶部 API 事实），
+    // 须用 SDK list() 返回的 state；非 started（stopped/starting 等）都走 start()
+    // 等待就绪（停机沙箱不拉起，后续 getWorkDir/execute 会 400 "no IP address found"）。
+    if (existing.state !== 'started') {
+      await sb.start();
     }
-  } catch {
-    // 任何查找错误（网络、鉴权、未找到等）均降级到 create 路径
-    // autoStopInterval / autoDeleteInterval 单位：分钟（已验证），数值为用户指定
+  } else {
+    // 确认列表为空才创建（autoStopInterval / autoDeleteInterval 单位：分钟，已验证）
     sb = await DaytonaSandbox.create({
       labels: { user_id: userId },
-      autoStopInterval: 5,
-      autoDeleteInterval: 30,
+      autoStopInterval: 5, // 闲置 5 分钟自动停机，停机态只计存储费用
+      autoDeleteInterval: 30, // 停机 30 分钟后自动删除
     });
   }
 
@@ -98,6 +120,28 @@ export async function getUserSandbox(userId: string): Promise<GuardedSandbox | n
   const ws = `${home}/${AGENT_WORKSPACE_DIR}`;
   await sb.execute(`mkdir -p '${ws}'`);
   return new GuardedSandbox(sb, ws);
+}
+
+/**
+ * 列出沙箱工作区的产物文件（相对路径）。conversations 文件接口与沙箱状态接口共用。
+ *
+ * 为什么用 find 而不是 ls：find 支持 -maxdepth 限制深度、-type f 只列文件、
+ * -not -path 排除 node_modules 和隐藏目录，一条命令搞定，避免递归实现。
+ * /skills/ 路径是 agent worker 注入的技能代码，不属于用户产物，排除之。
+ */
+export async function listWorkspaceFiles(
+  sb: GuardedSandbox,
+): Promise<{ path: string }[]> {
+  const workdir = await sb.getWorkDir();
+  const cmd = `find "${workdir}" -maxdepth 4 -type f -not -path '*/node_modules/*' -not -path '*/.*' -not -path '*/skills/*'`;
+  const result = await sb.execute(cmd);
+
+  return result.output
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line.length > 0)
+    // GuardedSandbox 出站脱敏后路径已是虚拟根（/xxx），去掉前导 / 得相对路径
+    .map((p) => ({ path: p.replace(/^\//, '') }));
 }
 
 /**
@@ -112,11 +156,9 @@ export async function findUserSandbox(userId: string): Promise<GuardedSandbox | 
   if (!process.env.DAYTONA_API_KEY) return null;
 
   try {
-    const client = new Daytona();
-    const iter = client.list({ labels: { user_id: userId } });
-    const { value: existing, done } = await iter.next();
-
-    if (done || !existing) return null;
+    // 与 getUserSandbox / 状态接口共用同一确定性选择，保证各处看到同一个沙箱
+    const existing = await pickUserSandbox(userId);
+    if (!existing) return null;
 
     const sb = await DaytonaSandbox.fromId(existing.id);
     // 同 getUserSandbox：isRunning 不可信，须用 list() 的 state 判断
