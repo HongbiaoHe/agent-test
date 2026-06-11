@@ -191,7 +191,8 @@ function MediaCardBody({
             rows={3}
             maxLength={2000}
             placeholder="描述你想要的画面…"
-            className="resize-none text-sm"
+            // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
+            className="resize-none text-base md:text-sm"
             autoFocus
           />
           <div className="flex items-center justify-end gap-2">
@@ -261,8 +262,10 @@ function CardHeader({
       <Icon className="size-4 shrink-0 text-muted-foreground" />
       <span className="font-mono text-xs text-foreground">{tool}</span>
       {version.model && (
-        <Badge variant="outline" className="font-mono">
-          {version.model}
+        // shrink（覆盖 Badge 基础类的 shrink-0）+ min-w-0 + 内层 truncate：
+        // 窄屏（手机）下长模型名截断省略，不把状态徽标挤出卡片
+        <Badge variant="outline" className="min-w-0 shrink font-mono">
+          <span className="truncate">{version.model}</span>
         </Badge>
       )}
       <Badge variant={status.variant} className="ml-auto">
