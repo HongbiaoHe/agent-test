@@ -17,9 +17,12 @@
     "build:backend": "pnpm --filter backend build",
     "build:frontend": "pnpm --filter frontend build",
     "build": "pnpm -r build",
-    "lint": "pnpm -r lint"
+    "lint": "pnpm -r lint",
+    "tunnel": "node scripts/tunnel.mjs",
+    "tunnel:off": "node scripts/tunnel.mjs --off"
   },
   "devDependencies": {
-    "pm2": "^7.0.1"
+    "pm2": "^7.0.1",
+    "qrcode-terminal": "^0.12.0"
   }
 }
