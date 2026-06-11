@@ -1,6 +1,21 @@
 "use client";
 
-import { CloudSun, Loader, Mail, Wrench, type LucideIcon } from "lucide-react";
+import {
+  Bot,
+  CloudSun,
+  FilePen,
+  FilePlus2,
+  FileText,
+  FolderOpen,
+  FolderSearch,
+  ListTodo,
+  Loader,
+  Mail,
+  SquareTerminal,
+  TextSearch,
+  Wrench,
+  type LucideIcon,
+} from "lucide-react";
 
 import { cn } from "@/lib/utils";
 
@@ -9,6 +24,15 @@ import type { ThreadItem } from "../_lib/thread";
 export type ToolItem = Extract<ThreadItem, { kind: "tool" }>;
 
 const TOOL_ICON: Record<string, LucideIcon> = {
+  ls: FolderOpen,
+  read_file: FileText,
+  write_file: FilePlus2,
+  edit_file: FilePen,
+  glob: FolderSearch,
+  grep: TextSearch,
+  execute: SquareTerminal,
+  write_todos: ListTodo,
+  task: Bot,
   send_email: Mail,
   get_weather: CloudSun,
 };

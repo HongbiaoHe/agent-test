@@ -85,6 +85,7 @@ export class AgentProcessor extends WorkerHost {
         sandbox = await getUserSandbox(conv.userId);
       } catch (e) {
         // 降级而非失败整个 run；提示用户本轮无执行能力（设计 §8）
+        this.logger.warn(`getUserSandbox 失败，降级 StateBackend：${(e as Error)?.message ?? e}`);
         await this.stream.publish(conversationId, {
           type: 'message',
           payload: { text: '⚠️ 沙箱创建失败，本轮无命令执行能力（文件与技能阅读不受影响）。' },

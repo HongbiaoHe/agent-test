@@ -30,8 +30,10 @@ export const AGENT_WORKSPACE_DIR = 'agent-workspace';
 //   · DaytonaSandbox.create(options?)                                     — 静态工厂
 //   · DaytonaSandbox.fromId(id, options?)                                 — 静态，按 SDK sandbox.id 连接
 //   · DaytonaSandbox.deleteAll(labels, options?)                          — 静态，按标签批量删
-//   · DaytonaSandbox.isRunning: boolean                                   — 实例 getter
-//   · DaytonaSandbox.start(timeout?)                                      — 实例方法
+//   · DaytonaSandbox.isRunning: boolean — ⚠️ 只表示「实例已初始化」（#sandbox !== null），
+//     fromId 之后恒为 true，与沙箱真实运行状态无关（dist/index.js:254）。
+//     判断是否需要 start() 必须用 SDK list() 返回的 sandbox.state === 'started'。
+//   · DaytonaSandbox.start(timeout?)                                      — 实例方法，委托 SDK start 并等待 started
 //   · DaytonaSandboxOptions.autoStopInterval / autoDeleteInterval          — 单位：分钟
 //     （JSDoc: "Auto-stop interval in minutes", "Auto-delete interval in minutes"）
 // ──────────────────────────────────────────────────────────────────
@@ -67,8 +69,10 @@ export async function getUserSandbox(userId: string): Promise<GuardedSandbox | n
     if (!done && existing) {
       // 找到已有沙箱：用 LangChain wrapper 连接，以便 execute/upload 等高级方法可用
       sb = await DaytonaSandbox.fromId(existing.id);
-      if (!sb.isRunning) {
-        // 停机沙箱须先显式拉起（停机时 execute/downloadFiles 会失败）
+      // ⚠️ 不能用 sb.isRunning 判断（fromId 后恒为 true，见文件顶部 API 事实），
+      // 须用 SDK list() 返回的 state；非 started（stopped/starting 等）都走 start()
+      // 等待就绪（停机沙箱不拉起，后续 getWorkDir/execute 会 400 "no IP address found"）。
+      if (existing.state !== 'started') {
         await sb.start();
       }
     } else {
@@ -115,7 +119,8 @@ export async function findUserSandbox(userId: string): Promise<GuardedSandbox | 
     if (done || !existing) return null;
 
     const sb = await DaytonaSandbox.fromId(existing.id);
-    if (!sb.isRunning) {
+    // 同 getUserSandbox：isRunning 不可信，须用 list() 的 state 判断
+    if (existing.state !== 'started') {
       await sb.start();
     }
     // 建立工作区目录后返回守卫 wrapper
