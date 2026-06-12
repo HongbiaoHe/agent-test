@@ -107,11 +107,11 @@ export async function getUserSandbox(userId: string): Promise<GuardedSandbox | n
       await sb.start();
     }
   } else {
-    // 确认列表为空才创建（auto*Interval 单位：分钟，已验证；archive/delete 均从停机时刻起算）
+    // 确认列表为空才创建（auto*Interval 单位：分钟，已验证；delete 从停机时刻起算）。
+    // 不配置 autoArchiveInterval：停机直接等删除，无归档中间态。
     sb = await DaytonaSandbox.create({
       labels: { user_id: userId },
       autoStopInterval: 5, // 闲置 5 分钟自动停机，停机态只计存储费用
-      // autoArchiveInterval: 8, // 停机 8 分钟后自动归档（文件系统转冷存储）
       autoDeleteInterval: 10, // 停机 10 分钟后自动删除
     });
   }
