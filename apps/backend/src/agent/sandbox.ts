@@ -111,7 +111,7 @@ export async function getUserSandbox(userId: string): Promise<GuardedSandbox | n
     sb = await DaytonaSandbox.create({
       labels: { user_id: userId },
       autoStopInterval: 5, // 闲置 5 分钟自动停机，停机态只计存储费用
-      autoArchiveInterval: 8, // 停机 8 分钟后自动归档（文件系统转冷存储）
+      // autoArchiveInterval: 8, // 停机 8 分钟后自动归档（文件系统转冷存储）
       autoDeleteInterval: 10, // 停机 10 分钟后自动删除
     });
   }
