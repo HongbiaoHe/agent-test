@@ -14,24 +14,29 @@ export default function SettingsLayout({
 }) {
   return (
     <TooltipProvider>
-      <main className="mx-auto max-w-5xl space-y-6 p-6 font-sans sm:p-8">
-        <header className="space-y-2">
-          <Button
-            variant="ghost"
-            size="sm"
-            nativeButton={false}
-            render={<Link href="/agent" />}
-            className="-ml-2 text-muted-foreground"
-          >
-            <ArrowLeft className="size-4" /> Back to conversations
-          </Button>
-          <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
-        </header>
-        <div className="flex flex-col gap-6 sm:flex-row">
-          <aside className="shrink-0 sm:w-44">
-            <SettingsNav />
-          </aside>
-          <div className="min-w-0 flex-1">{children}</div>
+      {/* 外壳自身是滚动容器（满视口宽，滚动条贴页面右缘）；
+          scrollbar-gutter 常驻预留滚动条位，切换 tab 长短内容时居中区域不再横移。 */}
+      <main className="h-screen overflow-y-auto [scrollbar-gutter:stable]">
+        <div className="mx-auto max-w-5xl space-y-6 p-6 font-sans sm:p-8">
+          <header className="space-y-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              nativeButton={false}
+              render={<Link href="/agent" />}
+              className="-ml-2 text-muted-foreground"
+            >
+              <ArrowLeft className="size-4" /> Back to conversations
+            </Button>
+            <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
+          </header>
+          <div className="flex flex-col gap-6 sm:flex-row">
+            {/* desktop 下导航 sticky 固定，滚动时只有右侧内容区移动 */}
+            <aside className="shrink-0 self-start sm:sticky sm:top-8 sm:w-44">
+              <SettingsNav />
+            </aside>
+            <div className="min-w-0 flex-1">{children}</div>
+          </div>
         </div>
       </main>
     </TooltipProvider>
