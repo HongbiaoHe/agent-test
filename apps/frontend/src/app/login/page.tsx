@@ -4,7 +4,7 @@ import {
   startAuthentication,
   startRegistration,
 } from "@simplewebauthn/browser";
-import { Fingerprint, KeyRound, Loader2, Mail, Sparkles } from "lucide-react";
+import { Fingerprint, Loader2, Mail, Sparkles } from "lucide-react";
 import { signIn } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -24,6 +24,39 @@ const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const LAST_EMAIL_KEY = "lastLoginEmail";
 
 type Busy = null | "passkey-login" | "passkey-register" | "email";
+
+/** Apple 品牌图标（lucide 无品牌图标，currentColor 跟随主题） */
+function AppleIcon() {
+  return (
+    <svg className="size-4" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true">
+      <path d="M12.152 6.896c-.948 0-2.415-1.078-3.96-1.04-2.04.027-3.91 1.183-4.961 3.014-2.117 3.675-.546 9.103 1.519 12.09 1.013 1.454 2.208 3.09 3.792 3.03 1.52-.065 2.09-.987 3.935-.987 1.831 0 2.35.987 3.96.948 1.637-.026 2.676-1.48 3.676-2.948 1.156-1.688 1.636-3.325 1.662-3.415-.039-.013-3.182-1.221-3.22-4.857-.026-3.04 2.48-4.494 2.597-4.559-1.429-2.09-3.623-2.324-4.39-2.376-2-.156-3.675 1.09-4.61 1.09zM15.53 3.83c.843-1.012 1.4-2.427 1.245-3.83-1.207.052-2.662.805-3.532 1.818-.78.896-1.454 2.338-1.273 3.714 1.338.104 2.715-.688 3.559-.702" />
+    </svg>
+  );
+}
+
+/** Google 品牌图标（lucide 无品牌图标，brand 色为官方固定色，不走主题 token） */
+function GoogleIcon() {
+  return (
+    <svg className="size-4" viewBox="0 0 24 24" aria-hidden="true">
+      <path
+        fill="#4285F4"
+        d="M23.52 12.27c0-.85-.08-1.67-.22-2.45H12v4.64h6.46a5.52 5.52 0 0 1-2.4 3.62v3h3.88c2.27-2.09 3.58-5.17 3.58-8.81Z"
+      />
+      <path
+        fill="#34A853"
+        d="M12 24c3.24 0 5.96-1.07 7.94-2.91l-3.88-3.01c-1.07.72-2.45 1.15-4.06 1.15-3.13 0-5.78-2.11-6.72-4.95H1.27v3.11A12 12 0 0 0 12 24Z"
+      />
+      <path
+        fill="#FBBC05"
+        d="M5.28 14.28a7.21 7.21 0 0 1 0-4.56V6.61H1.27a12 12 0 0 0 0 10.78l4.01-3.11Z"
+      />
+      <path
+        fill="#EA4335"
+        d="M12 4.77c1.76 0 3.34.61 4.59 1.8l3.44-3.44A11.97 11.97 0 0 0 12 0 12 12 0 0 0 1.27 6.61l4.01 3.11C6.22 6.88 8.87 4.77 12 4.77Z"
+      />
+    </svg>
+  );
+}
 
 export default function LoginPage() {
   const router = useRouter();
@@ -150,46 +183,17 @@ export default function LoginPage() {
           </div>
         </div>
 
-        {/* Passkey 登录（主） */}
-        <Button
-          className="h-11 w-full text-sm"
-          onClick={() => void passkeyLogin()}
-          disabled={busy !== null}
-        >
-          {busy === "passkey-login" ? (
-            <>
-              <Loader2 className="size-4 animate-spin" /> Verifying…
-            </>
-          ) : (
-            <>
-              <Fingerprint className="size-4" /> Sign in with passkey
-            </>
-          )}
-        </Button>
-
-        {/* 分隔 */}
-        <div className="my-6 flex items-center gap-3 text-xs text-muted-foreground">
-          <Separator className="flex-1" />
-          or use email
-          <Separator className="flex-1" />
-        </div>
-
-        {/* 邮箱：兜底登录 + 注册 Passkey */}
-        <div className="space-y-4">
+        {/* 邮箱优先：输入框 + Continue */}
+        <div className="space-y-3">
           <div className="space-y-1.5">
-            <label
-              htmlFor="email"
-              className="text-sm font-medium text-foreground"
-            >
-              Email
-            </label>
             <div className="relative">
               <Mail className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
               <Input
                 id="email"
                 type="email"
                 autoComplete="email"
-                placeholder="you@example.com"
+                placeholder="Email address"
+                aria-label="Email address"
                 ref={emailInputRef}
                 value={email}
                 onChange={(e) => {
@@ -212,7 +216,6 @@ export default function LoginPage() {
           </div>
 
           <Button
-            variant="secondary"
             className="h-11 w-full text-sm"
             onClick={() => void emailLogin()}
             // 不再依赖 state 判空禁用：iOS 自动填充不触发 onChange，state 为空会把按钮永久锁灰。
@@ -224,33 +227,68 @@ export default function LoginPage() {
                 <Loader2 className="size-4 animate-spin" /> Signing in…
               </>
             ) : (
-              "Sign in with email"
+              "Continue"
             )}
           </Button>
         </div>
 
-        {/* 注册（弱化为底部入口） */}
-        <div className="mt-6 space-y-3 border-t pt-5 text-center">
-          <p className="text-xs text-muted-foreground">
-            First time here? Enter your email and register a passkey for one-tap sign-in next time.
-          </p>
-          <Button
-            variant="ghost"
-            className="h-9 w-full text-sm"
+        {/* 注册入口：复用 passkey 注册流程（需先填邮箱） */}
+        <p className="mt-4 text-center text-sm text-muted-foreground">
+          Don&apos;t have an account?{" "}
+          <button
+            type="button"
+            className="font-medium text-primary underline-offset-4 hover:underline disabled:opacity-50"
             onClick={() => void passkeyRegister()}
-            disabled={busy !== null} // 同邮箱登录按钮：判空交给点击后校验（iOS 自动填充兼容）
+            disabled={busy !== null}
           >
-            {busy === "passkey-register" ? (
+            {busy === "passkey-register" ? "Registering…" : "Sign up"}
+          </button>
+        </p>
+
+        {/* 分隔 */}
+        <div className="my-6 flex items-center gap-3 text-xs text-muted-foreground">
+          <Separator className="flex-1" />
+          or
+          <Separator className="flex-1" />
+        </div>
+
+        {/* 第三方 / 快捷登录按钮组 */}
+        <div className="space-y-3">
+          {/* Google / Apple 暂为纯 UI 占位，点击不触发任何逻辑 */}
+          <Button variant="outline" className="h-11 w-full text-sm" disabled={busy !== null}>
+            <GoogleIcon /> Continue with Google
+          </Button>
+          <Button variant="outline" className="h-11 w-full text-sm" disabled={busy !== null}>
+            <AppleIcon /> Continue with Apple
+          </Button>
+          <Button
+            variant="outline"
+            className="h-11 w-full text-sm"
+            onClick={() => void passkeyLogin()}
+            disabled={busy !== null}
+          >
+            {busy === "passkey-login" ? (
               <>
-                <Loader2 className="size-4 animate-spin" /> Registering…
+                <Loader2 className="size-4 animate-spin" /> Verifying…
               </>
             ) : (
               <>
-                <KeyRound className="size-4" /> Register a passkey for this email
+                <Fingerprint className="size-4" /> Continue with passkey
               </>
             )}
           </Button>
         </div>
+
+        {/* 条款占位 */}
+        <p className="mt-8 text-center text-xs text-muted-foreground">
+          <a href="#" className="underline underline-offset-4 hover:text-foreground">
+            Terms of Use
+          </a>
+          <span className="mx-2">|</span>
+          <a href="#" className="underline underline-offset-4 hover:text-foreground">
+            Privacy Policy
+          </a>
+        </p>
       </Card>
     </main>
   );
