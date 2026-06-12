@@ -1,6 +1,7 @@
 "use client";
 
-import { LogOut, Plus, Search, Sparkles } from "lucide-react";
+import { LogOut, Plus, Search, Settings, Sparkles } from "lucide-react";
+import Link from "next/link";
 
 import type { ConversationListItem } from "@/lib/api";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -156,6 +157,22 @@ export function SidebarContent({
         </div>
         <div className="flex shrink-0 items-center">
           <ThemeToggle theme={theme} onCycle={onCycleTheme} />
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Settings"
+                  nativeButton={false}
+                  render={<Link href="/settings" />}
+                />
+              }
+            >
+              <Settings />
+            </TooltipTrigger>
+            <TooltipContent>Settings</TooltipContent>
+          </Tooltip>
           <Tooltip>
             <TooltipTrigger
               render={

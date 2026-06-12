@@ -256,6 +256,43 @@ describe('extractSkillFromTarball', () => {
     expect(existsSync(join(destRoot, 'docx', 'big.bin'))).toBe(false);
   });
 
+  // ─── 更新失败语义：dest 已有旧版，重装来源失效 → 抛错且旧文件完好 ─────────────
+  it('更新失败（新 tarball 不含目标路径）→ 抛错且已安装旧版完好', async () => {
+    // 先正常安装旧版
+    const oldMd = `---\nname: docx\ndescription: 旧版\n---\nold body`;
+    const okTarball = await buildFixtureTarball({
+      repoPrefix: 'skills-main',
+      skillPath: 'document-skills/docx',
+      skillMdContent: oldMd,
+    });
+    await extractSkillFromTarball({
+      tarball: okTarball,
+      repoPrefix: 'skills-main',
+      path: 'document-skills/docx',
+      destRoot,
+      source: 'github:a/b#document-skills/docx@main',
+    });
+
+    // 模拟上游路径被删：新 tarball 里只有别的目录，目标路径下无 SKILL.md
+    const brokenTarball = await buildFixtureTarball({
+      repoPrefix: 'skills-main',
+      skillPath: 'document-skills/other',
+      skillMdContent: `---\nname: other\ndescription: x\n---\nbody`,
+    });
+    await expect(
+      extractSkillFromTarball({
+        tarball: brokenTarball,
+        repoPrefix: 'skills-main',
+        path: 'document-skills/docx',
+        destRoot,
+        source: 'github:a/b#document-skills/docx@main',
+      }),
+    ).rejects.toThrow(BusinessException);
+
+    // 旧版完好：失败发生在 tmp 阶段，dest 未被触碰
+    expect(readFileSync(join(destRoot, 'docx', 'SKILL.md'), 'utf8')).toBe(oldMd);
+  });
+
   // ─── 用例 5b：目录总量 >20MB → BusinessException ─────────────────────────────
   it('技能目录总大小超过 20MB → BusinessException', async () => {
     const skillMd = `---\nname: docx\ndescription: test\n---\nbody`;

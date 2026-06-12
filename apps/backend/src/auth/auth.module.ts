@@ -16,6 +16,6 @@ import { PasskeyService } from './passkey.service';
   ],
   controllers: [AuthController, PasskeyController],
   providers: [AuthService, PasskeyService, JwtAuthGuard],
-  exports: [JwtAuthGuard, JwtModule],
+  exports: [JwtAuthGuard, JwtModule, PasskeyService],
 })
 export class AuthModule {}

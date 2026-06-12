@@ -182,22 +182,26 @@ export class SkillsService {
   }
 
   /**
+   * 列表/详情共享的合并视图（含 disabled 安装行，同名安装遮蔽内置）。
+   * listFor 在此之上剥离 files；detailFor 保留 files。
+   */
+  private async mergedMapFor(userId: string): Promise<Map<string, SkillDef>> {
+    const builtins = scanSkillDir(builtinDir(), 'builtin', true);
+    const map = new Map<string, SkillDef>(builtins.map((s) => [s.name, s]));
+    const installed = await this.buildInstalledMap(userId, true);
+    for (const [name, def] of installed) {
+      map.set(name, def);
+    }
+    return map;
+  }
+
+  /**
    * 管理页用：同 effectiveSkillsFor 的合并逻辑，但 **含 disabled 安装行**，
    * 以便前端能展示并允许用户重新启用。不含文件内容（节省传输）。
    */
   async listFor(userId: string): Promise<Omit<SkillDef, 'files'>[]> {
-    const builtins = scanSkillDir(builtinDir(), 'builtin', true);
-    const map = new Map<string, Omit<SkillDef, 'files'>>(
-      builtins.map(({ files: _f, ...rest }) => [rest.name, rest]),
-    );
-
-    // 含 disabled 行，覆盖同名内置
-    const installed = await this.buildInstalledMap(userId, true);
-    for (const [name, { files: _f, ...rest }] of installed) {
-      map.set(name, rest);
-    }
-
-    return [...map.values()];
+    const map = await this.mergedMapFor(userId);
+    return [...map.values()].map(({ files: _f, ...rest }) => rest);
   }
 
   /**
@@ -207,5 +211,16 @@ export class SkillsService {
   async getFor(userId: string, name: string): Promise<SkillDef | undefined> {
     const all = await this.effectiveSkillsFor(userId);
     return all.find((d) => d.name === name);
+  }
+
+  /** 技能详情（管理页用，listFor 同语义：含 disabled）。files 只回路径列表，SKILL.md 单独回原文。 */
+  async detailFor(
+    userId: string,
+    name: string,
+  ): Promise<(Omit<SkillDef, 'files'> & { files: string[]; skillMd: string }) | undefined> {
+    const def = (await this.mergedMapFor(userId)).get(name);
+    if (!def) return undefined;
+    const { files, ...rest } = def;
+    return { ...rest, files: Object.keys(files).sort(), skillMd: files['SKILL.md'] ?? '' };
   }
 }

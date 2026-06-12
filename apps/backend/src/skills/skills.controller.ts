@@ -55,6 +55,16 @@ export class SkillsController {
     return this.skills.listFor(user.userId);
   }
 
+  /** 技能详情（含文件路径列表与 SKILL.md 原文）。listFor 同语义：disabled 也可查看。 */
+  @Get(':name')
+  async detail(@Param('name') name: string, @CurrentUser() user: AuthUser) {
+    const def = await this.skills.detailFor(user.userId, name);
+    if (!def) {
+      throw new BusinessException(ErrorCodes.SKILL_NOT_FOUND, HttpStatus.NOT_FOUND);
+    }
+    return def;
+  }
+
   /**
    * 从 GitHub 安装技能。
    * 幂等：重复安装同一技能时 upsert 更新元数据并重新 enabled=true。

@@ -244,6 +244,23 @@ export function deleteSkill(name: string): Promise<unknown> {
   });
 }
 
+/** 技能详情（GET /skills/:name）：文件路径列表 + SKILL.md 原文。 */
+export interface SkillDetail extends SkillInfo {
+  files: string[];
+  skillMd: string;
+}
+
+export function getSkillDetail(name: string): Promise<SkillDetail> {
+  return request(`/skills/${encodeURIComponent(name)}`);
+}
+
+/** 解析 install 落库的 source 串（github:owner/repo#path@ref），供"更新"按钮重装同源。 */
+export function parseGithubSource(source: string): InstallSkillInput | null {
+  const m = /^github:([^#]+)#([^@]+)@(.+)$/.exec(source);
+  if (!m) return null;
+  return { repo: m[1], path: m[2], ref: m[3] };
+}
+
 // ——— Passkey / WebAuthn（后端 @simplewebauthn 完成校验后签发 token）———
 import type {
   PublicKeyCredentialCreationOptionsJSON,
@@ -293,5 +310,48 @@ export function passkeyLoginVerify(
   return request("/auth/passkey/login/verify", {
     method: "POST",
     body: JSON.stringify({ flowId, response, ...rp() }),
+  });
+}
+
+// ——— 当前用户（/users/me）———
+
+/** 已注册 passkey（transports 为逗号拼接串，可为 null，前端自行 split）。 */
+export interface MyPasskey {
+  id: string;
+  createdAt: string;
+  transports: string | null;
+}
+
+export interface MeInfo {
+  email: string;
+  createdAt: string;
+  tenantName: string;
+  passkeys: MyPasskey[];
+}
+
+export function getMe(): Promise<MeInfo> {
+  return request("/users/me");
+}
+
+/** 登录态添加 passkey：身份取自 JWT，只传 rpId/origin。 */
+export function myPasskeyOptions(): Promise<PublicKeyCredentialCreationOptionsJSON> {
+  return request("/users/me/passkeys/options", {
+    method: "POST",
+    body: JSON.stringify(rp()),
+  });
+}
+
+export function myPasskeyVerify(
+  response: RegistrationResponseJSON,
+): Promise<MyPasskey> {
+  return request("/users/me/passkeys/verify", {
+    method: "POST",
+    body: JSON.stringify({ response, ...rp() }),
+  });
+}
+
+export function deleteMyPasskey(id: string): Promise<{ deleted: string }> {
+  return request(`/users/me/passkeys/${encodeURIComponent(id)}`, {
+    method: "DELETE",
   });
 }

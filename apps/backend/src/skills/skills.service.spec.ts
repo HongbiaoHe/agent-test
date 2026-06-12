@@ -82,3 +82,56 @@ describe('SkillsService.effectiveSkillsFor', () => {
     expect((await svc.getFor('u1', 'docx'))?.description).toBe('安装版');
   });
 });
+
+describe('SkillsService.detailFor', () => {
+  let builtinDir: string;
+  let dataDir: string;
+  let svc: SkillsService;
+
+  beforeEach(() => {
+    builtinDir = mkdtempSync(join(tmpdir(), 'builtin-'));
+    dataDir = mkdtempSync(join(tmpdir(), 'data-'));
+    process.env.SKILLS_DIR = builtinDir;
+    process.env.SKILLS_DATA_DIR = dataDir;
+    svc = new SkillsService(prismaMock as never);
+  });
+  afterEach(() => {
+    rmSync(builtinDir, { recursive: true, force: true });
+    rmSync(dataDir, { recursive: true, force: true });
+  });
+
+  it('返回内置技能详情（files 列表 + skillMd 原文）', async () => {
+    makeSkill(builtinDir, 'docx', '内置版');
+    writeFileSync(join(builtinDir, 'docx', 'ref.md'), 'extra');
+    prismaMock.skill.findMany.mockResolvedValue([]);
+    const d = await svc.detailFor('u1', 'docx');
+    expect(d?.source).toBe('builtin');
+    expect(d?.files.sort()).toEqual(['SKILL.md', 'ref.md']);
+    expect(d?.skillMd).toContain('description: 内置版');
+  });
+
+  it('disabled 的安装技能也能查详情（listFor 语义，而非 effectiveSkillsFor）', async () => {
+    makeSkill(join(dataDir, 'u1'), 'pdf', 'x');
+    prismaMock.skill.findMany.mockResolvedValue([
+      { name: 'pdf', enabled: false, source: 'github:a/b#p@main' },
+    ]);
+    const d = await svc.detailFor('u1', 'pdf');
+    expect(d?.enabled).toBe(false);
+    expect(d?.source).toBe('github:a/b#p@main');
+  });
+
+  it('同名时用户安装遮蔽内置，与 listFor 一致', async () => {
+    makeSkill(builtinDir, 'docx', '内置版');
+    makeSkill(join(dataDir, 'u1'), 'docx', '安装版');
+    prismaMock.skill.findMany.mockResolvedValue([
+      { name: 'docx', enabled: true, source: 'github:a/b#p@main' },
+    ]);
+    const d = await svc.detailFor('u1', 'docx');
+    expect(d?.description).toBe('安装版');
+  });
+
+  it('不存在的技能返回 undefined', async () => {
+    prismaMock.skill.findMany.mockResolvedValue([]);
+    expect(await svc.detailFor('u1', 'nope')).toBeUndefined();
+  });
+});
