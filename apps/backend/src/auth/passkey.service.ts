@@ -18,7 +18,7 @@ import { AuthService } from './auth.service';
 import { resolveProviderName } from './aaguid-map';
 
 const RP_ID = process.env.WEBAUTHN_RP_ID ?? 'localhost';
-const RP_NAME = process.env.WEBAUTHN_RP_NAME ?? 'Agent';
+const RP_NAME = process.env.WEBAUTHN_RP_NAME ?? 'AgentSpark';
 const ORIGIN = process.env.WEBAUTHN_ORIGIN ?? 'http://localhost:3100';
 const CHALLENGE_TTL = 300; // 秒
 

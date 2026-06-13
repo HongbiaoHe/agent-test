@@ -69,7 +69,7 @@ export function SidebarContent({
           <div className="flex size-7 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <Sparkles className="size-4" />
           </div>
-          <span className="text-sm font-semibold tracking-tight">Agent</span>
+          <span className="text-sm font-semibold tracking-tight">AgentSpark</span>
         </Link>
         <Tooltip>
           <TooltipTrigger

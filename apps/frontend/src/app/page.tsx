@@ -13,7 +13,7 @@ import { LandingNav } from "./_components/landing-nav";
 import { ScrollReveal } from "./_components/scroll-reveal";
 
 export const metadata: Metadata = {
-  title: "Agent — Build agents that feel alive",
+  title: "AgentSpark — Build agents that feel alive",
   description:
     "An end-to-end Agent platform: planning, tool-calling, human-in-the-loop, skills, and real-time streaming — wired up and ready to run.",
 };
@@ -41,11 +41,14 @@ const steps = [
 
 const stack = [
   { name: "deepagents · LangGraph", role: "Agent core" },
-  { name: "Gemini", role: "LLM" },
+  { name: "Gemini · DeepSeek", role: "LLM" },
   { name: "NestJS", role: "API & workers" },
   { name: "Prisma · MySQL", role: "Persistence" },
   { name: "Redis · BullMQ", role: "Queue & event stream" },
   { name: "Next.js", role: "Frontend" },
+  { name: "LangSmith", role: "Tracing & observability" },
+  { name: "next-auth", role: "Auth & session" },
+  { name: "Daytona", role: "Skill sandbox" },
 ];
 
 export default async function HomePage() {
@@ -173,7 +176,7 @@ export default async function HomePage() {
 
       <footer className="border-t border-border">
         <div className="mx-auto flex max-w-6xl flex-col items-center justify-between gap-2 px-4 py-8 text-sm text-muted-foreground sm:flex-row sm:px-6">
-          <span>Agent — an end-to-end Agent application skeleton.</span>
+          <span>AgentSpark — an end-to-end Agent application skeleton.</span>
           <Link href="/login" className="hover:text-foreground">
             Sign in
           </Link>

@@ -176,7 +176,7 @@ export class AgentProcessor extends WorkerHost {
         ...config,
         signal, // stop 端点 abort 后整条 runnable 链中止（RunnableConfig.signal）
         runName,
-        tags: ['buzz-agent', kind ?? 'run'],
+        tags: ['spark', kind ?? 'run'],
         metadata: { conversationId, kind: kind ?? 'run' },
         context: { activePlan, userId: conv.userId },
         streamMode: ['updates', 'messages'],

@@ -18,7 +18,7 @@ import { sendEmailTool } from './tools/send-email.tool';
  * 必须防注入）；§8.4 外发护栏；§4.6 关键规则独立标题。原稿的全部领域知识
  * （斜杠命令语义 / progressive disclosure / 历史命令不重放）全部保留。
  */
-const BASE_SYSTEM_PROMPT = `你是 Buzz Agent：一个带技能库（skills）与虚拟文件系统的任务执行助手，在多轮对话中为用户完成内容创作与自动化任务。你的回复以 Markdown 呈现给用户；工具调用过程用户可见，无需复述。
+const BASE_SYSTEM_PROMPT = `你是 Spark：一个带技能库（skills）与虚拟文件系统的任务执行助手，在多轮对话中为用户完成内容创作与自动化任务。你的回复以 Markdown 呈现给用户；工具调用过程用户可见，无需复述。
 
 ## 回复语言
 始终以用户当前消息的语言回复（默认简体中文）。代码、命令、文件路径与技术标识符保留原文。
