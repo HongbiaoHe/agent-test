@@ -33,12 +33,12 @@ export function Providers({ children }: { children: React.ReactNode }) {
     <SessionProvider>
       <QueryClientProvider client={queryClient}>
         {/* attribute="class"：在 <html> 上挂/摘 .dark，配合 globals.css 的 @custom-variant；
-            defaultTheme="system" + enableSystem：默认跟随系统并实时响应其变化；
+            仅支持 light / dark 两档，不跟随系统（enableSystem=false）；默认 light。
             选择持久化到 localStorage（刷新不丢失），预水合脚本避免首屏闪烁。 */}
         <ThemeProvider
           attribute="class"
-          defaultTheme="system"
-          enableSystem
+          defaultTheme="light"
+          enableSystem={false}
           disableTransitionOnChange
         >
           {children}

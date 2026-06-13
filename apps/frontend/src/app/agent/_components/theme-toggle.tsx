@@ -1,6 +1,6 @@
 "use client";
 
-import { Monitor, Moon, Sun } from "lucide-react";
+import { Moon, Sun } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -13,15 +13,14 @@ import type { ThemeSetting } from "../_hooks/use-theme";
 
 const META: Record<
   ThemeSetting,
-  { Icon: typeof Monitor; label: string; next: string }
+  { Icon: typeof Sun; label: string; next: string }
 > = {
-  system: { Icon: Monitor, label: "System", next: "Light" },
   light: { Icon: Sun, label: "Light", next: "Dark" },
-  dark: { Icon: Moon, label: "Dark", next: "System" },
+  dark: { Icon: Moon, label: "Dark", next: "Light" },
 };
 
 /**
- * 三档循环：系统 → 亮 → 暗。theme 未水合时（undefined）按"跟随系统"占位渲染，
+ * 两档切换：亮 ⇄ 暗。theme 未水合时（undefined）按 light 占位渲染，
  * 与 SSR 一致；水合后切到真实档位。
  */
 export function ThemeToggle({
@@ -31,7 +30,7 @@ export function ThemeToggle({
   theme?: ThemeSetting;
   onCycle: () => void;
 }) {
-  const { Icon, label, next } = META[theme ?? "system"];
+  const { Icon, label, next } = META[theme ?? "light"];
   return (
     <Tooltip>
       <TooltipTrigger

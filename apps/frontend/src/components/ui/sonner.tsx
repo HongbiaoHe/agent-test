@@ -7,7 +7,7 @@ import { Toaster as Sonner, type ToasterProps } from "sonner";
  * shadcn 标准 sonner 包装：主题跟随 next-themes，配色走设计系统语义 token。
  */
 function Toaster({ ...props }: ToasterProps) {
-  const { theme = "system" } = useTheme();
+  const { theme = "light" } = useTheme();
 
   return (
     <Sonner
