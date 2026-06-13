@@ -114,6 +114,11 @@ The design system is the **manus 暖中性 (warm-neutral)** system defined in
 `apps/frontend/src/app/globals.css` (semantic `oklch` tokens, light + dark via the `.dark` class).
 Reference implementation: `apps/frontend/src/app/demo/template/`.
 
+**MUST READ FIRST** — before writing or changing ANY frontend UI (page / component / style),
+read `apps/frontend/DESIGN.md`. It is the detailed design spec derived from `globals.css`
+(full token tables light+dark, radius/font, dark-mode mechanics, Button variants, effect classes,
+shadcn setup). This is a hard requirement — skipping it = not following the design system.
+
 - **Semantic tokens only** — `bg-background` / `text-foreground` / `bg-card` /
   `text-muted-foreground` / `bg-primary` / `text-primary-foreground` / `bg-accent` /
   `border-border` / `text-destructive` / `ring-ring`, etc.
