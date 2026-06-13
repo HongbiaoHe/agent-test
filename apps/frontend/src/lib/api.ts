@@ -318,11 +318,18 @@ export function passkeyLoginVerify(
 
 // ——— 当前用户（/users/me）———
 
-/** 已注册 passkey（transports 为逗号拼接串，可为 null，前端自行 split）。 */
+/** 已注册 passkey。transports 为逗号拼接串可为 null；providerName 由后端解析。 */
 export interface MyPasskey {
   id: string;
   createdAt: string;
   transports: string | null;
+  /** 后端按 aaguid 解析出的来源名，如 "iCloud 钥匙串"；兜底 "云同步 passkey" / "设备 passkey" / "Passkey"。 */
+  providerName: string;
+  /** "singleDevice" | "multiDevice" | null */
+  deviceType: string | null;
+  backedUp: boolean;
+  /** 最后一次用此 passkey 登录的时间；从未使用为 null。 */
+  lastUsedAt: string | null;
 }
 
 export interface MeInfo {
