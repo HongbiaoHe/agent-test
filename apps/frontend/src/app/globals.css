@@ -139,6 +139,17 @@
   body {
     @apply bg-background text-foreground font-sans;
   }
+
+  /* 点击即时反馈：所有按钮 / 链接 / 可点元素按下瞬间轻微变淡，松开即恢复。
+     组件库 Button 已有按下位移（active:translate-y-px），但原生 <a>/<button>/[role=button]
+     缺反馈——这里全局统一补齐。:where() 零特异性，不覆盖组件自身 hover/active 样式；
+     禁用态（[disabled] / [aria-disabled]）排除。 */
+  :where(a[href], button, [role="button"], summary, label[for]):not([disabled]):not([aria-disabled="true"]) {
+    transition: opacity 0.12s ease;
+  }
+  :where(a[href], button, [role="button"], summary, label[for]):not([disabled]):not([aria-disabled="true"]):active {
+    opacity: 0.65;
+  }
 }
 
 /* 媒体卡片生成中的 shimmer：高光横扫。keyframe 必须在全局样式里声明——
