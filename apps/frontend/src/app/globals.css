@@ -47,6 +47,12 @@
   /* 旋转高光边框（GlowBorder）的柔光色：light 用暖中灰（白卡上可见但不刺黑），dark 见 .dark */
   --glow-color: oklch(0.64 0.015 60);
 
+  /* 落地页 DotField 点阵背景配色（canvas 直接消费，非 className）。
+     沿用暖中性 hue（60~70），靠深浅而非彩色；亮色见此，暗色见 .dark。
+     dot-from/to 为点阵对角渐变两端；alpha 调高让点阵在底色上清晰可辨。 */
+  --dotfield-dot-from: oklch(0.5 0.008 60 / 0.5);
+  --dotfield-dot-to: oklch(0.62 0.008 60 / 0.3);
+
   /* 代码高亮语法色（highlight.js 用，亮色一套，.dark 另一套） */
   --syntax-comment: oklch(0.55 0.01 240);
   --syntax-keyword: oklch(0.55 0.2 25);
@@ -90,6 +96,10 @@
 
   /* dark 下柔光用近白亮光（暗卡上更醒目） */
   --glow-color: oklch(0.92 0.002 80);
+
+  /* dark 下点阵提亮 + 提高 alpha，暗底上点更醒目 */
+  --dotfield-dot-from: oklch(0.8 0.006 70 / 0.55);
+  --dotfield-dot-to: oklch(0.7 0.006 70 / 0.32);
 
   --syntax-comment: oklch(0.66 0.01 240);
   --syntax-keyword: oklch(0.72 0.15 25);
@@ -161,6 +171,27 @@
 }
 .animate-media-shimmer {
   animation: media-card-shimmer 1.6s ease-in-out infinite;
+}
+
+/* 落地页首屏入场：纯 CSS 动画——CSS 在首帧绘制前就解析生效，不依赖 JS 水合，
+   故慢加载也不会白屏、也不闪现（初始隐藏态由 CSS 在首帧前就置好）。
+   配合各元素的 animation-delay 实现错峰。keyframe 必须全局声明。
+   reduced-motion 下不加初始隐藏、不动画，元素保持自然可见态。 */
+@keyframes landing-rise {
+  from {
+    opacity: 0;
+    transform: translateY(16px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .landing-rise {
+    opacity: 0;
+    animation: landing-rise 0.7s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
 }
 
 /* 旋转高光渐变边框（供 <GlowBorder> 组件 / .glow-border 类复用）：

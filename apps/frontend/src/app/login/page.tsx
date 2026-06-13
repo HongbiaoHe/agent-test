@@ -6,6 +6,7 @@ import {
 } from "@simplewebauthn/browser";
 import { Fingerprint, Loader2, Mail, Sparkles } from "lucide-react";
 import { signIn } from "next-auth/react";
+import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 import { Button } from "@/components/ui/button";
@@ -18,6 +19,8 @@ import {
   passkeyRegisterOptions,
   passkeyRegisterVerify,
 } from "@/lib/api";
+
+import DotField from "../_components/dot-field";
 
 const EMAIL_RE = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 // 仅缓存最近一次成功登录/注册用的邮箱，下次进来自动预填
@@ -170,13 +173,19 @@ export default function LoginPage() {
   }
 
   return (
-    <main className="flex min-h-dvh items-center justify-center bg-background px-4 py-10">
-      <Card className="w-full max-w-sm gap-0 bg-card p-8 shadow-sm">
+    <main className="relative flex min-h-dvh items-center justify-center overflow-clip bg-background px-4 py-10">
+      {/* 与首页一致的交互式点阵背景；登录卡不透明（自带 ring），点阵直接铺满即可，无需遮罩 */}
+      <DotField className="absolute inset-0 z-0" />
+      <Card className="relative z-10 w-full max-w-sm gap-0 bg-card p-8 shadow-sm">
         {/* 品牌区 */}
         <div className="mb-8 flex flex-col items-center gap-3 text-center">
-          <div className="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm">
+          <Link
+            href="/"
+            aria-label="Back to home"
+            className="flex size-12 items-center justify-center rounded-xl bg-primary text-primary-foreground shadow-sm"
+          >
             <Sparkles className="size-5" />
-          </div>
+          </Link>
           <div className="space-y-1">
             <h1 className="text-xl font-semibold tracking-tight">Welcome back</h1>
             <p className="text-sm text-muted-foreground">Sign in to the task automation platform</p>

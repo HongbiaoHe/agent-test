@@ -4,8 +4,9 @@ import { auth } from "@/auth";
 const PROTECTED_PREFIXES = ["/agent", "/conversations", "/skills"];
 
 // SSR 守卫（无闪烁，在服务端直接重定向）：
-// - 已登录访问 / 或 /login → 默认进 /agent
-// - 未登录访问 / 或受保护页 → 跳 /login
+// - 已登录访问 /login → 默认进 /agent
+// - 未登录访问受保护页 → 跳 /login
+// 首页 / 是公开 landing，对所有人放行（已从 matcher 移除，中间件不会跑到它）。
 export default auth((req) => {
   const { pathname } = req.nextUrl;
   const isLoggedIn = Boolean(req.auth);
@@ -18,13 +19,13 @@ export default auth((req) => {
   const proto = req.headers.get("x-forwarded-proto") ?? "http";
   const base = `${proto}://${host}`;
 
-  if (isLoggedIn && (pathname === "/" || pathname === "/login")) {
+  if (isLoggedIn && pathname === "/login") {
     return Response.redirect(new URL("/agent", base));
   }
 
-  const needsAuth =
-    pathname === "/" ||
-    PROTECTED_PREFIXES.some((prefix) => pathname.startsWith(prefix));
+  const needsAuth = PROTECTED_PREFIXES.some((prefix) =>
+    pathname.startsWith(prefix),
+  );
   if (!isLoggedIn && needsAuth) {
     return Response.redirect(new URL("/login", base));
   }
@@ -32,7 +33,6 @@ export default auth((req) => {
 
 export const config = {
   matcher: [
-    "/",
     "/login",
     "/agent/:path*",
     "/conversations/:path*",

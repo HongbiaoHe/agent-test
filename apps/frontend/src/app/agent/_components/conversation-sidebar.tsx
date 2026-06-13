@@ -65,12 +65,12 @@ export function SidebarContent({
     <div className="flex h-full min-h-0 flex-col">
       {/* 头部：品牌 + 新建 */}
       <div className="flex items-center justify-between gap-2 px-4 py-3.5">
-        <div className="flex items-center gap-2">
+        <Link href="/" aria-label="Back to home" className="flex items-center gap-2">
           <div className="flex size-7 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <Sparkles className="size-4" />
           </div>
           <span className="text-sm font-semibold tracking-tight">Agent</span>
-        </div>
+        </Link>
         <Tooltip>
           <TooltipTrigger
             render={
