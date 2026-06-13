@@ -15,7 +15,6 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import * as tar from 'tar';
 import { BusinessException } from '../common/errors/business.exception';
-import { ErrorCodes } from '../common/errors/error-code';
 import {
   extractSkillFromTarball,
   assertSafeEntryPath,

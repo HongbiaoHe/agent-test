@@ -109,7 +109,9 @@ export class PasskeyService {
       throw new BusinessException(ErrorCodes.PASSKEY_CHALLENGE_EXPIRED);
     }
     let verified = false;
-    let info;
+    let info: Awaited<
+      ReturnType<typeof verifyRegistrationResponse>
+    >['registrationInfo'];
     try {
       const result = await verifyRegistrationResponse({
         response,

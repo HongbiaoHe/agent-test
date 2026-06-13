@@ -197,7 +197,7 @@ export class AgentProcessor extends WorkerHost {
         await this.stream.publish(conversationId, msg);
         await this.persist(conversationId, msg, seq++);
       };
-      for await (const chunk of stream as AsyncIterable<unknown>) {
+      for await (const chunk of stream) {
         const [ns, mode, data] = chunk as [string[], string, unknown];
         const raw = normalize(ns, mode, data);
         if (!raw) continue;

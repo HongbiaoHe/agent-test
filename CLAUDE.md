@@ -129,6 +129,35 @@ shadcn setup). This is a hard requirement — skipping it = not following the de
 - **Components**: per §6, compose shadcn/ui primitives; place new business components beside the feature (per §5).
 - When unsure how something should look, open `demo/template/` and match it.
 
+## 8. TypeScript — 强类型约束（禁 any，少 unknown，少断言）
+
+**目标：让类型系统替你抓 bug。绝不用 `any` 逃逸类型检查。**
+
+- **禁用 `any`** —— 不写 `: any` / `as any` / `<any>` / `any[]` / `Record<string, any>`。
+  ESLint `@typescript-eslint/no-explicit-any` 已设为 `error`（含测试文件），写了就挂。
+- **少用 `unknown`** —— `unknown` 只用在「数据形状运行时才知道」的真实边界（外部 JSON、
+  第三方流、`catch (e)`）。能写出确切类型就别退化成 `unknown`；拿到 `unknown` 后要尽快用
+  **类型守卫**收窄成确切类型，不要把 `unknown` 一路传下去。
+- **少用断言（`as`）** —— `as` 是关掉类型检查的口子，优先级最低。先试这些「真类型」手段：
+  1. **真实类型 / 泛型**：给变量、参数、返回值标注确切类型；调用泛型 API 时显式传类型参数
+     （如 `getRequest<RequestWithUser>()`、`verifyAsync<JwtPayload>(token)`、
+     `jwt.fn<ReturnType>()`），而不是事后 `as`。
+  2. **复用库的真实类型 / 类型守卫**：用上游导出的类型与 type guard
+     （如 `@langchain/core/messages` 的 `isBaseMessage` / `isAIMessage` + `BaseMessage.text`），
+     而不是自己手写 `MessageLike` 再逐字段 `as`。
+  3. **工具类型**：`ReturnType<>` / `Awaited<>` / `Parameters<>` / `Pick<>` / `Partial<>`
+     从既有定义派生类型（如 `Awaited<ReturnType<typeof verifyRegistrationResponse>>['registrationInfo']`）。
+  4. **运行时校验**：外部数据用 **zod** 解析得到强类型结果（`schema.parse` → 推断类型），零断言且运行时安全。
+  - 仅当上述都不适用（如反序列化我方自有数据、递归泛型脱敏）才用断言，并就近写注释说明为何安全；
+    跨不兼容类型用 `as unknown as T`（**绝不**用 `as any`）。
+- **不靠 `// @ts-ignore` / `// @ts-expect-error` 绕过**类型错误——修类型，别压制。
+- **测试同样禁 `any`**：mock 用「cast-at-injection」——把 mock 对象在注入构造函数那一处
+  `as unknown as RealService`，其余代码照常拿到真实类型；`*.spec.ts` 仅放宽消费侧的
+  `no-unsafe-*` 噪音规则（见 `apps/backend/eslint.config.mjs`），`no-explicit-any` 依旧是 error。
+- **未用参数用 `_` 前缀**（接口实现里的占位参数等），ESLint 的 `argsIgnorePattern: '^_'` 已放行。
+
+判据：改完后 `pnpm lint` 0 error、`tsc` 0 error，且 diff 里看不到 `any`、`as any`、`@ts-ignore`。
+
 ---
 
 **These guidelines are working if:** fewer unnecessary changes in diffs, fewer rewrites due to overcomplication, and clarifying questions come before implementation rather than after mistakes.

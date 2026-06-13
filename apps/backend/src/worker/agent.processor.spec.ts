@@ -1,4 +1,9 @@
 import { InMemoryStore } from '@langchain/langgraph';
+import {
+  AIMessageChunk,
+  ToolMessage,
+  type ToolCall,
+} from '@langchain/core/messages';
 import type { Job, Queue } from 'bullmq';
 import { buildAgent } from '../agent/agent.factory';
 import { StreamService } from '../events/stream.service';
@@ -834,22 +839,23 @@ describe('AgentProcessor 多轮重放', () => {
 });
 
 describe('AgentProcessor 流式聚合落库', () => {
-  const aiChunk = (content: string) => ({
-    _getType: () => 'ai',
-    content,
-    tool_calls: [],
-  });
-  const aiToolMsg = (tool_calls: { name: string; args: unknown }[]) => ({
-    _getType: () => 'ai',
-    content: '',
-    tool_calls,
-  });
-  const toolMsg = (name: string, content: string) => ({
-    _getType: () => 'tool',
-    name,
-    content,
-    status: 'success',
-  });
+  const aiChunk = (content: string) => new AIMessageChunk({ content });
+  const aiToolMsg = (
+    toolCalls: { name: string; args: Record<string, unknown> }[],
+  ) =>
+    new AIMessageChunk({
+      content: '',
+      tool_calls: toolCalls.map(
+        (c, i): ToolCall => ({
+          name: c.name,
+          args: c.args,
+          id: `call-${i}`,
+          type: 'tool_call',
+        }),
+      ),
+    });
+  const toolMsg = (name: string, content: string) =>
+    new ToolMessage({ name, content, tool_call_id: 'tc', status: 'success' });
 
   it('把逐字 token 累积成完整 message 落库；token 本身只推流不落库；工具调用前的叙述文本也保留', async () => {
     // 一轮里：先吐叙述文本(分两个 token chunk) → 调工具 → 工具结果 → 再吐最终答案

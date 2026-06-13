@@ -28,7 +28,7 @@ export interface SkillDef {
   /** 分类：由 source 派生，全链路（API/前端列表/补全面板）以此分组 */
   kind: SkillKind;
   /** 'builtin' 或 'github:...' 串 */
-  source: 'builtin' | string;
+  source: string;
   enabled: boolean;
   /** 相对路径 → 内容（含 SKILL.md） */
   files: Record<string, string>;
@@ -80,7 +80,7 @@ function readSkillFiles(skillDir: string): Record<string, string> {
  */
 function scanSkillDir(
   rootDir: string,
-  source: 'builtin' | string,
+  source: string,
   enabled: boolean,
 ): SkillDef[] {
   if (!existsSync(rootDir)) return [];

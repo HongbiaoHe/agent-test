@@ -12,19 +12,30 @@ export interface AuthUser {
   email: string;
 }
 
+interface RequestWithUser {
+  headers: { authorization?: string };
+  user?: AuthUser;
+}
+
+interface JwtPayload {
+  sub: string;
+  tenantId: string;
+  email: string;
+}
+
 /** 验证 Authorization: Bearer <jwt>，解出 userId/tenantId 注入 req.user。 */
 @Injectable()
 export class JwtAuthGuard implements CanActivate {
   constructor(private readonly jwt: JwtService) {}
 
   async canActivate(ctx: ExecutionContext): Promise<boolean> {
-    const req = ctx.switchToHttp().getRequest();
-    const header = req.headers?.authorization as string | undefined;
+    const req = ctx.switchToHttp().getRequest<RequestWithUser>();
+    const header = req.headers?.authorization;
     if (!header?.startsWith('Bearer ')) {
       throw new UnauthorizedException('缺少 token');
     }
     try {
-      const p = await this.jwt.verifyAsync(header.slice(7));
+      const p = await this.jwt.verifyAsync<JwtPayload>(header.slice(7));
       req.user = {
         userId: p.sub,
         tenantId: p.tenantId,

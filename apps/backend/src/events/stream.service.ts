@@ -59,7 +59,9 @@ export class StreamService {
           for (const [id, fields] of entries) {
             lastId = id;
             const idx = fields.indexOf('data');
-            const parsed = idx >= 0 ? JSON.parse(fields[idx + 1]) : {};
+            const parsed = (
+              idx >= 0 ? JSON.parse(fields[idx + 1]) : {}
+            ) as Pick<ConversationEvent, 'type' | 'payload' | 'ts'>;
             onEvent({
               seq: id,
               conversationId,

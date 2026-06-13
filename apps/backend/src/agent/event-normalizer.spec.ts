@@ -1,16 +1,15 @@
+import {
+  AIMessageChunk,
+  ToolMessage,
+  type MessageContent,
+  type ToolCall,
+} from '@langchain/core/messages';
 import { normalize } from './event-normalizer';
 
-const aiMsg = (content: any, tool_calls: any[] = []) => ({
-  _getType: () => 'ai',
-  content,
-  tool_calls,
-});
-const toolMsg = (name: string, content: string) => ({
-  _getType: () => 'tool',
-  name,
-  content,
-  status: 'success',
-});
+const aiMsg = (content: MessageContent, toolCalls: ToolCall[] = []) =>
+  new AIMessageChunk({ content, tool_calls: toolCalls });
+const toolMsg = (name: string, content: string) =>
+  new ToolMessage({ name, content, tool_call_id: 'tc-1', status: 'success' });
 
 describe('normalize', () => {
   it('messages + ToolMessage → tool_end', () => {
@@ -55,7 +54,14 @@ describe('normalize', () => {
     const ev = normalize([], 'updates', {
       model_request: {
         messages: [
-          aiMsg('', [{ name: 'get_weather', args: { city: '上海' } }]),
+          aiMsg('', [
+            {
+              name: 'get_weather',
+              args: { city: '上海' },
+              id: 'call-1',
+              type: 'tool_call',
+            },
+          ]),
         ],
       },
     });

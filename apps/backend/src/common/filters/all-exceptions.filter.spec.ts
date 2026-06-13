@@ -6,8 +6,8 @@ import { ErrorCodes } from '../errors/error-code';
 function mockHost() {
   const json = jest.fn();
   const status = jest.fn(() => ({ json }));
-  const res = { status } as any;
-  const req = { method: 'GET', url: '/x' } as any;
+  const res = { status };
+  const req = { method: 'GET', url: '/x' };
   const host = {
     switchToHttp: () => ({ getResponse: () => res, getRequest: () => req }),
   } as unknown as ArgumentsHost;

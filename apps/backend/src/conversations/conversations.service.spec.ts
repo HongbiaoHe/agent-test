@@ -8,7 +8,6 @@
  * 其余涉及 Daytona 沙箱 / Prisma 的路径属于云端集成，无单元测试价值。
  */
 
-import { HttpStatus } from '@nestjs/common';
 import { Test } from '@nestjs/testing';
 import { getQueueToken } from '@nestjs/bullmq';
 import { AbortRegistry, AGENT_ABORTS } from '../agent/abort-registry';
@@ -17,7 +16,6 @@ import { MediaService } from '../media/media.service';
 import { ConversationsService } from './conversations.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SkillsService } from '../skills/skills.service';
-import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
 
 // 最小 Mock：只需 conversation.findFirst 返回一条记录，不触及队列/沙箱

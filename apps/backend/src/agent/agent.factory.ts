@@ -1,11 +1,6 @@
 import type { BaseStore } from '@langchain/langgraph';
 import { initChatModel } from 'langchain/chat_models/universal';
-import {
-  CompositeBackend,
-  createDeepAgent,
-  StateBackend,
-  StoreBackend,
-} from 'deepagents';
+import { CompositeBackend, createDeepAgent, StateBackend } from 'deepagents';
 import { createMiddleware } from 'langchain';
 import { z } from 'zod';
 import { buildSkillSyncFiles, ReadOnlyStoreBackend } from './skills-backend';
@@ -174,6 +169,19 @@ export interface BuildAgentOptions {
   extraTools?: unknown[];
 }
 
+/**
+ * buildAgent 对外暴露的最小 agent 接口：只声明 worker 实际调用的方法，
+ * 避免把 deepagents 内部类型泄漏到调用方（保持 agent.factory 的低耦合边界），
+ * 同时让调用点不再退化成 any。
+ */
+export interface BuiltAgent {
+  stream(
+    input: unknown,
+    config?: Record<string, unknown>,
+  ): Promise<AsyncIterable<unknown>>;
+  getState(config: unknown): Promise<unknown>;
+}
+
 // ─────────────────────────────────────────────────────────────────────────────
 // buildAgent
 // ─────────────────────────────────────────────────────────────────────────────
@@ -193,7 +201,9 @@ export interface BuildAgentOptions {
  *   defaultBackend / store / hasSandbox 均为可选，缺省值与旧行为完全一致，
  *   旧 worker 调用点（不传这三项）可正常编译。Task 10 worker 接线任务会显式传入。
  */
-export async function buildAgent(opts: BuildAgentOptions = {}): Promise<any> {
+export async function buildAgent(
+  opts: BuildAgentOptions = {},
+): Promise<BuiltAgent> {
   const model = await resolveChatModel(opts.model);
 
   // /skills/ 只读 backend：namespace factory 在运行时从 config.configurable.userId 取用户 ID。

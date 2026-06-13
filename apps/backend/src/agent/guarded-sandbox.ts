@@ -104,7 +104,7 @@ export class GuardedSandbox {
   private sanitize<T>(value: T): T {
     if (typeof value === 'string') return this.toVirtual(value) as T;
     if (Array.isArray(value))
-      return value.map((v) => this.sanitize(v)) as unknown as T;
+      return value.map((v: unknown) => this.sanitize(v)) as unknown as T;
     if (value && typeof value === 'object') {
       return Object.fromEntries(
         Object.entries(value as Record<string, unknown>).map(([k, v]) => [
@@ -204,8 +204,8 @@ export class GuardedSandbox {
 
   // ─── getWorkDir 覆写——仅宿主侧使用（conversations 文件接口），返回真实路径 ─
 
-  async getWorkDir(): Promise<string> {
-    return this.workspaceRoot;
+  getWorkDir(): Promise<string> {
+    return Promise.resolve(this.workspaceRoot);
   }
 
   // ─── host 侧方法：原样透传（可信宿主代码，技能同步/文件接口使用）────────

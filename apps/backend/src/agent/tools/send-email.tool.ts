@@ -7,7 +7,7 @@ import { z } from 'zod';
 const defaultTo = () => process.env.DEFAULT_EMAIL_TO ?? 'team@example.com';
 
 export const sendEmailTool = tool(
-  async ({ to, subject }: { to?: string; subject: string; body: string }) =>
+  ({ to, subject }: { to?: string; subject: string; body: string }) =>
     JSON.stringify({ sent: true, to: to ?? defaultTo(), subject }),
   {
     name: 'send_email',

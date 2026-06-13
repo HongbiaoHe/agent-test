@@ -12,6 +12,7 @@
  */
 
 // GuardedSandbox 不依赖 deepagents 运行时，无需 jest.mock
+import type { DaytonaSandbox } from '@langchain/daytona';
 import { GuardedSandbox } from './guarded-sandbox';
 
 const WS = '/home/user/agent-workspace';
@@ -46,7 +47,7 @@ describe('GuardedSandbox — 入站虚拟路径映射', () => {
 
   beforeEach(() => {
     inner = makeMockInner();
-    guard = new GuardedSandbox(inner as any, WS);
+    guard = new GuardedSandbox(inner as unknown as DaytonaSandbox, WS);
   });
 
   it("ls('/') → 映射到工作区根", async () => {
@@ -154,7 +155,7 @@ describe('GuardedSandbox — 出站脱敏（真实路径 → 虚拟 /）', () =>
 
   beforeEach(() => {
     inner = makeMockInner();
-    guard = new GuardedSandbox(inner as any, WS);
+    guard = new GuardedSandbox(inner as unknown as DaytonaSandbox, WS);
   });
 
   it('ls 结果里的真实路径替换回虚拟 /', async () => {
@@ -211,7 +212,7 @@ describe('GuardedSandbox — execute cwd 锚定', () => {
 
   beforeEach(() => {
     inner = makeMockInner();
-    guard = new GuardedSandbox(inner as any, WS);
+    guard = new GuardedSandbox(inner as unknown as DaytonaSandbox, WS);
   });
 
   it("execute: inner 收到 `cd '<ws>' && ( 原命令 )`", async () => {
@@ -229,7 +230,7 @@ describe('GuardedSandbox — execute cwd 锚定', () => {
 describe('GuardedSandbox — getWorkDir', () => {
   it('getWorkDir 返回真实 workspaceRoot（仅宿主侧使用）', async () => {
     const inner = makeMockInner();
-    const guard = new GuardedSandbox(inner as any, WS);
+    const guard = new GuardedSandbox(inner as unknown as DaytonaSandbox, WS);
     const result = await guard.getWorkDir();
     expect(result).toBe(WS);
     // inner.getWorkDir 不应被调用（直接返回 workspaceRoot）
@@ -240,7 +241,7 @@ describe('GuardedSandbox — getWorkDir', () => {
 describe('GuardedSandbox — uploadFiles 透传', () => {
   it('uploadFiles: /skills/... 路径 → 直接委托 inner，不拦截', async () => {
     const inner = makeMockInner();
-    const guard = new GuardedSandbox(inner as any, WS);
+    const guard = new GuardedSandbox(inner as unknown as DaytonaSandbox, WS);
     const enc = new TextEncoder();
     const files: Array<[string, Uint8Array]> = [
       ['/skills/docx/SKILL.md', enc.encode('# Docx Skill')],
@@ -253,13 +254,13 @@ describe('GuardedSandbox — uploadFiles 透传', () => {
 describe('GuardedSandbox — id / isRunning 透传', () => {
   it('id getter 返回 inner.id', () => {
     const inner = makeMockInner();
-    const guard = new GuardedSandbox(inner as any, WS);
+    const guard = new GuardedSandbox(inner as unknown as DaytonaSandbox, WS);
     expect(guard.id).toBe('mock-sandbox-id');
   });
 
   it('isRunning getter 返回 inner.isRunning', () => {
     const inner = makeMockInner();
-    const guard = new GuardedSandbox(inner as any, WS);
+    const guard = new GuardedSandbox(inner as unknown as DaytonaSandbox, WS);
     expect(guard.isRunning).toBe(true);
   });
 });

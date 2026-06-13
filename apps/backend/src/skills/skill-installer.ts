@@ -14,7 +14,6 @@
  */
 
 import {
-  createWriteStream,
   existsSync,
   mkdirSync,
   mkdtempSync,
