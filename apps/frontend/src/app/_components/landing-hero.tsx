@@ -12,7 +12,9 @@ import { Button } from "@/components/ui/button";
  */
 export function LandingHero() {
   return (
-    <div className="relative z-10 mx-auto flex min-h-screen max-w-3xl flex-col items-center justify-center px-4 text-center sm:px-6">
+    <div className="relative z-10 mx-auto flex min-h-screen max-w-3xl flex-col items-center justify-center px-4 py-24 text-center sm:px-6">
+      {/* py-24：justify-center 的内容不会进入 padding 区，故内容顶部恒 ≥96px，
+          始终在固定导航（≈72–80px 高）之下，移动端等任意视口都不被遮挡。 */}
       <span
         className="landing-rise mb-6 inline-flex items-center gap-2 rounded-full border border-border bg-card/70 px-3 py-1 text-xs font-medium text-muted-foreground backdrop-blur-sm"
         style={{ animationDelay: "0s" }}

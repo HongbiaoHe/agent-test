@@ -2,6 +2,7 @@ import { Activity, ArrowRight, MessageSquare, Workflow } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
+import { auth } from "@/auth";
 import { Button } from "@/components/ui/button";
 import { GlowBorder } from "@/components/ui/glow-border";
 
@@ -47,7 +48,11 @@ const stack = [
   { name: "Next.js", role: "Frontend" },
 ];
 
-export default function HomePage() {
+export default async function HomePage() {
+  // 服务端取登录态：SSR 直出正确的导航 CTA（Workspace / Sign in），无客户端闪烁。
+  const session = await auth();
+  const isLoggedIn = Boolean(session?.user);
+
   return (
     <main className="flex flex-1 flex-col bg-background">
       {/* Hero：满屏点阵背景 + 居中文案 + 双 CTA。用 min-h-screen（静态 100vh）而非 dvh，
@@ -63,7 +68,7 @@ export default function HomePage() {
           }}
         />
 
-        <LandingNav />
+        <LandingNav isLoggedIn={isLoggedIn} />
         <LandingHero />
       </section>
 
