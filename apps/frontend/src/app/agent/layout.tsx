@@ -2,6 +2,8 @@ import type { Metadata } from "next";
 
 import { TooltipProvider } from "@/components/ui/tooltip";
 
+import { AgentWrapper } from "./_components/agent-wrapper";
+
 export const metadata: Metadata = {
   title: "AgentSpark Chat",
   description: "Three-column AI agent chat interface (manus style)",
@@ -25,6 +27,7 @@ export default function AgentLayout({
           会把整个满屏框架滚起来、连顶栏带侧栏一起被顶上去且无法滚回。clip 不建立滚动容器、物理上不可滚，
           根除这一整类「整页被顶」问题；裁剪效果与 hidden 等价。 */}
       <div className="h-screen overflow-clip [@media(pointer:coarse)]:h-dvh">
+        <AgentWrapper />
         {children}
       </div>
     </TooltipProvider>

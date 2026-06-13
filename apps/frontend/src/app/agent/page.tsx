@@ -1,8 +1,4 @@
-"use client";
-
-import { AgentShell } from "./_components/agent-shell";
-
-// /agent：新会话（未选中任何会话）。首次发送后创建会话并跳转到 /agent/[id]。
+// /agent - layout 层 AgentWrapper 接管所有渲染，此文件仅作为路由占位。
 export default function AgentNewChatPage() {
-  return <AgentShell conversationId={null} />;
+  return null;
 }
