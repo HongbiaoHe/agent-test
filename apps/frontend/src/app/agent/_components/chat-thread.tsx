@@ -5,8 +5,6 @@ import {
   ArrowUp,
   Loader,
   PanelLeft,
-  PanelRightClose,
-  PanelRightOpen,
   Plus,
   Slash,
   Sparkles,
@@ -18,11 +16,6 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
 import { type SkillKind, listCommands } from "@/lib/api";
 
 import type { Approval, ThreadItem } from "../_lib/thread";
@@ -61,8 +54,6 @@ export function ChatThread({
   stopping,
   model,
   onModelChange,
-  panelOpen,
-  onTogglePanel,
   onOpenSidebar,
 }: {
   title: string;
@@ -85,8 +76,6 @@ export function ChatThread({
   stopping: boolean;
   model: string;
   onModelChange: (model: string) => void;
-  panelOpen: boolean;
-  onTogglePanel: () => void;
   onOpenSidebar: () => void;
 }) {
   const [draft, setDraft] = useState("");
@@ -222,21 +211,6 @@ export function ChatThread({
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
           <SandboxStatusButton />
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={panelOpen ? "Hide details panel" : "Show details panel"}
-                  onClick={onTogglePanel}
-                />
-              }
-            >
-              {panelOpen ? <PanelRightClose /> : <PanelRightOpen />}
-            </TooltipTrigger>
-            <TooltipContent>{panelOpen ? "Hide details" : "Show details"}</TooltipContent>
-          </Tooltip>
         </div>
       </header>
 

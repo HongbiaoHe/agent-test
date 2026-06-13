@@ -115,20 +115,6 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
 
   const panelOpen = manualPanel ?? isDesktop;
 
-  function togglePanel() {
-    if (!panelOpen) {
-      if (!activeDetailId) {
-        const lastTool = [...thread.items]
-          .reverse()
-          .find((it) => it.kind === "tool");
-        if (lastTool) setActiveDetailId(lastTool.id);
-      }
-      setManualPanel(true);
-    } else {
-      setManualPanel(false);
-    }
-  }
-
   const selectedTool = activeDetailId
     ? thread.items.find(
         (it): it is Extract<ThreadItem, { kind: "tool" }> =>
@@ -202,8 +188,6 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
         stopping={stopRequested}
         model={model}
         onModelChange={setModel}
-        panelOpen={panelOpen}
-        onTogglePanel={togglePanel}
         onOpenSidebar={() => setSidebarOpen(true)}
       />
 
