@@ -1,9 +1,7 @@
-import type { BaseStore } from '@langchain/langgraph';
 import { initChatModel } from 'langchain/chat_models/universal';
-import { CompositeBackend, createDeepAgent, StateBackend } from 'deepagents';
+import { createDeepAgent, StateBackend } from 'deepagents';
 import { createMiddleware } from 'langchain';
 import { z } from 'zod';
-import { buildSkillSyncFiles, ReadOnlyStoreBackend } from './skills-backend';
 import { injectActivePlan, injectSkillReadPolicy } from './plan-injection';
 import { getWeatherTool } from './tools/get-weather.tool';
 import { sendEmailTool } from './tools/send-email.tool';
@@ -142,24 +140,16 @@ export interface BuildAgentOptions {
    */
   model?: string;
 
-  // ── 过渡期软选项（Task 10 worker 接线任务会显式传入，此前保持旧调用点可编译）──
   /**
-   * 默认 backend（/skills/ 以外的路径）。
-   * 缺省 = new StateBackend()（与旧行为一致）。
+   * 默认 backend（agent 文件工具/skills/execute 的落点）。沙箱模式传 GuardedSandbox 实例；
+   * 缺省 = new StateBackend()（无沙箱：无技能、无 execute）。
    * 标记 unknown 以避免引入 deepagents 类型到调用方，worker 层直接传实例即可。
    */
   defaultBackend?: unknown;
   /**
-   * LangGraph BaseStore 实例。
-   * 传入后：技能同步中间件（skillSandboxSyncMiddleware）启用（前提是 hasSandbox 也为 true）；
-   * StoreBackend namespace factory 的 store 由 deepagents 内部从 LangGraph exec ctx 读取。
-   * 缺省 = undefined → 技能同步中间件跳过（旧行为）。
-   */
-  store?: BaseStore;
-  /**
    * 是否为沙箱模式（对应 Daytona 沙箱 backend）。
-   * true → 追加沙箱系统提示区块 + 启用 skillSandboxSyncMiddleware（需同时传 store）。
-   * 缺省 = false（旧行为）。
+   * true → 追加沙箱系统提示区块（execute 守则）。技能文件由 worker 在调用前写入沙箱盘。
+   * 缺省 = false。
    */
   hasSandbox?: boolean;
   /**
@@ -189,77 +179,25 @@ export interface BuiltAgent {
 /**
  * 装配主 agent：多提供商模型（initChatModel 动态切换）+ 内置工具 + get_weather + 需审批的 send_email。
  *
- * Skills backend 路由：
- *   /skills/ → ReadOnlyStoreBackend（只读，防 agent 污染技能库）
- *   其余路径 → defaultBackend（StateBackend 或外部传入的沙箱 backend）
+ * Skills 来源：`/skills/` 直接读 backend（沙箱模式下即沙箱磁盘的 `${workspaceRoot}/skills/`）。
+ *   技能文件由 worker 在起沙箱后、调 LLM 前用 uploadSkillsToSandbox 写入沙箱盘（见 agent.processor），
+ *   deepagents 的 skills 中间件在 beforeAgent 扫 `/skills/` 即可读到。
+ *   无沙箱（StateBackend 兜底）时 `/skills/` 为空 → 不提供任何技能（设计：无沙箱=无技能）。
  *
- * 沙箱同步中间件（opts.store && opts.hasSandbox）：
- *   beforeAgent 钩子把当前用户的技能文件从 LangGraph store 同步到沙箱 backend，
- *   确保 agent 在沙箱内能通过 /skills/ 读到最新技能。
- *
- * 过渡期说明（Task 9 → Task 10）：
- *   defaultBackend / store / hasSandbox 均为可选，缺省值与旧行为完全一致，
- *   旧 worker 调用点（不传这三项）可正常编译。Task 10 worker 接线任务会显式传入。
+ * defaultBackend / hasSandbox 均可选，缺省 = new StateBackend()（无沙箱，无技能、无 execute）。
  */
 export async function buildAgent(
   opts: BuildAgentOptions = {},
 ): Promise<BuiltAgent> {
   const model = await resolveChatModel(opts.model);
 
-  // /skills/ 只读 backend：namespace factory 在运行时从 config.configurable.userId 取用户 ID。
-  // dist 已核实：工厂入参是 { state, config, assistantId }，userId 走 config.configurable。
-  const skillsBackend = new ReadOnlyStoreBackend({
-    namespace: ({
-      config,
-    }: {
-      config?: { configurable?: { userId?: string } };
-    }) => {
-      const userId = config?.configurable?.userId;
-      if (!userId) {
-        throw new Error(
-          'configurable.userId 缺失：worker 必须在 stream config 传入（禁止静默共享技能库）',
-        );
-      }
-      return [userId, 'skills'];
-    },
-  });
-
-  // CompositeBackend：/skills/ → skillsBackend（只读），其余 → defaultBackend
-  const defaultBackend =
+  // backend = 沙箱（GuardedSandbox）或 StateBackend 兜底；/skills/ 不再单独路由到内存 store，
+  // 直接读 backend：沙箱模式落在 ${workspaceRoot}/skills/，无沙箱则为空（不提供技能）。
+  const backend =
     (opts.defaultBackend as StateBackend | undefined) ?? new StateBackend();
-  const backend = new CompositeBackend(defaultBackend, {
-    '/skills/': skillsBackend,
-  });
 
-  // 沙箱技能同步中间件：仅当 store 和 hasSandbox 同时传入时启用
-  const shouldSync = !!(opts.store && opts.hasSandbox);
-  const skillSandboxSyncMiddleware = shouldSync
-    ? createMiddleware({
-        name: 'skillSandboxSyncMiddleware',
-        // beforeAgent 签名：(state, runtime) => PromiseOrValue<MiddlewareResult<...>>
-        // runtime.context 的形状由 contextSchema 推导，此处 cast 取 userId
-        beforeAgent: async (
-          _state: unknown,
-          runtime: { context?: { userId?: string } },
-        ): Promise<undefined> => {
-          const userId = runtime.context?.userId;
-          if (!userId) return undefined;
-          const files = await buildSkillSyncFiles(opts.store!, userId);
-          if (files.length > 0) {
-            // uploadFiles 把技能文件注入 CompositeBackend 的 defaultBackend（沙箱 backend）
-            await backend.uploadFiles(files);
-          }
-          return undefined;
-        },
-      })
-    : null;
-
-  // 中间件顺序：同步（最外层）→ 计划延续 → 技能必读规则（离模型最近）
-  const middleware = [
-    ...(skillSandboxSyncMiddleware ? [skillSandboxSyncMiddleware] : []),
-    planContinuationMiddleware,
-    skillReadPolicyMiddleware,
-  ];
+  // 中间件顺序即 recency：计划延续 → 技能必读规则（离模型最近）。
+  const middleware = [planContinuationMiddleware, skillReadPolicyMiddleware];
 
   return createDeepAgent({
     model,
@@ -278,6 +216,5 @@ export async function buildAgent(
     middleware,
     interruptOn: { send_email: true },
     checkpointer: opts.checkpointer as never,
-    ...(opts.store ? { store: opts.store } : {}),
   });
 }

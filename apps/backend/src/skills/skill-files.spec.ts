@@ -1,4 +1,4 @@
-import { absolutizeRefPaths, toFileData } from './skill-files';
+import { absolutizeRefPaths } from './skill-files';
 
 // absolutizeRefPaths 测试用例从 src/worker/skill-files.spec.ts 迁入，
 // 对应函数已原样迁入 src/skills/skill-files.ts（VERBATIM）。
@@ -43,22 +43,5 @@ describe('absolutizeRefPaths', () => {
     expect(out).toContain('](https://example.com/a.md)');
     expect(out).toContain('`/skills/tvc-director/references/treatment.md`');
     expect(out).not.toContain('/skills/tvc-director//skills/');
-  });
-});
-
-describe('toFileData', () => {
-  it('把文本内容按行切分，并设置 created_at / modified_at', () => {
-    const now = '2026-06-01T00:00:00.000Z';
-    const fd = toFileData('a\nb\nc', now);
-    expect(fd).toEqual({
-      content: ['a', 'b', 'c'],
-      created_at: now,
-      modified_at: now,
-    });
-  });
-
-  it('空内容返回单元素数组（split 行为一致）', () => {
-    const fd = toFileData('', '2026-06-01T00:00:00.000Z');
-    expect(fd.content).toEqual(['']);
   });
 });

@@ -13,9 +13,12 @@
  * - 无 DAYTONA_API_KEY 时静默返回 null，调用方回退到 StateBackend（纯内存/DB）。
  */
 
+import { createHash } from 'node:crypto';
 import { Daytona } from '@daytonaio/sdk';
 import { DaytonaSandbox } from '@langchain/daytona';
 import type { FileData } from 'deepagents';
+import { absolutizeRefPaths } from '../skills/skill-files';
+import type { SkillDef } from '../skills/skills.service';
 import { GuardedSandbox } from './guarded-sandbox';
 
 /** agent 专用工作区目录名（相对于沙箱 home） */
@@ -129,6 +132,77 @@ export async function getUserSandbox(
   const ws = `${home}/${AGENT_WORKSPACE_DIR}`;
   await sb.execute(`mkdir -p '${ws}'`);
   return new GuardedSandbox(sb, ws);
+}
+
+/** 沙箱内记录「上次上传的技能集指纹」的清单文件（虚拟根路径）。 */
+const SKILLS_MANIFEST_PATH = '/skills/.manifest';
+
+/**
+ * 把该用户的生效技能写入沙箱磁盘（`/skills/<name>/<rel>`，虚拟根路径，
+ * GuardedSandbox.uploadFiles 会映射到 `${workspaceRoot}/skills/...`）。
+ *
+ * 会话启动时序：getUserSandbox 起沙箱 → 本函数加载技能 → buildAgent → 调 LLM。
+ * deepagents 的 skills 中间件在 beforeAgent 通过 ls + downloadFiles 扫 `/skills/`，
+ * 故必须在 agent.stream 之前完成上传，模型才能在系统提示里看到技能清单。
+ *
+ * 幂等去重（防每轮重复上传）：用户级沙箱跨会话/多轮共享，每条消息都会进 process。
+ * 这里先算技能集指纹（名+路径+内容的 sha256），与沙箱内 `.manifest` 比对：
+ *  - 一致 → 直接跳过，省掉一整轮文件上传（仅 1 次小文件下载）；
+ *  - 不一致（首次/新沙箱/技能增删改/启停）→ 先清空旧技能目录（去除被禁用/删除技能的残留，
+ *    恢复旧 seedSkillsStore 的删除语义），再全量上传并写入新指纹。
+ *
+ * SKILL.md 经 absolutizeRefPaths 把相对引用改写为 `/skills/<name>/...` 绝对路径
+ * （read_file 精确匹配，无相对解析）；其余文件原样上传。
+ * 任一文件上传失败即抛错，由调用方降级（沙箱可用但技能缺失没有意义）。
+ */
+export async function uploadSkillsToSandbox(
+  sb: GuardedSandbox,
+  defs: SkillDef[],
+): Promise<void> {
+  const enc = new TextEncoder();
+  // 收集 [虚拟路径, 文本] 并按路径排序，保证指纹与上传内容确定、与 defs 顺序无关
+  const entries: Array<{ path: string; text: string }> = [];
+  for (const def of defs) {
+    for (const [rel, content] of Object.entries(def.files)) {
+      const text =
+        rel === 'SKILL.md' ? absolutizeRefPaths(def.name, content) : content;
+      entries.push({ path: `/skills/${def.name}/${rel}`, text });
+    }
+  }
+  entries.sort((a, b) => a.path.localeCompare(b.path));
+  const fingerprint = createHash('sha256')
+    .update(entries.map((e) => `${e.path}\n${e.text}`).join('\0'))
+    .digest('hex');
+
+  // 与沙箱内上次指纹比对：一致则跳过（下载失败/缺失 = 视为不一致，照常上传）
+  const [manifest] = await sb.downloadFiles([SKILLS_MANIFEST_PATH]);
+  if (
+    manifest &&
+    !manifest.error &&
+    manifest.content &&
+    new TextDecoder().decode(manifest.content) === fingerprint
+  ) {
+    return;
+  }
+
+  // 指纹变化：先清空旧技能目录（execute 已 cd 到工作区根，相对路径 skills 即 ws/skills），
+  // 再全量重建——避免被禁用/删除的技能文件残留被 skills 中间件继续扫到。
+  await sb.execute(`rm -rf skills`);
+
+  const files: Array<[string, Uint8Array]> = entries.map((e) => [
+    e.path,
+    enc.encode(e.text),
+  ]);
+  // 指纹清单一并写入（.manifest 是文件，skills 中间件只认目录，不会被当成技能）
+  files.push([SKILLS_MANIFEST_PATH, enc.encode(fingerprint)]);
+
+  const results = await sb.uploadFiles(files);
+  const failed = results.filter((r) => r.error);
+  if (failed.length > 0) {
+    throw new Error(
+      `技能上传沙箱失败 ${failed.length}/${files.length}：${failed[0].path} ${failed[0].error}`,
+    );
+  }
 }
 
 /**

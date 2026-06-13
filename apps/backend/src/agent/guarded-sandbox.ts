@@ -27,8 +27,15 @@
  * getWorkDir() 覆写为直接返回 workspaceRoot（真实路径）——它只被宿主侧代码使用
  * （conversations 文件接口的 listFiles/downloadFile），不进入模型上下文。
  *
- * uploadFiles / downloadFiles / start / isRunning / id 等 host 侧方法原样透传——
- * 技能同步要传 /skills/...，文件接口要下载产物，这些是宿主代码（可信路径）。
+ * uploadFiles / downloadFiles 与文件工具同样走虚拟根映射（toReal）：技能库注入
+ * `/skills/<name>/...` 落到 `${workspaceRoot}/skills/...`，与 ls/read 口径一致，
+ * deepagents 的 skills 中间件（ls + downloadFiles 扫 /skills/）才能在沙箱盘读到技能；
+ * conversations 文件接口传真实工作区路径，经 toReal 的「真实路径原样接受」分支不受影响。
+ *
+ * /skills/ 是只读技能库：write/edit 命中 `${workspaceRoot}/skills/` 直接拒绝，
+ * 防 agent 改坏注入的技能文件（每轮 run 前会重新上传，但运行中不应被污染）。
+ *
+ * start / isRunning / id 等 host 侧方法原样透传。
  */
 
 import path from 'node:path';
@@ -93,6 +100,12 @@ export class GuardedSandbox {
     return null;
   }
 
+  /** 真实路径是否落在只读技能库 `${workspaceRoot}/skills/` 下。 */
+  private isSkillsPath(real: string): boolean {
+    const skillsRoot = `${this.workspaceRoot}/skills`;
+    return real === skillsRoot || real.startsWith(skillsRoot + '/');
+  }
+
   /** 出站：字符串里的真实工作区前缀替换回虚拟根 `/`。 */
   private toVirtual(s: string): string {
     return s
@@ -119,6 +132,11 @@ export class GuardedSandbox {
   /** 拒绝消息：不暴露真实路径，按虚拟根口径表述（回显的入参路径同样脱敏）。 */
   private denyMsg(p: string): string {
     return `路径超出 agent 工作目录（你的工作目录是 /，仅可访问其中的路径）：${this.toVirtual(p)}`;
+  }
+
+  /** 只读技能库拒写消息（按虚拟根口径表述）。 */
+  private skillsReadOnlyMsg(p: string): string {
+    return `/skills/ 是只读技能库，禁止写入：${this.toVirtual(p)}`;
   }
 
   // ─── 文件方法（含路径守卫 + 出入站映射）──────────────────────────────────
@@ -156,6 +174,8 @@ export class GuardedSandbox {
   async write(filePath: string, content: string): Promise<WriteResult> {
     const real = this.toReal(filePath);
     if (!real) return { error: this.denyMsg(filePath) };
+    if (this.isSkillsPath(real))
+      return { error: this.skillsReadOnlyMsg(filePath) };
     return this.sanitize(await this.inner.write(real, content));
   }
 
@@ -167,6 +187,8 @@ export class GuardedSandbox {
   ): Promise<EditResult> {
     const real = this.toReal(filePath);
     if (!real) return { error: this.denyMsg(filePath) };
+    if (this.isSkillsPath(real))
+      return { error: this.skillsReadOnlyMsg(filePath) };
     return this.sanitize(
       await this.inner.edit(real, oldString, newString, replaceAll),
     );
@@ -208,16 +230,65 @@ export class GuardedSandbox {
     return Promise.resolve(this.workspaceRoot);
   }
 
-  // ─── host 侧方法：原样透传（可信宿主代码，技能同步/文件接口使用）────────
+  // ─── host 侧批量传输：路径走 toReal 映射（虚拟根 → 工作区真实路径）─────────
 
+  /**
+   * 入站路径映射 + 逃逸拒绝：技能同步传 `/skills/...` → `${workspaceRoot}/skills/...`；
+   * conversations 传真实工作区路径 → toReal 原样接受。逃逸到区外的项返回 error，保持数组对齐。
+   */
   async uploadFiles(
     files: Array<[string, Uint8Array]>,
   ): Promise<FileUploadResponse[]> {
-    return this.inner.uploadFiles(files);
+    const results: FileUploadResponse[] = new Array<FileUploadResponse>(
+      files.length,
+    );
+    const allowed: Array<[string, Uint8Array]> = [];
+    const allowedIdx: number[] = [];
+    files.forEach(([p, content], i) => {
+      const real = this.toReal(p);
+      // error 是标准化错误码（非自由文本）：逃逸工作区按 invalid_path
+      if (real === null)
+        results[i] = { path: this.toVirtual(p), error: 'invalid_path' };
+      else {
+        allowed.push([real, content]);
+        allowedIdx.push(i);
+      }
+    });
+    if (allowed.length > 0) {
+      const res = this.sanitize(await this.inner.uploadFiles(allowed));
+      res.forEach((r, j) => (results[allowedIdx[j]] = r));
+    }
+    return results;
   }
 
   async downloadFiles(paths: string[]): Promise<FileDownloadResponse[]> {
-    return this.inner.downloadFiles(paths);
+    const results: FileDownloadResponse[] = new Array<FileDownloadResponse>(
+      paths.length,
+    );
+    const allowed: string[] = [];
+    const allowedIdx: number[] = [];
+    paths.forEach((p, i) => {
+      const real = this.toReal(p);
+      // error 是标准化错误码（非自由文本）：逃逸工作区按 invalid_path
+      if (real === null)
+        results[i] = {
+          path: this.toVirtual(p),
+          content: null,
+          error: 'invalid_path',
+        };
+      else {
+        allowed.push(real);
+        allowedIdx.push(i);
+      }
+    });
+    if (allowed.length > 0) {
+      const res = await this.inner.downloadFiles(allowed);
+      // content 可能是二进制，不脱敏；error 是错误码不脱敏；仅 path 按虚拟根脱敏
+      res.forEach((r, j) => {
+        results[allowedIdx[j]] = { ...r, path: this.toVirtual(r.path) };
+      });
+    }
+    return results;
   }
 
   async start(timeout?: number): Promise<void> {

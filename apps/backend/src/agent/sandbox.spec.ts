@@ -12,9 +12,11 @@ import {
   listDir,
   pickPreferredSandbox,
   readFilePreview,
+  uploadSkillsToSandbox,
   type SandboxListing,
 } from './sandbox';
 import type { GuardedSandbox } from './guarded-sandbox';
+import type { SkillDef } from '../skills/skills.service';
 
 const sb = (id: string, state: string, createdAt: string): SandboxListing => ({
   id,
@@ -138,5 +140,73 @@ describe('readFilePreview', () => {
     } as unknown as GuardedSandbox;
     const out = await readFilePreview(sbm, 'dist/app.zip');
     expect(out).toEqual({ kind: 'binary', size: 4 });
+  });
+});
+
+describe('uploadSkillsToSandbox 去重', () => {
+  const def: SkillDef = {
+    name: 'tvc-director',
+    description: '',
+    kind: 'builtin',
+    source: 'builtin',
+    enabled: true,
+    files: { 'SKILL.md': '# tvc' },
+  };
+
+  // mock GuardedSandbox：downloadFiles 返回给定 .manifest，uploadFiles 记录上传项
+  const mkSb = (manifest: {
+    content: Uint8Array | null;
+    error: string | null;
+  }) => {
+    const uploaded: Array<[string, Uint8Array]> = [];
+    const sbm = {
+      downloadFiles: jest
+        .fn()
+        .mockResolvedValue([{ path: '/skills/.manifest', ...manifest }]),
+      execute: jest.fn().mockResolvedValue({ output: '', exitCode: 0 }),
+      uploadFiles: jest.fn(async (files: Array<[string, Uint8Array]>) => {
+        uploaded.push(...files);
+        return files.map(([p]) => ({ path: p, error: null }));
+      }),
+    } as unknown as GuardedSandbox;
+    return { sbm, uploaded };
+  };
+
+  it('无 manifest（首次/新沙箱）→ 先清空旧目录再全量上传 + 写 .manifest', async () => {
+    const { sbm, uploaded } = mkSb({ content: null, error: 'file_not_found' });
+    await uploadSkillsToSandbox(sbm, [def]);
+    expect(sbm.execute).toHaveBeenCalledWith('rm -rf skills');
+    const paths = uploaded.map(([p]) => p);
+    expect(paths).toContain('/skills/tvc-director/SKILL.md');
+    expect(paths).toContain('/skills/.manifest');
+  });
+
+  it('manifest 指纹一致 → 跳过：不 execute、不 uploadFiles', async () => {
+    // 先跑一次拿到写入沙箱的指纹（避免硬编码 sha256）
+    const first = mkSb({ content: null, error: 'file_not_found' });
+    await uploadSkillsToSandbox(first.sbm, [def]);
+    const fingerprint = first.uploaded.find(
+      ([p]) => p === '/skills/.manifest',
+    )![1];
+
+    // 第二次：downloadFiles 回灌相同指纹 → 应整体跳过
+    const second = mkSb({ content: fingerprint, error: null });
+    await uploadSkillsToSandbox(second.sbm, [def]);
+    expect(second.sbm.execute).not.toHaveBeenCalled();
+    expect(second.sbm.uploadFiles).not.toHaveBeenCalled();
+  });
+
+  it('技能内容变化 → 指纹不符 → 重新清空并上传', async () => {
+    const first = mkSb({ content: null, error: 'file_not_found' });
+    await uploadSkillsToSandbox(first.sbm, [def]);
+    const fingerprint = first.uploaded.find(
+      ([p]) => p === '/skills/.manifest',
+    )![1];
+
+    const changed: SkillDef = { ...def, files: { 'SKILL.md': '# tvc v2' } };
+    const second = mkSb({ content: fingerprint, error: null });
+    await uploadSkillsToSandbox(second.sbm, [changed]);
+    expect(second.sbm.execute).toHaveBeenCalledWith('rm -rf skills');
+    expect(second.sbm.uploadFiles).toHaveBeenCalled();
   });
 });

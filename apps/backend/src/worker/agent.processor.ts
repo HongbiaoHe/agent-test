@@ -1,4 +1,3 @@
-import type { BaseStore } from '@langchain/langgraph';
 import { Command } from '@langchain/langgraph';
 import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
@@ -6,7 +5,7 @@ import { Job, Queue } from 'bullmq';
 import { AbortRegistry, AGENT_ABORTS } from '../agent/abort-registry';
 import { buildAgent } from '../agent/agent.factory';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
-import { getUserSandbox } from '../agent/sandbox';
+import { getUserSandbox, uploadSkillsToSandbox } from '../agent/sandbox';
 import { normalize, RawEvent } from '../agent/event-normalizer';
 import { parseCommand } from '../commands/parse-command';
 import { StreamService } from '../events/stream.service';
@@ -14,8 +13,6 @@ import { MediaService } from '../media/media.service';
 import { createMediaTools } from '../media/media.tools';
 import { PrismaService } from '../prisma/prisma.service';
 import { absolutizeRefPaths } from '../skills/skill-files';
-import { seedSkillsStore } from '../skills/skill-store.seed';
-import { SKILLS_STORE } from '../skills/skill-store.provider';
 import type { SkillDef } from '../skills/skills.service';
 import { SkillsService } from '../skills/skills.service';
 
@@ -48,7 +45,6 @@ export class AgentProcessor extends WorkerHost {
     private readonly skills: SkillsService,
     @Inject(CHECKPOINTER) private readonly checkpointer: unknown,
     @InjectQueue('agent-run') private readonly queue: Queue,
-    @Inject(SKILLS_STORE) private readonly store: BaseStore,
     private readonly media: MediaService,
     @Inject(AGENT_ABORTS) private readonly aborts: AbortRegistry,
   ) {
@@ -91,10 +87,8 @@ export class AgentProcessor extends WorkerHost {
         configurable: { thread_id: conversationId, userId: conv.userId },
       };
 
-      // ① 播种：该用户生效技能 → InMemoryStore（diff 同步）
-      // run/resume 共享：worker 重启后 InMemoryStore 为空，resume 不播种 → namespace 空、技能静默失效
+      // ① 取该用户生效技能（含全部文件内容），供下方上传沙箱 + 多轮 SKILL.md 注入复用
       const defs = await this.skills.effectiveSkillsFor(conv.userId);
-      await seedSkillsStore(this.store, conv.userId, defs);
 
       // ② 沙箱：user-scoped find-or-create（同一用户全部会话共享工作区）；无 key/创建失败 → 回退 StateBackend
       let sandbox: Awaited<ReturnType<typeof getUserSandbox>> = null;
@@ -108,9 +102,22 @@ export class AgentProcessor extends WorkerHost {
         await this.stream.publish(conversationId, {
           type: 'message',
           payload: {
-            text: '⚠️ 沙箱创建失败，本轮无命令执行能力（文件与技能阅读不受影响）。',
+            text: '⚠️ 沙箱创建失败，本轮无命令执行与技能能力。',
           },
         });
+      }
+
+      // ②.5 加载技能：起沙箱后、调 LLM 前把技能写入沙箱盘（/skills/<name>/...），
+      // deepagents skills 中间件随后扫 /skills/ 才能读到。上传失败只告警不中断
+      // （沙箱仍可执行命令/读写文件，仅本轮无技能）。无沙箱 → 不提供技能（设计：无沙箱=无技能）。
+      if (sandbox) {
+        try {
+          await uploadSkillsToSandbox(sandbox, defs);
+        } catch (e) {
+          this.logger.warn(
+            `技能上传沙箱失败，本轮无技能：${(e as Error)?.message ?? e}`,
+          );
+        }
       }
       // sandbox 为 null 时不传 defaultBackend，buildAgent 内部 new StateBackend() 兜底（避免在 processor 引入 deepagents 直接依赖）
       const defaultBackend = sandbox ?? undefined;
@@ -125,9 +132,8 @@ export class AgentProcessor extends WorkerHost {
       } else {
         const messages = await this.loadHistory(conversationId);
         // 历史按原样重放，不改写任何用户消息：/command 该触发哪个技能由 system prompt 约束
-        // （见 agent.factory）。技能文件现在通过 InMemoryStore 播种（seedSkillsStore），
-        // 不再全量注入 state.files——避免每轮刷新全部文件的写放大，且 store 已按 userId namespace 隔离。
-        // 这里只取末条 user 消息做 LangSmith runName。
+        // （见 agent.factory）。技能文件已在上方 uploadSkillsToSandbox 写入沙箱盘，
+        // 不再注入 state.files。这里只取末条 user 消息做 LangSmith runName。
         let lastLabel = '';
         for (const m of messages) {
           if (m.role !== 'user') continue;
@@ -165,12 +171,11 @@ export class AgentProcessor extends WorkerHost {
         systemPromptExtra,
         model: conv.model ?? undefined,
         defaultBackend,
-        store: this.store,
         hasSandbox: !!sandbox,
         extraTools,
       });
 
-      // ④ stream config：userId 同时进 configurable（StoreBackend namespace 用）与 context（中间件用）
+      // ④ stream config：userId 进 configurable（thread 作用域）与 context（中间件用）
       // runName/tags/metadata → LangSmith 里按此命名/过滤，而非只显示 "LangGraph"
       const stream = await agent.stream(input, {
         ...config,

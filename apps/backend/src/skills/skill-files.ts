@@ -1,12 +1,3 @@
-import type { FileData } from 'deepagents';
-
-/** 虚拟 FS 里单个文件的存储结构（与 deepagents StateBackend FileDataV1 对应）。 */
-export interface SkillFile {
-  content: string[];
-  created_at: string;
-  modified_at: string;
-}
-
 /**
  * 把 SKILL.md 里指向 skill 内部文件的相对路径改写成绝对路径。
  *
@@ -36,9 +27,4 @@ export function absolutizeRefPaths(name: string, skillMd: string): string {
       // 兼容旧写法：反引号里裸写的 references/（无 ./ 前缀）→ 绝对路径
       .replace(/`references\//g, '`' + base + 'references/')
   );
-}
-
-/** 文本内容 → StoreBackend 的 FileData 值（content 按行数组 + 时间戳，dist 的 convertStoreItemToFileData 校验这三字段）。 */
-export function toFileData(content: string, now: string): FileData {
-  return { content: content.split('\n'), created_at: now, modified_at: now };
 }

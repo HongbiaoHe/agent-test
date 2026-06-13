@@ -8,7 +8,8 @@
  *  - 出站脱敏：结果里的真实 ws 前缀替换回 '/'（含 execute 输出）；readRaw.data 不动
  *  - execute → inner 收到 `cd '<ws>' && ( 原命令 )`，输出脱敏
  *  - getWorkDir → 返回真实 workspaceRoot（宿主侧用）
- *  - uploadFiles → 透传（/skills/... 路径不拦截）
+ *  - uploadFiles / downloadFiles → 路径走 toReal 映射（/skills/... → ws/skills/...）
+ *  - /skills/ 只读：write/edit 命中 → 拒绝、inner 未被调用
  */
 
 // GuardedSandbox 不依赖 deepagents 运行时，无需 jest.mock
@@ -238,16 +239,73 @@ describe('GuardedSandbox — getWorkDir', () => {
   });
 });
 
-describe('GuardedSandbox — uploadFiles 透传', () => {
-  it('uploadFiles: /skills/... 路径 → 直接委托 inner，不拦截', async () => {
-    const inner = makeMockInner();
-    const guard = new GuardedSandbox(inner as unknown as DaytonaSandbox, WS);
-    const enc = new TextEncoder();
-    const files: Array<[string, Uint8Array]> = [
-      ['/skills/docx/SKILL.md', enc.encode('# Docx Skill')],
-    ];
-    await guard.uploadFiles(files);
-    expect(inner.uploadFiles).toHaveBeenCalledWith(files);
+describe('GuardedSandbox — uploadFiles / downloadFiles 路径映射', () => {
+  let inner: ReturnType<typeof makeMockInner>;
+  let guard: GuardedSandbox;
+  const enc = new TextEncoder();
+
+  beforeEach(() => {
+    inner = makeMockInner();
+    guard = new GuardedSandbox(inner as unknown as DaytonaSandbox, WS);
+  });
+
+  it('uploadFiles: /skills/... → 映射到 ws/skills/... 再交给 inner', async () => {
+    inner.uploadFiles.mockResolvedValue([
+      { path: `${WS}/skills/docx/SKILL.md`, error: null },
+    ]);
+    await guard.uploadFiles([['/skills/docx/SKILL.md', enc.encode('# Docx')]]);
+    expect(inner.uploadFiles).toHaveBeenCalledWith([
+      [`${WS}/skills/docx/SKILL.md`, enc.encode('# Docx')],
+    ]);
+  });
+
+  it('uploadFiles: 逃逸工作区的路径 → invalid_path、inner 未被调用该项', async () => {
+    const res = await guard.uploadFiles([['../../etc/evil', enc.encode('x')]]);
+    expect(res[0].error).toBe('invalid_path');
+    expect(inner.uploadFiles).not.toHaveBeenCalled();
+  });
+
+  it('downloadFiles: /skills/... → 映射到 ws/skills/...；返回 path 脱敏回虚拟根', async () => {
+    inner.downloadFiles.mockResolvedValue([
+      {
+        path: `${WS}/skills/docx/SKILL.md`,
+        content: enc.encode('# Docx'),
+        error: null,
+      },
+    ]);
+    const res = await guard.downloadFiles(['/skills/docx/SKILL.md']);
+    expect(inner.downloadFiles).toHaveBeenCalledWith([
+      `${WS}/skills/docx/SKILL.md`,
+    ]);
+    // 出站 path 脱敏：真实 ws 前缀替换回虚拟根
+    expect(res[0].path).toBe('/skills/docx/SKILL.md');
+  });
+});
+
+describe('GuardedSandbox — /skills/ 只读保护', () => {
+  let inner: ReturnType<typeof makeMockInner>;
+  let guard: GuardedSandbox;
+
+  beforeEach(() => {
+    inner = makeMockInner();
+    guard = new GuardedSandbox(inner as unknown as DaytonaSandbox, WS);
+  });
+
+  it("write('/skills/docx/SKILL.md') → 拒绝、inner.write 未被调用", async () => {
+    const res = await guard.write('/skills/docx/SKILL.md', 'x');
+    expect(res.error).toContain('只读技能库');
+    expect(inner.write).not.toHaveBeenCalled();
+  });
+
+  it("edit('/skills/docx/SKILL.md') → 拒绝、inner.edit 未被调用", async () => {
+    const res = await guard.edit('/skills/docx/SKILL.md', 'a', 'b');
+    expect(res.error).toContain('只读技能库');
+    expect(inner.edit).not.toHaveBeenCalled();
+  });
+
+  it("write('/output/result.md') 非技能路径 → 正常委托 inner", async () => {
+    await guard.write('/output/result.md', 'x');
+    expect(inner.write).toHaveBeenCalledWith(`${WS}/output/result.md`, 'x');
   });
 });
 
