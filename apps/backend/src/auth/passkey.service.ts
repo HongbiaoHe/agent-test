@@ -15,6 +15,7 @@ import { ErrorCodes } from '../common/errors/error-code';
 import { PrismaService } from '../prisma/prisma.service';
 import { REDIS_CLIENT } from '../redis/redis.module';
 import { AuthService } from './auth.service';
+import { resolveProviderName } from './aaguid-map';
 
 const RP_ID = process.env.WEBAUTHN_RP_ID ?? 'localhost';
 const RP_NAME = process.env.WEBAUTHN_RP_NAME ?? 'Agent';
@@ -130,10 +131,22 @@ export class PasskeyService {
         publicKey: Buffer.from(info.credential.publicKey),
         counter: info.credential.counter,
         transports: (response.response.transports ?? []).join(',') || null,
+        // v13 registrationInfo 里这三个字段都是非可空（aaguid:string / credentialDeviceType / credentialBackedUp:boolean）
+        aaguid: info.aaguid,
+        deviceType: info.credentialDeviceType,
+        backedUp: info.credentialBackedUp,
       },
     });
     await this.redis.del(`webauthn:reg:${userId}`);
-    return { id: row.id, createdAt: row.createdAt, transports: row.transports };
+    return {
+      id: row.id,
+      createdAt: row.createdAt,
+      transports: row.transports,
+      providerName: resolveProviderName(row.aaguid, row.deviceType),
+      deviceType: row.deviceType,
+      backedUp: row.backedUp,
+      lastUsedAt: row.lastUsedAt,
+    };
   }
 
   /**
@@ -214,7 +227,7 @@ export class PasskeyService {
 
     await this.prisma.authenticator.update({
       where: { credentialId: cred.credentialId },
-      data: { counter: newCounter },
+      data: { counter: newCounter, lastUsedAt: new Date() },
     });
     await this.redis.del(`webauthn:auth:${flowId}`);
     const token = await this.auth.signToken(user);
