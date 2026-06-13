@@ -51,7 +51,7 @@ describe('AgentProcessor 多轮重放', () => {
     const def: SkillDef = {
       name: 'tvc-director',
       description: '',
-      domain: 'tvc',
+      kind: 'builtin' as const,
       source: 'builtin',
       enabled: true,
       files: { 'SKILL.md': '# tvc' },
@@ -127,7 +127,7 @@ describe('AgentProcessor 多轮重放', () => {
     const def: SkillDef = {
       name: 'tvc-director',
       description: '',
-      domain: 'tvc',
+      kind: 'builtin' as const,
       source: 'builtin',
       enabled: true,
       files: { 'SKILL.md': '# TVC Director\n详见 `./references/treatment.md`' },
@@ -199,7 +199,7 @@ describe('AgentProcessor 多轮重放', () => {
     const def: SkillDef = {
       name: 'tvc-director',
       description: '',
-      domain: 'tvc',
+      kind: 'builtin' as const,
       source: 'builtin',
       enabled: true,
       files: { 'SKILL.md': '# TVC Director' },
@@ -329,7 +329,7 @@ describe('AgentProcessor 多轮重放', () => {
     const def: SkillDef = {
       name: 'tvc-director',
       description: '',
-      domain: 'tvc',
+      kind: 'builtin' as const,
       source: 'builtin',
       enabled: true,
       files: { 'SKILL.md': '# tvc' },
@@ -432,7 +432,7 @@ describe('AgentProcessor 多轮重放', () => {
     const def: SkillDef = {
       name: 'tvc-director',
       description: '',
-      domain: 'tvc',
+      kind: 'builtin' as const,
       source: 'builtin',
       enabled: true,
       files: { 'SKILL.md': '# tvc' },

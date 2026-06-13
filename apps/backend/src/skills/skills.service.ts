@@ -18,18 +18,24 @@ import { Injectable } from '@nestjs/common';
 import { PrismaService } from '../prisma/prisma.service';
 import { parseSkillMd } from './skill-parser';
 
+/** 技能分类：内置（随代码发布）或 GitHub 安装。 */
+export type SkillKind = 'builtin' | 'github';
+
 /** 技能定义：含完整文件内容，供 worker 注入虚拟 FS。 */
 export interface SkillDef {
   name: string;
   description: string;
-  /** 命名约定 <domain>-<action>（沿用现状：name 含 '-' 取首段，否则 'general'） */
-  domain: string;
+  /** 分类：由 source 派生，全链路（API/前端列表/补全面板）以此分组 */
+  kind: SkillKind;
   /** 'builtin' 或 'github:...' 串 */
   source: 'builtin' | string;
   enabled: boolean;
   /** 相对路径 → 内容（含 SKILL.md） */
   files: Record<string, string>;
 }
+
+const kindOf = (source: string): SkillKind =>
+  source === 'builtin' ? 'builtin' : 'github';
 
 // 惰性求值：测试 beforeEach 赋值的 env 在方法调用时才被读取，避免模块加载时快照旧值。
 // 模式沿用 command-registry.service.ts:18。
@@ -94,7 +100,7 @@ function scanSkillDir(
     result.push({
       name,
       description: parsed.description,
-      domain: name.includes('-') ? name.split('-')[0] : 'general',
+      kind: kindOf(source),
       source,
       enabled,
       files,
@@ -133,7 +139,7 @@ export class SkillsService {
         map.set(row.name, {
           name: row.name,
           description: '',
-          domain: row.name.includes('-') ? row.name.split('-')[0] : 'general',
+          kind: kindOf(row.source),
           source: row.source,
           enabled: row.enabled,
           files: {},
@@ -151,7 +157,7 @@ export class SkillsService {
       map.set(row.name, {
         name: parsed.name,
         description: parsed.description,
-        domain: parsed.name.includes('-') ? parsed.name.split('-')[0] : 'general',
+        kind: kindOf(row.source),
         source: row.source,
         enabled: row.enabled,
         files,

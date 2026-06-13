@@ -49,17 +49,16 @@ export function SkillDetailSheet({
             <span className="truncate">{name}</span>
             {d && (
               <>
-                <Badge variant={d.source === "builtin" ? "secondary" : "outline"}>
-                  {d.source === "builtin" ? "Built-in" : "GitHub"}
+                <Badge variant={d.kind === "builtin" ? "secondary" : "outline"}>
+                  {d.kind === "builtin" ? "Built-in" : "GitHub"}
                 </Badge>
-                <Badge variant="outline">{d.domain}</Badge>
                 {!d.enabled && <Badge variant="destructive">Disabled</Badge>}
               </>
             )}
           </SheetTitle>
           {d && (
             <SheetDescription className="truncate text-left">
-              {d.source === "builtin" ? "Ships with the system" : d.source}
+              {d.kind === "builtin" ? "Ships with the system" : d.source}
             </SheetDescription>
           )}
         </SheetHeader>

@@ -17,6 +17,7 @@ import {
 import { cn } from "@/lib/utils";
 import {
   type SkillInfo,
+  type SkillKind,
   deleteSkill,
   installSkill,
   listSkills,
@@ -30,7 +31,14 @@ export const SKILLS_QUERY_KEY = ["skills"] as const;
 
 export type SourceFilter = "all" | "builtin" | "github";
 
-/** 技能列表：搜索过滤 / 来源筛选 / domain 分组 / 启停 / 删除 / 更新 / 详情。 */
+const KIND_LABEL: Record<SkillKind, string> = {
+  builtin: "Built-in",
+  github: "GitHub",
+};
+/** 分组顺序与页面 Tabs（All / Built-in / GitHub）保持一致 */
+const KIND_ORDER: SkillKind[] = ["builtin", "github"];
+
+/** 技能列表：搜索过滤 / 来源筛选 / 分类（Built-in/GitHub）分组 / 启停 / 删除 / 更新 / 详情。 */
 export function SkillList({
   search,
   source,
@@ -84,8 +92,8 @@ export function SkillList({
 
   const q = search.trim().toLowerCase();
   const filtered = skills.filter((s) => {
-    if (source === "builtin" && s.source !== "builtin") return false;
-    if (source === "github" && s.source === "builtin") return false;
+    if (source === "builtin" && s.kind !== "builtin") return false;
+    if (source === "github" && s.kind !== "github") return false;
     if (!q) return true;
     return (
       s.name.toLowerCase().includes(q) ||
@@ -105,29 +113,33 @@ export function SkillList({
     );
   }
 
-  const groups = new Map<string, SkillInfo[]>();
+  const groups = new Map<SkillKind, SkillInfo[]>();
   for (const s of filtered) {
-    const list = groups.get(s.domain) ?? [];
+    const list = groups.get(s.kind) ?? [];
     list.push(s);
-    groups.set(s.domain, list);
+    groups.set(s.kind, list);
   }
-  const domains = [...groups.keys()].sort();
+  const kinds = KIND_ORDER.filter((k) => groups.has(k));
 
   return (
     <div className="space-y-6">
-      {domains.map((domain) => (
-        <section key={domain} className="space-y-2">
+      {kinds.map((kind) => (
+        <section key={kind} className="space-y-2">
           <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-            {domain}
+            {KIND_LABEL[kind]}
           </h3>
           <div className="space-y-3">
-            {groups.get(domain)!.map((skill) => (
-              <SkillCard
-                key={skill.name}
-                skill={skill}
-                onOpenDetail={() => setDetailName(skill.name)}
-              />
-            ))}
+            {groups
+              .get(kind)!
+              .slice()
+              .sort((a, b) => a.name.localeCompare(b.name))
+              .map((skill) => (
+                <SkillCard
+                  key={skill.name}
+                  skill={skill}
+                  onOpenDetail={() => setDetailName(skill.name)}
+                />
+              ))}
           </div>
         </section>
       ))}
@@ -145,7 +157,7 @@ function SkillCard({
   onOpenDetail: () => void;
 }) {
   const qc = useQueryClient();
-  const isBuiltin = skill.source === "builtin";
+  const isBuiltin = skill.kind === "builtin";
   const [confirming, setConfirming] = useState(false);
 
   const toggleMut = useMutation({

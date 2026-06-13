@@ -45,7 +45,7 @@ export function ChatMessage({ item }: { item: ThreadItem }) {
 
 /**
  * 用户消息气泡。若消息以 `/命令` 开头且命中已知命令（与输入框补全同源），
- * 将该命令渲染为高亮 chip，hover 展示其 domain / 名称 / 描述。
+ * 将该命令渲染为高亮 chip，hover 展示其分类（Built-in/GitHub）/ 名称 / 描述。
  */
 function UserMessage({ text }: { text: string }) {
   // 与 ChatThread 的补全共用同一缓存（queryKey 一致，不会重复请求）
@@ -77,7 +77,7 @@ function UserMessage({ text }: { text: string }) {
               <TooltipContent side="top" align="start" className="max-w-xs">
                 <span className="flex flex-col gap-1 text-left">
                   <span className="text-[10px] font-medium tracking-wide text-background/60 uppercase">
-                    {command.domain}
+                    {command.kind === "builtin" ? "Built-in" : "GitHub"}
                   </span>
                   <span className="font-mono text-xs font-semibold">
                     /{command.name}

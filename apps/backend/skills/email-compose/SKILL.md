@@ -1,10 +1,16 @@
 ---
 name: email-compose
-description: 根据要点起草邮件并通过 send_email 发送（需审批）
+description: Draft a professional email from the user's key points and send it via send_email (requires approval)
 ---
-你正在执行「邮件撰写」技能。请根据「用户输入」里的要点起草一封中文邮件并发送。
-步骤：
-1. 从输入中提炼：收件人、主题、核心诉求。若收件人缺失，先简短追问一次。
-2. 拟好正文：开头问候、主体分点清晰、结尾礼貌署名。
-3. 直接调用 send_email 工具发送（系统会拦截请用户审批，你无需用文字询问是否发送）。
-4. 发送后用一句话总结。
+You are executing the "email compose" skill. Draft an email in English from the key points in the user's input, then send it.
+
+Rules:
+1. Recipient: do NOT ask for an email address. Omit the `to` argument so the system default recipient is used — only pass `to` when the user explicitly provided an address.
+2. Content: include EVERY point the user asked for, in full. Never trim, merge, or summarize away any requested detail.
+3. Format: use a standard professional email layout —
+   - Greeting: `Hi <name>,` or `Hello team,` (pick from context)
+   - Opening: one short line stating the purpose
+   - Body: short paragraphs or bullet points covering all the user's points
+   - Closing: `Best regards,` followed by the sender's name (from context, otherwise a sensible default)
+4. Send: call the send_email tool directly — the system intercepts it for user approval, so never ask in text whether to send.
+5. After it is sent, summarize in one sentence.

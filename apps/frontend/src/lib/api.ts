@@ -76,11 +76,14 @@ export function listConversations(): Promise<ConversationListItem[]> {
   return request("/conversations");
 }
 
+/** 技能分类：内置（随系统发布）或 GitHub 安装。与后端 SkillKind 对应。 */
+export type SkillKind = "builtin" | "github";
+
 /** /command 可用命令（供输入框 `/` 自动补全）。 */
 export interface CommandInfo {
   name: string;
   description: string;
-  domain: string;
+  kind: SkillKind;
 }
 
 export function listCommands(): Promise<CommandInfo[]> {
@@ -201,11 +204,11 @@ export async function fetchMediaAssetBlob(versionId: string): Promise<Blob> {
 
 // ——— Skills 技能管理 ———
 
-/** 技能注册表条目（GET /skills）。source==='builtin' 为内置（不可启停/删除）。 */
+/** 技能注册表条目（GET /skills）。kind==='builtin' 为内置（不可启停/删除）。 */
 export interface SkillInfo {
   name: string;
   description: string;
-  domain: string;
+  kind: SkillKind;
   source: "builtin" | string;
   enabled: boolean;
 }

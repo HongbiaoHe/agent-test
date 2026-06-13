@@ -17,6 +17,6 @@ export class CommandsController {
     const defs = await this.skills.listFor(user.userId);
     return defs
       .filter((d) => d.enabled)
-      .map(({ name, description, domain }) => ({ name, description, domain }));
+      .map(({ name, description, kind }) => ({ name, description, kind }));
   }
 }

@@ -37,6 +37,7 @@ describe('SkillsService.effectiveSkillsFor', () => {
     const defs = await svc.effectiveSkillsFor('u1');
     expect(defs.map((d) => d.name)).toEqual(['tvc-director']);
     expect(defs[0].source).toBe('builtin');
+    expect(defs[0].kind).toBe('builtin');
   });
 
   it('用户已启用安装技能合并进来，且同名覆盖内置', async () => {
@@ -118,6 +119,7 @@ describe('SkillsService.detailFor', () => {
     const d = await svc.detailFor('u1', 'pdf');
     expect(d?.enabled).toBe(false);
     expect(d?.source).toBe('github:a/b#p@main');
+    expect(d?.kind).toBe('github');
   });
 
   it('同名时用户安装遮蔽内置，与 listFor 一致', async () => {

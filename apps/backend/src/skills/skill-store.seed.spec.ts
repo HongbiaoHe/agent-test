@@ -3,7 +3,7 @@ import { seedSkillsStore } from './skill-store.seed';
 import type { SkillDef } from './skills.service';
 
 const def = (name: string, files: Record<string, string>): SkillDef =>
-  ({ name, description: 'd', domain: 'g', source: 'builtin', enabled: true, files });
+  ({ name, description: 'd', kind: 'builtin', source: 'builtin', enabled: true, files });
 
 describe('seedSkillsStore', () => {
   it('把技能文件播到 [userId,"skills"]，key 为挂载点相对路径 /<name>/<rel>，SKILL.md 经 absolutize', async () => {

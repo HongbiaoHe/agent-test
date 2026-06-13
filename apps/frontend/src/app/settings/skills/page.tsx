@@ -9,7 +9,7 @@ import { Tabs, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { InstallForm } from "./_components/install-form";
 import { SkillList, type SourceFilter } from "./_components/skill-list";
 
-// /settings/skills：技能管理——搜索 / 来源筛选 / domain 分组 / 安装 / 启停 / 更新 / 删除 / 详情。
+// /settings/skills：技能管理——搜索 / 来源筛选 / 分类（Built-in/GitHub）分组 / 安装 / 启停 / 更新 / 删除 / 详情。
 export default function SkillsSettingsPage() {
   const [search, setSearch] = useState("");
   const [source, setSource] = useState<SourceFilter>("all");

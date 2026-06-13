@@ -8,7 +8,6 @@ import { respondControl, subscribeConversation } from "@/lib/socket";
 
 import {
   buildBaseState,
-  type Decision,
   emptyState,
   foldLive,
   type NormalizedEvent,
@@ -95,32 +94,11 @@ export function useConversation(conversationId: string | null) {
     setPending(true);
   }
 
-  /** 审批决策（approve/reject/edit/respond），decisions 顺序对应 actionRequests。 */
-  function respondApproval(decision: Decision) {
-    const approval = derived.approval;
-    if (!approval || !conversationId) return;
-    let decisions: unknown[];
-    if (decision === "edit") {
-      decisions = approval.actionRequests.map((a) => {
-        const input = window.prompt(
-          `Edit arguments for ${a.name} (JSON):`,
-          JSON.stringify(a.args),
-        );
-        if (input === null) return { type: "reject" };
-        try {
-          return { type: "edit", editedAction: { name: a.name, args: JSON.parse(input) } };
-        } catch {
-          return { type: "reject" };
-        }
-      });
-    } else if (decision === "respond") {
-      const input = window.prompt("Reply (returned to the agent as the tool result):") ?? "";
-      decisions = approval.actionRequests.map(() => ({ type: "respond", message: input }));
-    } else {
-      decisions = approval.actionRequests.map(() => ({ type: decision }));
-    }
+  /** 审批决策回传：decisions 由 ApprovalPanel 组装，顺序对应 actionRequests。 */
+  function respondApproval(decisions: unknown[]) {
+    if (!derived.approval || !conversationId) return;
     respondControl(conversationId, decisions);
-    // 乐观清掉审批卡片并恢复运行态，后续 resume 事件继续流入
+    // 乐观清掉审批面板并恢复运行态，后续 resume 事件继续流入
     setLiveEvents((prev) => [...prev, { type: "control_resolved", payload: {} }]);
     setPending(true);
   }

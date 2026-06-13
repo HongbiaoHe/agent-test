@@ -105,7 +105,7 @@ export class SkillsController {
     return {
       name: row.name,
       description: row.description,
-      domain: row.name.includes('-') ? row.name.split('-')[0] : 'general',
+      kind: 'github' as const, // install 只来自 GitHub
       source: row.source,
       enabled: row.enabled,
     };

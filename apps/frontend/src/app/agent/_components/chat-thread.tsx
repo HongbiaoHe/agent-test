@@ -22,10 +22,10 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { listCommands } from "@/lib/api";
+import { type SkillKind, listCommands } from "@/lib/api";
 
-import type { Approval, Decision, ThreadItem } from "../_lib/thread";
-import { ApprovalCard } from "./approval-card";
+import type { Approval, ThreadItem } from "../_lib/thread";
+import { ApprovalPanel } from "./approval-panel";
 import { ChatMessage } from "./chat-message";
 import { MediaCard } from "./media-card";
 import { ModelSwitcher } from "./model-switcher";
@@ -34,6 +34,13 @@ import { TaskPlanPanel } from "./task-plan-panel";
 import { ThinkingIndicator } from "./thinking-indicator";
 import type { ToolItem } from "./tool-chip";
 import { ToolGroup } from "./tool-group";
+
+/** `/` 补全面板分组标签与顺序（Built-in 在前，与设置页一致） */
+const CMD_KIND_LABEL: Record<SkillKind, string> = {
+  builtin: "Built-in",
+  github: "GitHub",
+};
+const CMD_KIND_ORDER: SkillKind[] = ["builtin", "github"];
 
 export function ChatThread({
   title,
@@ -64,7 +71,8 @@ export function ChatThread({
   isNewChat: boolean;
   activeDetailId: string | null;
   onOpenDetail: (id: string) => void;
-  onDecide: (d: Decision) => void;
+  /** 审批决策回传：decisions 顺序对应 actionRequests（由 ApprovalPanel 组装） */
+  onDecide: (decisions: unknown[]) => void;
   onSend: (text: string) => void;
   onStop: () => void;
   /** 停止指令请求中（HTTP 在途）：按钮转圈并禁用，防重复点击 */
@@ -98,12 +106,12 @@ export function ChatThread({
         );
   const showCmdMenu = !busy && cmdPrefix !== null && matches.length > 0;
 
-  // 按 domain 分组展示；flat 为菜单从上到下的实际可选顺序（键盘导航以此为准）
-  const grouped = matches.reduce<Record<string, typeof matches>>((acc, c) => {
-    (acc[c.domain] ??= []).push(c);
-    return acc;
-  }, {});
-  const flat = Object.values(grouped).flat();
+  // 按分类（Built-in/GitHub）分组展示；flat 为菜单从上到下的实际可选顺序（键盘导航以此为准），
+  // 与渲染共用同一 groupedKinds，保证顺序一致
+  const groupedKinds = CMD_KIND_ORDER.map(
+    (k) => [k, matches.filter((c) => c.kind === k)] as const,
+  ).filter(([, cmds]) => cmds.length > 0);
+  const flat = groupedKinds.flatMap(([, cmds]) => cmds);
 
   // 候选项变化（输入过滤 / 菜单重新打开）时，默认高亮第一个
   const [prevPrefix, setPrevPrefix] = useState(cmdPrefix);
@@ -268,11 +276,6 @@ export function ChatThread({
                   <ChatMessage key={r.item.id} item={r.item} />
                 ),
               )}
-              {approval && (
-                <div>
-                  <ApprovalCard approval={approval} onDecide={onDecide} />
-                </div>
-              )}
               {busy && <ThinkingIndicator visible={thinkingVisible} />}
             </>
           )}
@@ -286,13 +289,16 @@ export function ChatThread({
           {/* 任务计划：固定在输入框上方，可折叠/展开 */}
           {plan && <TaskPlanPanel todos={plan.todos} />}
 
-          {/* 命令补全面板（输入 / 时浮在输入框上方，按 domain 分组）*/}
+          {/* 审批面板：与任务计划同区域，固定在输入框上方 */}
+          {approval && <ApprovalPanel approval={approval} onSubmit={onDecide} />}
+
+          {/* 命令补全面板（输入 / 时浮在输入框上方，按分类 Built-in/GitHub 分组）*/}
           {showCmdMenu && (
             <div className="absolute bottom-full mb-2 max-h-72 w-full overflow-y-auto rounded-xl border bg-popover p-1.5 shadow-lg">
-              {Object.entries(grouped).map(([domain, cmds]) => (
-                <div key={domain}>
+              {groupedKinds.map(([kind, cmds]) => (
+                <div key={kind}>
                   <div className="px-2 py-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-                    {domain}
+                    {CMD_KIND_LABEL[kind]}
                   </div>
                   {cmds.map((c) => {
                     const idx = flat.indexOf(c);
