@@ -17,17 +17,22 @@ export function PromptPanel({
   children,
   footer,
   className,
+  glow = false,
 }: {
   icon: LucideIcon;
   title: string;
   children: ReactNode;
   footer?: ReactNode;
   className?: string;
+  /** 待处理高光边框：一道光沿边框旋转，吸引用户注意需响应的内容 */
+  glow?: boolean;
 }) {
   return (
     <div
       className={cn(
-        "mb-2 overflow-hidden rounded-xl border bg-card shadow-sm",
+        // glow 时旋转高光环（GlowBorder 同款 .glow-border）即边框，不再叠加静态 border
+        "mb-2 overflow-hidden rounded-xl bg-card shadow-sm",
+        glow ? "glow-border" : "border",
         className,
       )}
     >

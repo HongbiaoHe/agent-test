@@ -93,7 +93,7 @@ export function ApprovalPanel({
     <PromptPanel
       icon={ShieldAlert}
       title="Needs your sign-off"
-      className="border-primary/40"
+      glow
       footer={
         view === "review" ? (
           <>

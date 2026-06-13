@@ -44,6 +44,9 @@
   --success: oklch(0.63 0.17 150);
   --warning: oklch(0.72 0.15 75);
 
+  /* 旋转高光边框（GlowBorder）的柔光色：light 用暖中灰（白卡上可见但不刺黑），dark 见 .dark */
+  --glow-color: oklch(0.64 0.015 60);
+
   /* 代码高亮语法色（highlight.js 用，亮色一套，.dark 另一套） */
   --syntax-comment: oklch(0.55 0.01 240);
   --syntax-keyword: oklch(0.55 0.2 25);
@@ -84,6 +87,9 @@
 
   --success: oklch(0.72 0.17 150);
   --warning: oklch(0.78 0.14 80);
+
+  /* dark 下柔光用近白亮光（暗卡上更醒目） */
+  --glow-color: oklch(0.92 0.002 80);
 
   --syntax-comment: oklch(0.66 0.01 240);
   --syntax-keyword: oklch(0.72 0.15 25);
@@ -144,6 +150,68 @@
 }
 .animate-media-shimmer {
   animation: media-card-shimmer 1.6s ease-in-out infinite;
+}
+
+/* 旋转高光渐变边框（供 <GlowBorder> 组件 / .glow-border 类复用）：
+   两段对称柔光沿边框环缓慢旋转，吸引注意。
+   实现：conic-gradient 高光（用语义 token，保持暖中性不引彩色）+ mask 镂空中心只留边框环。
+   可调变量（在元素上覆盖即可）：
+     --glow-color  高光色（默认见 :root / .dark 的 token）
+     --glow-speed  旋转周期（默认 8s）
+     --glow-width  边框环宽度（默认 1.5px）
+   @property 让角度可被动画补间；keyframe 必须全局声明（写在组件内 <style> 不会注入）。 */
+@property --glow-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes glow-border-spin {
+  to {
+    --glow-angle: 360deg;
+  }
+}
+.glow-border {
+  position: relative;
+}
+.glow-border::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  z-index: 0;
+  border-radius: inherit;
+  padding: var(--glow-width, 1.5px); /* 边框环宽度 */
+  /* 常驻边框色打底（取代静态 border，避免缺口）+ 两段对称高光旋转扫过，
+     两段之间用衔接色（--border）渐变过渡。高光色用 --glow-color（light/dark 分别取值）。 */
+  background: conic-gradient(
+    from var(--glow-angle),
+    var(--glow-color) 0deg,
+    var(--glow-color) 30deg,
+    var(--border) 90deg,
+    var(--border) 150deg,
+    var(--glow-color) 180deg,
+    var(--glow-color) 210deg,
+    var(--border) 270deg,
+    var(--border) 330deg,
+    var(--glow-color) 360deg
+  );
+  /* 双 mask 异或：保留 padding 区（边框环）、镂空 content-box（中心），故不挡交互/内容。
+     只写标准属性，Lightning CSS（Tailwind v4）会自动补 -webkit- 前缀；手写前缀反而会被丢弃。 */
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: glow-border-spin var(--glow-speed, 8s) linear infinite;
+}
+/* 内容需浮在高光环之上（::before z-index:0） */
+.glow-border > * {
+  position: relative;
+  z-index: 1;
+}
+@media (prefers-reduced-motion: reduce) {
+  .glow-border::before {
+    animation: none;
+  }
 }
 
 /* highlight.js 语法配色：统一映射到上方 --syntax-* token（亮暗自适应）。
