@@ -69,7 +69,9 @@ describe('UsersService.deletePasskey', () => {
     prismaMock.authenticator.findFirst.mockResolvedValue({ id: 'pk1' });
     prismaMock.authenticator.delete.mockResolvedValue({});
     const svc = new UsersService(prismaMock as never);
-    await expect(svc.deletePasskey('u1', 'pk1')).resolves.toEqual({ deleted: 'pk1' });
+    await expect(svc.deletePasskey('u1', 'pk1')).resolves.toEqual({
+      deleted: 'pk1',
+    });
     expect(prismaMock.authenticator.findFirst).toHaveBeenCalledWith({
       where: { id: 'pk1', userId: 'u1' },
     });

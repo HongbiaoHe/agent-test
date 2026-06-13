@@ -41,13 +41,13 @@ describe('SandboxStatusService', () => {
 
   it('started + includeFiles：字段映射完整 + 列工作区文件', async () => {
     mockPickUserSandbox.mockResolvedValue({
-        id: 'sb-1',
-        state: 'started',
-        createdAt: '2026-06-11T01:00:00Z',
-        updatedAt: '2026-06-11T02:00:00Z',
-        autoStopInterval: 5,
-        autoDeleteInterval: 30,
-      });
+      id: 'sb-1',
+      state: 'started',
+      createdAt: '2026-06-11T01:00:00Z',
+      updatedAt: '2026-06-11T02:00:00Z',
+      autoStopInterval: 5,
+      autoDeleteInterval: 30,
+    });
     mockFindUserSandbox.mockResolvedValue({ fake: true });
     mockListWorkspaceFiles.mockResolvedValue([{ path: 'a.txt' }]);
 
@@ -66,7 +66,12 @@ describe('SandboxStatusService', () => {
   });
 
   it('started 默认（心跳）：不连沙箱不列文件——GET-by-id 会刷新 Daytona 活动事件导致永不自动停机', async () => {
-    mockPickUserSandbox.mockResolvedValue({ id: 'sb-1', state: 'started', autoStopInterval: 5, autoDeleteInterval: 30 });
+    mockPickUserSandbox.mockResolvedValue({
+      id: 'sb-1',
+      state: 'started',
+      autoStopInterval: 5,
+      autoDeleteInterval: 30,
+    });
 
     const r = await service.status('u1');
 
@@ -78,7 +83,12 @@ describe('SandboxStatusService', () => {
   });
 
   it('stopped：不连沙箱、不列文件（files:null），绝不唤醒', async () => {
-    mockPickUserSandbox.mockResolvedValue({ id: 'sb-1', state: 'stopped', autoStopInterval: 5, autoDeleteInterval: 30 });
+    mockPickUserSandbox.mockResolvedValue({
+      id: 'sb-1',
+      state: 'stopped',
+      autoStopInterval: 5,
+      autoDeleteInterval: 30,
+    });
 
     const r = await service.status('u1');
 

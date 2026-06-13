@@ -18,15 +18,30 @@ export const ErrorCodes = {
   PASSKEY_VERIFY_FAILED: { code: 30002, message: 'Passkey 验证失败' },
   PASSKEY_NOT_FOUND: { code: 30003, message: '未找到该 Passkey，请先注册' },
   INTERNAL_ERROR: { code: 50000, message: '系统繁忙，请稍后重试' },
-  SKILL_INSTALL_NOT_FOUND: { code: 40001, message: '技能源仓库不存在或路径无效' },
+  SKILL_INSTALL_NOT_FOUND: {
+    code: 40001,
+    message: '技能源仓库不存在或路径无效',
+  },
   SKILL_INSTALL_INVALID: { code: 40002, message: '技能校验失败' },
-  SKILL_INSTALL_PATH_TRAVERSAL: { code: 40003, message: 'tarball 含非法路径，拒绝解压' },
-  SKILL_INSTALL_TOO_LARGE: { code: 40004, message: '技能目录超出 20MB 大小限制' },
+  SKILL_INSTALL_PATH_TRAVERSAL: {
+    code: 40003,
+    message: 'tarball 含非法路径，拒绝解压',
+  },
+  SKILL_INSTALL_TOO_LARGE: {
+    code: 40004,
+    message: '技能目录超出 20MB 大小限制',
+  },
   SKILL_NOT_FOUND: { code: 40005, message: '技能不存在' },
   SANDBOX_NOT_FOUND: { code: 40006, message: '会话沙箱不存在或已回收' },
-  INVALID_PATH: { code: 40007, message: '路径含非法字符（不允许 .. 或绝对路径）' },
+  INVALID_PATH: {
+    code: 40007,
+    message: '路径含非法字符（不允许 .. 或绝对路径）',
+  },
   MEDIA_GENERATION_NOT_FOUND: { code: 60001, message: '媒体生成记录不存在' },
   MEDIA_VERSION_NOT_FOUND: { code: 60002, message: '媒体版本不存在' },
   MEDIA_ASSET_NOT_READY: { code: 60003, message: '媒体资产尚未生成完成' },
-  MEDIA_REF_INVALID: { code: 60004, message: '参考图无效（需为本人已生成完成的图片版本）' },
+  MEDIA_REF_INVALID: {
+    code: 60004,
+    message: '参考图无效（需为本人已生成完成的图片版本）',
+  },
 } as const satisfies Record<string, ErrorDef>;

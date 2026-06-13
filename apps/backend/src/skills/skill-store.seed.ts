@@ -32,7 +32,8 @@ export async function seedSkillsStore(
   for (const def of defs) {
     for (const [rel, content] of Object.entries(def.files)) {
       // 只对 SKILL.md 做相对路径改写，其余文件（如引用的子文件）保持原样
-      const injected = rel === 'SKILL.md' ? absolutizeRefPaths(def.name, content) : content;
+      const injected =
+        rel === 'SKILL.md' ? absolutizeRefPaths(def.name, content) : content;
       want.set(`/${def.name}/${rel}`, injected);
     }
   }

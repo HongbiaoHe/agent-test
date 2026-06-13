@@ -32,7 +32,10 @@ export class UsersController {
   }
 
   @Post('me/passkeys/options')
-  passkeyOptions(@Body() dto: MyPasskeyOptionsDto, @CurrentUser() user: AuthUser) {
+  passkeyOptions(
+    @Body() dto: MyPasskeyOptionsDto,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.passkey.registrationOptionsForUser(
       { id: user.userId, email: user.email },
       dto.rpId,
@@ -40,7 +43,10 @@ export class UsersController {
   }
 
   @Post('me/passkeys/verify')
-  passkeyVerify(@Body() dto: MyPasskeyVerifyDto, @CurrentUser() user: AuthUser) {
+  passkeyVerify(
+    @Body() dto: MyPasskeyVerifyDto,
+    @CurrentUser() user: AuthUser,
+  ) {
     return this.passkey.verifyRegistrationForUser(
       user.userId,
       dto.response,

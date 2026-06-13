@@ -16,9 +16,10 @@ export interface ApiResponse<T> {
 
 /** 成功响应统一包装成 { code: 0, message: 'ok', data }。 */
 @Injectable()
-export class ResponseInterceptor<T>
-  implements NestInterceptor<T, ApiResponse<T> | StreamableFile>
-{
+export class ResponseInterceptor<T> implements NestInterceptor<
+  T,
+  ApiResponse<T> | StreamableFile
+> {
   intercept(
     _context: ExecutionContext,
     next: CallHandler<T>,

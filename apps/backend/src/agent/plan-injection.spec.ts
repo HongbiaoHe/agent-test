@@ -25,8 +25,14 @@ describe('injectActivePlan', () => {
     const concat = jest.fn();
     const handler = jest.fn((req: unknown) => req);
 
-    injectActivePlan({ systemMessage: { concat }, runtime: { context: {} } }, handler);
-    injectActivePlan({ systemMessage: { concat }, runtime: { context: { activePlan: '' } } }, handler);
+    injectActivePlan(
+      { systemMessage: { concat }, runtime: { context: {} } },
+      handler,
+    );
+    injectActivePlan(
+      { systemMessage: { concat }, runtime: { context: { activePlan: '' } } },
+      handler,
+    );
     injectActivePlan({ systemMessage: { concat } }, handler);
 
     expect(concat).not.toHaveBeenCalled();

@@ -12,7 +12,9 @@ export class ReadOnlyStoreBackend extends StoreBackend {
    * 基类签名：write(filePath, content) → Promise<WriteResult>
    */
   async write(filePath: string, _content: string): Promise<WriteResult> {
-    return { error: `${filePath} is read-only (skills library)` } as WriteResult;
+    return {
+      error: `${filePath} is read-only (skills library)`,
+    };
   }
 
   /**
@@ -25,7 +27,7 @@ export class ReadOnlyStoreBackend extends StoreBackend {
     _newString: string,
     _replaceAll?: boolean,
   ): Promise<EditResult> {
-    return { error: `${filePath} is read-only (skills library)` } as EditResult;
+    return { error: `${filePath} is read-only (skills library)` };
   }
 }
 

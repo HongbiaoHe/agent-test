@@ -60,7 +60,7 @@ export function createMediaTools(svc: MediaService, ctx: MediaToolContext) {
       } catch (e) {
         if (e instanceof BusinessException) {
           return JSON.stringify({
-            error: (e as BusinessException).getResponse(),
+            error: e.getResponse(),
             hint: '请改用本会话媒体资产清单或工具结果中的真实 versionId 后重试',
           });
         }
@@ -96,7 +96,7 @@ export function createMediaTools(svc: MediaService, ctx: MediaToolContext) {
       } catch (e) {
         if (e instanceof BusinessException) {
           return JSON.stringify({
-            error: (e as BusinessException).getResponse(),
+            error: e.getResponse(),
             hint: '请改用本会话媒体资产清单或工具结果中的真实 versionId 后重试',
           });
         }

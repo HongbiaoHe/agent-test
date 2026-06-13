@@ -70,7 +70,9 @@ export function validateSkill(s: {
 
   const nameRe = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
   if (!nameRe.test(s.name)) {
-    errors.push(`name "${s.name}" 不合法：只允许小写字母、数字、连字符，且首尾须为字母或数字，总长 ≤64`);
+    errors.push(
+      `name "${s.name}" 不合法：只允许小写字母、数字、连字符，且首尾须为字母或数字，总长 ≤64`,
+    );
   }
 
   if (s.name !== s.dirName) {

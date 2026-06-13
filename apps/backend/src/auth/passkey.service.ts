@@ -23,7 +23,8 @@ const ORIGIN = process.env.WEBAUTHN_ORIGIN ?? 'http://localhost:3100';
 const CHALLENGE_TTL = 300; // 秒
 
 function parseTransports(s: string | null): AuthenticatorTransportFuture[] {
-  return (s?.split(',').filter(Boolean) ?? []) as AuthenticatorTransportFuture[];
+  return (s?.split(',').filter(Boolean) ??
+    []) as AuthenticatorTransportFuture[];
 }
 
 /**
@@ -200,7 +201,9 @@ export class PasskeyService {
       where: { credentialId: response.id },
     });
     if (!cred) throw new BusinessException(ErrorCodes.PASSKEY_NOT_FOUND);
-    const user = await this.prisma.user.findUnique({ where: { id: cred.userId } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: cred.userId },
+    });
     if (!user) throw new BusinessException(ErrorCodes.PASSKEY_NOT_FOUND);
 
     let verified = false;
@@ -223,7 +226,8 @@ export class PasskeyService {
     } catch {
       throw new BusinessException(ErrorCodes.PASSKEY_VERIFY_FAILED);
     }
-    if (!verified) throw new BusinessException(ErrorCodes.PASSKEY_VERIFY_FAILED);
+    if (!verified)
+      throw new BusinessException(ErrorCodes.PASSKEY_VERIFY_FAILED);
 
     await this.prisma.authenticator.update({
       where: { credentialId: cred.credentialId },

@@ -19,7 +19,10 @@ describe('AllExceptionsFilter', () => {
 
   it('业务错误 → {code,message,data:null} + 对应 status', () => {
     const { host, status, json } = mockHost();
-    filter.catch(new BusinessException(ErrorCodes.CONVERSATION_NOT_FOUND), host);
+    filter.catch(
+      new BusinessException(ErrorCodes.CONVERSATION_NOT_FOUND),
+      host,
+    );
     expect(status).toHaveBeenCalledWith(HttpStatus.BAD_REQUEST);
     expect(json).toHaveBeenCalledWith({
       code: ErrorCodes.CONVERSATION_NOT_FOUND.code,
@@ -32,7 +35,11 @@ describe('AllExceptionsFilter', () => {
     const { host, status, json } = mockHost();
     filter.catch(new BadRequestException('bad'), host);
     expect(status).toHaveBeenCalledWith(400);
-    expect(json).toHaveBeenCalledWith({ code: 400, message: 'bad', data: null });
+    expect(json).toHaveBeenCalledWith({
+      code: 400,
+      message: 'bad',
+      data: null,
+    });
   });
 
   it('未预期异常 → INTERNAL_ERROR(50000) + 500', () => {

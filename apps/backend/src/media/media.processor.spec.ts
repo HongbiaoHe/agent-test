@@ -52,8 +52,16 @@ describe('MediaProcessor.waitForRef', () => {
 
   it('ref generating→done 后继续执行', async () => {
     mockPrisma.mediaVersion.findUnique
-      .mockResolvedValueOnce({ id: 'ref-1', status: 'generating', filePath: null })
-      .mockResolvedValueOnce({ id: 'ref-1', status: 'done', filePath: 'ref-1.png' });
+      .mockResolvedValueOnce({
+        id: 'ref-1',
+        status: 'generating',
+        filePath: null,
+      })
+      .mockResolvedValueOnce({
+        id: 'ref-1',
+        status: 'done',
+        filePath: 'ref-1.png',
+      });
 
     const v = await processor.waitForRef('ref-1', 10, 5_000);
     expect(v.id).toBe('ref-1');
@@ -64,7 +72,11 @@ describe('MediaProcessor.waitForRef', () => {
     mockPrisma.mediaVersion.findUnique
       .mockResolvedValueOnce({ id: 'ref-1', status: 'queued', filePath: null })
       .mockResolvedValueOnce({ id: 'ref-1', status: 'queued', filePath: null })
-      .mockResolvedValueOnce({ id: 'ref-1', status: 'done', filePath: 'ref-1.png' });
+      .mockResolvedValueOnce({
+        id: 'ref-1',
+        status: 'done',
+        filePath: 'ref-1.png',
+      });
 
     const v = await processor.waitForRef('ref-1', 10, 5_000);
     expect(v.id).toBe('ref-1');
@@ -78,7 +90,9 @@ describe('MediaProcessor.waitForRef', () => {
       filePath: null,
     });
 
-    await expect(processor.waitForRef('ref-1', 10, 1_000)).rejects.toThrow(/ref-1/);
+    await expect(processor.waitForRef('ref-1', 10, 1_000)).rejects.toThrow(
+      /ref-1/,
+    );
   });
 
   it('超时 → 抛错且错误信息含 refId', async () => {
@@ -89,12 +103,16 @@ describe('MediaProcessor.waitForRef', () => {
       filePath: null,
     });
 
-    await expect(processor.waitForRef('ref-1', 10, 50)).rejects.toThrow(/ref-1/);
+    await expect(processor.waitForRef('ref-1', 10, 50)).rejects.toThrow(
+      /ref-1/,
+    );
   });
 
   it('ref 不存在 → 抛错', async () => {
     mockPrisma.mediaVersion.findUnique.mockResolvedValue(null);
 
-    await expect(processor.waitForRef('ref-ghost', 10, 1_000)).rejects.toThrow(/ref-ghost/);
+    await expect(processor.waitForRef('ref-ghost', 10, 1_000)).rejects.toThrow(
+      /ref-ghost/,
+    );
   });
 });

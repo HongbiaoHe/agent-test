@@ -14,7 +14,11 @@ import { GoogleMediaClient } from './google-media.client';
  * exports MediaService —— worker 模块（M3）将 imports 本模块并注入 MediaService 构造媒体工具。
  */
 @Module({
-  imports: [BullModule.registerQueue({ name: 'media-gen' }), EventsModule, AbortModule],
+  imports: [
+    BullModule.registerQueue({ name: 'media-gen' }),
+    EventsModule,
+    AbortModule,
+  ],
   controllers: [MediaController],
   providers: [MediaService, MediaProcessor, GoogleMediaClient],
   exports: [MediaService],

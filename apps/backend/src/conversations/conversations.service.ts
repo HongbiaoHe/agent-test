@@ -163,7 +163,13 @@ export class ConversationsService {
       await this.stream.publish(id, { type: 'result', payload });
       // role 与 worker 的 ROLE_BY_TYPE 一致（result → assistant），历史回放行为统一
       await this.prisma.message.create({
-        data: { conversationId: id, role: 'assistant', type: 'result', content: payload, seq },
+        data: {
+          conversationId: id,
+          role: 'assistant',
+          type: 'result',
+          content: payload,
+          seq,
+        },
       });
     }
 
@@ -199,7 +205,10 @@ export class ConversationsService {
    * 文件接口不需要消息列表，只需确认会话存在且属于当前租户。
    */
   /** 返回会话归属的 userId：沙箱现按用户分配，文件接口需要它定位沙箱。 */
-  private async assertConversationOwner(id: string, tenantId: string): Promise<string> {
+  private async assertConversationOwner(
+    id: string,
+    tenantId: string,
+  ): Promise<string> {
     const conv = await this.prisma.conversation.findFirst({
       where: { id, tenantId },
       select: { id: true, userId: true },

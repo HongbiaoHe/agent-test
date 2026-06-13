@@ -47,8 +47,8 @@ export class MediaService {
   ): Promise<{ generationId: string; versionId: string }> {
     const model =
       type === 'image'
-        ? process.env.MEDIA_IMAGE_MODEL ?? 'gemini-3.1-flash-image-preview'
-        : process.env.MEDIA_VIDEO_MODEL ?? 'veo-3.1-generate-preview';
+        ? (process.env.MEDIA_IMAGE_MODEL ?? 'gemini-3.1-flash-image-preview')
+        : (process.env.MEDIA_VIDEO_MODEL ?? 'veo-3.1-generate-preview');
 
     // 入队前先校验参考图：不合法直接抛错，不建任何 DB 行（避免留下脏 generation）。
     await this.validateReferences(referenceVersionIds, userId);
@@ -73,9 +73,19 @@ export class MediaService {
     const version = generation.versions[0];
 
     // jobId=versionId：stop 时可按版本号定位并移除排队中的 job
-    await this.queue.add('generate', { versionId: version.id }, { jobId: version.id });
+    await this.queue.add(
+      'generate',
+      { versionId: version.id },
+      { jobId: version.id },
+    );
     // 入队后推流：前端据此 invalidate media query（设计 §前端职责）。仅状态变更推流。
-    await this.publishUpdate(conversationId, generation.id, version.id, type, 'queued');
+    await this.publishUpdate(
+      conversationId,
+      generation.id,
+      version.id,
+      type,
+      'queued',
+    );
 
     return { generationId: generation.id, versionId: version.id };
   }
@@ -115,8 +125,8 @@ export class MediaService {
     const model =
       last?.model ??
       (generation.type === 'image'
-        ? process.env.MEDIA_IMAGE_MODEL ?? 'gemini-3.1-flash-image-preview'
-        : process.env.MEDIA_VIDEO_MODEL ?? 'veo-3.1-generate-preview');
+        ? (process.env.MEDIA_IMAGE_MODEL ?? 'gemini-3.1-flash-image-preview')
+        : (process.env.MEDIA_VIDEO_MODEL ?? 'veo-3.1-generate-preview'));
 
     // 参考图缺省继承上一版（last.referenceVersionIds 是 Json，按 string[] 取）；
     // 显式传入则覆盖。无论来源都要过校验（继承的旧引用也可能已被改名/删除，理论上 done 版本不会，但仍统一校验）。
@@ -138,7 +148,11 @@ export class MediaService {
     });
 
     // jobId=versionId：stop 时可按版本号定位并移除排队中的 job
-    await this.queue.add('generate', { versionId: version.id }, { jobId: version.id });
+    await this.queue.add(
+      'generate',
+      { versionId: version.id },
+      { jobId: version.id },
+    );
     await this.publishUpdate(
       generation.conversationId,
       generationId,
@@ -177,7 +191,11 @@ export class MediaService {
             await job.remove();
             await this.prisma.mediaVersion.update({
               where: { id: v.id },
-              data: { status: 'failed', error: '用户已停止', completedAt: new Date() },
+              data: {
+                status: 'failed',
+                error: '用户已停止',
+                completedAt: new Date(),
+              },
             });
             await this.publishUpdate(
               conversationId,
@@ -191,7 +209,9 @@ export class MediaService {
           }
         } catch (e) {
           // job 刚被拾取为 active 时 remove 会抛错——落到下面的协作 abort 分支
-          this.logger.warn(`media job 移除失败，转协作取消 versionId=${v.id}: ${String(e)}`);
+          this.logger.warn(
+            `media job 移除失败，转协作取消 versionId=${v.id}: ${String(e)}`,
+          );
         }
       }
       this.aborts.abort(v.id);
@@ -217,14 +237,26 @@ export class MediaService {
 
     // 不存在的 id（查到数不足）即非法
     if (found.length !== referenceVersionIds.length) {
-      throw new BusinessException(ErrorCodes.MEDIA_REF_INVALID, HttpStatus.BAD_REQUEST);
+      throw new BusinessException(
+        ErrorCodes.MEDIA_REF_INVALID,
+        HttpStatus.BAD_REQUEST,
+      );
     }
     for (const v of found) {
       // status=failed 明确拒绝；queued/generating/done 均视为合法（就绪性由 processor 等待）
-      const validStatus = v.status === 'queued' || v.status === 'generating' || v.status === 'done';
-      const ok = validStatus && v.generation.type === 'image' && v.generation.userId === userId;
+      const validStatus =
+        v.status === 'queued' ||
+        v.status === 'generating' ||
+        v.status === 'done';
+      const ok =
+        validStatus &&
+        v.generation.type === 'image' &&
+        v.generation.userId === userId;
       if (!ok) {
-        throw new BusinessException(ErrorCodes.MEDIA_REF_INVALID, HttpStatus.BAD_REQUEST);
+        throw new BusinessException(
+          ErrorCodes.MEDIA_REF_INVALID,
+          HttpStatus.BAD_REQUEST,
+        );
       }
     }
   }
@@ -300,6 +332,7 @@ export class MediaService {
 /** 由文件后缀推 Content-Type（资产文件名 = <versionId>.<ext>）。 */
 function mimeForFilePath(filePath: string): string {
   if (filePath.endsWith('.mp4')) return 'video/mp4';
-  if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) return 'image/jpeg';
+  if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg'))
+    return 'image/jpeg';
   return 'image/png';
 }

@@ -26,10 +26,16 @@ describe('validateSkill', () => {
   });
   it('description 必填且 ≤1024', () => {
     expect(validateSkill({ ...ok, description: '' })).not.toEqual([]);
-    expect(validateSkill({ ...ok, description: 'a'.repeat(1025) })).not.toEqual([]);
+    expect(validateSkill({ ...ok, description: 'a'.repeat(1025) })).not.toEqual(
+      [],
+    );
   });
   it('可选 compatibility ≤500', () => {
-    expect(validateSkill({ ...ok, compatibility: 'a'.repeat(501) })).not.toEqual([]);
-    expect(validateSkill({ ...ok, compatibility: 'needs internet' })).toEqual([]);
+    expect(
+      validateSkill({ ...ok, compatibility: 'a'.repeat(501) }),
+    ).not.toEqual([]);
+    expect(validateSkill({ ...ok, compatibility: 'needs internet' })).toEqual(
+      [],
+    );
   });
 });

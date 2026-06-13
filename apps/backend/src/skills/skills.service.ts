@@ -39,8 +39,10 @@ const kindOf = (source: string): SkillKind =>
 
 // 惰性求值：测试 beforeEach 赋值的 env 在方法调用时才被读取，避免模块加载时快照旧值。
 // 模式沿用 command-registry.service.ts:18。
-const builtinDir = () => process.env.SKILLS_DIR ?? join(process.cwd(), 'skills');
-const dataDir = () => process.env.SKILLS_DATA_DIR ?? join(process.cwd(), 'data', 'skills');
+const builtinDir = () =>
+  process.env.SKILLS_DIR ?? join(process.cwd(), 'skills');
+const dataDir = () =>
+  process.env.SKILLS_DATA_DIR ?? join(process.cwd(), 'data', 'skills');
 
 /** 单文件大小上限，超出（多半是二进制资产）跳过，避免注入垃圾内容撑大 state。
  *  与 command-registry.service.ts:21 保持一致。 */
@@ -223,10 +225,16 @@ export class SkillsService {
   async detailFor(
     userId: string,
     name: string,
-  ): Promise<(Omit<SkillDef, 'files'> & { files: string[]; skillMd: string }) | undefined> {
+  ): Promise<
+    (Omit<SkillDef, 'files'> & { files: string[]; skillMd: string }) | undefined
+  > {
     const def = (await this.mergedMapFor(userId)).get(name);
     if (!def) return undefined;
     const { files, ...rest } = def;
-    return { ...rest, files: Object.keys(files).sort(), skillMd: files['SKILL.md'] ?? '' };
+    return {
+      ...rest,
+      files: Object.keys(files).sort(),
+      skillMd: files['SKILL.md'] ?? '',
+    };
   }
 }

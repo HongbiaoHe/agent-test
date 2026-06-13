@@ -66,7 +66,9 @@ describe('buildSkillSyncFiles', () => {
     // Uint8Array 内容是 content 数组 join('\n') 的 UTF-8 编码
     const enc = new TextEncoder();
     const fileMap = Object.fromEntries(files.map(([p, b]) => [p, b]));
-    expect(fileMap['/skills/skill-a.md']).toEqual(enc.encode('# Skill A\nline2'));
+    expect(fileMap['/skills/skill-a.md']).toEqual(
+      enc.encode('# Skill A\nline2'),
+    );
     expect(fileMap['/skills/skill-b.md']).toEqual(enc.encode('# Skill B'));
   });
 

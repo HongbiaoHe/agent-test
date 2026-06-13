@@ -11,7 +11,10 @@ async function bootstrap() {
   // 的内部聚合 response promise 以 "Error reading from the stream" reject——没有这层
   // 兜底，一次停止就让整个后端死掉。只记日志不退出；业务错误各自的 catch 不受影响。
   process.on('unhandledRejection', (reason) => {
-    const msg = reason instanceof Error ? (reason.stack ?? reason.message) : String(reason);
+    const msg =
+      reason instanceof Error
+        ? (reason.stack ?? reason.message)
+        : String(reason);
     console.error(`[unhandledRejection] ${msg}`);
   });
 

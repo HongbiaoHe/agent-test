@@ -47,13 +47,13 @@ export class StreamService {
     let lastId = fromId;
     try {
       while (!shouldStop()) {
-        const res = (await sub.xread(
+        const res = await sub.xread(
           'BLOCK',
           2000,
           'STREAMS',
           this.key(conversationId),
           lastId,
-        )) as [string, [string, string[]][]][] | null;
+        );
         if (!res) continue;
         for (const [, entries] of res) {
           for (const [id, fields] of entries) {
@@ -71,7 +71,9 @@ export class StreamService {
         }
       }
     } catch (e) {
-      this.logger.warn(`stream subscribe(${conversationId}) 结束: ${String(e)}`);
+      this.logger.warn(
+        `stream subscribe(${conversationId}) 结束: ${String(e)}`,
+      );
     } finally {
       sub.disconnect();
     }

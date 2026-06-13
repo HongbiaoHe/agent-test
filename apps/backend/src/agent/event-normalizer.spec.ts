@@ -14,7 +14,9 @@ const toolMsg = (name: string, content: string) => ({
 
 describe('normalize', () => {
   it('messages + ToolMessage → tool_end', () => {
-    const ev = normalize(['tools:x'], 'messages', [toolMsg('get_weather', '{}')]);
+    const ev = normalize(['tools:x'], 'messages', [
+      toolMsg('get_weather', '{}'),
+    ]);
     expect(ev).toEqual({
       type: 'tool_end',
       payload: { name: 'get_weather', content: '{}', status: 'success' },
@@ -31,11 +33,9 @@ describe('normalize', () => {
   });
 
   it('messages + functionCall 数组内容(无 text) → null', () => {
-    const ev = normalize(
-      ['model_request:x'],
-      'messages',
-      [aiMsg([{ type: 'functionCall', functionCall: { name: 'get_weather' } }])],
-    );
+    const ev = normalize(['model_request:x'], 'messages', [
+      aiMsg([{ type: 'functionCall', functionCall: { name: 'get_weather' } }]),
+    ]);
     expect(ev).toBeNull();
   });
 
@@ -54,12 +54,16 @@ describe('normalize', () => {
   it('updates + AIMessage(tool_calls) → tool_start', () => {
     const ev = normalize([], 'updates', {
       model_request: {
-        messages: [aiMsg('', [{ name: 'get_weather', args: { city: '上海' } }])],
+        messages: [
+          aiMsg('', [{ name: 'get_weather', args: { city: '上海' } }]),
+        ],
       },
     });
     expect(ev).toEqual({
       type: 'tool_start',
-      payload: { tool_calls: [{ name: 'get_weather', args: { city: '上海' } }] },
+      payload: {
+        tool_calls: [{ name: 'get_weather', args: { city: '上海' } }],
+      },
     });
   });
 

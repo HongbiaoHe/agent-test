@@ -1,4 +1,10 @@
-import { ArrayMaxSize, IsArray, IsOptional, IsString, MaxLength } from 'class-validator';
+import {
+  ArrayMaxSize,
+  IsArray,
+  IsOptional,
+  IsString,
+  MaxLength,
+} from 'class-validator';
 
 /** POST /media/generations/:id/regenerate 请求体；prompt 缺省时沿用上一版。 */
 export class RegenerateMediaDto {

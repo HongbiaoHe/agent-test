@@ -28,7 +28,8 @@ export function decideExt(mimeType: string): string {
 /** 由参考资产文件后缀推 MIME（图生图/视频首帧的 inlineData/image 需要它）。 */
 export function mimeForExt(filePath: string): string {
   if (filePath.endsWith('.png')) return 'image/png';
-  if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg')) return 'image/jpeg';
+  if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg'))
+    return 'image/jpeg';
   if (filePath.endsWith('.webp')) return 'image/webp';
   // 参考图只允许 image 类型版本（service 已校验），兜底 png
   return 'image/png';
@@ -75,7 +76,13 @@ export class MediaProcessor extends WorkerHost {
         where: { id: versionId },
         data: { status: 'generating' },
       });
-      await this.publish(generation.conversationId, generation.id, versionId, type, 'generating');
+      await this.publish(
+        generation.conversationId,
+        generation.id,
+        versionId,
+        type,
+        'generating',
+      );
 
       // 参考图：从 DB 取引用版本的 filePath → 读盘转 base64。资产缺失则抛错使本版本 failed（不静默忽略）。
       const refs = await this.loadRefs(version.referenceVersionIds, { signal });
@@ -84,11 +91,19 @@ export class MediaProcessor extends WorkerHost {
       // 图生图：refs 全传；视频首帧：仅取第一张参考图。
       const result =
         type === 'image'
-          ? await this.client.generateImageBytes(version.prompt, version.model, refs)
-          : await this.client.generateVideoBytes(version.prompt, version.model, {
-              firstFrame: refs[0],
-              signal,
-            });
+          ? await this.client.generateImageBytes(
+              version.prompt,
+              version.model,
+              refs,
+            )
+          : await this.client.generateVideoBytes(
+              version.prompt,
+              version.model,
+              {
+                firstFrame: refs[0],
+                signal,
+              },
+            );
       // 图片调用期间被停止：结果作废（不落盘），统一走 catch 的「用户已停止」收尾
       if (signal.aborted) throw new Error('用户已停止');
 
@@ -103,7 +118,13 @@ export class MediaProcessor extends WorkerHost {
         where: { id: versionId },
         data: { status: 'done', filePath: fileName, completedAt: new Date() },
       });
-      await this.publish(generation.conversationId, generation.id, versionId, type, 'done');
+      await this.publish(
+        generation.conversationId,
+        generation.id,
+        versionId,
+        type,
+        'done',
+      );
       this.logger.log(`media 生成完成 versionId=${versionId} file=${fileName}`);
     } catch (e) {
       // 协作取消统一在此落 failed(用户已停止)；其余按原始报错落 failed
@@ -143,9 +164,15 @@ export class MediaProcessor extends WorkerHost {
    */
   private async loadRefs(
     referenceVersionIds: unknown,
-    opts: { pollIntervalMs?: number; timeoutMs?: number; signal?: AbortSignal } = {},
+    opts: {
+      pollIntervalMs?: number;
+      timeoutMs?: number;
+      signal?: AbortSignal;
+    } = {},
   ): Promise<MediaRef[]> {
-    const ids = Array.isArray(referenceVersionIds) ? (referenceVersionIds as string[]) : [];
+    const ids = Array.isArray(referenceVersionIds)
+      ? (referenceVersionIds as string[])
+      : [];
     if (ids.length === 0) return [];
 
     const pollIntervalMs = opts.pollIntervalMs ?? 5_000;
@@ -155,9 +182,17 @@ export class MediaProcessor extends WorkerHost {
     const refs: MediaRef[] = [];
 
     for (const id of ids) {
-      const v = await this.waitForRef(id, pollIntervalMs, timeoutMs, opts.signal);
+      const v = await this.waitForRef(
+        id,
+        pollIntervalMs,
+        timeoutMs,
+        opts.signal,
+      );
       const data = await readFile(join(dir, v.filePath!)); // 文件不存在会抛 ENOENT → 本版本 failed
-      refs.push({ data: data.toString('base64'), mimeType: mimeForExt(v.filePath!) });
+      refs.push({
+        data: data.toString('base64'),
+        mimeType: mimeForExt(v.filePath!),
+      });
     }
     return refs;
   }
@@ -178,13 +213,17 @@ export class MediaProcessor extends WorkerHost {
     while (true) {
       // 协作取消：参考图等待最长 5 分钟，停止后不再干等
       if (signal?.aborted) throw new Error('用户已停止');
-      const v = await this.prisma.mediaVersion.findUnique({ where: { id: refId } });
+      const v = await this.prisma.mediaVersion.findUnique({
+        where: { id: refId },
+      });
       if (!v) {
         throw new Error(`参考图版本不存在（versionId=${refId}）`);
       }
       if (v.status === 'done') {
         if (!v.filePath) {
-          throw new Error(`参考图版本资产缺失（versionId=${refId} 无 filePath）`);
+          throw new Error(
+            `参考图版本资产缺失（versionId=${refId} 无 filePath）`,
+          );
         }
         return v;
       }
@@ -193,7 +232,9 @@ export class MediaProcessor extends WorkerHost {
       }
       // queued / generating：继续等待
       if (Date.now() >= deadline) {
-        throw new Error(`参考图未能就绪：${refId} ${v.status}（等待超时 ${timeoutMs}ms）`);
+        throw new Error(
+          `参考图未能就绪：${refId} ${v.status}（等待超时 ${timeoutMs}ms）`,
+        );
       }
       await sleep(pollIntervalMs);
     }

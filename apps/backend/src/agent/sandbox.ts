@@ -57,21 +57,26 @@ export interface SandboxListing {
  *  - started 优先（可直接用），其次 stopped（可拉起），过渡/异常态最后；
  *  - 同级取 createdAt 最早（最可能持有历史工作区文件）。
  */
-export function pickPreferredSandbox<T extends SandboxListing>(all: T[]): T | null {
+export function pickPreferredSandbox<T extends SandboxListing>(
+  all: T[],
+): T | null {
   if (all.length === 0) return null;
   const rank = (s: SandboxListing) =>
     s.state === 'started' ? 0 : s.state === 'stopped' ? 1 : 2;
   return [...all].sort(
-    (a, b) => rank(a) - rank(b) || (a.createdAt ?? '').localeCompare(b.createdAt ?? ''),
+    (a, b) =>
+      rank(a) - rank(b) || (a.createdAt ?? '').localeCompare(b.createdAt ?? ''),
   )[0];
 }
 
 /** list 该用户全部沙箱并确定性选择（getUserSandbox / findUserSandbox / 状态接口共用）。 */
-export async function pickUserSandbox(userId: string): Promise<SandboxListing | null> {
+export async function pickUserSandbox(
+  userId: string,
+): Promise<SandboxListing | null> {
   const client = new Daytona();
   const all: SandboxListing[] = [];
   for await (const s of client.list({ labels: { user_id: userId } })) {
-    all.push(s as unknown as SandboxListing);
+    all.push(s);
   }
   return pickPreferredSandbox(all);
 }
@@ -91,7 +96,9 @@ export async function pickUserSandbox(userId: string): Promise<SandboxListing | 
  *  - ⚠️ 此前任何异常都落到 create 路径——start() 超时等瞬时错误会凭空裂变新沙箱
  *    （同一用户多沙箱、文件“消失”，已实际发生），create 仅在确认无沙箱时执行。
  */
-export async function getUserSandbox(userId: string): Promise<GuardedSandbox | null> {
+export async function getUserSandbox(
+  userId: string,
+): Promise<GuardedSandbox | null> {
   if (!process.env.DAYTONA_API_KEY) return null;
 
   let sb: DaytonaSandbox;
@@ -137,12 +144,14 @@ export async function listWorkspaceFiles(
   const cmd = `find "${workdir}" -maxdepth 4 -type f -not -path '*/node_modules/*' -not -path '*/.*' -not -path '*/skills/*'`;
   const result = await sb.execute(cmd);
 
-  return result.output
-    .split('\n')
-    .map((line) => line.trim())
-    .filter((line) => line.length > 0)
-    // GuardedSandbox 出站脱敏后路径已是虚拟根（/xxx），去掉前导 / 得相对路径
-    .map((p) => ({ path: p.replace(/^\//, '') }));
+  return (
+    result.output
+      .split('\n')
+      .map((line) => line.trim())
+      .filter((line) => line.length > 0)
+      // GuardedSandbox 出站脱敏后路径已是虚拟根（/xxx），去掉前导 / 得相对路径
+      .map((p) => ({ path: p.replace(/^\//, '') }))
+  );
 }
 
 /**
@@ -153,7 +162,9 @@ export async function listWorkspaceFiles(
  * - 未找到       → 返回 null。
  * - 任何错误     → 返回 null（调用方做好 null 检查即可）。
  */
-export async function findUserSandbox(userId: string): Promise<GuardedSandbox | null> {
+export async function findUserSandbox(
+  userId: string,
+): Promise<GuardedSandbox | null> {
   if (!process.env.DAYTONA_API_KEY) return null;
 
   try {

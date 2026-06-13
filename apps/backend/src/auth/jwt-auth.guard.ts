@@ -29,7 +29,7 @@ export class JwtAuthGuard implements CanActivate {
         userId: p.sub,
         tenantId: p.tenantId,
         email: p.email,
-      } as AuthUser;
+      };
       return true;
     } catch {
       throw new UnauthorizedException('token 无效或已过期');

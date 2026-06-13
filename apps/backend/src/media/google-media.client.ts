@@ -119,7 +119,12 @@ export class GoogleMediaClient {
       model,
       prompt,
       ...(firstFrame
-        ? { image: { imageBytes: firstFrame.data, mimeType: firstFrame.mimeType } }
+        ? {
+            image: {
+              imageBytes: firstFrame.data,
+              mimeType: firstFrame.mimeType,
+            },
+          }
         : {}),
     });
     this.logger.log(`视频生成已提交 operation=${op.name}`);
@@ -163,6 +168,8 @@ export class GoogleMediaClient {
         rmSync(tmp, { recursive: true, force: true });
       }
     }
-    throw new Error('视频生成失败：operation 完成但无视频数据（无 videoBytes 也无 uri）');
+    throw new Error(
+      '视频生成失败：operation 完成但无视频数据（无 videoBytes 也无 uri）',
+    );
   }
 }

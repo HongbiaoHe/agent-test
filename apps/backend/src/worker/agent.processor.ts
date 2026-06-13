@@ -102,11 +102,15 @@ export class AgentProcessor extends WorkerHost {
         sandbox = await getUserSandbox(conv.userId);
       } catch (e) {
         // 降级而非失败整个 run；提示用户本轮无执行能力（设计 §8）
-        this.logger.warn(`getUserSandbox 失败，降级 StateBackend：${(e as Error)?.message ?? e}`);
+        this.logger.warn(
+          `getUserSandbox 失败，降级 StateBackend：${(e as Error)?.message ?? e}`,
+        );
         await this.stream.publish(conversationId, {
           type: 'message',
-          payload: { text: '⚠️ 沙箱创建失败，本轮无命令执行能力（文件与技能阅读不受影响）。' },
-        } as RawEvent);
+          payload: {
+            text: '⚠️ 沙箱创建失败，本轮无命令执行能力（文件与技能阅读不受影响）。',
+          },
+        });
       }
       // sandbox 为 null 时不传 defaultBackend，buildAgent 内部 new StateBackend() 兜底（避免在 processor 引入 deepagents 直接依赖）
       const defaultBackend = sandbox ?? undefined;
@@ -137,7 +141,10 @@ export class AgentProcessor extends WorkerHost {
         runName = lastLabel || runName;
         input = { messages };
         systemPromptExtra = await this.buildSkillPrompt(conv.userId, messages);
-        const mediaInventory = await this.buildMediaInventory(conversationId, conv.userId);
+        const mediaInventory = await this.buildMediaInventory(
+          conversationId,
+          conv.userId,
+        );
         if (mediaInventory) {
           systemPromptExtra += mediaInventory;
         }
@@ -174,7 +181,7 @@ export class AgentProcessor extends WorkerHost {
         context: { activePlan, userId: conv.userId },
         streamMode: ['updates', 'messages'],
         subgraphs: true,
-      } as never);
+      });
 
       // resume 续跑时从已有消息数接着排 seq
       let seq = await this.prisma.message.count({ where: { conversationId } });
@@ -202,7 +209,9 @@ export class AgentProcessor extends WorkerHost {
         // updates 聚合出的 message 文本可能短于逐字流（如思考/工具叙述被裁剪）：优先用累积的 buf
         // 收口；buf 为空（非流式模型，未产生 token）时才退回 updates 文本，避免文本丢失。
         if (raw.type === 'message') {
-          await flush(buf || String((raw.payload as { text?: string }).text ?? ''));
+          await flush(
+            buf || String((raw.payload as { text?: string }).text ?? ''),
+          );
           continue;
         }
         // 其余非文本事件（tool_start/tool_end/plan_update/control_request）是文本段边界：
@@ -217,10 +226,14 @@ export class AgentProcessor extends WorkerHost {
       const state = (await agent.getState(config)) as {
         tasks?: { interrupts?: { value?: unknown }[] }[];
       };
-      const interrupts = (state?.tasks ?? []).flatMap((t) => t.interrupts ?? []);
+      const interrupts = (state?.tasks ?? []).flatMap(
+        (t) => t.interrupts ?? [],
+      );
       if (interrupts.length > 0) {
         const value = interrupts[0]?.value;
-        this.logger.log(`conversation=${conversationId} 命中审批中断，等待用户决策`);
+        this.logger.log(
+          `conversation=${conversationId} 命中审批中断，等待用户决策`,
+        );
         // CAS：流自然结束后、走到这里前被停止（status 已是 stopped）→ 不进审批流程，按停止收尾
         const toApproval = await this.prisma.conversation.updateMany({
           where: { id: conversationId, status: 'running' },
@@ -251,7 +264,10 @@ export class AgentProcessor extends WorkerHost {
         return;
       }
       // 持久化 result：历史据此收尾未完成的工具卡、置为 done；实时丢失/重连也能从历史对齐。
-      const resultEvt: RawEvent = { type: 'result', payload: { status: 'done' } };
+      const resultEvt: RawEvent = {
+        type: 'result',
+        payload: { status: 'done' },
+      };
       await this.stream.publish(conversationId, resultEvt);
       await this.persist(conversationId, resultEvt, seq++);
       this.logger.log(`agent 完成: conversation=${conversationId}`);
@@ -262,7 +278,9 @@ export class AgentProcessor extends WorkerHost {
         await this.finalizeStopped(conversationId, buf);
         return;
       }
-      this.logger.error(`agent 失败: conversation=${conversationId} ${String(e)}`);
+      this.logger.error(
+        `agent 失败: conversation=${conversationId} ${String(e)}`,
+      );
       await this.prisma.conversation.update({
         where: { id: conversationId },
         data: { status: 'failed' },
@@ -273,7 +291,9 @@ export class AgentProcessor extends WorkerHost {
       };
       await this.stream.publish(conversationId, errorEvt);
       // catch 作用域取不到 try 内的 seq，重新计数后持久化
-      const seq = await this.prisma.message.count({ where: { conversationId } });
+      const seq = await this.prisma.message.count({
+        where: { conversationId },
+      });
       await this.persist(conversationId, errorEvt, seq);
     } finally {
       dispose();
@@ -402,15 +422,22 @@ export class AgentProcessor extends WorkerHost {
    * 构建本会话已生成的媒体资产清单，注入系统提示让模型正确引用 versionId，避免编造。
    * 空会话（无生成位）返回空串，不注入。
    */
-  private async buildMediaInventory(conversationId: string, userId: string): Promise<string> {
-    const generations = await this.media.listForConversation(conversationId, userId);
+  private async buildMediaInventory(
+    conversationId: string,
+    userId: string,
+  ): Promise<string> {
+    const generations = await this.media.listForConversation(
+      conversationId,
+      userId,
+    );
     if (!generations || generations.length === 0) return '';
 
     const lines = generations
       .map((g) => {
         const v = g.versions[0]; // 最新版本（已按 createdAt desc）
         if (!v) return null;
-        const promptPreview = v.prompt.slice(0, 40) + (v.prompt.length > 40 ? '…' : '');
+        const promptPreview =
+          v.prompt.slice(0, 40) + (v.prompt.length > 40 ? '…' : '');
         return `- versionId=${v.id} [${g.type}][${v.status}] ${promptPreview}`;
       })
       .filter(Boolean)

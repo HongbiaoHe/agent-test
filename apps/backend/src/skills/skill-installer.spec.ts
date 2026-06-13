@@ -63,16 +63,22 @@ async function buildFixtureTarball(opts: {
 
 describe('assertSafeEntryPath', () => {
   it('正常路径不抛', () => {
-    expect(() => assertSafeEntryPath('repo-main/skills/docx/SKILL.md')).not.toThrow();
+    expect(() =>
+      assertSafeEntryPath('repo-main/skills/docx/SKILL.md'),
+    ).not.toThrow();
   });
   it('包含 .. 的路径抛 BusinessException', () => {
-    expect(() => assertSafeEntryPath('repo-main/../../../etc/passwd')).toThrow(BusinessException);
+    expect(() => assertSafeEntryPath('repo-main/../../../etc/passwd')).toThrow(
+      BusinessException,
+    );
   });
   it('以 / 开头的绝对路径抛 BusinessException', () => {
     expect(() => assertSafeEntryPath('/etc/passwd')).toThrow(BusinessException);
   });
   it('Windows 路径穿越 ..\\  也拒绝（含 ..）', () => {
-    expect(() => assertSafeEntryPath('repo-main/..\\evil')).toThrow(BusinessException);
+    expect(() => assertSafeEntryPath('repo-main/..\\evil')).toThrow(
+      BusinessException,
+    );
   });
 });
 
@@ -105,7 +111,9 @@ describe('extractSkillFromTarball', () => {
 
     expect(result.name).toBe('docx');
     expect(result.description).toBe('Word 文档处理技能');
-    expect(result.source).toBe('github:anthropics/skills#document-skills/docx@main');
+    expect(result.source).toBe(
+      'github:anthropics/skills#document-skills/docx@main',
+    );
 
     // 落盘校验
     const installedSkillMd = join(destRoot, 'docx', 'SKILL.md');
@@ -188,7 +196,9 @@ describe('extractSkillFromTarball', () => {
       // gz 内容是压缩的，字节替换在压缩层不可靠。
       // 改用非压缩 tar 更容易替换（tar header 是明文）
       const tarPathRaw = join(stage, 'out.tar');
-      await tar.c({ gzip: false, file: tarPathRaw, cwd: stage }, ['skills-main']);
+      await tar.c({ gzip: false, file: tarPathRaw, cwd: stage }, [
+        'skills-main',
+      ]);
       let buf = readFileSync(tarPathRaw);
       // tar header 第 0-99 字节是文件名
       // 扫描 buffer 找 'xAx/' 并替换成 '../'
@@ -197,7 +207,12 @@ describe('extractSkillFromTarball', () => {
       let replaced = false;
       for (let i = 0; i <= buf.length - needle.length; i++) {
         if (buf.slice(i, i + needle.length).equals(needle)) {
-          buf = Buffer.concat([buf.slice(0, i), replacement, Buffer.from('/'), buf.slice(i + needle.length)]);
+          buf = Buffer.concat([
+            buf.slice(0, i),
+            replacement,
+            Buffer.from('/'),
+            buf.slice(i + needle.length),
+          ]);
           replaced = true;
           break;
         }
@@ -290,7 +305,9 @@ describe('extractSkillFromTarball', () => {
     ).rejects.toThrow(BusinessException);
 
     // 旧版完好：失败发生在 tmp 阶段，dest 未被触碰
-    expect(readFileSync(join(destRoot, 'docx', 'SKILL.md'), 'utf8')).toBe(oldMd);
+    expect(readFileSync(join(destRoot, 'docx', 'SKILL.md'), 'utf8')).toBe(
+      oldMd,
+    );
   });
 
   // ─── 用例 5b：目录总量 >20MB → BusinessException ─────────────────────────────

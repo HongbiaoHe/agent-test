@@ -2,19 +2,30 @@ import { InMemoryStore } from '@langchain/langgraph';
 import { seedSkillsStore } from './skill-store.seed';
 import type { SkillDef } from './skills.service';
 
-const def = (name: string, files: Record<string, string>): SkillDef =>
-  ({ name, description: 'd', kind: 'builtin', source: 'builtin', enabled: true, files });
+const def = (name: string, files: Record<string, string>): SkillDef => ({
+  name,
+  description: 'd',
+  kind: 'builtin',
+  source: 'builtin',
+  enabled: true,
+  files,
+});
 
 describe('seedSkillsStore', () => {
   it('把技能文件播到 [userId,"skills"]，key 为挂载点相对路径 /<name>/<rel>，SKILL.md 经 absolutize', async () => {
     const store = new InMemoryStore();
     await seedSkillsStore(store, 'u1', [
-      def('tvc', { 'SKILL.md': '看 `./references/a.md`', 'references/a.md': 'A' }),
+      def('tvc', {
+        'SKILL.md': '看 `./references/a.md`',
+        'references/a.md': 'A',
+      }),
     ]);
     const items = await store.search(['u1', 'skills']);
     const keys = items.map((i) => i.key).sort();
     expect(keys).toEqual(['/tvc/SKILL.md', '/tvc/references/a.md']);
-    const md = items.find((i) => i.key.endsWith('SKILL.md'))!.value as { content: string[] };
+    const md = items.find((i) => i.key.endsWith('SKILL.md'))!.value as {
+      content: string[];
+    };
     expect(md.content.join('\n')).toContain('/skills/tvc/references/a.md');
   });
 

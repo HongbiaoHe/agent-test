@@ -27,8 +27,12 @@ describe('absolutizeRefPaths', () => {
     const input =
       '| [big-idea](./big-idea-concept-pitching.md) | ... |\n| [brand](./brand-positioning.md) | ... |';
     const out = absolutizeRefPaths('marketing-strategist', input);
-    expect(out).toContain('](/skills/marketing-strategist/big-idea-concept-pitching.md)');
-    expect(out).toContain('](/skills/marketing-strategist/brand-positioning.md)');
+    expect(out).toContain(
+      '](/skills/marketing-strategist/big-idea-concept-pitching.md)',
+    );
+    expect(out).toContain(
+      '](/skills/marketing-strategist/brand-positioning.md)',
+    );
     expect(out).not.toContain('](./');
   });
 

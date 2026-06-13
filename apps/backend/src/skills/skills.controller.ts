@@ -60,7 +60,10 @@ export class SkillsController {
   async detail(@Param('name') name: string, @CurrentUser() user: AuthUser) {
     const def = await this.skills.detailFor(user.userId, name);
     if (!def) {
-      throw new BusinessException(ErrorCodes.SKILL_NOT_FOUND, HttpStatus.NOT_FOUND);
+      throw new BusinessException(
+        ErrorCodes.SKILL_NOT_FOUND,
+        HttpStatus.NOT_FOUND,
+      );
     }
     return def;
   }
@@ -70,10 +73,7 @@ export class SkillsController {
    * 幂等：重复安装同一技能时 upsert 更新元数据并重新 enabled=true。
    */
   @Post('install')
-  async install(
-    @Body() dto: InstallSkillDto,
-    @CurrentUser() user: AuthUser,
-  ) {
+  async install(@Body() dto: InstallSkillDto, @CurrentUser() user: AuthUser) {
     const { userId } = user;
     const destRoot = join(dataDir(), userId);
 
@@ -127,7 +127,10 @@ export class SkillsController {
       where: { userId_name: { userId, name } },
     });
     if (!row) {
-      throw new BusinessException(ErrorCodes.SKILL_NOT_FOUND, HttpStatus.NOT_FOUND);
+      throw new BusinessException(
+        ErrorCodes.SKILL_NOT_FOUND,
+        HttpStatus.NOT_FOUND,
+      );
     }
 
     return this.prisma.skill.update({
@@ -141,10 +144,7 @@ export class SkillsController {
    * 路径由 DB 行的 name 构建，而非原始 URL 参数，防止路径遍历。
    */
   @Delete(':name')
-  async remove(
-    @Param('name') name: string,
-    @CurrentUser() user: AuthUser,
-  ) {
+  async remove(@Param('name') name: string, @CurrentUser() user: AuthUser) {
     const { userId } = user;
 
     // 先校验 DB 行存在（同时作为路径遍历防护：只删 DB 里登记的技能）
@@ -152,7 +152,10 @@ export class SkillsController {
       where: { userId_name: { userId, name } },
     });
     if (!row) {
-      throw new BusinessException(ErrorCodes.SKILL_NOT_FOUND, HttpStatus.NOT_FOUND);
+      throw new BusinessException(
+        ErrorCodes.SKILL_NOT_FOUND,
+        HttpStatus.NOT_FOUND,
+      );
     }
 
     // 用 DB 行的 name 构建路径，不使用 URL 参数

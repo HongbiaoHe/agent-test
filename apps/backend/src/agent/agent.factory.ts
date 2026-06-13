@@ -1,6 +1,11 @@
 import type { BaseStore } from '@langchain/langgraph';
 import { initChatModel } from 'langchain/chat_models/universal';
-import { CompositeBackend, createDeepAgent, StateBackend, StoreBackend } from 'deepagents';
+import {
+  CompositeBackend,
+  createDeepAgent,
+  StateBackend,
+  StoreBackend,
+} from 'deepagents';
 import { createMiddleware } from 'langchain';
 import { z } from 'zod';
 import { buildSkillSyncFiles, ReadOnlyStoreBackend } from './skills-backend';
@@ -194,7 +199,11 @@ export async function buildAgent(opts: BuildAgentOptions = {}): Promise<any> {
   // /skills/ 只读 backend：namespace factory 在运行时从 config.configurable.userId 取用户 ID。
   // dist 已核实：工厂入参是 { state, config, assistantId }，userId 走 config.configurable。
   const skillsBackend = new ReadOnlyStoreBackend({
-    namespace: ({ config }: { config?: { configurable?: { userId?: string } } }) => {
+    namespace: ({
+      config,
+    }: {
+      config?: { configurable?: { userId?: string } };
+    }) => {
       const userId = config?.configurable?.userId;
       if (!userId) {
         throw new Error(
@@ -206,8 +215,11 @@ export async function buildAgent(opts: BuildAgentOptions = {}): Promise<any> {
   });
 
   // CompositeBackend：/skills/ → skillsBackend（只读），其余 → defaultBackend
-  const defaultBackend = (opts.defaultBackend as StateBackend | undefined) ?? new StateBackend();
-  const backend = new CompositeBackend(defaultBackend, { '/skills/': skillsBackend });
+  const defaultBackend =
+    (opts.defaultBackend as StateBackend | undefined) ?? new StateBackend();
+  const backend = new CompositeBackend(defaultBackend, {
+    '/skills/': skillsBackend,
+  });
 
   // 沙箱技能同步中间件：仅当 store 和 hasSandbox 同时传入时启用
   const shouldSync = !!(opts.store && opts.hasSandbox);
@@ -241,8 +253,14 @@ export async function buildAgent(opts: BuildAgentOptions = {}): Promise<any> {
 
   return createDeepAgent({
     model,
-    systemPrompt: buildSystemPrompt(opts.hasSandbox ?? false) + (opts.systemPromptExtra ?? ''),
-    tools: [getWeatherTool, sendEmailTool, ...((opts.extraTools ?? []) as never[])],
+    systemPrompt:
+      buildSystemPrompt(opts.hasSandbox ?? false) +
+      (opts.systemPromptExtra ?? ''),
+    tools: [
+      getWeatherTool,
+      sendEmailTool,
+      ...((opts.extraTools ?? []) as never[]),
+    ],
     backend,
     skills: ['/skills/'],
     contextSchema,
@@ -250,6 +268,6 @@ export async function buildAgent(opts: BuildAgentOptions = {}): Promise<any> {
     middleware,
     interruptOn: { send_email: true },
     checkpointer: opts.checkpointer as never,
-    ...(opts.store ? { store: opts.store as never } : {}),
+    ...(opts.store ? { store: opts.store } : {}),
   });
 }

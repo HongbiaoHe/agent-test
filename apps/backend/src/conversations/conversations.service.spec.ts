@@ -54,7 +54,10 @@ describe('ConversationsService – downloadFile 路径校验', () => {
         { provide: SkillsService, useValue: mockSkills },
         { provide: getQueueToken('agent-run'), useValue: mockQueue },
         { provide: StreamService, useValue: { publish: jest.fn() } },
-        { provide: MediaService, useValue: { cancelByConversation: jest.fn() } },
+        {
+          provide: MediaService,
+          useValue: { cancelByConversation: jest.fn() },
+        },
         { provide: AGENT_ABORTS, useValue: new AbortRegistry() },
       ],
     }).compile();
@@ -103,7 +106,10 @@ describe('ConversationsService – 空会话创建与续聊', () => {
         { provide: SkillsService, useValue: mockSkills },
         { provide: getQueueToken('agent-run'), useValue: mockQueue },
         { provide: StreamService, useValue: { publish: jest.fn() } },
-        { provide: MediaService, useValue: { cancelByConversation: jest.fn() } },
+        {
+          provide: MediaService,
+          useValue: { cancelByConversation: jest.fn() },
+        },
         { provide: AGENT_ABORTS, useValue: new AbortRegistry() },
       ],
     }).compile();
@@ -162,7 +168,11 @@ describe('ConversationsService – 空会话创建与续聊', () => {
 
     await service.appendMessage('conv-1', 'follow up', 'tenant-1', 'u1');
 
-    const data = (mockPrisma.conversation.update.mock.calls[0][0] as { data: Record<string, unknown> }).data;
+    const data = (
+      mockPrisma.conversation.update.mock.calls[0][0] as {
+        data: Record<string, unknown>;
+      }
+    ).data;
     expect(data.status).toBe('queued');
     expect(data).not.toHaveProperty('goal');
   });
@@ -180,7 +190,10 @@ describe('ConversationsService – stop（主动停止）', () => {
     mockStream = { publish: jest.fn() };
     mockMedia = { cancelByConversation: jest.fn() };
     const prisma = {
-      conversation: { findFirst: jest.fn().mockResolvedValue({ id: 'conv-1', userId: 'u1' }), updateMany },
+      conversation: {
+        findFirst: jest.fn().mockResolvedValue({ id: 'conv-1', userId: 'u1' }),
+        updateMany,
+      },
       message: { count: jest.fn().mockResolvedValue(3), create: jest.fn() },
     };
     const module = await Test.createTestingModule({

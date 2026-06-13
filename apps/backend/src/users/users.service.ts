@@ -15,7 +15,10 @@ export class UsersService {
       include: { tenant: true, authenticators: true },
     });
     if (!user) {
-      throw new BusinessException(ErrorCodes.INTERNAL_ERROR, HttpStatus.NOT_FOUND);
+      throw new BusinessException(
+        ErrorCodes.INTERNAL_ERROR,
+        HttpStatus.NOT_FOUND,
+      );
     }
     return {
       email: user.email,
@@ -41,7 +44,10 @@ export class UsersService {
       where: { id, userId },
     });
     if (!row) {
-      throw new BusinessException(ErrorCodes.PASSKEY_NOT_FOUND, HttpStatus.NOT_FOUND);
+      throw new BusinessException(
+        ErrorCodes.PASSKEY_NOT_FOUND,
+        HttpStatus.NOT_FOUND,
+      );
     }
     await this.prisma.authenticator.delete({ where: { id: row.id } });
     return { deleted: row.id };

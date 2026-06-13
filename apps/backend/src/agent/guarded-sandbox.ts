@@ -72,29 +72,45 @@ export class GuardedSandbox {
     let real: string;
     if (p === '' || p === '/') {
       real = this.workspaceRoot;
-    } else if (p === this.workspaceRoot || p.startsWith(this.workspaceRoot + '/')) {
+    } else if (
+      p === this.workspaceRoot ||
+      p.startsWith(this.workspaceRoot + '/')
+    ) {
       // agent 可能从 execute 输出（pwd 等）拿到真实路径，原样接受
       real = path.posix.resolve(p);
     } else {
       // 虚拟绝对路径 `/foo` 与相对路径 `foo` 都按工作区根解析
-      real = path.posix.resolve(this.workspaceRoot, p.startsWith('/') ? `.${p}` : p);
+      real = path.posix.resolve(
+        this.workspaceRoot,
+        p.startsWith('/') ? `.${p}` : p,
+      );
     }
-    if (real === this.workspaceRoot || real.startsWith(this.workspaceRoot + '/')) return real;
+    if (
+      real === this.workspaceRoot ||
+      real.startsWith(this.workspaceRoot + '/')
+    )
+      return real;
     return null;
   }
 
   /** 出站：字符串里的真实工作区前缀替换回虚拟根 `/`。 */
   private toVirtual(s: string): string {
-    return s.replaceAll(this.workspaceRoot + '/', '/').replaceAll(this.workspaceRoot, '/');
+    return s
+      .replaceAll(this.workspaceRoot + '/', '/')
+      .replaceAll(this.workspaceRoot, '/');
   }
 
   /** 出站：结果对象深度遍历脱敏（字符串 → toVirtual；数组/对象递归；其余原样）。 */
   private sanitize<T>(value: T): T {
     if (typeof value === 'string') return this.toVirtual(value) as T;
-    if (Array.isArray(value)) return value.map((v) => this.sanitize(v)) as unknown as T;
+    if (Array.isArray(value))
+      return value.map((v) => this.sanitize(v)) as unknown as T;
     if (value && typeof value === 'object') {
       return Object.fromEntries(
-        Object.entries(value as Record<string, unknown>).map(([k, v]) => [k, this.sanitize(v)]),
+        Object.entries(value as Record<string, unknown>).map(([k, v]) => [
+          k,
+          this.sanitize(v),
+        ]),
       ) as T;
     }
     return value;
@@ -113,7 +129,11 @@ export class GuardedSandbox {
     return this.sanitize(await this.inner.ls(real));
   }
 
-  async read(filePath: string, offset?: number, limit?: number): Promise<ReadResult> {
+  async read(
+    filePath: string,
+    offset?: number,
+    limit?: number,
+  ): Promise<ReadResult> {
     const real = this.toReal(filePath);
     if (!real) return { error: this.denyMsg(filePath) };
     return this.sanitize(await this.inner.read(real, offset, limit));
@@ -125,7 +145,10 @@ export class GuardedSandbox {
     // data 可能是二进制/base64，不做字符串替换；仅 error 字段脱敏
     const result = await this.inner.readRaw(real);
     if (typeof (result as { error?: unknown }).error === 'string') {
-      return { ...result, error: this.toVirtual((result as { error: string }).error) };
+      return {
+        ...result,
+        error: this.toVirtual((result as { error: string }).error),
+      };
     }
     return result;
   }
@@ -144,7 +167,9 @@ export class GuardedSandbox {
   ): Promise<EditResult> {
     const real = this.toReal(filePath);
     if (!real) return { error: this.denyMsg(filePath) };
-    return this.sanitize(await this.inner.edit(real, oldString, newString, replaceAll));
+    return this.sanitize(
+      await this.inner.edit(real, oldString, newString, replaceAll),
+    );
   }
 
   async glob(pattern: string, searchPath?: string): Promise<GlobResult> {
@@ -161,14 +186,18 @@ export class GuardedSandbox {
   ): Promise<GrepResult> {
     const real = this.toReal(searchPath ?? '/');
     if (!real) return { error: this.denyMsg(searchPath ?? '/') };
-    return this.sanitize(await this.inner.grep(pattern, real, glob ?? undefined));
+    return this.sanitize(
+      await this.inner.grep(pattern, real, glob ?? undefined),
+    );
   }
 
   // ─── execute（cwd 锚定 + 输出脱敏，无路径级硬隔离——见文件顶部说明）──────
 
   async execute(command: string): Promise<ExecuteResponse> {
     // 用单引号包围路径防空格，workspaceRoot 本身不含单引号（Daytona 路径约定）
-    const result = await this.inner.execute(`cd '${this.workspaceRoot}' && ( ${command} )`);
+    const result = await this.inner.execute(
+      `cd '${this.workspaceRoot}' && ( ${command} )`,
+    );
     // 输出里的真实工作区路径（pwd、报错栈等）替换回虚拟根，避免模型学到真实路径
     return this.sanitize(result);
   }
@@ -181,7 +210,9 @@ export class GuardedSandbox {
 
   // ─── host 侧方法：原样透传（可信宿主代码，技能同步/文件接口使用）────────
 
-  async uploadFiles(files: Array<[string, Uint8Array]>): Promise<FileUploadResponse[]> {
+  async uploadFiles(
+    files: Array<[string, Uint8Array]>,
+  ): Promise<FileUploadResponse[]> {
     return this.inner.uploadFiles(files);
   }
 

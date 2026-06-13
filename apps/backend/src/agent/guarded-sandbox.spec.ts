@@ -21,7 +21,9 @@ function makeMockInner() {
   return {
     id: 'mock-sandbox-id',
     isRunning: true,
-    execute: jest.fn().mockResolvedValue({ output: '', exitCode: 0, truncated: false }),
+    execute: jest
+      .fn()
+      .mockResolvedValue({ output: '', exitCode: 0, truncated: false }),
     ls: jest.fn().mockResolvedValue({ files: [] }),
     read: jest.fn().mockResolvedValue({ content: 'hello' }),
     readRaw: jest.fn().mockResolvedValue({ data: {} }),
@@ -111,7 +113,12 @@ describe('GuardedSandbox — 入站虚拟路径映射', () => {
 
   it('edit: 虚拟路径映射 + 参数透传', async () => {
     await guard.edit('/file.txt', 'old', 'new', false);
-    expect(inner.edit).toHaveBeenCalledWith(`${WS}/file.txt`, 'old', 'new', false);
+    expect(inner.edit).toHaveBeenCalledWith(
+      `${WS}/file.txt`,
+      'old',
+      'new',
+      false,
+    );
   });
 
   it('readRaw: 虚拟路径映射', async () => {
@@ -179,7 +186,11 @@ describe('GuardedSandbox — 出站脱敏（真实路径 → 虚拟 /）', () =>
   });
 
   it('execute 输出里的真实路径（如 pwd）替换为 /', async () => {
-    inner.execute.mockResolvedValue({ output: `${WS}\n${WS}/dist/out.docx\n`, exitCode: 0, truncated: false });
+    inner.execute.mockResolvedValue({
+      output: `${WS}\n${WS}/dist/out.docx\n`,
+      exitCode: 0,
+      truncated: false,
+    });
     const result = await guard.execute('pwd && ls dist');
     expect(result.output).toBe('/\n/dist/out.docx\n');
   });
@@ -187,7 +198,9 @@ describe('GuardedSandbox — 出站脱敏（真实路径 → 虚拟 /）', () =>
   it('readRaw 的 data 字段不做字符串替换（二进制/base64 安全）', async () => {
     const data = { base64: `${WS}-looking-string-stays` };
     inner.readRaw.mockResolvedValue({ data });
-    const result = (await guard.readRaw('/image.png')) as unknown as { data: typeof data };
+    const result = (await guard.readRaw('/image.png')) as unknown as {
+      data: typeof data;
+    };
     expect(result.data).toBe(data);
   });
 });

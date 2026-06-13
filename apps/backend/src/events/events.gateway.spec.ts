@@ -29,7 +29,9 @@ describe('EventsGateway.handleSubscribe', () => {
     const stream = { subscribe } as any;
     const prisma = {
       conversation: {
-        findFirst: jest.fn().mockImplementation(({ where }: any) => ({ id: where.id })),
+        findFirst: jest
+          .fn()
+          .mockImplementation(({ where }: any) => ({ id: where.id })),
       },
     } as any;
     const gw = new EventsGateway(stream, {} as any, prisma, {} as any);

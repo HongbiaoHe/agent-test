@@ -13,7 +13,17 @@
  *   显式指定时不回退，直接抛错。
  */
 
-import { createWriteStream, existsSync, mkdirSync, mkdtempSync, readdirSync, rmSync, statSync, writeFileSync, renameSync } from 'node:fs';
+import {
+  createWriteStream,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  readdirSync,
+  rmSync,
+  statSync,
+  writeFileSync,
+  renameSync,
+} from 'node:fs';
 import { readFile, cp } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { basename, join } from 'node:path';
@@ -130,12 +140,20 @@ export async function extractSkillFromTarball(opts: {
         }
 
         // 只展开属于目标子路径的条目（含子目录条目本身 entryPrefix 去掉末尾 /）
-        if (!entryPath.startsWith(entryPrefix) && entryPath !== entryPrefix.slice(0, -1)) {
+        if (
+          !entryPath.startsWith(entryPrefix) &&
+          entryPath !== entryPrefix.slice(0, -1)
+        ) {
           return false;
         }
 
         // 单文件大小限制：>512KB 的文件跳过（目录条目 type=Directory，不跳过）
-        if (entry && entry.type === 'File' && entry.size != null && entry.size > MAX_FILE_BYTES) {
+        if (
+          entry &&
+          entry.type === 'File' &&
+          entry.size != null &&
+          entry.size > MAX_FILE_BYTES
+        ) {
           return false;
         }
         return true;
