@@ -1,4 +1,5 @@
 import { HttpStatus, Injectable } from '@nestjs/common';
+import { resolveProviderName } from '../auth/aaguid-map';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
 import { PrismaService } from '../prisma/prisma.service';
@@ -25,6 +26,11 @@ export class UsersService {
         id: a.id,
         createdAt: a.createdAt,
         transports: a.transports,
+        // aaguid 仅用于解析来源名，不直接外泄
+        providerName: resolveProviderName(a.aaguid, a.deviceType),
+        deviceType: a.deviceType,
+        backedUp: a.backedUp,
+        lastUsedAt: a.lastUsedAt,
       })),
     };
   }

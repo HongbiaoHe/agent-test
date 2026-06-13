@@ -8,27 +8,59 @@ const prismaMock = {
 beforeEach(() => jest.clearAllMocks());
 
 describe('UsersService.getMe', () => {
-  it('返回 email/createdAt/tenantName/passkeys（transports 可为 null）', async () => {
+  it('返回 email/createdAt/tenantName + enriched passkeys（providerName/deviceType/backedUp/lastUsedAt）', async () => {
     prismaMock.user.findUnique.mockResolvedValue({
       id: 'u1',
       email: 'a@b.c',
       createdAt: new Date('2026-01-01'),
       tenant: { name: 'a@b.c' },
       authenticators: [
-        { id: 'pk1', createdAt: new Date('2026-02-02'), transports: 'internal,hybrid' },
-        { id: 'pk2', createdAt: new Date('2026-03-03'), transports: null },
+        {
+          id: 'pk1',
+          createdAt: new Date('2026-02-02'),
+          transports: 'internal,hybrid',
+          aaguid: 'fbfc3007-154e-4ecc-8c0b-6e020557d7bd',
+          deviceType: 'multiDevice',
+          backedUp: true,
+          lastUsedAt: new Date('2026-04-04'),
+        },
+        {
+          id: 'pk2',
+          createdAt: new Date('2026-03-03'),
+          transports: null,
+          aaguid: null,
+          deviceType: 'singleDevice',
+          backedUp: false,
+          lastUsedAt: null,
+        },
       ],
     });
     const svc = new UsersService(prismaMock as never);
     const me = await svc.getMe('u1');
     expect(me.email).toBe('a@b.c');
     expect(me.tenantName).toBe('a@b.c');
-    expect(me.passkeys).toEqual([
-      { id: 'pk1', createdAt: new Date('2026-02-02'), transports: 'internal,hybrid' },
-      { id: 'pk2', createdAt: new Date('2026-03-03'), transports: null },
+    expect(me.passkeys[0]).toEqual({
+      id: 'pk1',
+      createdAt: new Date('2026-02-02'),
+      transports: 'internal,hybrid',
+      providerName: 'iCloud 钥匙串',
+      deviceType: 'multiDevice',
+      backedUp: true,
+      lastUsedAt: new Date('2026-04-04'),
+    });
+    expect(me.passkeys[1].providerName).toBe('设备 passkey');
+    expect(me.passkeys[1].lastUsedAt).toBeNull();
+    // 回传对象不含 aaguid 原始值——aaguid 只用于后端解析成 providerName，
+    // 也不泄漏 publicKey/counter/credentialId 等内部列
+    expect(Object.keys(me.passkeys[0]).sort()).toEqual([
+      'backedUp',
+      'createdAt',
+      'deviceType',
+      'id',
+      'lastUsedAt',
+      'providerName',
+      'transports',
     ]);
-    // 不泄漏 publicKey/counter/credentialId 等内部列
-    expect(Object.keys(me.passkeys[0]).sort()).toEqual(['createdAt', 'id', 'transports']);
   });
 });
 
