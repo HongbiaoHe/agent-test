@@ -34,6 +34,10 @@ model Authenticator {
   publicKey    Bytes // COSE 公钥
   counter      Int      @default(0) // 签名计数器，防重放
   transports   String? // 逗号拼接，如 "internal,hybrid"
+  aaguid       String? // 认证器厂商标识（注册时由 WebAuthn 返回），用于解析来源名
+  deviceType   String? // singleDevice | multiDevice（来自 credentialDeviceType）
+  backedUp     Boolean  @default(false) // 是否云同步备份（来自 credentialBackedUp）
+  lastUsedAt   DateTime? // 最后一次用此 passkey 登录的时间；从未使用为 null
   createdAt    DateTime @default(now())
 
   @@index([userId])
