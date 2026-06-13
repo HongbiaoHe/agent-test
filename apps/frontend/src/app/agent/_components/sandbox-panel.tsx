@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { FileText, Server, Timer } from "lucide-react";
+import { Loader2, Server, Timer, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -22,14 +22,19 @@ import {
 import { fetchSandboxStatus, type SandboxStatus } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-/** 沙箱状态 → 展示语义（点的颜色 / 徽标文案）。 */
+import { FilePreview } from "./file-preview";
+import { FileTree } from "./file-tree";
+
+/**
+ * 沙箱状态 → 展示语义（状态色 dot / 文案）。
+ * 状态颜色靠彩色圆点表达：运行=绿、停机/未知=黄、无沙箱=中性灰——徽标本身保持中性底 +
+ * 高对比文字（彩字弱底在浅色下对比度不足 WCAG，见 DESIGN.md §11）。dot 同时供顶栏心跳点复用。
+ */
 function toneOf(data: SandboxStatus | undefined) {
-  if (!data?.exists) return { dot: "bg-muted-foreground/40", label: "No sandbox", variant: "outline" as const };
-  if (data.state === "started")
-    return { dot: "bg-success", label: "Running", variant: "secondary" as const };
-  if (data.state === "stopped")
-    return { dot: "bg-warning", label: "Stopped", variant: "outline" as const };
-  return { dot: "bg-warning", label: data.state ?? "Unknown", variant: "outline" as const };
+  if (!data?.exists) return { dot: "bg-muted-foreground/40", label: "No sandbox" };
+  if (data.state === "started") return { dot: "bg-success", label: "Running" };
+  if (data.state === "stopped") return { dot: "bg-warning", label: "Stopped" };
+  return { dot: "bg-warning", label: data.state ?? "Unknown" };
 }
 
 /** 每秒跳动的当前时间（active=false 时不起 interval，面板关闭零开销）。 */
@@ -66,6 +71,8 @@ function formatTime(iso: string | null | undefined): string {
  */
 export function SandboxStatusButton() {
   const [open, setOpen] = useState(false);
+  // 当前预览的文件（虚拟相对路径）；非 null 时侧栏加宽为左树右预览
+  const [selected, setSelected] = useState<string | null>(null);
   const { data } = useQuery({
     queryKey: ["sandbox-status"],
     queryFn: () => fetchSandboxStatus(),
@@ -78,18 +85,27 @@ export function SandboxStatusButton() {
     // 用 toast id 去重，这里再加 meta 静默会引入分叉——直接依赖 exists:false 降级即可）
   });
   // 详情查询（含文件列表）：仅面板打开时启用，关闭即停（不在后台续命沙箱）
-  const { data: detail } = useQuery({
-    queryKey: ["sandbox-status", "files"],
-    queryFn: () => fetchSandboxStatus(true),
+  const {
+    data: detail,
+    isFetching: detailFetching,
+    refetch: refetchDetail,
+  } = useQuery({
+    // 仅刷新状态主体（state/时间戳/倒计时）；文件不再随此查询返回，改由文件树按目录懒加载
+    queryKey: ["sandbox-status", "detail"],
+    queryFn: () => fetchSandboxStatus(),
     enabled: open,
     refetchInterval: open ? 5_000 : false,
   });
-  const tone = toneOf(data);
+  // 状态徽标优先用详情数据：打开后随详情刷新即时反映最新 state，不再滞后于 15s 心跳
+  const tone = toneOf(detail ?? data);
   const running = data?.exists && data.state === "started";
 
   function openPanel() {
-    // enabled:open 翻转后 React Query 立即发起详情查询，无需手动 refetch
     setOpen(true);
+    // 全局 staleTime=60s 会把 60s 内的缓存判定为 fresh——仅靠 enabled 翻转不会自动重拉，
+    // 表现为「打开时状态/文件还是旧的」。这里显式 refetch 强制打开瞬间立即刷新状态+文件
+    // 列表（命令式 refetch 忽略 staleTime；并发同 key 请求会被去重，不会多发）。
+    void refetchDetail();
   }
 
   return (
@@ -122,22 +138,78 @@ export function SandboxStatusButton() {
         <TooltipContent>Sandbox: {tone.label}</TooltipContent>
       </Tooltip>
 
-      <Sheet open={open} onOpenChange={setOpen}>
-        <SheetContent side="right" className="w-full gap-0 sm:max-w-sm">
+      <Sheet
+        open={open}
+        onOpenChange={(o) => {
+          setOpen(o);
+          if (!o) setSelected(null); // 关闭面板时清掉预览，下次打开回到纯文件树宽度
+        }}
+      >
+        <SheetContent
+          side="right"
+          className={cn(
+            "w-full gap-0 transition-[max-width] duration-300",
+            // 预览文件时加宽，给代码留足阅读宽度；否则保持窄栏只放文件树
+            selected
+              ? "data-[side=right]:sm:max-w-2xl"
+              : "data-[side=right]:sm:max-w-sm",
+          )}
+        >
           <SheetHeader className="border-b">
             <SheetTitle className="flex items-center gap-2">
               <Server className="size-4" />
               Sandbox
-              <Badge variant={tone.variant}>{tone.label}</Badge>
+              <Badge variant="secondary" className="gap-1.5">
+                <span className={cn("size-1.5 rounded-full", tone.dot)} />
+                {tone.label}
+              </Badge>
+              {/* 刷新中（打开瞬间 / 5s 轮询）：旋转指示正在与沙箱同步状态+文件 */}
+              {detailFetching && (
+                <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
+              )}
             </SheetTitle>
             <SheetDescription>
               Each user gets a dedicated sandbox; all conversations share the same workspace.
             </SheetDescription>
           </SheetHeader>
-          <ScrollArea className="min-h-0 flex-1">
-            {/* 详情数据未到时先用心跳数据兜底（除 files 外字段一致） */}
-            <SandboxDetail data={detail ?? data} panelOpen={open} />
-          </ScrollArea>
+          <div className="flex min-h-0 flex-1">
+            {/* 左：状态详情 + 文件树。预览时收窄为定宽侧列（移动端隐藏，腾给预览） */}
+            <ScrollArea
+              className={cn(
+                "min-h-0",
+                selected
+                  ? "w-64 shrink-0 border-r max-sm:hidden"
+                  : "flex-1",
+              )}
+            >
+              {/* 详情数据未到时先用心跳数据兜底 */}
+              <SandboxDetail
+                data={detail ?? data}
+                panelOpen={open}
+                selectedFile={selected}
+                onSelectFile={setSelected}
+              />
+            </ScrollArea>
+            {/* 右：选中文件的预览（含文件名头 + 关闭） */}
+            {selected && (
+              <div className="flex min-w-0 flex-1 flex-col">
+                <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b px-3">
+                  <span className="truncate font-mono text-xs">{selected}</span>
+                  <Button
+                    variant="ghost"
+                    size="icon-sm"
+                    aria-label="Close preview"
+                    onClick={() => setSelected(null)}
+                  >
+                    <X />
+                  </Button>
+                </div>
+                <ScrollArea className="min-h-0 flex-1">
+                  <FilePreview path={selected} />
+                </ScrollArea>
+              </div>
+            )}
+          </div>
         </SheetContent>
       </Sheet>
     </>
@@ -156,9 +228,13 @@ function InfoRow({ label, value }: { label: string; value: React.ReactNode }) {
 function SandboxDetail({
   data,
   panelOpen,
+  selectedFile,
+  onSelectFile,
 }: {
   data: SandboxStatus | undefined;
   panelOpen: boolean;
+  selectedFile: string | null;
+  onSelectFile: (path: string) => void;
 }) {
   const stopped = data?.exists && data.state === "stopped";
   // 删除倒计时锚点：停机时刻（updatedAt）+ autoDeleteMinutes
@@ -213,26 +289,12 @@ function SandboxDetail({
           Workspace files
         </h3>
         {data.state !== "started" ? (
+          // 停机态不渲染文件树：列目录会 findUserSandbox 唤醒沙箱，仅查看不应续命
           <p className="text-sm text-muted-foreground">
             Sandbox is stopped; files will be visible on the next run.
           </p>
-        ) : !data.files ? (
-          // files=null：详情查询（?files=1）还没返回，心跳数据不含文件
-          <p className="text-sm text-muted-foreground">Loading files…</p>
-        ) : data.files.length === 0 ? (
-          <p className="text-sm text-muted-foreground">No output files in the workspace yet.</p>
         ) : (
-          <ul className="space-y-1">
-            {data.files.map((f) => (
-              <li
-                key={f.path}
-                className="flex items-center gap-2 rounded-md px-1.5 py-1 text-sm"
-              >
-                <FileText className="size-3.5 shrink-0 text-muted-foreground" />
-                <span className="truncate font-mono text-xs">{f.path}</span>
-              </li>
-            ))}
-          </ul>
+          <FileTree selected={selectedFile} onSelect={onSelectFile} />
         )}
       </div>
     </div>

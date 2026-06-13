@@ -14,4 +14,16 @@ export class SandboxController {
   status(@CurrentUser() user: AuthUser, @Query('files') files?: string) {
     return this.sandbox.status(user.userId, files === '1');
   }
+
+  /** 列出工作区某目录的直接子项（?path=<相对路径>，缺省=根）——树展开时按需调用。 */
+  @Get('dir')
+  listDir(@CurrentUser() user: AuthUser, @Query('path') path?: string) {
+    return this.sandbox.listDir(user.userId, path ?? '');
+  }
+
+  /** 读取单个文件用于预览（?path=<相对路径>）——点击文件时按需调用。 */
+  @Get('file')
+  readFile(@CurrentUser() user: AuthUser, @Query('path') path: string) {
+    return this.sandbox.readFile(user.userId, path);
+  }
 }

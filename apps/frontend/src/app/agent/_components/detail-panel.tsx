@@ -14,10 +14,16 @@ import {
 import { cn } from "@/lib/utils";
 
 import type { ThreadItem } from "../_lib/thread";
-import { HighlightedCode, langFromPath } from "./highlight";
+import {
+  CodeViewer,
+  jsonLangIfParses,
+  langFromPath,
+  stripLineNumbers,
+} from "./highlight";
 
 type ToolItem = Extract<ThreadItem, { kind: "tool" }>;
 
+/** 工具结果/参数的等宽块——薄封装 CodeViewer（项目唯一的代码渲染出口）。 */
 function CodeBlock({
   children,
   language,
@@ -25,11 +31,7 @@ function CodeBlock({
   children: string;
   language?: string;
 }) {
-  return (
-    <pre className="overflow-x-auto rounded-lg bg-muted/60 p-3 font-mono text-xs leading-relaxed whitespace-pre-wrap text-foreground/90">
-      <HighlightedCode code={children} language={language} />
-    </pre>
-  );
+  return <CodeViewer text={children} language={language} />;
 }
 
 type ContentBlock = { type: string } & Record<string, unknown>;
@@ -59,33 +61,6 @@ function parseContentBlocks(s: string): ContentBlock[] | null {
     return null;
   } catch {
     return null;
-  }
-}
-
-/**
- * 剥离 read 类工具结果的行号前缀（cat -n 式 `  12\t内容`，可能叠多层）。
- * 仅当所有非空行都带 `数字\t` 前缀时才剥（整列一致 = 行号列；内容行偶然
- * 以数字开头不会全行命中），逐层剥到内容行不再匹配为止。只影响展示。
- */
-function stripLineNumbers(text: string): string {
-  let lines = text.split("\n");
-  const isNumbered = (ls: string[]) =>
-    ls.some((l) => l !== "") && ls.every((l) => l === "" || /^\s*\d+\t/.test(l));
-  while (isNumbered(lines)) {
-    lines = lines.map((l) => (l === "" ? l : l.replace(/^\s*\d+\t/, "")));
-  }
-  return lines.join("\n");
-}
-
-/** 内容像 JSON（能 parse 的对象/数组）时返回 "json"，否则 undefined。 */
-function jsonLangIfParses(text: string): string | undefined {
-  const t = text.trim();
-  if (!t.startsWith("{") && !t.startsWith("[")) return undefined;
-  try {
-    JSON.parse(t);
-    return "json";
-  } catch {
-    return undefined;
   }
 }
 

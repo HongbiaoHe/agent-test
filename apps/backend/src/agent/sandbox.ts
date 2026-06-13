@@ -15,6 +15,7 @@
 
 import { Daytona } from '@daytonaio/sdk';
 import { DaytonaSandbox } from '@langchain/daytona';
+import type { FileData } from 'deepagents';
 import { GuardedSandbox } from './guarded-sandbox';
 
 /** agent 专用工作区目录名（相对于沙箱 home） */
@@ -152,6 +153,213 @@ export async function listWorkspaceFiles(
       // GuardedSandbox 出站脱敏后路径已是虚拟根（/xxx），去掉前导 / 得相对路径
       .map((p) => ({ path: p.replace(/^\//, '') }))
   );
+}
+
+/** 树节点：工作区某目录下的直接子项（相对虚拟路径，无前导 /）。 */
+export interface DirEntry {
+  /** 末级名（展示用） */
+  name: string;
+  /** 相对工作区根的虚拟路径（如 my-blog/pages），点目录时回传以列下一层 */
+  path: string;
+  isDir: boolean;
+  /** 文件字节数；目录为 0 */
+  size: number;
+}
+
+/** 树里不展示的项：依赖目录、隐藏文件、注入的技能代码（与 listWorkspaceFiles 口径一致）。 */
+const HIDDEN_TREE_NAMES = new Set(['node_modules', 'skills']);
+function isHiddenTreeEntry(name: string): boolean {
+  return name.startsWith('.') || HIDDEN_TREE_NAMES.has(name);
+}
+
+/**
+ * 列出工作区某目录的直接子项（非递归，按需懒加载用）。
+ *
+ * 与 listWorkspaceFiles（一次性扁平 find）的区别：这里只列**单层**，前端展开目录
+ * 才调一次——「不展开不加载」。底层用 GuardedSandbox.ls（find -maxdepth 1 + stat，
+ * 已做路径守卫与出站脱敏，返回虚拟路径：目录带尾 /、文件不带）。
+ *
+ * dir 为相对虚拟路径（''/'/' = 根）。排除 node_modules/隐藏/skills，目录优先排序。
+ */
+export async function listDir(
+  sb: GuardedSandbox,
+  dir: string,
+): Promise<DirEntry[]> {
+  const res = await sb.ls(dir && dir !== '/' ? dir : '/');
+  const entries: DirEntry[] = [];
+  for (const f of res.files ?? []) {
+    // ls 返回虚拟路径：目录尾随 /、前导 /；取末级名并归一相对路径
+    const rel = f.path.replace(/^\//, '').replace(/\/$/, '');
+    const name = rel.split('/').filter(Boolean).pop() ?? '';
+    if (!name || isHiddenTreeEntry(name)) continue;
+    entries.push({
+      name,
+      path: rel,
+      isDir: f.is_dir ?? false,
+      size: f.size ?? 0,
+    });
+  }
+  // 目录在前、同类按名排序（区分大小写无碍，工作区文件名以 ASCII 为主）
+  entries.sort((a, b) =>
+    a.isDir === b.isDir ? a.name.localeCompare(b.name) : a.isDir ? -1 : 1,
+  );
+  return entries;
+}
+
+/** 可内联高亮预览的文本扩展名（未列入的当二进制处理，避免 read() 误走二进制分支被脱敏破坏）。 */
+const TEXT_EXTS = new Set([
+  'ts',
+  'tsx',
+  'js',
+  'jsx',
+  'mjs',
+  'cjs',
+  'json',
+  'jsonc',
+  'py',
+  'rb',
+  'go',
+  'rs',
+  'java',
+  'kt',
+  'c',
+  'h',
+  'cpp',
+  'hpp',
+  'cc',
+  'cs',
+  'php',
+  'swift',
+  'sh',
+  'bash',
+  'zsh',
+  'fish',
+  'sql',
+  'graphql',
+  'gql',
+  'css',
+  'scss',
+  'sass',
+  'less',
+  'html',
+  'htm',
+  'xml',
+  'vue',
+  'svelte',
+  'md',
+  'markdown',
+  'mdx',
+  'txt',
+  'text',
+  'log',
+  'yml',
+  'yaml',
+  'toml',
+  'ini',
+  'conf',
+  'cfg',
+  'env',
+  'csv',
+  'tsv',
+  'properties',
+  'gitignore',
+  'dockerignore',
+  'editorconfig',
+]);
+/** 无扩展名但属文本的常见文件名（树已过滤隐藏文件，故无需点开头项）。 */
+const TEXT_NOEXT_NAMES = new Set([
+  'dockerfile',
+  'makefile',
+  'license',
+  'readme',
+  'procfile',
+]);
+/** 走 readRaw → base64 dataUrl 内联预览的图片扩展名。 */
+const IMAGE_EXTS = new Set([
+  'png',
+  'jpg',
+  'jpeg',
+  'gif',
+  'webp',
+  'svg',
+  'bmp',
+  'ico',
+  'avif',
+]);
+
+/** 文件预览负载：文本（带行号原文，前端剥）/ 图片（dataUrl）/ 不可预览二进制。 */
+export type FilePreview =
+  | { kind: 'text'; content: string; truncated: boolean }
+  | { kind: 'image'; dataUrl: string; mimeType: string }
+  | { kind: 'binary'; size: number };
+
+const PREVIEW_MAX_LINES = 2000;
+
+/**
+ * 读取单个工作区文件用于前端预览（点击文件时按需调用）。
+ *
+ * 按扩展名路由，避免 GuardedSandbox.read 的二进制分支问题——read() 对非文本 mime
+ * 会回退到 downloadFiles，其 Uint8Array 结果经 GuardedSandbox.sanitize 的对象深拷贝
+ * 会被破坏成普通对象；故二进制/图片**不走 read()**，改用 readRaw（成功结果不脱敏）。
+ *  - 文本扩展：read() 取前 PREVIEW_MAX_LINES 行（带行号原文，前端 stripLineNumbers）。
+ *  - 图片扩展：readRaw() → base64 dataUrl。
+ *  - 其余：返回 binary 占位（不下载，省流量）。
+ */
+export async function readFilePreview(
+  sb: GuardedSandbox,
+  filePath: string,
+): Promise<FilePreview> {
+  const name = filePath.split('/').filter(Boolean).pop() ?? '';
+  const ext = name.includes('.') ? name.split('.').pop()!.toLowerCase() : '';
+  const isText =
+    (ext && TEXT_EXTS.has(ext)) ||
+    (!ext && TEXT_NOEXT_NAMES.has(name.toLowerCase()));
+  const isImage = ext !== '' && IMAGE_EXTS.has(ext);
+
+  if (isText) {
+    const res = await sb.read(filePath, 0, PREVIEW_MAX_LINES);
+    if (res.error || typeof res.content !== 'string') {
+      throw new Error(res.error ?? '读取文件失败');
+    }
+    const lineCount = res.content === '' ? 0 : res.content.split('\n').length;
+    return {
+      kind: 'text',
+      content: res.content,
+      truncated: lineCount >= PREVIEW_MAX_LINES,
+    };
+  }
+
+  if (isImage) {
+    const res = await sb.readRaw(filePath);
+    if (res.error || !res.data) throw new Error(res.error ?? '读取文件失败');
+    const buf = fileDataToBuffer(res.data);
+    const mimeType = fileDataMime(res.data);
+    return {
+      kind: 'image',
+      dataUrl: `data:${mimeType};base64,${buf.toString('base64')}`,
+      mimeType,
+    };
+  }
+
+  // 其余二进制：仅取大小（readRaw 拿字节数），不内联内容
+  const res = await sb.readRaw(filePath);
+  const size = res.data ? fileDataToBuffer(res.data).length : 0;
+  return { kind: 'binary', size };
+}
+
+/**
+ * deepagents FileData 联合（V1=行数组 / V2=string|Uint8Array）→ Buffer。
+ * readRaw 实际返回 V2，但类型是联合，逐分支收窄以零断言取字节。
+ */
+function fileDataToBuffer(data: FileData): Buffer {
+  const c = data.content;
+  if (Array.isArray(c)) return Buffer.from(c.join('\n'), 'utf8');
+  return Buffer.from(c);
+}
+
+/** FileData mime：仅 V2 带 mimeType，V1 回退 octet-stream。 */
+function fileDataMime(data: FileData): string {
+  return 'mimeType' in data ? data.mimeType : 'application/octet-stream';
 }
 
 /**

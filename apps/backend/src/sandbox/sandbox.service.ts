@@ -1,9 +1,16 @@
-import { Injectable, Logger } from '@nestjs/common';
+import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import {
+  type DirEntry,
+  type FilePreview,
   findUserSandbox,
+  listDir,
   listWorkspaceFiles,
   pickUserSandbox,
+  readFilePreview,
 } from '../agent/sandbox';
+import { ErrorCodes } from '../common/errors/error-code';
+import { BusinessException } from '../common/errors/business.exception';
+import { assertSafeEntryPath } from '../skills/skill-installer';
 
 /** GET /sandbox/status 的响应形状（exists=false 时其余字段缺省）。 */
 export interface SandboxStatus {
@@ -71,6 +78,51 @@ export class SandboxStatusService {
       // 沙箱是可降级能力：查询异常按「无沙箱」返回，不向前端报错
       this.logger.warn(`沙箱状态查询失败 userId=${userId}: ${String(e)}`);
       return { exists: false };
+    }
+  }
+
+  /**
+   * 列出工作区某目录的直接子项（树展开时按需调用）。
+   * dir 为相对虚拟路径（''=根），经 assertSafeEntryPath 拒绝 .. / 绝对路径。
+   * 与 status 不同：这里会 findUserSandbox（停机则唤醒）——用户正在浏览，续命副作用可接受。
+   */
+  async listDir(userId: string, dir: string): Promise<{ entries: DirEntry[] }> {
+    if (dir) this.assertSafePath(dir);
+    const sb = await findUserSandbox(userId);
+    if (!sb) {
+      throw new BusinessException(
+        ErrorCodes.SANDBOX_NOT_FOUND,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    return { entries: await listDir(sb, dir) };
+  }
+
+  /** 读取单个文件用于预览（点击文件时按需调用）。文本/图片/二进制三态见 readFilePreview。 */
+  async readFile(userId: string, filePath: string): Promise<FilePreview> {
+    this.assertSafePath(filePath);
+    const sb = await findUserSandbox(userId);
+    if (!sb) {
+      throw new BusinessException(
+        ErrorCodes.SANDBOX_NOT_FOUND,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    return readFilePreview(sb, filePath);
+  }
+
+  /**
+   * 路径安全校验：复用 skill-installer 的纯函数（拒 .. 片段与绝对路径），
+   * 把其 skill 语义错误转成更清晰的 INVALID_PATH（与 conversations 文件接口口径一致）。
+   */
+  private assertSafePath(relPath: string): void {
+    try {
+      assertSafeEntryPath(relPath);
+    } catch {
+      throw new BusinessException(
+        ErrorCodes.INVALID_PATH,
+        HttpStatus.BAD_REQUEST,
+      );
     }
   }
 }

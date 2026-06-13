@@ -134,6 +134,35 @@ export function fetchSandboxStatus(includeFiles = false): Promise<SandboxStatus>
   return request(`/sandbox/status${includeFiles ? "?files=1" : ""}`);
 }
 
+/** 工作区目录树的一层子项（GET /sandbox/dir，按目录懒加载）。 */
+export interface SandboxDirEntry {
+  name: string;
+  /** 相对工作区根的虚拟路径（点目录时回传以列下一层；点文件时传给 /sandbox/file） */
+  path: string;
+  isDir: boolean;
+  size: number;
+}
+
+/** GET /sandbox/dir?path=：列出某目录直接子项（path 缺省=根）。 */
+export function fetchSandboxDir(
+  path = "",
+): Promise<{ entries: SandboxDirEntry[] }> {
+  return request(
+    `/sandbox/dir${path ? `?path=${encodeURIComponent(path)}` : ""}`,
+  );
+}
+
+/** 单个文件的预览负载（GET /sandbox/file）：文本/图片/不可预览二进制三态。 */
+export type SandboxFilePreview =
+  | { kind: "text"; content: string; truncated: boolean }
+  | { kind: "image"; dataUrl: string; mimeType: string }
+  | { kind: "binary"; size: number };
+
+/** GET /sandbox/file?path=：读取单个文件用于预览。 */
+export function fetchSandboxFile(path: string): Promise<SandboxFilePreview> {
+  return request(`/sandbox/file?path=${encodeURIComponent(path)}`);
+}
+
 // ——— 生图/生视频 媒体 ———
 
 export type MediaType = "image" | "video";
