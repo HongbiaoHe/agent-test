@@ -466,6 +466,7 @@ function AssetSurface({
   }
 
   if (mediaType === "video") {
+    // bg-black：视频 letterbox 黑边的行业惯例，非设计 token 范畴，刻意保留
     return (
       <video
         src={url}

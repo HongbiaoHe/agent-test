@@ -22,9 +22,9 @@ async function getConversations(token: string): Promise<ConvItem[]> {
 }
 
 const STATUS_STYLE: Record<string, string> = {
-  done: "text-green-600",
+  done: "text-success",
   failed: "text-destructive",
-  waiting_approval: "text-amber-600",
+  waiting_approval: "text-warning",
   running: "text-muted-foreground",
   queued: "text-muted-foreground",
 };
