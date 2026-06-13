@@ -2,7 +2,15 @@
 
 import { startRegistration } from "@simplewebauthn/browser";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { KeyRound, Loader2, Plus, Trash2 } from "lucide-react";
+import {
+  Clock,
+  KeyRound,
+  Loader2,
+  Plus,
+  ShieldCheck,
+  Smartphone,
+  Trash2,
+} from "lucide-react";
 import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -25,10 +33,11 @@ import {
 
 import { ME_QUERY_KEY } from "./account-card";
 
-/** Passkey 管理：列表 / 添加（WebAuthn 注册）/ 删除（两步确认）。 */
+/** Passkey 管理：列表 / 添加（先内联确认绑定邮箱，再走 WebAuthn 注册）/ 删除（两步确认）。 */
 export function PasskeysCard() {
   const qc = useQueryClient();
   const query = useQuery({ queryKey: ME_QUERY_KEY, queryFn: getMe });
+  const [confirmingAdd, setConfirmingAdd] = useState(false);
 
   const addMut = useMutation({
     mutationFn: async () => {
@@ -38,9 +47,13 @@ export function PasskeysCard() {
       const response = await startRegistration({ optionsJSON: options });
       return myPasskeyVerify(response);
     },
-    onSuccess: () => qc.invalidateQueries({ queryKey: ME_QUERY_KEY }),
+    onSuccess: () => {
+      setConfirmingAdd(false);
+      qc.invalidateQueries({ queryKey: ME_QUERY_KEY });
+    },
   });
 
+  const email = query.data?.email;
   const passkeys = query.data?.passkeys ?? [];
 
   return (
@@ -54,27 +67,65 @@ export function PasskeysCard() {
         </div>
         <Button
           size="sm"
-          disabled={addMut.isPending}
-          onClick={() => addMut.mutate()}
+          disabled={addMut.isPending || confirmingAdd || !email}
+          onClick={() => {
+            addMut.reset();
+            setConfirmingAdd(true);
+          }}
         >
-          {addMut.isPending ? (
-            <Loader2 className="size-4 animate-spin" />
-          ) : (
-            <Plus className="size-4" />
-          )}
+          <Plus className="size-4" />
           Add passkey
         </Button>
       </CardHeader>
       <CardContent className="space-y-3">
-        {addMut.isError && (
-          <p className="text-sm text-destructive" role="alert">
-            {addMut.error instanceof Error
-              ? addMut.error.message
-              : "Failed to add passkey"}
-          </p>
+        {confirmingAdd && (
+          <div className="space-y-3 rounded-lg border border-primary/40 bg-accent/40 px-3 py-3">
+            <div className="space-y-1">
+              <p className="text-sm font-medium">
+                Add a passkey for this account
+              </p>
+              <p className="text-sm text-muted-foreground">
+                This passkey will be bound to{" "}
+                <span className="font-medium text-foreground">{email}</span>.
+                The account can&apos;t be changed.
+              </p>
+            </div>
+            {addMut.isError && (
+              <p className="text-sm text-destructive" role="alert">
+                {addMut.error instanceof Error
+                  ? addMut.error.message
+                  : "Failed to add passkey"}
+              </p>
+            )}
+            <div className="flex items-center gap-1.5">
+              <Button
+                size="sm"
+                disabled={addMut.isPending}
+                onClick={() => addMut.mutate()}
+              >
+                {addMut.isPending ? (
+                  <Loader2 className="size-4 animate-spin" />
+                ) : (
+                  <KeyRound className="size-4" />
+                )}
+                Confirm &amp; continue
+              </Button>
+              <Button
+                variant="ghost"
+                size="sm"
+                disabled={addMut.isPending}
+                onClick={() => {
+                  addMut.reset();
+                  setConfirmingAdd(false);
+                }}
+              >
+                Cancel
+              </Button>
+            </div>
+          </div>
         )}
         {query.isLoading ? (
-          <Skeleton className="h-14 w-full rounded-lg" />
+          <Skeleton className="h-16 w-full rounded-lg" />
         ) : query.isError ? (
           // 错误细节由同页 AccountCard（同 query）展示，这里只给中性占位避免误导性空态
           <p className="py-2 text-sm text-muted-foreground">
@@ -92,6 +143,10 @@ export function PasskeysCard() {
   );
 }
 
+function fmtDate(iso: string) {
+  return new Date(iso).toLocaleDateString();
+}
+
 function PasskeyRow({ passkey }: { passkey: MyPasskey }) {
   const qc = useQueryClient();
   const [confirming, setConfirming] = useState(false);
@@ -99,22 +154,37 @@ function PasskeyRow({ passkey }: { passkey: MyPasskey }) {
     mutationFn: () => deleteMyPasskey(passkey.id),
     onSuccess: () => qc.invalidateQueries({ queryKey: ME_QUERY_KEY }),
   });
-  const transports = passkey.transports?.split(",").filter(Boolean) ?? [];
+
+  const isSynced = passkey.deviceType === "multiDevice";
 
   return (
-    <div className="flex items-center justify-between gap-3 rounded-lg border px-3 py-2.5">
-      <div className="flex min-w-0 items-center gap-3">
-        <KeyRound className="size-4 shrink-0 text-muted-foreground" />
-        <div className="min-w-0 space-y-0.5">
-          <p className="text-sm font-medium">
-            Added {new Date(passkey.createdAt).toLocaleDateString()}
-          </p>
-          <div className="flex flex-wrap gap-1">
-            {transports.map((t) => (
-              <Badge key={t} variant="outline" className="text-xs">
-                {t}
+    <div className="flex items-start justify-between gap-3 rounded-lg border px-3 py-2.5">
+      <div className="flex min-w-0 items-start gap-3">
+        <KeyRound className="mt-0.5 size-4 shrink-0 text-muted-foreground" />
+        <div className="min-w-0 space-y-1.5">
+          <p className="truncate text-sm font-medium">{passkey.providerName}</p>
+          <div className="flex flex-wrap items-center gap-1">
+            {passkey.deviceType && (
+              <Badge variant="secondary" className="gap-1 text-xs">
+                <Smartphone className="size-3" />
+                {isSynced ? "Synced" : "Single device"}
               </Badge>
-            ))}
+            )}
+            {passkey.backedUp && (
+              <Badge variant="secondary" className="gap-1 text-xs">
+                <ShieldCheck className="size-3" />
+                Backed up
+              </Badge>
+            )}
+          </div>
+          <div className="flex flex-wrap items-center gap-x-3 gap-y-0.5 text-xs text-muted-foreground">
+            <span>Added {fmtDate(passkey.createdAt)}</span>
+            <span className="inline-flex items-center gap-1">
+              <Clock className="size-3" />
+              {passkey.lastUsedAt
+                ? `Last used ${fmtDate(passkey.lastUsedAt)}`
+                : "Never used"}
+            </span>
           </div>
           {deleteMut.isError && (
             <p className="text-xs text-destructive" role="alert">
