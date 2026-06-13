@@ -7,6 +7,7 @@ import {
   PanelLeft,
   PanelRightClose,
   PanelRightOpen,
+  Plus,
   Slash,
   Sparkles,
   Square,
@@ -50,6 +51,8 @@ export function ChatThread({
   busy,
   isLoading,
   isNewChat,
+  creating,
+  onNewChat,
   activeDetailId,
   onOpenDetail,
   onDecide,
@@ -69,6 +72,9 @@ export function ChatThread({
   busy: boolean;
   isLoading: boolean;
   isNewChat: boolean;
+  /** 创建空会话请求在途（引导页按钮转圈防重复点击） */
+  creating: boolean;
+  onNewChat: () => void;
   activeDetailId: string | null;
   onOpenDetail: (id: string) => void;
   /** 审批决策回传：decisions 顺序对应 actionRequests（由 ApprovalPanel 组装） */
@@ -239,18 +245,33 @@ export function ChatThread({
         <div className="mx-auto max-w-3xl space-y-6 px-5 py-8">
           {isLoading ? (
             <ThreadSkeleton />
+          ) : isNewChat ? (
+            // 引导页：没有输入框，先创建会话再进入（/agent 空路由）
+            <div className="flex flex-col items-center gap-3 py-24 text-center">
+              <div className="flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
+                <Sparkles className="size-6" />
+              </div>
+              <p className="text-base font-medium">Start a new conversation</p>
+              <p className="max-w-sm text-sm text-muted-foreground">
+                Create a conversation to start chatting — the agent breaks
+                your goal down and works through it step by step, asking for
+                your sign-off before sensitive actions.
+              </p>
+              <Button onClick={onNewChat} disabled={creating} className="mt-1">
+                {creating ? <Loader className="animate-spin" /> : <Plus />}
+                New conversation
+              </Button>
+            </div>
           ) : showEmpty ? (
             <div className="flex flex-col items-center gap-3 py-24 text-center">
               <div className="flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
                 <Sparkles className="size-6" />
               </div>
-              <p className="text-base font-medium">
-                {isNewChat ? "Start a new conversation" : "Nothing here yet"}
-              </p>
+              <p className="text-base font-medium">Start chatting</p>
               <p className="max-w-sm text-sm text-muted-foreground">
-                Tell the agent your goal — it will break it down and work
-                through it step by step, asking for your sign-off before
-                sensitive actions like sending email.
+                Tell the agent your goal in the box below — it will break it
+                down and work through it step by step, asking for your
+                sign-off before sensitive actions like sending email.
               </p>
             </div>
           ) : (
@@ -283,7 +304,8 @@ export function ChatThread({
         </div>
       </ScrollArea>
 
-      {/* 输入区 */}
+      {/* 输入区（新会话引导页没有输入框，先创建会话再聊天） */}
+      {!isNewChat && (
       <div className="shrink-0 px-5 pb-4">
         <div className="relative mx-auto max-w-3xl">
           {/* 任务计划：固定在输入框上方，可折叠/展开 */}
@@ -389,6 +411,7 @@ export function ChatThread({
           </p>
         </div>
       </div>
+      )}
     </section>
   );
 }

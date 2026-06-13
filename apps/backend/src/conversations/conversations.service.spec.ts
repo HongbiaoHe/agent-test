@@ -92,6 +92,82 @@ describe('ConversationsService – downloadFile 路径校验', () => {
   });
 });
 
+describe('ConversationsService – 空会话创建与续聊', () => {
+  let service: ConversationsService;
+
+  beforeEach(async () => {
+    const module = await Test.createTestingModule({
+      providers: [
+        ConversationsService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: SkillsService, useValue: mockSkills },
+        { provide: getQueueToken('agent-run'), useValue: mockQueue },
+        { provide: StreamService, useValue: { publish: jest.fn() } },
+        { provide: MediaService, useValue: { cancelByConversation: jest.fn() } },
+        { provide: AGENT_ABORTS, useValue: new AbortRegistry() },
+      ],
+    }).compile();
+    service = module.get(ConversationsService);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  it('goal 为空 → 创建 idle 空会话：不落首条消息、不入队', async () => {
+    mockPrisma.conversation.create.mockResolvedValue({ id: 'conv-new' });
+
+    const r = await service.create(undefined, 'tenant-1', 'u1');
+
+    expect(r).toEqual({ conversationId: 'conv-new' });
+    expect(mockPrisma.conversation.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ goal: '', status: 'idle' }),
+    });
+    expect(mockPrisma.message.create).not.toHaveBeenCalled();
+    expect(mockQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('goal 非空 → 维持原行为：落消息并入队', async () => {
+    mockPrisma.conversation.create.mockResolvedValue({ id: 'conv-2' });
+    mockSkills.getFor.mockResolvedValue(undefined);
+
+    await service.create('do something', 'tenant-1', 'u1');
+
+    expect(mockPrisma.message.create).toHaveBeenCalled();
+    expect(mockQueue.add).toHaveBeenCalled();
+  });
+
+  it('idle 会话可追加：状态置 queued，空 goal 回填为首条消息内容', async () => {
+    mockPrisma.conversation.findFirst.mockResolvedValue({
+      id: 'conv-1',
+      status: 'idle',
+      goal: '',
+    });
+    mockPrisma.message.count.mockResolvedValue(0);
+
+    await service.appendMessage('conv-1', 'hello world', 'tenant-1', 'u1');
+
+    expect(mockPrisma.conversation.update).toHaveBeenCalledWith({
+      where: { id: 'conv-1' },
+      data: expect.objectContaining({ status: 'queued', goal: 'hello world' }),
+    });
+    expect(mockQueue.add).toHaveBeenCalled();
+  });
+
+  it('已有 goal 的会话追加时不覆盖 goal', async () => {
+    mockPrisma.conversation.findFirst.mockResolvedValue({
+      id: 'conv-1',
+      status: 'done',
+      goal: 'original goal',
+    });
+    mockPrisma.message.count.mockResolvedValue(2);
+
+    await service.appendMessage('conv-1', 'follow up', 'tenant-1', 'u1');
+
+    const data = (mockPrisma.conversation.update.mock.calls[0][0] as { data: Record<string, unknown> }).data;
+    expect(data.status).toBe('queued');
+    expect(data).not.toHaveProperty('goal');
+  });
+});
+
 describe('ConversationsService – stop（主动停止）', () => {
   let service: ConversationsService;
   let aborts: AbortRegistry;

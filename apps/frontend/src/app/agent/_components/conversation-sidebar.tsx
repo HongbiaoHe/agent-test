@@ -24,6 +24,7 @@ const STATUS_BADGE: Record<
   string,
   { label: string; variant: "default" | "secondary" | "destructive" | "outline" }
 > = {
+  idle: { label: "New", variant: "outline" },
   queued: { label: "Queued", variant: "secondary" },
   running: { label: "Running", variant: "secondary" },
   waiting_approval: { label: "Awaiting approval", variant: "default" },
@@ -132,7 +133,9 @@ export function SidebarContent({
                       : "text-foreground/80 hover:bg-accent/60",
                   )}
                 >
-                  <span className="truncate text-sm font-medium">{c.goal}</span>
+                  <span className="truncate text-sm font-medium">
+                    {c.goal.trim() || "New conversation"}
+                  </span>
                   {badge && (
                     <Badge variant={badge.variant} className="w-fit">
                       {badge.label}

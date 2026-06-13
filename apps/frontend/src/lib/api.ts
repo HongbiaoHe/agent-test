@@ -62,13 +62,13 @@ export interface ConversationListItem {
   createdAt: string;
 }
 
-export function createConversation(
-  goal: string,
+/** 创建空会话（idle，不带首条消息、不触发运行）：先建会话再进入，首条消息走 appendMessage。 */
+export function createEmptyConversation(
   model?: string,
 ): Promise<{ conversationId: string }> {
   return request("/conversations", {
     method: "POST",
-    body: JSON.stringify({ goal, model }),
+    body: JSON.stringify({ model }),
   });
 }
 

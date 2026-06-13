@@ -8,7 +8,7 @@ import { useState } from "react";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import {
   appendMessage,
-  createConversation,
+  createEmptyConversation,
   listConversations,
   stopConversation,
 } from "@/lib/api";
@@ -56,8 +56,9 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
 
   const thread = useConversation(conversationId);
 
+  // 先创建空会话（idle）再进入：成功后跳 /agent/[id]，首条消息走 appendMessage
   const createMut = useMutation({
-    mutationFn: (text: string) => createConversation(text, model),
+    mutationFn: () => createEmptyConversation(model),
     onSuccess: ({ conversationId: newId }) => {
       void qc.invalidateQueries({ queryKey: ["conversations"] });
       router.push(`/agent/${newId}`); // 跳到新会话路由，URL 持有 id，刷新可恢复
@@ -91,12 +92,9 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   }
 
   function handleSend(text: string) {
-    if (!conversationId) {
-      createMut.mutate(text);
-    } else {
-      thread.pushUserMessage(text);
-      appendMut.mutate(text);
-    }
+    if (!conversationId) return; // 新会话页只有引导按钮，没有输入框
+    thread.pushUserMessage(text);
+    appendMut.mutate(text);
   }
 
   function selectConversation(id: string) {
@@ -105,8 +103,9 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   }
 
   function newChat() {
+    if (createMut.isPending) return; // 防重复点击
     setSidebarOpen(false);
-    router.push("/agent");
+    createMut.mutate();
   }
 
   function openDetail(id: string) {
@@ -138,7 +137,11 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
     : undefined;
 
   const activeConv = conversations.find((c) => c.id === conversationId);
-  const title = conversationId ? (activeConv?.goal ?? "Conversation") : "New conversation";
+  // 空会话（idle，goal 尚未回填）与新会话页统一显示 "New conversation"
+  const title =
+    conversationId && activeConv?.goal.trim()
+      ? activeConv.goal
+      : "New conversation";
 
   const filtered = search.trim()
     ? conversations.filter((c) =>
@@ -189,6 +192,8 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
         busy={busy}
         isLoading={thread.isLoading}
         isNewChat={!conversationId}
+        creating={createMut.isPending}
+        onNewChat={newChat}
         activeDetailId={panelOpen ? activeDetailId : null}
         onOpenDetail={openDetail}
         onDecide={thread.respondApproval}

@@ -37,13 +37,18 @@ export class ConversationsService {
   }
 
   async create(
-    goal: string,
+    goal: string | undefined,
     tenantId: string,
     userId: string,
     model?: string,
   ) {
+    // goal 为空 → 创建 idle 空会话（先建会话再进入）：不落首条消息、不入队，
+    // 等首条 appendMessage 时再置 queued 并回填 goal。
     if (!goal?.trim()) {
-      throw new BusinessException(ErrorCodes.CONVERSATION_GOAL_EMPTY);
+      const conv = await this.prisma.conversation.create({
+        data: { goal: '', status: 'idle', tenantId, userId, model },
+      });
+      return { conversationId: conv.id };
     }
     await this.assertKnownCommand(goal, userId);
     const conv = await this.prisma.conversation.create({
@@ -81,7 +86,7 @@ export class ConversationsService {
     // 租户隔离：只能往自己租户的会话追加
     const conv = await this.prisma.conversation.findFirst({
       where: { id, tenantId },
-      select: { id: true, status: true },
+      select: { id: true, status: true, goal: true },
     });
     if (!conv) {
       throw new BusinessException(
@@ -89,8 +94,9 @@ export class ConversationsService {
         HttpStatus.NOT_FOUND,
       );
     }
-    // 并发守卫：仅在空闲（done/failed/stopped）时允许追加，避免对同一 thread 并发续跑
+    // 并发守卫：仅在空闲（idle/done/failed/stopped）时允许追加，避免对同一 thread 并发续跑
     if (
+      conv.status !== 'idle' &&
       conv.status !== 'done' &&
       conv.status !== 'failed' &&
       conv.status !== 'stopped'
@@ -100,10 +106,15 @@ export class ConversationsService {
 
     // 状态重置为 queued（必须）：上一轮若是 stopped 终态，不重置会让新 job 撞 worker 的
     // CAS 门（where status != 'stopped'）被误判「排队期间被停止」——一次停止永久封死会话。
-    // 顺带把本轮选定的模型落到会话上（含审批 resume / 超时兜底都复用同一模型）。
+    // 顺带把本轮选定的模型落到会话上（含审批 resume / 超时兜底都复用同一模型）；
+    // 空会话（idle 创建、goal 为空）首条消息回填 goal 作为侧栏标题。
     await this.prisma.conversation.update({
       where: { id },
-      data: { status: 'queued', ...(model ? { model } : {}) },
+      data: {
+        status: 'queued',
+        ...(model ? { model } : {}),
+        ...(conv.goal.trim() ? {} : { goal: content }),
+      },
     });
 
     // 落一条 user message（seq 接续，worker 续跑时再从当前 count 接着排）
