@@ -386,3 +386,12 @@ export function deleteMyPasskey(id: string): Promise<{ deleted: string }> {
     method: "DELETE",
   });
 }
+
+// ——— OTP Verification Code ———
+
+export function sendOtpCode(email: string): Promise<{ success: boolean; code?: string }> {
+  return request("/auth/send-code", {
+    method: "POST",
+    body: JSON.stringify({ email }),
+  });
+}

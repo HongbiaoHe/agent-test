@@ -2,9 +2,8 @@
 
 import {
   startAuthentication,
-  startRegistration,
 } from "@simplewebauthn/browser";
-import { Fingerprint, Loader2, Mail, Sparkles } from "lucide-react";
+import { Fingerprint, Key, Loader2, Mail, Sparkles } from "lucide-react";
 import { signIn } from "next-auth/react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
@@ -16,8 +15,7 @@ import { Separator } from "@/components/ui/separator";
 import {
   passkeyLoginOptions,
   passkeyLoginVerify,
-  passkeyRegisterOptions,
-  passkeyRegisterVerify,
+  sendOtpCode,
 } from "@/lib/api";
 
 import DotField from "../_components/dot-field";
@@ -66,9 +64,20 @@ export default function LoginPage() {
   const [email, setEmail] = useState("");
   const [busy, setBusy] = useState<Busy>(null);
   const [error, setError] = useState("");
+  const [showCode, setShowCode] = useState(false);
+  const [code, setCode] = useState("");
+  const [countdown, setCountdown] = useState(0);
   // iOS Safari 的自动填充会直接写 DOM、不触发 React onChange——受控 state 仍是空串，
   // 提交/校验若只看 state 会误判"没填"。这里提交时经 ref 兜底读 DOM 真实值。
   const emailInputRef = useRef<HTMLInputElement>(null);
+
+  useEffect(() => {
+    if (countdown <= 0) return;
+    const timer = setTimeout(() => {
+      setCountdown((prev) => prev - 1);
+    }, 1000);
+    return () => clearTimeout(timer);
+  }, [countdown]);
 
   /** 提交时的有效邮箱：DOM 真实值优先（覆盖自动填充场景），并回写 state 保持受控一致。 */
   function effectiveEmail(): string {
@@ -135,21 +144,21 @@ export default function LoginPage() {
     }
   }
 
-  async function passkeyRegister() {
+  async function resendOtp() {
     setError("");
     const value = effectiveEmail();
-    if (!EMAIL_RE.test(value)) {
-      setError("Enter your email before registering a passkey");
-      return;
-    }
-    setBusy("passkey-register");
     try {
-      const options = await passkeyRegisterOptions(value);
-      const response = await startRegistration({ optionsJSON: options });
-      const { token } = await passkeyRegisterVerify(value, response);
-      await finishWithToken(token, value);
+      setBusy("email");
+      const res = await sendOtpCode(value);
+      setCountdown(60);
+      if (res?.code) {
+        setError(`Testing environment: Your verification code is ${res.code} (auto-filled)`);
+        setCode(res.code);
+      }
     } catch (e) {
-      setError(friendly(e));
+      const msg = e instanceof Error ? e.message : String(e);
+      setError(msg || "Failed to send verification code");
+    } finally {
       setBusy(null);
     }
   }
@@ -161,14 +170,41 @@ export default function LoginPage() {
       setError("Enter a valid email address");
       return;
     }
-    setBusy("email");
-    const res = await signIn("credentials", { email: value, redirect: false });
-    if (res?.error) {
-      setError("Sign-in failed, please try again");
-      setBusy(null);
+
+    if (!showCode) {
+      setBusy("email");
+      try {
+        const res = await sendOtpCode(value);
+        setShowCode(true);
+        setCountdown(60);
+        if (res?.code) {
+          setError(`Testing environment: Your verification code is ${res.code} (auto-filled)`);
+          setCode(res.code);
+        }
+      } catch (e) {
+        const msg = e instanceof Error ? e.message : String(e);
+        setError(msg || "Failed to send verification code");
+      } finally {
+        setBusy(null);
+      }
     } else {
-      rememberEmail(value);
-      router.push("/agent");
+      if (code.trim().length !== 6) {
+        setError("Enter a 6-digit verification code");
+        return;
+      }
+      setBusy("email");
+      const res = await signIn("credentials", {
+        email: value,
+        code: code.trim(),
+        redirect: false,
+      });
+      if (res?.error) {
+        setError("Verification failed or invalid code");
+        setBusy(null);
+      } else {
+        rememberEmail(value);
+        router.push("/agent");
+      }
     }
   }
 
@@ -212,45 +248,103 @@ export default function LoginPage() {
                 onKeyDown={(e) => {
                   if (e.key === "Enter") void emailLogin();
                 }}
-                className="h-11 pl-9"
+                className={`h-11 pl-9 ${showCode ? "bg-muted/50 cursor-not-allowed text-muted-foreground pr-16" : ""}`}
                 aria-invalid={Boolean(error)}
-                disabled={busy !== null}
+                disabled={busy !== null || showCode}
               />
+              {showCode && (
+                <button
+                  type="button"
+                  onClick={() => {
+                    setShowCode(false);
+                    setError("");
+                  }}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 text-xs font-medium text-primary hover:underline"
+                  disabled={busy !== null}
+                >
+                  Change
+                </button>
+              )}
             </div>
-            {error && (
-              <p className="text-sm text-destructive" role="alert">
-                {error}
-              </p>
-            )}
           </div>
+
+          {showCode && (
+            <div className="space-y-1.5">
+              <div className="relative">
+                <Key className="pointer-events-none absolute top-1/2 left-3 size-4 -translate-y-1/2 text-muted-foreground" />
+                <Input
+                  id="code"
+                  type="text"
+                  maxLength={6}
+                  placeholder="6-digit code"
+                  aria-label="Verification code"
+                  value={code}
+                  onChange={(e) => {
+                    setCode(e.target.value.replace(/\D/g, ""));
+                    setError("");
+                  }}
+                  onKeyDown={(e) => {
+                    if (e.key === "Enter") void emailLogin();
+                  }}
+                  className="h-11 pl-9 tracking-[0.2em] font-mono"
+                  disabled={busy !== null}
+                  autoFocus
+                />
+              </div>
+              <div className="flex justify-between items-center text-xs text-muted-foreground px-1">
+                <span>5 minutes expiry</span>
+                {countdown > 0 ? (
+                  <span>Resend in {countdown}s</span>
+                ) : (
+                  <button
+                    type="button"
+                    onClick={() => void resendOtp()}
+                    className="text-primary hover:underline font-medium disabled:opacity-50"
+                    disabled={busy !== null}
+                  >
+                    Resend code
+                  </button>
+                )}
+              </div>
+            </div>
+          )}
+
+          {error && (
+            <p className="text-sm text-destructive" role="alert">
+              {error}
+            </p>
+          )}
 
           <Button
             className="h-11 w-full text-sm"
             onClick={() => void emailLogin()}
-            // 不再依赖 state 判空禁用：iOS 自动填充不触发 onChange，state 为空会把按钮永久锁灰。
-            // 改为点击后校验（effectiveEmail 经 ref 读 DOM 真实值），无效时给出错误提示。
             disabled={busy !== null}
           >
             {busy === "email" ? (
               <>
-                <Loader2 className="size-4 animate-spin" /> Signing in…
+                <Loader2 className="size-4 animate-spin" /> Verifying…
               </>
+            ) : showCode ? (
+              "Verify & Sign in"
             ) : (
               "Continue"
             )}
           </Button>
         </div>
 
-        {/* 注册入口：复用 passkey 注册流程（需先填邮箱） */}
+        {/* 注册入口：只支持邮箱注册 */}
         <p className="mt-4 text-center text-sm text-muted-foreground">
           Don&apos;t have an account?{" "}
           <button
             type="button"
             className="font-medium text-primary underline-offset-4 hover:underline disabled:opacity-50"
-            onClick={() => void passkeyRegister()}
+            onClick={() => {
+              emailInputRef.current?.focus();
+              void emailLogin();
+            }}
             disabled={busy !== null}
           >
-            {busy === "passkey-register" ? "Registering…" : "Sign up"}
+            Sign up
           </button>
         </p>
 
