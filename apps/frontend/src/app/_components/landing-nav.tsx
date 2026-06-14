@@ -2,7 +2,7 @@
 
 import { Sparkles } from "lucide-react";
 import Link from "next/link";
-import { useSyncExternalStore } from "react";
+import { useEffect, useSyncExternalStore } from "react";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -40,6 +40,40 @@ function useScrolled(threshold: number) {
  */
 export function LandingNav({ isLoggedIn }: { isLoggedIn: boolean }) {
   const scrolled = useScrolled(24);
+
+  useEffect(() => {
+    // 强制每次刷新或重新进入首页时，回到第一屏（顶部）的初始位置，避免浏览器自带的 scrollRestoration 还原旧滚动位置导致首屏错乱
+    if (typeof window !== "undefined" && "scrollRestoration" in window.history) {
+      const originalScrollRestoration = window.history.scrollRestoration;
+      window.history.scrollRestoration = "manual";
+      
+      const hash = window.location.hash;
+      if (!hash) {
+        // 页面刷新或重新加载且无 hash 锚点时，重置滚动位置到第一屏初始位置
+        window.scrollTo(0, 0);
+      } else {
+        // 如果有 hash 锚点，在下一帧/异步宏任务中执行，确保 DOM 已装载完毕，并精确定位到对应锚点元素
+        setTimeout(() => {
+          try {
+            const target = document.querySelector(hash);
+            if (target) {
+              target.scrollIntoView({ behavior: "auto" });
+            }
+          } catch {
+            const id = hash.slice(1);
+            const target = document.getElementById(id);
+            if (target) {
+              target.scrollIntoView();
+            }
+          }
+        }, 0);
+      }
+
+      return () => {
+        window.history.scrollRestoration = originalScrollRestoration;
+      };
+    }
+  }, []);
 
   return (
     <header className="fixed inset-x-0 top-0 z-30">
