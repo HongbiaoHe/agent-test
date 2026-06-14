@@ -1,5 +1,3 @@
-import { getSession } from "next-auth/react";
-
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3101";
 
@@ -9,17 +7,14 @@ interface ApiEnvelope<T> {
   data: T;
 }
 
-/** 统一请求：从 next-auth session 取 backendToken 带 Authorization；解析 {code,message,data}。 */
+/** 统一请求：Authorization header 由 middleware 注入；解析 {code,message,data}。 */
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const session = (await getSession()) as { backendToken?: string } | null;
-  const token = session?.backendToken;
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
       "Content-Type": "application/json",
       // 经 ngrok 隧道时跳过 free 版浏览器拦截页，避免接口返回 HTML
       "ngrok-skip-browser-warning": "1",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(init?.headers ?? {}),
     },
   });
@@ -217,12 +212,9 @@ export function regenerateMedia(
  * 故不能走 request() 的 JSON 解析路径——这里手动 fetch、带 Authorization、读 Blob。
  */
 export async function fetchMediaAssetBlob(versionId: string): Promise<Blob> {
-  const session = (await getSession()) as { backendToken?: string } | null;
-  const token = session?.backendToken;
   const res = await fetch(`${API_BASE}/media/versions/${versionId}/asset`, {
     headers: {
       "ngrok-skip-browser-warning": "1",
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
   });
   if (!res.ok) {

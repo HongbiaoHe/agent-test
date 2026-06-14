@@ -1,6 +1,5 @@
 "use client";
 
-import { getSession } from "next-auth/react";
 import { io, type Socket } from "socket.io-client";
 
 const API_BASE =
@@ -31,20 +30,14 @@ let socket: Socket | null = null;
 function getSocket(): Socket {
   if (!socket) {
     const isAbsolute = /^https?:\/\//.test(API_BASE);
-    // 连接时从 next-auth session 取 backendToken
-    const auth = async (cb: (data: { token?: string }) => void) => {
-      const session = (await getSession()) as { backendToken?: string } | null;
-      cb({ token: session?.backendToken });
-    };
-    // 同源前缀模式：连本站 origin，socket.io 路径走 /api-backend/socket.io，由 Next rewrites 反代到后端。
+    // Authorization header 由 Next.js middleware 注入（与 REST 统一），不再在前端调 getSession()。
     // 带 polling 兜底——Next dev 不转发 websocket 升级，经隧道时会自动回退到 polling（HTTP，可被反代）。
     socket = isAbsolute
-      ? io(API_BASE, { transports: ["websocket"], auth })
+      ? io(API_BASE, { transports: ["websocket"] })
       : io({
           path: `${API_BASE}/socket.io`,
           transports: ["websocket", "polling"],
           extraHeaders: { "ngrok-skip-browser-warning": "1" },
-          auth,
         });
   }
   return socket;

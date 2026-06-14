@@ -7,6 +7,7 @@ import {
   QueryClientProvider,
 } from "@tanstack/react-query";
 import { SessionProvider } from "next-auth/react";
+import type { Session } from "next-auth";
 import { ThemeProvider } from "next-themes";
 import { useState } from "react";
 import { toast } from "sonner";
@@ -19,7 +20,13 @@ function reportError(error: unknown) {
   toast.error(message, { id: message });
 }
 
-export function Providers({ children }: { children: React.ReactNode }) {
+export function Providers({
+  children,
+  session,
+}: {
+  children: React.ReactNode;
+  session: Session | null;
+}) {
   const [queryClient] = useState(
     () =>
       new QueryClient({
@@ -30,11 +37,11 @@ export function Providers({ children }: { children: React.ReactNode }) {
   );
 
   return (
-    <SessionProvider>
+    <SessionProvider session={session} refetchOnWindowFocus={false}>
       <QueryClientProvider client={queryClient}>
         {/* attribute="class"：在 <html> 上挂/摘 .dark，配合 globals.css 的 @custom-variant；
-            仅支持 light / dark 两档，不跟随系统（enableSystem=false）；默认 light。
-            选择持久化到 localStorage（刷新不丢失），预水合脚本避免首屏闪烁。 */}
+             仅支持 light / dark 两档，不跟随系统（enableSystem=false）；默认 light。
+             选择持久化到 localStorage（刷新不丢失），预水合脚本避免首屏闪烁。 */}
         <ThemeProvider
           attribute="class"
           defaultTheme="light"

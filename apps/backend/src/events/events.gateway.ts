@@ -48,16 +48,16 @@ export class EventsGateway implements OnGatewayConnection {
     private readonly jwt: JwtService,
   ) {}
 
-  /** 连接时验证 handshake.auth.token（与 REST 同一个 JWT），注入 socket.data.user。 */
+  /** 连接时从 Authorization header 读 token（BFF middleware 注入，与 REST 统一），注入 socket.data.user。 */
   async handleConnection(socket: AppSocket) {
-    const token = socket.handshake.auth?.token as string | undefined;
-    if (!token) {
+    const header = socket.handshake.headers.authorization;
+    if (!header?.startsWith('Bearer ')) {
       socket.disconnect();
       return;
     }
     try {
       const p = await this.jwt.verifyAsync<{ sub: string; tenantId: string }>(
-        token,
+        header.slice(7),
       );
       socket.data.user = { userId: p.sub, tenantId: p.tenantId };
     } catch {
