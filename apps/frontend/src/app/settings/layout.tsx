@@ -1,17 +1,20 @@
+"use client";
+
 import { ArrowLeft } from "lucide-react";
-import Link from "next/link";
+import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
 import { TooltipProvider } from "@/components/ui/tooltip";
 
 import { SettingsNav } from "./_components/settings-nav";
 
-// /settings 外壳：返回 agent + 标题 + 左侧分区导航（mobile 折叠为顶部横向）。
+// /settings 外壳：返回上一个页面 + 标题 + 左侧分区导航（mobile 折叠为顶部横向）。
 export default function SettingsLayout({
   children,
 }: {
   children: React.ReactNode;
 }) {
+  const router = useRouter();
   return (
     <TooltipProvider>
       {/* 外壳自身是滚动容器（满视口宽，滚动条贴页面右缘）；
@@ -22,11 +25,10 @@ export default function SettingsLayout({
             <Button
               variant="ghost"
               size="sm"
-              nativeButton={false}
-              render={<Link href="/agent" />}
+              onClick={() => router.back()}
               className="-ml-2 text-muted-foreground"
             >
-              <ArrowLeft className="size-4" /> Back to conversations
+              <ArrowLeft className="size-4" /> Back
             </Button>
             <h1 className="text-2xl font-bold tracking-tight">Settings</h1>
           </header>

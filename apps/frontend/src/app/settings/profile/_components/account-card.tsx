@@ -1,8 +1,10 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { signOut } from "next-auth/react";
 
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardFooter, CardHeader, CardTitle } from "@/components/ui/card";
 import { Skeleton } from "@/components/ui/skeleton";
 import { getMe } from "@/lib/api";
 
@@ -43,6 +45,17 @@ export function AccountCard() {
           </dl>
         ) : null}
       </CardContent>
+      <CardFooter className="justify-end border-t">
+        <Button
+          variant="destructive"
+          onClick={async () => {
+            await signOut({ redirect: false });
+            window.location.href = "/login";
+          }}
+        >
+          Sign out
+        </Button>
+      </CardFooter>
     </Card>
   );
 }

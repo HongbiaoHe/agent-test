@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { signOut, useSession } from "next-auth/react";
+import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
@@ -144,11 +144,6 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
     onSelect: selectConversation,
     onNewChat: newChat,
     userEmail,
-    // redirect:false + 客户端跳转，按当前域名回 /login（避免 next-auth 按写死的 AUTH_URL 跳隧道）
-    onSignOut: async () => {
-      await signOut({ redirect: false });
-      window.location.href = "/login";
-    },
     theme,
     onCycleTheme: cycle,
   };

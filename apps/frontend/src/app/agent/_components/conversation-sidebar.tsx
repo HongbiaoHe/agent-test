@@ -1,6 +1,6 @@
 "use client";
 
-import { LogOut, Plus, Search, Settings, Sparkles } from "lucide-react";
+import { Plus, Search, Settings, Sparkles } from "lucide-react";
 import Link from "next/link";
 
 import type { ConversationListItem } from "@/lib/api";
@@ -42,7 +42,6 @@ export type SidebarProps = {
   onSelect: (id: string) => void;
   onNewChat: () => void;
   userEmail: string;
-  onSignOut: () => void;
   theme?: ThemeSetting;
   onCycleTheme: () => void;
 };
@@ -57,7 +56,6 @@ export function SidebarContent({
   onSelect,
   onNewChat,
   userEmail,
-  onSignOut,
   theme,
   onCycleTheme,
 }: SidebarProps) {
@@ -148,16 +146,19 @@ export function SidebarContent({
         </div>
       </ScrollArea>
 
-      {/* 底部：用户 + 主题切换 + 退出 */}
+      {/* 底部：用户 + 主题切换 + 设置 */}
       <div className="flex items-center justify-between gap-2 border-t px-3 py-2.5">
-        <div className="flex min-w-0 items-center gap-2">
+        <Link
+          href="/settings/profile"
+          className="flex min-w-0 cursor-pointer items-center gap-2 rounded-md transition-colors hover:bg-accent/60"
+        >
           <Avatar size="sm">
             <AvatarFallback>
               {userEmail.charAt(0).toUpperCase() || "U"}
             </AvatarFallback>
           </Avatar>
           <span className="truncate text-sm font-medium">{userEmail}</span>
-        </div>
+        </Link>
         <div className="flex shrink-0 items-center">
           <ThemeToggle theme={theme} onCycle={onCycleTheme} />
           <Tooltip>
@@ -175,21 +176,6 @@ export function SidebarContent({
               <Settings />
             </TooltipTrigger>
             <TooltipContent>Settings</TooltipContent>
-          </Tooltip>
-          <Tooltip>
-            <TooltipTrigger
-              render={
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label="Sign out"
-                  onClick={onSignOut}
-                />
-              }
-            >
-              <LogOut />
-            </TooltipTrigger>
-            <TooltipContent>Sign out</TooltipContent>
           </Tooltip>
         </div>
       </div>
