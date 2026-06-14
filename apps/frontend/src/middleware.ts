@@ -2,7 +2,7 @@ import { auth } from "@/auth";
 import { NextResponse } from "next/server";
 
 // 需要登录的受保护区域
-const PROTECTED_PREFIXES = ["/agent", "/conversations", "/skills"];
+const PROTECTED_PREFIXES = ["/agent", "/conversations", "/skills", "/settings"];
 
 // SSR 守卫（无闪烁，在服务端直接重定向）：
 // - 已登录访问 /login → 默认进 /agent
@@ -51,6 +51,7 @@ export const config = {
     "/agent/:path*",
     "/conversations/:path*",
     "/skills/:path*",
+    "/settings/:path*",
     "/api-backend/:path*",
   ],
 };
