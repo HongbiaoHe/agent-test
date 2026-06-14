@@ -323,25 +323,50 @@ export class AgentProcessor extends WorkerHost {
   }
 
   /**
-   * 从 DB 重放该会话的完整对话历史（user/assistant 文本消息，按 seq）。
-   * 工具调用/结果是每轮内的临时过程，不重放（也无法重建合法的 tool_call 配对）。
+   * 从 DB 重放该会话的完整对话历史（按 seq）。
+   * 包含 user/assistant 文本消息 + tool_end 工具结果。
+   * tool_call_id 为合成值（DB 不存原始 id），仅用于满足 LangChain ToolMessage 结构要求。
+   *
+   * 裁剪：取最近 200 条；若首条非 user，继续从头部移除直到首条为 user（保证对话起点的完整性）。
    */
   private async loadHistory(
     conversationId: string,
-  ): Promise<{ role: string; content: string }[]> {
+  ): Promise<{ role: string; content: string; tool_call_id?: string }[]> {
+    const MAX_MSGS = 200;
+
     const rows = await this.prisma.message.findMany({
       where: {
         conversationId,
-        type: 'message',
-        role: { in: ['user', 'assistant'] },
+        type: { in: ['message', 'tool_end'] },
+        role: { in: ['user', 'assistant', 'tool'] },
       },
       orderBy: { seq: 'asc' },
-      select: { role: true, content: true },
+      select: { role: true, content: true, type: true, seq: true },
     });
-    return rows.map((m) => ({
-      role: m.role,
-      content: (m.content as { text?: string })?.text ?? '',
-    }));
+
+    let slice = rows.length > MAX_MSGS ? rows.slice(-MAX_MSGS) : rows;
+    while (slice.length > 0 && slice[0].role !== 'user') {
+      slice = slice.slice(1);
+    }
+
+    return slice.map((m) => {
+      if (m.type === 'tool_end') {
+        const payload = m.content as { name?: string; content?: unknown };
+        const text =
+          typeof payload.content === 'string'
+            ? payload.content
+            : JSON.stringify(payload.content);
+        return {
+          role: 'tool',
+          content: text,
+          tool_call_id: `synth_${payload.name ?? 'tool'}_${m.seq}`,
+        };
+      }
+      return {
+        role: m.role,
+        content: (m.content as { text?: string })?.text ?? '',
+      };
+    });
   }
 
   /**
