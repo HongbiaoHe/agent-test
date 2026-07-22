@@ -25,8 +25,8 @@ module.exports = {
     {
       name: 'frontend',
       cwd: __dirname,
-      script: 'pnpm',
-      args: '--filter frontend dev',
+      script: 'bash',
+      args: '-c "while ! nc -z localhost 3101 2>/dev/null; do sleep 0.5; done; pnpm --filter frontend dev"',
       interpreter: 'none',
       watch: false,
       env: { NODE_ENV: 'development', PATH: PATH_WITH_NODE22 },
