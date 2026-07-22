@@ -1,7 +1,6 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Sparkles } from "lucide-react";
 
 import {
   Tooltip,
@@ -13,26 +12,19 @@ import { listCommands } from "@/lib/api";
 import type { ThreadItem } from "../_lib/thread";
 import { Markdown } from "./markdown";
 
-/** 助手侧内容的左缩进，对齐头像（size-7 + gap-3 ≈ pl-10）。 */
-const INDENT = "pl-10";
-
 export function ChatMessage({ item }: { item: ThreadItem }) {
   if (item.kind === "user") {
     return <UserMessage text={item.text} />;
   }
 
+  // 助手消息不带头像：内容直接靠左，与工具组/媒体卡/审批卡同列对齐
   if (item.kind === "assistant") {
     return (
-      <div className="flex gap-3">
-        <div className="flex size-7 shrink-0 items-center justify-center rounded-lg bg-primary text-primary-foreground">
-          <Sparkles className="size-4" />
-        </div>
-        <div className="min-w-0 flex-1">
-          <Markdown>{item.text}</Markdown>
-          {item.streaming && (
-            <span className="ml-0.5 inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-foreground/60" />
-          )}
-        </div>
+      <div className="min-w-0">
+        <Markdown>{item.text}</Markdown>
+        {item.streaming && (
+          <span className="ml-0.5 inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-foreground/60" />
+        )}
       </div>
     );
   }
@@ -41,10 +33,8 @@ export function ChatMessage({ item }: { item: ThreadItem }) {
 
   if (item.kind === "error") {
     return (
-      <div className={INDENT}>
-        <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {item.text}
-        </div>
+      <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
+        {item.text}
       </div>
     );
   }
@@ -55,7 +45,7 @@ export function ChatMessage({ item }: { item: ThreadItem }) {
 
 /**
  * 用户消息气泡。若消息以 `/命令` 开头且命中已知命令（与输入框补全同源），
- * 将该命令渲染为高亮 chip，hover 展示其 domain / 名称 / 描述。
+ * 将该命令渲染为高亮 chip，hover 展示其分类（Built-in/GitHub）/ 名称 / 描述。
  */
 function UserMessage({ text }: { text: string }) {
   // 与 ChatThread 的补全共用同一缓存（queryKey 一致，不会重复请求）
@@ -87,7 +77,7 @@ function UserMessage({ text }: { text: string }) {
               <TooltipContent side="top" align="start" className="max-w-xs">
                 <span className="flex flex-col gap-1 text-left">
                   <span className="text-[10px] font-medium tracking-wide text-background/60 uppercase">
-                    {command.domain}
+                    {command.kind === "builtin" ? "Built-in" : "GitHub"}
                   </span>
                   <span className="font-mono text-xs font-semibold">
                     /{command.name}

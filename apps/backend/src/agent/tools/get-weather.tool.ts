@@ -3,7 +3,7 @@ import { z } from 'zod';
 
 /** demo 工具：返回假天气数据，用于在 skeleton 中演示 tool-calling 循环。 */
 export const getWeatherTool = tool(
-  async ({ city }: { city: string }) => {
+  ({ city }: { city: string }) => {
     return JSON.stringify({ city, tempC: 23, condition: '晴', source: 'mock' });
   },
   {

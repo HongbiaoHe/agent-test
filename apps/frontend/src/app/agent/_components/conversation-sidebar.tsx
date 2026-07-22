@@ -1,6 +1,7 @@
 "use client";
 
-import { LogOut, Plus, Search, Sparkles } from "lucide-react";
+import { Plus, Search, Settings, Sparkles } from "lucide-react";
+import Link from "next/link";
 
 import type { ConversationListItem } from "@/lib/api";
 import { Avatar, AvatarFallback } from "@/components/ui/avatar";
@@ -23,11 +24,13 @@ const STATUS_BADGE: Record<
   string,
   { label: string; variant: "default" | "secondary" | "destructive" | "outline" }
 > = {
-  queued: { label: "排队中", variant: "secondary" },
-  running: { label: "运行中", variant: "secondary" },
-  waiting_approval: { label: "待审批", variant: "default" },
-  done: { label: "已完成", variant: "outline" },
-  failed: { label: "失败", variant: "destructive" },
+  idle: { label: "New", variant: "outline" },
+  queued: { label: "Queued", variant: "secondary" },
+  running: { label: "Running", variant: "secondary" },
+  waiting_approval: { label: "Awaiting approval", variant: "default" },
+  done: { label: "Done", variant: "outline" },
+  failed: { label: "Failed", variant: "destructive" },
+  stopped: { label: "Stopped", variant: "outline" },
 };
 
 export type SidebarProps = {
@@ -39,7 +42,6 @@ export type SidebarProps = {
   onSelect: (id: string) => void;
   onNewChat: () => void;
   userEmail: string;
-  onSignOut: () => void;
   theme?: ThemeSetting;
   onCycleTheme: () => void;
 };
@@ -54,7 +56,6 @@ export function SidebarContent({
   onSelect,
   onNewChat,
   userEmail,
-  onSignOut,
   theme,
   onCycleTheme,
 }: SidebarProps) {
@@ -62,26 +63,26 @@ export function SidebarContent({
     <div className="flex h-full min-h-0 flex-col">
       {/* 头部：品牌 + 新建 */}
       <div className="flex items-center justify-between gap-2 px-4 py-3.5">
-        <div className="flex items-center gap-2">
+        <Link href="/" aria-label="Back to home" className="flex items-center gap-2">
           <div className="flex size-7 items-center justify-center rounded-lg bg-primary text-primary-foreground">
             <Sparkles className="size-4" />
           </div>
-          <span className="text-sm font-semibold tracking-tight">Agent</span>
-        </div>
+          <span className="text-sm font-semibold tracking-tight">AgentSpark</span>
+        </Link>
         <Tooltip>
           <TooltipTrigger
             render={
               <Button
                 variant="ghost"
                 size="icon-sm"
-                aria-label="新建对话"
+                aria-label="New conversation"
                 onClick={onNewChat}
               />
             }
           >
             <Plus />
           </TooltipTrigger>
-          <TooltipContent>新建对话</TooltipContent>
+          <TooltipContent>New conversation</TooltipContent>
         </Tooltip>
       </div>
 
@@ -90,7 +91,7 @@ export function SidebarContent({
         <div className="relative">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="搜索对话…"
+            placeholder="Search conversations…"
             className="h-8 pl-8"
             value={query}
             onChange={(e) => onQueryChange(e.target.value)}
@@ -102,7 +103,7 @@ export function SidebarContent({
       <ScrollArea className="min-h-0 flex-1 px-2">
         <div className="flex flex-col gap-0.5 py-1">
           <div className="px-2 py-1.5 text-xs font-medium text-muted-foreground">
-            最近
+            Recent
           </div>
           {isLoading ? (
             <div className="space-y-2 px-2.5 py-2">
@@ -112,7 +113,7 @@ export function SidebarContent({
             </div>
           ) : conversations.length === 0 ? (
             <p className="px-2.5 py-6 text-center text-xs text-muted-foreground">
-              还没有会话，点右上角 + 开始
+              No conversations yet — tap + in the top right to start
             </p>
           ) : (
             conversations.map((c) => {
@@ -130,7 +131,9 @@ export function SidebarContent({
                       : "text-foreground/80 hover:bg-accent/60",
                   )}
                 >
-                  <span className="truncate text-sm font-medium">{c.goal}</span>
+                  <span className="truncate text-sm font-medium">
+                    {c.goal.trim() || "New conversation"}
+                  </span>
                   {badge && (
                     <Badge variant={badge.variant} className="w-fit">
                       {badge.label}
@@ -143,16 +146,19 @@ export function SidebarContent({
         </div>
       </ScrollArea>
 
-      {/* 底部：用户 + 主题切换 + 退出 */}
+      {/* 底部：用户 + 主题切换 + 设置 */}
       <div className="flex items-center justify-between gap-2 border-t px-3 py-2.5">
-        <div className="flex min-w-0 items-center gap-2">
+        <Link
+          href="/settings/profile"
+          className="flex min-w-0 cursor-pointer items-center gap-2 rounded-md transition-colors hover:bg-accent/60"
+        >
           <Avatar size="sm">
             <AvatarFallback>
               {userEmail.charAt(0).toUpperCase() || "U"}
             </AvatarFallback>
           </Avatar>
           <span className="truncate text-sm font-medium">{userEmail}</span>
-        </div>
+        </Link>
         <div className="flex shrink-0 items-center">
           <ThemeToggle theme={theme} onCycle={onCycleTheme} />
           <Tooltip>
@@ -161,14 +167,15 @@ export function SidebarContent({
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  aria-label="退出登录"
-                  onClick={onSignOut}
+                  aria-label="Settings"
+                  nativeButton={false}
+                  render={<Link href="/settings" />}
                 />
               }
             >
-              <LogOut />
+              <Settings />
             </TooltipTrigger>
-            <TooltipContent>退出登录</TooltipContent>
+            <TooltipContent>Settings</TooltipContent>
           </Tooltip>
         </div>
       </div>

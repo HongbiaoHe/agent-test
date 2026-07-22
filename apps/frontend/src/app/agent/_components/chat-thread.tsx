@@ -3,64 +3,79 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   ArrowUp,
+  Loader,
   PanelLeft,
-  PanelRightClose,
-  PanelRightOpen,
+  Plus,
   Slash,
   Sparkles,
+  Square,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
+import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Tooltip,
-  TooltipContent,
-  TooltipTrigger,
-} from "@/components/ui/tooltip";
-import { listCommands } from "@/lib/api";
+import { type SkillKind, listCommands } from "@/lib/api";
 
-import type { Approval, Decision, ThreadItem } from "../_lib/thread";
-import { ApprovalCard } from "./approval-card";
+import type { Approval, ThreadItem } from "../_lib/thread";
+import { ApprovalPanel } from "./approval-panel";
 import { ChatMessage } from "./chat-message";
+import { MediaCard } from "./media-card";
 import { ModelSwitcher } from "./model-switcher";
+import { SandboxStatusButton } from "./sandbox-panel";
 import { TaskPlanPanel } from "./task-plan-panel";
 import { ThinkingIndicator } from "./thinking-indicator";
 import type { ToolItem } from "./tool-chip";
 import { ToolGroup } from "./tool-group";
 
+/** `/` 补全面板分组标签与顺序（Built-in 在前，与设置页一致） */
+const CMD_KIND_LABEL: Record<SkillKind, string> = {
+  builtin: "Built-in",
+  github: "GitHub",
+};
+const CMD_KIND_ORDER: SkillKind[] = ["builtin", "github"];
+
 export function ChatThread({
   title,
+  conversationId,
   items,
   approval,
   busy,
   isLoading,
   isNewChat,
+  creating,
+  onNewChat,
   activeDetailId,
   onOpenDetail,
   onDecide,
   onSend,
+  onStop,
+  stopping,
   model,
   onModelChange,
-  panelOpen,
-  onTogglePanel,
   onOpenSidebar,
 }: {
   title: string;
+  conversationId: string | null;
   items: ThreadItem[];
   approval: Approval | null;
   busy: boolean;
   isLoading: boolean;
   isNewChat: boolean;
+  /** 创建空会话请求在途（引导页按钮转圈防重复点击） */
+  creating: boolean;
+  onNewChat: () => void;
   activeDetailId: string | null;
   onOpenDetail: (id: string) => void;
-  onDecide: (d: Decision) => void;
+  /** 审批决策回传：decisions 顺序对应 actionRequests（由 ApprovalPanel 组装） */
+  onDecide: (decisions: unknown[]) => void;
   onSend: (text: string) => void;
+  onStop: () => void;
+  /** 停止指令请求中（HTTP 在途）：按钮转圈并禁用，防重复点击 */
+  stopping: boolean;
   model: string;
   onModelChange: (model: string) => void;
-  panelOpen: boolean;
-  onTogglePanel: () => void;
   onOpenSidebar: () => void;
 }) {
   const [draft, setDraft] = useState("");
@@ -86,12 +101,12 @@ export function ChatThread({
         );
   const showCmdMenu = !busy && cmdPrefix !== null && matches.length > 0;
 
-  // 按 domain 分组展示；flat 为菜单从上到下的实际可选顺序（键盘导航以此为准）
-  const grouped = matches.reduce<Record<string, typeof matches>>((acc, c) => {
-    (acc[c.domain] ??= []).push(c);
-    return acc;
-  }, {});
-  const flat = Object.values(grouped).flat();
+  // 按分类（Built-in/GitHub）分组展示；flat 为菜单从上到下的实际可选顺序（键盘导航以此为准），
+  // 与渲染共用同一 groupedKinds，保证顺序一致
+  const groupedKinds = CMD_KIND_ORDER.map(
+    (k) => [k, matches.filter((c) => c.kind === k)] as const,
+  ).filter(([, cmds]) => cmds.length > 0);
+  const flat = groupedKinds.flatMap(([, cmds]) => cmds);
 
   // 候选项变化（输入过滤 / 菜单重新打开）时，默认高亮第一个
   const [prevPrefix, setPrevPrefix] = useState(cmdPrefix);
@@ -185,7 +200,7 @@ export function ChatThread({
             variant="ghost"
             size="icon-sm"
             className="lg:hidden"
-            aria-label="打开会话列表"
+            aria-label="Open conversations"
             onClick={onOpenSidebar}
           >
             <PanelLeft />
@@ -194,36 +209,43 @@ export function ChatThread({
             {title}
           </h1>
         </div>
-        <Tooltip>
-          <TooltipTrigger
-            render={
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={panelOpen ? "收起详情面板" : "展开详情面板"}
-                onClick={onTogglePanel}
-              />
-            }
-          >
-            {panelOpen ? <PanelRightClose /> : <PanelRightOpen />}
-          </TooltipTrigger>
-          <TooltipContent>{panelOpen ? "收起详情" : "展开详情"}</TooltipContent>
-        </Tooltip>
+        <div className="flex shrink-0 items-center gap-1.5">
+          <SandboxStatusButton />
+        </div>
       </header>
 
       {/* 消息流 */}
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto max-w-3xl space-y-6 px-5 py-8">
-          {showEmpty ? (
+          {isLoading ? (
+            <ThreadSkeleton />
+          ) : isNewChat ? (
+            // 引导页：没有输入框，先创建会话再进入（/agent 空路由）
             <div className="flex flex-col items-center gap-3 py-24 text-center">
               <div className="flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
                 <Sparkles className="size-6" />
               </div>
-              <p className="text-base font-medium">
-                {isNewChat ? "开始一个新对话" : "这个会话还没有内容"}
-              </p>
+              <p className="text-base font-medium">Start a new conversation</p>
               <p className="max-w-sm text-sm text-muted-foreground">
-                把目标告诉 Agent，它会拆解任务并逐步执行。需要发邮件等敏感操作时会先请你审批。
+                Create a conversation to start chatting — the agent breaks
+                your goal down and works through it step by step, asking for
+                your sign-off before sensitive actions.
+              </p>
+              <Button onClick={onNewChat} disabled={creating} className="mt-1">
+                {creating ? <Loader className="animate-spin" /> : <Plus />}
+                New conversation
+              </Button>
+            </div>
+          ) : showEmpty ? (
+            <div className="flex flex-col items-center gap-3 py-24 text-center">
+              <div className="flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
+                <Sparkles className="size-6" />
+              </div>
+              <p className="text-base font-medium">Start chatting</p>
+              <p className="max-w-sm text-sm text-muted-foreground">
+                Tell the agent your goal in the box below — it will break it
+                down and work through it step by step, asking for your
+                sign-off before sensitive actions like sending email.
               </p>
             </div>
           ) : (
@@ -236,14 +258,18 @@ export function ChatThread({
                     activeDetailId={activeDetailId}
                     onOpenDetail={onOpenDetail}
                   />
+                ) : r.item.kind === "media" ? (
+                  // 媒体卡片与助手内容同列左对齐，conversationId 必有（卡片只在已有会话里出现）。
+                  <div key={r.item.id}>
+                    <MediaCard
+                      conversationId={conversationId as string}
+                      generationId={r.item.generationId}
+                      mediaType={r.item.mediaType}
+                    />
+                  </div>
                 ) : (
                   <ChatMessage key={r.item.id} item={r.item} />
                 ),
-              )}
-              {approval && (
-                <div className="pl-10">
-                  <ApprovalCard approval={approval} onDecide={onDecide} />
-                </div>
               )}
               {busy && <ThinkingIndicator visible={thinkingVisible} />}
             </>
@@ -252,19 +278,23 @@ export function ChatThread({
         </div>
       </ScrollArea>
 
-      {/* 输入区 */}
+      {/* 输入区（新会话引导页没有输入框，先创建会话再聊天） */}
+      {!isNewChat && (
       <div className="shrink-0 px-5 pb-4">
         <div className="relative mx-auto max-w-3xl">
           {/* 任务计划：固定在输入框上方，可折叠/展开 */}
           {plan && <TaskPlanPanel todos={plan.todos} />}
 
-          {/* 命令补全面板（输入 / 时浮在输入框上方，按 domain 分组）*/}
+          {/* 审批面板：与任务计划同区域，固定在输入框上方 */}
+          {approval && <ApprovalPanel approval={approval} onSubmit={onDecide} />}
+
+          {/* 命令补全面板（输入 / 时浮在输入框上方，按分类 Built-in/GitHub 分组）*/}
           {showCmdMenu && (
             <div className="absolute bottom-full mb-2 max-h-72 w-full overflow-y-auto rounded-xl border bg-popover p-1.5 shadow-lg">
-              {Object.entries(grouped).map(([domain, cmds]) => (
-                <div key={domain}>
+              {groupedKinds.map(([kind, cmds]) => (
+                <div key={kind}>
                   <div className="px-2 py-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-                    {domain}
+                    {CMD_KIND_LABEL[kind]}
                   </div>
                   {cmds.map((c) => {
                     const idx = flat.indexOf(c);
@@ -310,8 +340,9 @@ export function ChatThread({
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onKeyDown}
-              placeholder={busy ? "Agent 正在处理…" : "给 Agent 发消息…（试试输入 /）"}
-              className="max-h-40 min-h-0 resize-none border-0 bg-transparent px-4 pt-3.5 pb-1.5 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
+              placeholder={busy ? "Agent is on the case…" : "Message the agent… (try typing /)"}
+              // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
+              className="max-h-40 min-h-0 resize-none border-0 bg-transparent px-4 pt-3.5 pb-1.5 text-base shadow-none focus-visible:border-0 focus-visible:ring-0 md:text-sm dark:bg-transparent"
             />
             {/* 工具条：左侧模型切换，右侧发送 */}
             <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
@@ -320,22 +351,76 @@ export function ChatThread({
                 onChange={onModelChange}
                 disabled={busy}
               />
-              <Button
-                size="icon-sm"
-                aria-label="发送"
-                disabled={busy || !draft.trim()}
-                onClick={submit}
-                className="rounded-lg"
-              >
-                <ArrowUp />
-              </Button>
+              {busy ? (
+                // 运行中：发送位变停止——立即中止本轮所有操作（LLM 流式/工具等待/媒体生成）
+                <Button
+                  size="icon-sm"
+                  variant="destructive"
+                  aria-label="Stop"
+                  disabled={stopping}
+                  onClick={onStop}
+                  className="rounded-lg"
+                >
+                  {stopping ? (
+                    <Loader className="animate-spin" />
+                  ) : (
+                    <Square className="fill-current" />
+                  )}
+                </Button>
+              ) : (
+                <Button
+                  size="icon-sm"
+                  aria-label="Send"
+                  disabled={!draft.trim()}
+                  onClick={submit}
+                  className="rounded-lg"
+                >
+                  <ArrowUp />
+                </Button>
+              )}
             </div>
           </div>
           <p className="mt-2 text-center text-xs text-muted-foreground">
-            Agent 可能会出错，请核对重要信息。
+            The agent can make mistakes — double-check important info.
           </p>
         </div>
       </div>
+      )}
     </section>
+  );
+}
+
+/**
+ * 刷新/加载已有会话时的消息列表骨架屏。
+ * 首屏 isLoading 即为 true，SSR 输出的 HTML 就带骨架——刷新先出骨架而非白屏。
+ * 形态模拟真实消息流：右侧用户气泡 + 左侧助手文本行 + 工具 chip 行。
+ */
+function ThreadSkeleton() {
+  return (
+    <div aria-hidden className="space-y-6">
+      <div className="flex justify-end">
+        <Skeleton className="h-10 w-1/2 rounded-2xl rounded-br-md" />
+      </div>
+      <div className="space-y-2.5">
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-11/12" />
+        <Skeleton className="h-4 w-3/5" />
+      </div>
+      <div className="flex gap-2">
+        <Skeleton className="h-8 w-40 rounded-lg" />
+        <Skeleton className="h-8 w-32 rounded-lg" />
+      </div>
+      <div className="space-y-2.5">
+        <Skeleton className="h-4 w-full" />
+        <Skeleton className="h-4 w-2/3" />
+      </div>
+      <div className="flex justify-end">
+        <Skeleton className="h-8 w-2/5 rounded-2xl rounded-br-md" />
+      </div>
+      <div className="space-y-2.5">
+        <Skeleton className="h-4 w-10/12" />
+        <Skeleton className="h-4 w-1/2" />
+      </div>
+    </div>
   );
 }

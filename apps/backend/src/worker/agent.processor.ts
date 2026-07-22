@@ -2,15 +2,19 @@ import { Command } from '@langchain/langgraph';
 import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
 import { Job, Queue } from 'bullmq';
+import { AbortRegistry, AGENT_ABORTS } from '../agent/abort-registry';
 import { buildAgent } from '../agent/agent.factory';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
+import { getUserSandbox, uploadSkillsToSandbox } from '../agent/sandbox';
 import { normalize, RawEvent } from '../agent/event-normalizer';
-import type { CommandDef } from '../commands/command-registry.service';
-import { CommandRegistryService } from '../commands/command-registry.service';
 import { parseCommand } from '../commands/parse-command';
 import { StreamService } from '../events/stream.service';
+import { MediaService } from '../media/media.service';
+import { createMediaTools } from '../media/media.tools';
 import { PrismaService } from '../prisma/prisma.service';
-import { absolutizeRefPaths, buildSkillFiles } from './skill-files';
+import { absolutizeRefPaths } from '../skills/skill-files';
+import type { SkillDef } from '../skills/skills.service';
+import { SkillsService } from '../skills/skills.service';
 
 interface JobData {
   conversationId: string;
@@ -38,9 +42,11 @@ export class AgentProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly stream: StreamService,
-    private readonly commands: CommandRegistryService,
+    private readonly skills: SkillsService,
     @Inject(CHECKPOINTER) private readonly checkpointer: unknown,
     @InjectQueue('agent-run') private readonly queue: Queue,
+    private readonly media: MediaService,
+    @Inject(AGENT_ABORTS) private readonly aborts: AbortRegistry,
   ) {
     super();
   }
@@ -53,14 +59,68 @@ export class AgentProcessor extends WorkerHost {
       return;
     }
 
-    const config = { configurable: { thread_id: conversationId } };
-
+    // 注册可中止句柄——必须在 timeout 早退之后：timeout job 与 resume run 可共存，
+    // 在早退前注册会覆盖正在跑的 resume 的注册（停止设计 §worker 接入顺序）。
+    const { signal, dispose } = this.aborts.register(conversationId);
+    // 流式文本缓冲提升到 try 外：停止收尾（catch 分支）需要 flush 残余文本
+    let buf = '';
     try {
-      // update 返回整条记录，顺带取本会话选定的模型（前端可切换）传给 buildAgent
-      const conv = await this.prisma.conversation.update({
-        where: { id: conversationId },
+      // CAS 门：排队期间被 stop 端点置为 stopped 的 job 不起跑。
+      // 竞态规则：端点 abort() 返回 true ⇒ 由 worker 发 result（此处或流中 catch）；
+      // false ⇒ 端点已按 CAS 补发，这里静默退出（设计 §竞态规则）。
+      const gate = await this.prisma.conversation.updateMany({
+        where: { id: conversationId, status: { not: 'stopped' } },
         data: { status: 'running' },
       });
+      if (gate.count === 0) {
+        if (signal.aborted) await this.finalizeStopped(conversationId, '');
+        return;
+      }
+      // CAS（updateMany）不返回记录，补一次读取拿本会话的 userId / 选定模型
+      const conv = await this.prisma.conversation.findUniqueOrThrow({
+        where: { id: conversationId },
+      });
+
+      // config 在 conv 加载后定义，以便 getState 和 stream 均携带 userId
+      // （StoreBackend namespace factory 在 state 读取时也可能被调用，保持一致）
+      const config = {
+        configurable: { thread_id: conversationId, userId: conv.userId },
+      };
+
+      // ① 取该用户生效技能（含全部文件内容），供下方上传沙箱 + 多轮 SKILL.md 注入复用
+      const defs = await this.skills.effectiveSkillsFor(conv.userId);
+
+      // ② 沙箱：user-scoped find-or-create（同一用户全部会话共享工作区）；无 key/创建失败 → 回退 StateBackend
+      let sandbox: Awaited<ReturnType<typeof getUserSandbox>> = null;
+      try {
+        sandbox = await getUserSandbox(conv.userId);
+      } catch (e) {
+        // 降级而非失败整个 run；提示用户本轮无执行能力（设计 §8）
+        this.logger.warn(
+          `getUserSandbox 失败，降级 StateBackend：${(e as Error)?.message ?? e}`,
+        );
+        await this.stream.publish(conversationId, {
+          type: 'message',
+          payload: {
+            text: '⚠️ 沙箱创建失败，本轮无命令执行与技能能力。',
+          },
+        });
+      }
+
+      // ②.5 加载技能：起沙箱后、调 LLM 前把技能写入沙箱盘（/skills/<name>/...），
+      // deepagents skills 中间件随后扫 /skills/ 才能读到。上传失败只告警不中断
+      // （沙箱仍可执行命令/读写文件，仅本轮无技能）。无沙箱 → 不提供技能（设计：无沙箱=无技能）。
+      if (sandbox) {
+        try {
+          await uploadSkillsToSandbox(sandbox, defs);
+        } catch (e) {
+          this.logger.warn(
+            `技能上传沙箱失败，本轮无技能：${(e as Error)?.message ?? e}`,
+          );
+        }
+      }
+      // sandbox 为 null 时不传 defaultBackend，buildAgent 内部 new StateBackend() 兜底（避免在 processor 引入 deepagents 直接依赖）
+      const defaultBackend = sandbox ?? undefined;
 
       // resume 续跑沿用 checkpointer 的中断态；run/追加则从 DB 重放完整对话历史，
       // 因为 deepagents 跑完一轮后不在持久化 state 保留对话消息（同 thread_id 续跑拿不到上文）。
@@ -71,28 +131,29 @@ export class AgentProcessor extends WorkerHost {
         input = new Command({ resume: { decisions } });
       } else {
         const messages = await this.loadHistory(conversationId);
-        // 把所有技能文件注入 per-thread state 的 /skills/ 下，供 deepagents SkillsMiddleware 发现/列出，
-        // agent 据系统提示用 read_file 按需加载（原生 progressive disclosure）。files 随 thread_id 隔离。
-        const files = buildSkillFiles(
-          this.commands.all(),
-          new Date().toISOString(),
-        );
         // 历史按原样重放，不改写任何用户消息：/command 该触发哪个技能由 system prompt 约束
-        // （见 agent.factory）。改写历史会让旧命令每轮被重新注入「先 read_file 读 SKILL.md」祈使，
-        // 导致多轮里重复触发同一技能、重复读同一文件。这里只取末条 user 消息做 LangSmith runName。
+        // （见 agent.factory）。技能文件已在上方 uploadSkillsToSandbox 写入沙箱盘，
+        // 不再注入 state.files。这里只取末条 user 消息做 LangSmith runName。
         let lastLabel = '';
         for (const m of messages) {
           if (m.role !== 'user') continue;
           lastLabel = `Agent · ${m.content.slice(0, 60)}`;
           const cmd = parseCommand(m.content);
           if (!cmd) continue;
-          const def = this.commands.get(cmd.name);
+          const def = await this.skills.getFor(conv.userId, cmd.name);
           if (!def) continue;
           lastLabel = `技能:${def.name} · ${cmd.args}`.slice(0, 60);
         }
         runName = lastLabel || runName;
-        input = { messages, files };
-        systemPromptExtra = this.buildSkillPrompt(messages);
+        input = { messages };
+        systemPromptExtra = await this.buildSkillPrompt(conv.userId, messages);
+        const mediaInventory = await this.buildMediaInventory(
+          conversationId,
+          conv.userId,
+        );
+        if (mediaInventory) {
+          systemPromptExtra += mediaInventory;
+        }
       }
 
       // 既有任务计划经 runtime context 注入：planContinuationMiddleware 会把它追加到系统提示
@@ -100,29 +161,39 @@ export class AgentProcessor extends WorkerHost {
       // 就换新列表。run/resume 都注入（resume 续跑同一轮，回注既有计划同样有益）。
       const activePlan = await this.buildActivePlan(conversationId);
 
-      const agent = buildAgent({
+      // ③ 装配：media 工具闭包注入——conversationId/userId 由 worker 上下文提供，不经模型传递（无注入风险）
+      const extraTools = createMediaTools(this.media, {
+        conversationId,
+        userId: conv.userId,
+      });
+      const agent = await buildAgent({
         checkpointer: this.checkpointer,
         systemPromptExtra,
         model: conv.model ?? undefined,
+        defaultBackend,
+        hasSandbox: !!sandbox,
+        extraTools,
       });
 
+      // ④ stream config：userId 进 configurable（thread 作用域）与 context（中间件用）
       // runName/tags/metadata → LangSmith 里按此命名/过滤，而非只显示 "LangGraph"
       const stream = await agent.stream(input, {
         ...config,
+        signal, // stop 端点 abort 后整条 runnable 链中止（RunnableConfig.signal）
         runName,
-        tags: ['buzz-agent', kind ?? 'run'],
+        tags: ['spark', kind ?? 'run'],
         metadata: { conversationId, kind: kind ?? 'run' },
-        context: { activePlan },
+        context: { activePlan, userId: conv.userId },
         streamMode: ['updates', 'messages'],
         subgraphs: true,
-      } as never);
+      });
 
       // resume 续跑时从已有消息数接着排 seq
       let seq = await this.prisma.message.count({ where: { conversationId } });
       // 逐字 token 实时推流但不逐条落库（否则每条 token 一行、表爆炸）；改为按助手文本段累积，
       // 在遇到边界（工具调用/结果/计划/审批）或流结束时，把累积文本收口成一条完整 message：
       // 推流 + 落库都用「用户实际看到的累积文本」，从而 live 与刷新恢复一致、结尾不再被更短的聚合覆盖。
-      let buf = '';
+      // （buf 声明在 try 外，停止收尾需要它）
       const flush = async (override?: string) => {
         const text = override ?? buf;
         buf = '';
@@ -131,7 +202,7 @@ export class AgentProcessor extends WorkerHost {
         await this.stream.publish(conversationId, msg);
         await this.persist(conversationId, msg, seq++);
       };
-      for await (const chunk of stream as AsyncIterable<unknown>) {
+      for await (const chunk of stream) {
         const [ns, mode, data] = chunk as [string[], string, unknown];
         const raw = normalize(ns, mode, data);
         if (!raw) continue;
@@ -143,7 +214,9 @@ export class AgentProcessor extends WorkerHost {
         // updates 聚合出的 message 文本可能短于逐字流（如思考/工具叙述被裁剪）：优先用累积的 buf
         // 收口；buf 为空（非流式模型，未产生 token）时才退回 updates 文本，避免文本丢失。
         if (raw.type === 'message') {
-          await flush(buf || String((raw.payload as { text?: string }).text ?? ''));
+          await flush(
+            buf || String((raw.payload as { text?: string }).text ?? ''),
+          );
           continue;
         }
         // 其余非文本事件（tool_start/tool_end/plan_update/control_request）是文本段边界：
@@ -158,14 +231,23 @@ export class AgentProcessor extends WorkerHost {
       const state = (await agent.getState(config)) as {
         tasks?: { interrupts?: { value?: unknown }[] }[];
       };
-      const interrupts = (state?.tasks ?? []).flatMap((t) => t.interrupts ?? []);
+      const interrupts = (state?.tasks ?? []).flatMap(
+        (t) => t.interrupts ?? [],
+      );
       if (interrupts.length > 0) {
         const value = interrupts[0]?.value;
-        this.logger.log(`conversation=${conversationId} 命中审批中断，等待用户决策`);
-        await this.prisma.conversation.update({
-          where: { id: conversationId },
+        this.logger.log(
+          `conversation=${conversationId} 命中审批中断，等待用户决策`,
+        );
+        // CAS：流自然结束后、走到这里前被停止（status 已是 stopped）→ 不进审批流程，按停止收尾
+        const toApproval = await this.prisma.conversation.updateMany({
+          where: { id: conversationId, status: 'running' },
           data: { status: 'waiting_approval' },
         });
+        if (toApproval.count === 0) {
+          await this.finalizeStopped(conversationId, '');
+          return;
+        }
         const evt: RawEvent = { type: 'control_request', payload: value };
         await this.stream.publish(conversationId, evt);
         await this.persist(conversationId, evt, seq++);
@@ -177,17 +259,33 @@ export class AgentProcessor extends WorkerHost {
         return; // job 结束，释放 worker slot
       }
 
-      await this.prisma.conversation.update({
-        where: { id: conversationId },
+      // CAS：流自然结束后、走到这里前被停止 → 不覆盖 stopped 终态，按停止收尾
+      const toDone = await this.prisma.conversation.updateMany({
+        where: { id: conversationId, status: 'running' },
         data: { status: 'done' },
       });
+      if (toDone.count === 0) {
+        await this.finalizeStopped(conversationId, '');
+        return;
+      }
       // 持久化 result：历史据此收尾未完成的工具卡、置为 done；实时丢失/重连也能从历史对齐。
-      const resultEvt: RawEvent = { type: 'result', payload: { status: 'done' } };
+      const resultEvt: RawEvent = {
+        type: 'result',
+        payload: { status: 'done' },
+      };
       await this.stream.publish(conversationId, resultEvt);
       await this.persist(conversationId, resultEvt, seq++);
       this.logger.log(`agent 完成: conversation=${conversationId}`);
     } catch (e) {
-      this.logger.error(`agent 失败: conversation=${conversationId} ${String(e)}`);
+      // 用户主动停止：AbortError 不是失败——flush 残余文本 + 发 stopped result（状态已由端点置好）
+      if (signal.aborted) {
+        this.logger.log(`agent 停止: conversation=${conversationId}`);
+        await this.finalizeStopped(conversationId, buf);
+        return;
+      }
+      this.logger.error(
+        `agent 失败: conversation=${conversationId} ${String(e)}`,
+      );
       await this.prisma.conversation.update({
         where: { id: conversationId },
         data: { status: 'failed' },
@@ -198,31 +296,77 @@ export class AgentProcessor extends WorkerHost {
       };
       await this.stream.publish(conversationId, errorEvt);
       // catch 作用域取不到 try 内的 seq，重新计数后持久化
-      const seq = await this.prisma.message.count({ where: { conversationId } });
+      const seq = await this.prisma.message.count({
+        where: { conversationId },
+      });
       await this.persist(conversationId, errorEvt, seq);
+    } finally {
+      dispose();
     }
   }
 
   /**
-   * 从 DB 重放该会话的完整对话历史（user/assistant 文本消息，按 seq）。
-   * 工具调用/结果是每轮内的临时过程，不重放（也无法重建合法的 tool_call 配对）。
+   * 停止收尾：保留已累积的流式文本（leftover），补发并持久化 result{status:'stopped'}。
+   * 会话状态已由 stop 端点 CAS 置为 stopped，此处不改写（设计 §竞态规则）。
+   */
+  private async finalizeStopped(conversationId: string, leftover: string) {
+    let seq = await this.prisma.message.count({ where: { conversationId } });
+    if (leftover) {
+      const msg: RawEvent = { type: 'message', payload: { text: leftover } };
+      await this.stream.publish(conversationId, msg);
+      await this.persist(conversationId, msg, seq++);
+    }
+    const evt: RawEvent = { type: 'result', payload: { status: 'stopped' } };
+    await this.stream.publish(conversationId, evt);
+    await this.persist(conversationId, evt, seq);
+    this.logger.log(`agent 已停止收尾: conversation=${conversationId}`);
+  }
+
+  /**
+   * 从 DB 重放该会话的完整对话历史（按 seq）。
+   * 包含 user/assistant 文本消息 + tool_end 工具结果。
+   * tool_call_id 为合成值（DB 不存原始 id），仅用于满足 LangChain ToolMessage 结构要求。
+   *
+   * 裁剪：取最近 200 条；若首条非 user，继续从头部移除直到首条为 user（保证对话起点的完整性）。
    */
   private async loadHistory(
     conversationId: string,
-  ): Promise<{ role: string; content: string }[]> {
+  ): Promise<{ role: string; content: string; tool_call_id?: string }[]> {
+    const MAX_MSGS = 200;
+
     const rows = await this.prisma.message.findMany({
       where: {
         conversationId,
-        type: 'message',
-        role: { in: ['user', 'assistant'] },
+        type: { in: ['message', 'tool_end'] },
+        role: { in: ['user', 'assistant', 'tool'] },
       },
       orderBy: { seq: 'asc' },
-      select: { role: true, content: true },
+      select: { role: true, content: true, type: true, seq: true },
     });
-    return rows.map((m) => ({
-      role: m.role,
-      content: (m.content as { text?: string })?.text ?? '',
-    }));
+
+    let slice = rows.length > MAX_MSGS ? rows.slice(-MAX_MSGS) : rows;
+    while (slice.length > 0 && slice[0].role !== 'user') {
+      slice = slice.slice(1);
+    }
+
+    return slice.map((m) => {
+      if (m.type === 'tool_end') {
+        const payload = m.content as { name?: string; content?: unknown };
+        const text =
+          typeof payload.content === 'string'
+            ? payload.content
+            : JSON.stringify(payload.content);
+        return {
+          role: 'tool',
+          content: text,
+          tool_call_id: `synth_${payload.name ?? 'tool'}_${m.seq}`,
+        };
+      }
+      return {
+        role: m.role,
+        content: (m.content as { text?: string })?.text ?? '',
+      };
+    });
   }
 
   /**
@@ -271,19 +415,20 @@ export class AgentProcessor extends WorkerHost {
    * 本轮才首次发起的 /command 不注入，交由基础系统提示按 read_file 完成首次加载。
    * SKILL.md 经 absolutizeRefPaths 改写相对引用，保证注入后正文里的 references 路径仍能命中虚拟 FS。
    */
-  private buildSkillPrompt(
+  private async buildSkillPrompt(
+    userId: string,
     messages: { role: string; content: string }[],
-  ): string {
+  ): Promise<string> {
     const users = messages.filter((m) => m.role === 'user');
     if (users.length === 0) return '';
     const current = users[users.length - 1];
 
-    let active: CommandDef | undefined;
+    let active: SkillDef | undefined;
     let activeMsg: { role: string; content: string } | undefined;
     for (const m of users) {
       const cmd = parseCommand(m.content);
       if (!cmd) continue;
-      const def = this.commands.get(cmd.name);
+      const def = await this.skills.getFor(userId, cmd.name);
       if (!def) continue;
       active = def;
       activeMsg = m;
@@ -300,6 +445,38 @@ export class AgentProcessor extends WorkerHost {
       `请直接据此继续，**不要再 read_file 读取 \`/skills/${active.name}/SKILL.md\`**；` +
       `仅当需要其引用的 references/ 子技能等子文件时，才按需 read_file 那些子文件。\n\n` +
       `<skill name="${active.name}">\n${content}\n</skill>`
+    );
+  }
+
+  /**
+   * 构建本会话已生成的媒体资产清单，注入系统提示让模型正确引用 versionId，避免编造。
+   * 空会话（无生成位）返回空串，不注入。
+   */
+  private async buildMediaInventory(
+    conversationId: string,
+    userId: string,
+  ): Promise<string> {
+    const generations = await this.media.listForConversation(
+      conversationId,
+      userId,
+    );
+    if (!generations || generations.length === 0) return '';
+
+    const lines = generations
+      .map((g) => {
+        const v = g.versions[0]; // 最新版本（已按 createdAt desc）
+        if (!v) return null;
+        const promptPreview =
+          v.prompt.slice(0, 40) + (v.prompt.length > 40 ? '…' : '');
+        return `- versionId=${v.id} [${g.type}][${v.status}] ${promptPreview}`;
+      })
+      .filter(Boolean)
+      .join('\n');
+    if (!lines) return '';
+
+    return (
+      `\n\n## 本会话已生成的媒体资产（引用参考图必须用此表的 versionId）\n${lines}\n` +
+      `规则：referenceVersionIds 只能填上表或 generate_image 工具结果中的真实 versionId（cuid 格式），禁止自造名称；表中已有的资产不要重复生成。`
     );
   }
 

@@ -1,5 +1,5 @@
 {
-  "name": "agent-test",
+  "name": "AgentSpark",
   "version": "0.0.0",
   "private": true,
   "engines": {
@@ -7,7 +7,8 @@
   },
   "packageManager": "pnpm@11.5.0",
   "scripts": {
-    "dev": "PM2_HOME=./.pm2 pm2 start ecosystem.config.cjs",
+    "dev": "node scripts/dev.mjs",
+    "test:scripts": "node --test scripts/*.test.mjs",
     "dev:stop": "PM2_HOME=./.pm2 pm2 delete ecosystem.config.cjs",
     "dev:restart": "PM2_HOME=./.pm2 pm2 restart ecosystem.config.cjs",
     "dev:logs": "PM2_HOME=./.pm2 pm2 logs",
@@ -17,9 +18,12 @@
     "build:backend": "pnpm --filter backend build",
     "build:frontend": "pnpm --filter frontend build",
     "build": "pnpm -r build",
-    "lint": "pnpm -r lint"
+    "lint": "pnpm -r lint",
+    "tunnel": "node scripts/tunnel.mjs",
+    "tunnel:off": "node scripts/tunnel.mjs --off"
   },
   "devDependencies": {
-    "pm2": "^7.0.1"
+    "pm2": "^7.0.1",
+    "qrcode-terminal": "^0.12.0"
   }
 }

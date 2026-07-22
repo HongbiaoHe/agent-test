@@ -34,6 +34,10 @@ model Authenticator {
   publicKey    Bytes // COSE 公钥
   counter      Int      @default(0) // 签名计数器，防重放
   transports   String? // 逗号拼接，如 "internal,hybrid"
+  aaguid       String? // 认证器厂商标识（注册时由 WebAuthn 返回），用于解析来源名
+  deviceType   String? // singleDevice | multiDevice（来自 credentialDeviceType）
+  backedUp     Boolean  @default(false) // 是否云同步备份（来自 credentialBackedUp）
+  lastUsedAt   DateTime? // 最后一次用此 passkey 登录的时间；从未使用为 null
   createdAt    DateTime @default(now())
 
   @@index([userId])
@@ -42,7 +46,7 @@ model Authenticator {
 model Conversation {
   id        String    @id @default(cuid())
   goal      String    @db.Text
-  status    String    @default("queued") // queued | running | waiting_approval | done | failed
+  status    String    @default("queued") // queued | running | waiting_approval | done | failed | stopped
   model     String?   // 本会话回答模型（前端可切换）；为空则 worker 回退 env/默认
   tenantId  String
   userId    String
@@ -74,4 +78,49 @@ model Approval {
   decidedAt      DateTime @default(now())
 
   @@index([conversationId])
+}
+
+/** 一个"生成位"= 对话里的一张媒体卡片；重新生成在同一 generation 下叠 version。 */
+model MediaGeneration {
+  id             String         @id @default(cuid())
+  conversationId String
+  userId         String
+  type           String // image | video
+  versions       MediaVersion[]
+  createdAt      DateTime       @default(now())
+
+  @@index([conversationId])
+}
+
+/** 一次生成尝试；历史版本永不删除（用户要求重生成后仍可看旧版）。 */
+model MediaVersion {
+  id           String          @id @default(cuid())
+  generationId String
+  generation   MediaGeneration @relation(fields: [generationId], references: [id])
+  prompt       String          @db.Text
+  model        String
+  status       String          @default("queued") // queued | generating | done | failed
+  // 参考图：引用本会话此前生成的图片版本 id 数组（图生图多张 / 视频取首张作首帧）。
+  // 用 Json 存数组：版本数 ≤4、只整体读写、不需要按元素查询，Json 比关联表更简单（YAGNI）。
+  referenceVersionIds Json? // string[] | null
+  filePath     String? // MEDIA_DATA_DIR 下相对路径，如 <versionId>.png / .mp4
+  error        String?         @db.Text
+  createdAt    DateTime        @default(now())
+  completedAt  DateTime?
+
+  @@index([generationId])
+}
+
+/** 用户安装的技能（内置技能不入库）。落盘目录 SKILLS_DATA_DIR/<userId>/<name>/。 */
+model Skill {
+  id          String   @id @default(cuid())
+  name        String
+  description String   @db.Text
+  source      String // 如 "github:anthropics/skills#document-skills/docx@main"
+  userId      String // 非空：MySQL 可空唯一键允许重复 NULL，不留可空层（见设计文档 §2）
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, name])
 }

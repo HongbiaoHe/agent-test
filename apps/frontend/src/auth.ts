@@ -23,8 +23,8 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
   pages: { signIn: "/login" },
   providers: [
     Credentials({
-      // email：开发态邮箱兜底；token：passkey 已在后端验证并签发，直接桥接
-      credentials: { email: {}, token: {} },
+      // email：邮箱验证登录；code：验证码；token：passkey 已在后端验证并签发，直接桥接
+      credentials: { email: {}, code: {}, token: {} },
       async authorize(credentials) {
         // Passkey 路径：后端 PasskeyService 验证通过后给的 backendToken，直接使用
         const token = credentials?.token as string | undefined;
@@ -32,19 +32,26 @@ export const { handlers, auth, signIn, signOut } = NextAuth({
           const email = decodeJwtEmail(token) ?? "passkey-user";
           return { id: email, email, backendToken: token };
         }
-        // 邮箱兜底：调 NestJS /auth/login 拿后端标准 JWT
+        // 邮箱登录：调 NestJS /auth/login 验证验证码并拿后端标准 JWT
         const email = credentials?.email as string | undefined;
-        if (!email) return null;
+        const code = credentials?.code as string | undefined;
+        if (!email || !code) return null;
         const res = await fetch(`${API_BASE}/auth/login`, {
           method: "POST",
           headers: { "Content-Type": "application/json" },
-          body: JSON.stringify({ email }),
+          body: JSON.stringify({ email, code }),
         });
         const body = (await res.json()) as {
           code: number;
+          message?: string;
           data?: { token: string };
         };
-        if (body.code !== 0 || !body.data) return null;
+        if (body.code !== 0 || !body.data) {
+          if (body.message) {
+            throw new Error(body.message);
+          }
+          return null;
+        }
         return { id: email, email, backendToken: body.data.token };
       },
     }),

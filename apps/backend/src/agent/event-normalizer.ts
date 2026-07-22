@@ -1,3 +1,8 @@
+import {
+  isAIMessage,
+  isBaseMessage,
+  isToolMessage,
+} from '@langchain/core/messages';
 import { ConversationEvent } from './types';
 
 /** 未补充 seq/conversationId/ts 的事件（由发布层补全）。 */
@@ -12,6 +17,10 @@ export type RawEvent = Pick<ConversationEvent, 'type' | 'payload'>;
  *  - updates  + {node:{todos}}       → plan_update
  *  - updates  + AIMessage(tool_calls)→ tool_start
  *  - updates  + AIMessage(文本)      → message
+ *
+ * data 来自 LangGraph 流，运行时是真实的 LangChain 消息实例，故用官方类型守卫
+ * （isBaseMessage/isAIMessage/isToolMessage）与 BaseMessage.text getter 强类型解析，
+ * 不自定义结构体、不逐字段断言。
  */
 export function normalize(
   _namespace: string[],
@@ -23,65 +32,53 @@ export function normalize(
   return null;
 }
 
-function getType(msg: any): string {
-  if (typeof msg?._getType === 'function') return msg._getType();
-  if (typeof msg?.getType === 'function') return msg.getType();
-  return '';
-}
-
-function textOf(content: any): string {
-  if (typeof content === 'string') return content;
-  if (Array.isArray(content)) {
-    return content
-      .filter((p) => p?.type === 'text' && typeof p.text === 'string')
-      .map((p) => p.text)
-      .join('');
-  }
-  return '';
-}
-
 function normalizeMessage(data: unknown): RawEvent | null {
-  const msg: any = Array.isArray(data) ? data[0] : data;
-  if (!msg) return null;
-  const t = getType(msg);
-  if (t === 'tool') {
+  // messages 模式产出 [message, metadata] 元组，取首元素为消息本体。
+  const msg = Array.isArray(data) ? (data as unknown[])[0] : data;
+  if (!isBaseMessage(msg)) return null;
+  if (isToolMessage(msg)) {
     return {
       type: 'tool_end',
       payload: { name: msg.name, content: msg.content, status: msg.status },
     };
   }
-  if (t === 'ai') {
-    const text = textOf(msg.content);
-    return text ? { type: 'token', payload: { text } } : null;
+  if (isAIMessage(msg)) {
+    return msg.text ? { type: 'token', payload: { text: msg.text } } : null;
   }
   return null;
 }
 
+/** updates 模式下单个节点的最小形状（messages 元素是消息实例，故声明为 unknown[] 交给守卫收窄）。 */
+interface UpdateNode {
+  todos?: unknown[];
+  messages?: unknown[];
+}
+
 function normalizeUpdate(data: unknown): RawEvent | null {
   if (!data || typeof data !== 'object') return null;
-  for (const val of Object.values(data as Record<string, any>)) {
-    if (!val || typeof val !== 'object') continue;
+  for (const value of Object.values(data as Record<string, unknown>)) {
+    if (!value || typeof value !== 'object') continue;
+    const node = value as UpdateNode;
 
-    if (Array.isArray(val.todos)) {
-      return { type: 'plan_update', payload: { todos: val.todos } };
+    if (Array.isArray(node.todos)) {
+      return { type: 'plan_update', payload: { todos: node.todos } };
     }
 
-    if (Array.isArray(val.messages) && val.messages.length) {
-      const m: any = val.messages[val.messages.length - 1];
-      if (getType(m) === 'ai') {
-        if (Array.isArray(m.tool_calls) && m.tool_calls.length) {
+    if (Array.isArray(node.messages) && node.messages.length) {
+      const last = node.messages[node.messages.length - 1];
+      if (isBaseMessage(last) && isAIMessage(last)) {
+        if (last.tool_calls && last.tool_calls.length) {
           return {
             type: 'tool_start',
             payload: {
-              tool_calls: m.tool_calls.map((c: any) => ({
+              tool_calls: last.tool_calls.map((c) => ({
                 name: c.name,
                 args: c.args,
               })),
             },
           };
         }
-        const text = textOf(m.content);
-        if (text) return { type: 'message', payload: { text } };
+        if (last.text) return { type: 'message', payload: { text: last.text } };
       }
     }
   }

@@ -8,7 +8,8 @@
         "-c",
         "export PATH=$HOME/.nvm/versions/node/v22.21.1/bin:$PATH; exec pnpm --filter backend start:dev"
       ],
-      "port": 3101
+      "port": 3101,
+      "autoPort": false
     },
     {
       "name": "frontend",

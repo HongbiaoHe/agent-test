@@ -1,12 +1,11 @@
-import { Global, Module } from '@nestjs/common';
-import { CommandRegistryService } from './command-registry.service';
+import { Module } from '@nestjs/common';
 import { CommandsController } from './commands.controller';
 
-/** 命令/技能注册表，全局可用（conversations 校验、worker 注入、controller 列表共用）。 */
-@Global()
+/**
+ * CommandsModule：仅保留 REST controller（/commands 补全接口）。
+ * 技能注册表已迁移到 SkillsModule（@Global），CommandsController 直接注入全局的 SkillsService。
+ */
 @Module({
   controllers: [CommandsController],
-  providers: [CommandRegistryService],
-  exports: [CommandRegistryService],
 })
 export class CommandsModule {}

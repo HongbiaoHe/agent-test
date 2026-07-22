@@ -5,10 +5,12 @@ const BACKEND = process.env.BACKEND_INTERNAL_URL ?? "http://localhost:3101";
 const nextConfig: NextConfig = {
   // 允许经 ngrok 隧道域名访问 dev 资源（/_next/*）。否则 Next 16 dev 默认拦截跨源请求，
   // 导致隧道下页面拿不到 JS chunk、无法 hydrate（表现为按钮一直禁用、点击无反应）。
-  allowedDevOrigins: ["localhost"],
+  // 通配子域：随机/固定 ngrok 域名均无需改配置重启（官方文档确认支持 *.）。
+  // .dev 与 .app 都要：实测 ngrok v3.34.1 随机域名发 *.ngrok-free.dev，固定域名仍是 *.ngrok-free.app。
+  allowedDevOrigins: ["localhost", "*.ngrok-free.app", "*.ngrok-free.dev"],
   // 不对带尾斜杠的请求做 308 重定向，否则 socket.io 的 /api-backend/socket.io/?... 会被重定向而握手失败
   skipTrailingSlashRedirect: true,
-  // 浏览器侧经同源前缀 /api-backend/* 反代到后端，使单条 ngrok 隧道（仅暴露 3000）即可全功能。
+  // 浏览器侧经同源前缀 /api-backend/* 反代到后端，使单条 ngrok 隧道（仅暴露 3100）即可全功能。
   // 用独立前缀避免与前端的 /conversations 页面路由冲突；socket.io 也走这个前缀。
   async rewrites() {
     return [

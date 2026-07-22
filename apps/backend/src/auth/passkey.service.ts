@@ -15,14 +15,16 @@ import { ErrorCodes } from '../common/errors/error-code';
 import { PrismaService } from '../prisma/prisma.service';
 import { REDIS_CLIENT } from '../redis/redis.module';
 import { AuthService } from './auth.service';
+import { resolveProviderName } from './aaguid-map';
 
 const RP_ID = process.env.WEBAUTHN_RP_ID ?? 'localhost';
-const RP_NAME = process.env.WEBAUTHN_RP_NAME ?? 'Agent';
+const RP_NAME = process.env.WEBAUTHN_RP_NAME ?? 'AgentSpark';
 const ORIGIN = process.env.WEBAUTHN_ORIGIN ?? 'http://localhost:3100';
 const CHALLENGE_TTL = 300; // 秒
 
 function parseTransports(s: string | null): AuthenticatorTransportFuture[] {
-  return (s?.split(',').filter(Boolean) ?? []) as AuthenticatorTransportFuture[];
+  return (s?.split(',').filter(Boolean) ??
+    []) as AuthenticatorTransportFuture[];
 }
 
 /**
@@ -41,13 +43,21 @@ export class PasskeyService {
   /** 注册第一步：按 email 找/建用户，产出注册 options，挑战存 Redis。 */
   async registrationOptions(email: string, rpId?: string) {
     const user = await this.auth.findOrCreateByEmail(email);
+    return this.registrationOptionsForUser(user, rpId);
+  }
+
+  /** 同上，但用户已知（登录态添加 passkey 用）：userId 来自 JWT，不信任客户端 email。 */
+  async registrationOptionsForUser(
+    user: { id: string; email: string },
+    rpId?: string,
+  ) {
     const existing = await this.prisma.authenticator.findMany({
       where: { userId: user.id },
     });
     const options = await generateRegistrationOptions({
       rpName: RP_NAME,
       rpID: rpId || RP_ID,
-      userName: email,
+      userName: user.email,
       userID: new TextEncoder().encode(user.id),
       attestationType: 'none',
       excludeCredentials: existing.map((a) => ({
@@ -71,7 +81,7 @@ export class PasskeyService {
     return options;
   }
 
-  /** 注册第二步：校验响应，存 Authenticator。 */
+  /** 注册第二步：校验响应，存 Authenticator。注册成功即登录：签发 JWT。 */
   async verifyRegistration(
     email: string,
     response: RegistrationResponseJSON,
@@ -79,12 +89,29 @@ export class PasskeyService {
     origin?: string,
   ) {
     const user = await this.auth.findOrCreateByEmail(email);
-    const expectedChallenge = await this.redis.get(`webauthn:reg:${user.id}`);
+    await this.verifyRegistrationForUser(user.id, response, rpId, origin);
+    const token = await this.auth.signToken(user);
+    return { verified: true, token, email: user.email };
+  }
+
+  /**
+   * 校验注册响应并落库（登录态添加 passkey 用）：不签发 token，
+   * 返回新建凭据行（id/createdAt/transports），供管理页直接插入列表。
+   */
+  async verifyRegistrationForUser(
+    userId: string,
+    response: RegistrationResponseJSON,
+    rpId?: string,
+    origin?: string,
+  ) {
+    const expectedChallenge = await this.redis.get(`webauthn:reg:${userId}`);
     if (!expectedChallenge) {
       throw new BusinessException(ErrorCodes.PASSKEY_CHALLENGE_EXPIRED);
     }
     let verified = false;
-    let info;
+    let info: Awaited<
+      ReturnType<typeof verifyRegistrationResponse>
+    >['registrationInfo'];
     try {
       const result = await verifyRegistrationResponse({
         response,
@@ -100,19 +127,29 @@ export class PasskeyService {
     if (!verified || !info) {
       throw new BusinessException(ErrorCodes.PASSKEY_VERIFY_FAILED);
     }
-    await this.prisma.authenticator.create({
+    const row = await this.prisma.authenticator.create({
       data: {
         credentialId: info.credential.id,
-        userId: user.id,
+        userId,
         publicKey: Buffer.from(info.credential.publicKey),
         counter: info.credential.counter,
         transports: (response.response.transports ?? []).join(',') || null,
+        // v13 registrationInfo 里这三个字段都是非可空（aaguid:string / credentialDeviceType / credentialBackedUp:boolean）
+        aaguid: info.aaguid,
+        deviceType: info.credentialDeviceType,
+        backedUp: info.credentialBackedUp,
       },
     });
-    await this.redis.del(`webauthn:reg:${user.id}`);
-    // 注册成功即登录：直接签发后端 JWT，前端一步进入
-    const token = await this.auth.signToken(user);
-    return { verified: true, token, email: user.email };
+    await this.redis.del(`webauthn:reg:${userId}`);
+    return {
+      id: row.id,
+      createdAt: row.createdAt,
+      transports: row.transports,
+      providerName: resolveProviderName(row.aaguid, row.deviceType),
+      deviceType: row.deviceType,
+      backedUp: row.backedUp,
+      lastUsedAt: row.lastUsedAt,
+    };
   }
 
   /**
@@ -166,7 +203,9 @@ export class PasskeyService {
       where: { credentialId: response.id },
     });
     if (!cred) throw new BusinessException(ErrorCodes.PASSKEY_NOT_FOUND);
-    const user = await this.prisma.user.findUnique({ where: { id: cred.userId } });
+    const user = await this.prisma.user.findUnique({
+      where: { id: cred.userId },
+    });
     if (!user) throw new BusinessException(ErrorCodes.PASSKEY_NOT_FOUND);
 
     let verified = false;
@@ -189,11 +228,12 @@ export class PasskeyService {
     } catch {
       throw new BusinessException(ErrorCodes.PASSKEY_VERIFY_FAILED);
     }
-    if (!verified) throw new BusinessException(ErrorCodes.PASSKEY_VERIFY_FAILED);
+    if (!verified)
+      throw new BusinessException(ErrorCodes.PASSKEY_VERIFY_FAILED);
 
     await this.prisma.authenticator.update({
       where: { credentialId: cred.credentialId },
-      data: { counter: newCounter },
+      data: { counter: newCounter, lastUsedAt: new Date() },
     });
     await this.redis.del(`webauthn:auth:${flowId}`);
     const token = await this.auth.signToken(user);

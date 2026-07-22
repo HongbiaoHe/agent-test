@@ -1,15 +1,16 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { signOut, useSession } from "next-auth/react";
+import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
 import { useState } from "react";
 
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import {
   appendMessage,
-  createConversation,
+  createEmptyConversation,
   listConversations,
+  stopConversation,
 } from "@/lib/api";
 
 import { ChatThread } from "./chat-thread";
@@ -31,7 +32,7 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   const isDesktop = useIsDesktop();
   const qc = useQueryClient();
   const { data: session } = useSession();
-  const userEmail = (session?.user?.email as string | undefined) ?? "用户";
+  const userEmail = (session?.user?.email as string | undefined) ?? "User";
 
   const [sidebarOpen, setSidebarOpen] = useState(false);
   const [manualPanel, setManualPanel] = useState<boolean | null>(null);
@@ -55,8 +56,9 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
 
   const thread = useConversation(conversationId);
 
+  // 先创建空会话（idle）再进入：成功后跳 /agent/[id]，首条消息走 appendMessage
   const createMut = useMutation({
-    mutationFn: (text: string) => createConversation(text, model),
+    mutationFn: () => createEmptyConversation(model),
     onSuccess: ({ conversationId: newId }) => {
       void qc.invalidateQueries({ queryKey: ["conversations"] });
       router.push(`/agent/${newId}`); // 跳到新会话路由，URL 持有 id，刷新可恢复
@@ -67,16 +69,32 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
       appendMessage(conversationId as string, text, model),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["conversations"] }),
   });
+  // 主动停止：busy 收尾由后端 result{status:'stopped'} 事件驱动（SSE），这里只发指令。
+  // stopRequested 让按钮的 loading 从点击持续到运行真正结束（HTTP 返回 ≠ 收尾完成）；
+  // 失败则复位允许重试（全局 MutationCache 已 toast 错误）。
+  const [stopRequested, setStopRequested] = useState(false);
+  const stopMut = useMutation({
+    mutationFn: () => stopConversation(conversationId as string),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["conversations"] }),
+    onError: () => setStopRequested(false),
+  });
 
   const busy = thread.busy || createMut.isPending;
+  // 运行已结束 → 复位（render-time reset，同 trackedId 模式，避免 effect 里 setState）
+  if (stopRequested && !busy) {
+    setStopRequested(false);
+  }
+
+  function handleStop() {
+    if (!conversationId || stopRequested) return;
+    setStopRequested(true);
+    stopMut.mutate();
+  }
 
   function handleSend(text: string) {
-    if (!conversationId) {
-      createMut.mutate(text);
-    } else {
-      thread.pushUserMessage(text);
-      appendMut.mutate(text);
-    }
+    if (!conversationId) return; // 新会话页只有引导按钮，没有输入框
+    thread.pushUserMessage(text);
+    appendMut.mutate(text);
   }
 
   function selectConversation(id: string) {
@@ -85,8 +103,9 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   }
 
   function newChat() {
+    if (createMut.isPending) return; // 防重复点击
     setSidebarOpen(false);
-    router.push("/agent");
+    createMut.mutate();
   }
 
   function openDetail(id: string) {
@@ -96,20 +115,6 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
 
   const panelOpen = manualPanel ?? isDesktop;
 
-  function togglePanel() {
-    if (!panelOpen) {
-      if (!activeDetailId) {
-        const lastTool = [...thread.items]
-          .reverse()
-          .find((it) => it.kind === "tool");
-        if (lastTool) setActiveDetailId(lastTool.id);
-      }
-      setManualPanel(true);
-    } else {
-      setManualPanel(false);
-    }
-  }
-
   const selectedTool = activeDetailId
     ? thread.items.find(
         (it): it is Extract<ThreadItem, { kind: "tool" }> =>
@@ -118,7 +123,11 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
     : undefined;
 
   const activeConv = conversations.find((c) => c.id === conversationId);
-  const title = conversationId ? (activeConv?.goal ?? "对话") : "新对话";
+  // 空会话（idle，goal 尚未回填）与新会话页统一显示 "New conversation"
+  const title =
+    conversationId && activeConv?.goal.trim()
+      ? activeConv.goal
+      : "New conversation";
 
   const filtered = search.trim()
     ? conversations.filter((c) =>
@@ -135,11 +144,6 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
     onSelect: selectConversation,
     onNewChat: newChat,
     userEmail,
-    // redirect:false + 客户端跳转，按当前域名回 /login（避免 next-auth 按写死的 AUTH_URL 跳隧道）
-    onSignOut: async () => {
-      await signOut({ redirect: false });
-      window.location.href = "/login";
-    },
     theme,
     onCycleTheme: cycle,
   };
@@ -156,26 +160,29 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
           showCloseButton={false}
           className="w-72 gap-0 bg-background p-0"
         >
-          <SheetTitle className="sr-only">会话列表</SheetTitle>
+          <SheetTitle className="sr-only">Conversations</SheetTitle>
           <SidebarContent {...sidebarProps} />
         </SheetContent>
       </Sheet>
 
       <ChatThread
         title={title}
+        conversationId={conversationId}
         items={thread.items}
         approval={thread.approval}
         busy={busy}
         isLoading={thread.isLoading}
         isNewChat={!conversationId}
+        creating={createMut.isPending}
+        onNewChat={newChat}
         activeDetailId={panelOpen ? activeDetailId : null}
         onOpenDetail={openDetail}
         onDecide={thread.respondApproval}
         onSend={handleSend}
+        onStop={handleStop}
+        stopping={stopRequested}
         model={model}
         onModelChange={setModel}
-        panelOpen={panelOpen}
-        onTogglePanel={togglePanel}
         onOpenSidebar={() => setSidebarOpen(true)}
       />
 

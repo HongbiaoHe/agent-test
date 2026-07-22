@@ -6,6 +6,7 @@ export type ConversationEventType =
   | 'plan_update'
   | 'control_request'
   | 'result'
+  | 'media_update' // 媒体生成卡片状态变更（不落 messages 表，仅经 Redis Stream 推流）
   | 'error';
 
 export interface ConversationEvent {

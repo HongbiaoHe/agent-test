@@ -1,20 +1,21 @@
+import {
+  AIMessageChunk,
+  ToolMessage,
+  type MessageContent,
+  type ToolCall,
+} from '@langchain/core/messages';
 import { normalize } from './event-normalizer';
 
-const aiMsg = (content: any, tool_calls: any[] = []) => ({
-  _getType: () => 'ai',
-  content,
-  tool_calls,
-});
-const toolMsg = (name: string, content: string) => ({
-  _getType: () => 'tool',
-  name,
-  content,
-  status: 'success',
-});
+const aiMsg = (content: MessageContent, toolCalls: ToolCall[] = []) =>
+  new AIMessageChunk({ content, tool_calls: toolCalls });
+const toolMsg = (name: string, content: string) =>
+  new ToolMessage({ name, content, tool_call_id: 'tc-1', status: 'success' });
 
 describe('normalize', () => {
   it('messages + ToolMessage → tool_end', () => {
-    const ev = normalize(['tools:x'], 'messages', [toolMsg('get_weather', '{}')]);
+    const ev = normalize(['tools:x'], 'messages', [
+      toolMsg('get_weather', '{}'),
+    ]);
     expect(ev).toEqual({
       type: 'tool_end',
       payload: { name: 'get_weather', content: '{}', status: 'success' },
@@ -31,11 +32,9 @@ describe('normalize', () => {
   });
 
   it('messages + functionCall 数组内容(无 text) → null', () => {
-    const ev = normalize(
-      ['model_request:x'],
-      'messages',
-      [aiMsg([{ type: 'functionCall', functionCall: { name: 'get_weather' } }])],
-    );
+    const ev = normalize(['model_request:x'], 'messages', [
+      aiMsg([{ type: 'functionCall', functionCall: { name: 'get_weather' } }]),
+    ]);
     expect(ev).toBeNull();
   });
 
@@ -54,12 +53,23 @@ describe('normalize', () => {
   it('updates + AIMessage(tool_calls) → tool_start', () => {
     const ev = normalize([], 'updates', {
       model_request: {
-        messages: [aiMsg('', [{ name: 'get_weather', args: { city: '上海' } }])],
+        messages: [
+          aiMsg('', [
+            {
+              name: 'get_weather',
+              args: { city: '上海' },
+              id: 'call-1',
+              type: 'tool_call',
+            },
+          ]),
+        ],
       },
     });
     expect(ev).toEqual({
       type: 'tool_start',
-      payload: { tool_calls: [{ name: 'get_weather', args: { city: '上海' } }] },
+      payload: {
+        tool_calls: [{ name: 'get_weather', args: { city: '上海' } }],
+      },
     });
   });
 

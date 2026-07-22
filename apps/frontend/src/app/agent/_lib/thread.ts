@@ -22,7 +22,11 @@ export type ThreadItem =
       done: boolean;
     }
   | { kind: "plan"; id: string; todos: Todo[] }
-  | { kind: "error"; id: string; text: string };
+  | { kind: "error"; id: string; text: string }
+  // 生图/生视频卡片：由 generate_image/generate_video 的 tool_end 在工具 chip **之后**追加。
+  // tool chip 本身保留（与 read_file 一样进工具组、参数可见），卡片只承载 generationId 锚点；
+  // 卡片状态一律从 React Query（GET /conversations/:id/media）读。
+  | { kind: "media"; id: string; generationId: string; mediaType: "image" | "video" };
 
 /**
  * 归一事件：DB 历史 Message 与 socket ConversationEvent 都先转成这个形状，
@@ -105,11 +109,38 @@ export function reduce(state: ThreadState, ev: NormalizedEvent): ThreadState {
     }
     case "tool_end": {
       const name = ev.payload?.name;
+      // 先按普通工具收尾：找到对应 chip 标记 done + 填结果（generate_* 也走这步——
+      // chip 保留进工具组、参数可见，与 read_file 一致，推翻了早前「原位替换成 media」的决议）。
       for (let i = items.length - 1; i >= 0; i--) {
         const it = items[i];
         if (it.kind === "tool" && it.name === name && !it.done) {
           items[i] = { ...it, result: stringifyContent(ev.payload?.content), done: true };
           break;
+        }
+      }
+      // 生图/生视频：LangChain 把工具返回值序列化为 JSON 字符串，content 形如
+      // '{"generationId":"...","versionId":"...","status":"queued"}'。解析出 generationId 后，
+      // 在工具 chip **之后**追加一条 kind:'media' 卡片锚点（不替换 chip）。
+      const mediaType =
+        name === "generate_image" ? "image" : name === "generate_video" ? "video" : null;
+      if (mediaType) {
+        let generationId: string | null = null;
+        try {
+          const parsed = JSON.parse(String(ev.payload?.content ?? ""));
+          if (parsed && typeof parsed.generationId === "string") {
+            generationId = parsed.generationId;
+          }
+        } catch {
+          // 解析失败：仅保留上面的 chip 收尾，不追加卡片
+        }
+        // 防重复：同 generationId 的卡片只插一次。历史重放经 base 折叠出卡片后，若 live
+        // tool_end 又携同一 generationId 抵达（foldLive 把 base+实时增量过同一 reducer），
+        // 这里据已存在的 media item 去重，避免双卡。
+        const exists =
+          generationId != null &&
+          items.some((it) => it.kind === "media" && it.generationId === generationId);
+        if (generationId && !exists) {
+          items.push({ kind: "media", id: id(), generationId, mediaType });
         }
       }
       return { ...state, items, nextId };
@@ -166,9 +197,13 @@ export function buildBaseState(conv: Conversation): ThreadState {
   for (const m of conv.messages) {
     state = reduce(state, messageToEvent(m));
   }
-  // 历史里没有 result 事件（未持久化）；会话已终态时收尾未完成的工具 chip，避免历史也卡「调用中」。
+  // 会话已终态时收尾未完成的工具 chip，避免历史也卡「调用中」。
   // waiting_approval 不收尾——send_email 此时确实在等审批。
-  if (conv.status === "done" || conv.status === "failed") {
+  if (
+    conv.status === "done" ||
+    conv.status === "failed" ||
+    conv.status === "stopped"
+  ) {
     state = {
       ...state,
       items: state.items.map((it) =>
