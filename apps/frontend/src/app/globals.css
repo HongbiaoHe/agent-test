@@ -44,6 +44,14 @@
   --success: oklch(0.63 0.17 150);
   --warning: oklch(0.72 0.15 75);
 
+  /* 画布节点「类型身份色」（业务扩展，非 shadcn；由 .canvas-node 经 --tone 消费）。
+     四类节点=一条流水线，按角色分配色相、统一 chroma/明度求和谐：
+     文本=琥珀金(创意) / 上传=青(输入) / 生图=紫罗兰(生成) / 生视频=玫红(动态)。 */
+  --node-text: oklch(0.7 0.14 70);
+  --node-upload: oklch(0.66 0.11 210);
+  --node-image: oklch(0.62 0.17 292);
+  --node-video: oklch(0.63 0.19 12);
+
   /* 旋转高光边框（GlowBorder）的柔光色：light 用暖中灰（白卡上可见但不刺黑），dark 见 .dark */
   --glow-color: oklch(0.64 0.015 60);
 
@@ -93,6 +101,12 @@
 
   --success: oklch(0.72 0.17 150);
   --warning: oklch(0.78 0.14 80);
+
+  /* 暗色下节点类型色：提亮以在深卡上醒目，chroma 保持一致（见 :root 说明）。 */
+  --node-text: oklch(0.79 0.13 70);
+  --node-upload: oklch(0.74 0.1 210);
+  --node-image: oklch(0.72 0.15 292);
+  --node-video: oklch(0.73 0.17 12);
 
   /* dark 下柔光用近白亮光（暗卡上更醒目） */
   --glow-color: oklch(0.92 0.002 80);
@@ -254,6 +268,138 @@
   .glow-border::before {
     animation: none;
   }
+}
+
+/* 画布工作光晕：agent 操控画布时，画布四周缓慢旋转的柔和彩色辉光，表现 AI 正在奋力创作。
+   无边框、无硬边线；透明区与画布同为矩形：用四条边线性渐变的并集做 mask —— 四边发光、
+   向内淡出，中心留一块矩形透明区（形状跟画布一致），随 --glow-angle 旋转。
+   pointer-events:none 不挡交互。 */
+.canvas-working-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  border-radius: inherit;
+  overflow: hidden;
+}
+.canvas-working-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: conic-gradient(
+    from var(--glow-angle),
+    oklch(0.72 0.23 20),
+    oklch(0.75 0.2 90),
+    oklch(0.72 0.22 160),
+    oklch(0.7 0.24 235),
+    oklch(0.73 0.24 305),
+    oklch(0.72 0.23 20)
+  );
+  filter: blur(16px); /* 模糊 → 柔和辉光，无硬边框线；收窄以贴合 ~50px 范围 */
+  opacity: 0.42; /* 弱化存在感 */
+  /* 四条边各自从边缘（实）向内 50px（透明）渐变，并集 → 距画布边约 50px 的矩形柔光带、
+     中心矩形透明区（与画布同形） */
+  mask:
+    linear-gradient(to right, #000, transparent 50px),
+    linear-gradient(to left, #000, transparent 50px),
+    linear-gradient(to bottom, #000, transparent 50px),
+    linear-gradient(to top, #000, transparent 50px);
+  mask-composite: add;
+  animation: glow-border-spin 3s linear infinite; /* 旋转（加快） */
+}
+@media (prefers-reduced-motion: reduce) {
+  .canvas-working-overlay::before {
+    animation: none;
+  }
+}
+
+/* 「Agent 工作中」提醒 pill 的入场：从右上角轻微下滑 + 淡入 + 回弹，柔和浮现而非硬闪。 */
+@keyframes canvas-badge-in {
+  from {
+    opacity: 0;
+    transform: translateY(-6px) scale(0.96);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0) scale(1);
+  }
+}
+.canvas-working-badge {
+  animation: canvas-badge-in 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .canvas-working-badge {
+    animation: none;
+  }
+}
+
+/* ReactFlow 缩放/复位操控按钮的暗色适配：xyflow 内置暗色主题门控在 `.react-flow.dark`
+   （类需挂在其自身根节点，靠 colorMode prop 添加），而本项目 next-themes 把 `.dark` 挂在
+   <html> 上，二者匹配不到 → 暗色下按钮仍是默认奶油底。这里直接覆盖 xyflow 消费的基础变量，
+   映射到暖中性 token，使操控条在暗色下变成浮层深底 + 前景色图标。 */
+.dark .react-flow {
+  --xy-controls-button-background-color: var(--popover);
+  --xy-controls-button-background-color-hover: var(--accent);
+  --xy-controls-button-color: var(--foreground);
+  --xy-controls-button-color-hover: var(--foreground);
+  --xy-controls-button-border-color: var(--border);
+  --xy-controls-box-shadow:
+    0 0 0 1px var(--border), 0 2px 8px oklch(0 0 0 / 0.35);
+}
+
+/* 画布节点「类型身份」视觉：每个节点经内联 style 设 `--tone`（= 某个 --node-* token），
+   下方所有强调件（左导轨 / 图标 chip / 表头淡染 / 连接点 / hover&选中环）统一从 --tone 取色，
+   卡片主体保持中性 bg-card 保证可读。改类型色只需换 --tone，无需动组件。 */
+.canvas-node {
+  position: relative;
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease;
+}
+/* 左侧彩色导轨：贴左边框，仅左角随卡片圆角收口，宽 3px 不影响连接点（不能用 overflow:hidden，
+   否则会裁掉半悬在边缘的 handle）。 */
+.canvas-node__rail {
+  position: absolute;
+  left: 0;
+  top: 0;
+  bottom: 0;
+  z-index: 1;
+  width: 3px;
+  background: var(--tone);
+  border-radius: var(--radius) 0 0 var(--radius);
+}
+.canvas-node__header {
+  background: color-mix(in oklch, var(--tone) 10%, var(--card));
+  border-bottom-color: color-mix(in oklch, var(--tone) 24%, var(--border));
+}
+/* 彩色图标 chip：类型色图标 + 同色极淡底 */
+.canvas-node__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  flex-shrink: 0;
+  border-radius: calc(var(--radius) - 4px);
+  color: var(--tone);
+  background: color-mix(in oklch, var(--tone) 18%, transparent);
+}
+/* 连接点染成类型色（源端=该节点类型色，直观标示数据从哪来） */
+.canvas-node .react-flow__handle {
+  width: 9px;
+  height: 9px;
+  background: var(--tone);
+  border: 1.5px solid var(--card);
+}
+.canvas-node:hover {
+  border-color: color-mix(in oklch, var(--tone) 38%, var(--border));
+}
+/* 选中：类型色描边 + 柔和同色投影 */
+.react-flow__node.selected .canvas-node {
+  border-color: color-mix(in oklch, var(--tone) 55%, var(--border));
+  box-shadow:
+    0 0 0 1px color-mix(in oklch, var(--tone) 55%, transparent),
+    0 6px 18px color-mix(in oklch, var(--tone) 22%, transparent);
 }
 
 /* highlight.js 语法配色：统一映射到上方 --syntax-* token（亮暗自适应）。

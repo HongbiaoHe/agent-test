@@ -8,6 +8,7 @@ import { EventsModule } from './events/events.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RedisModule } from './redis/redis.module';
 import { AuthModule } from './auth/auth.module';
+import { CanvasModule } from './canvas/canvas.module';
 import { CommandsModule } from './commands/commands.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { MediaModule } from './media/media.module';
@@ -50,6 +51,7 @@ import { WorkerModule } from './worker/worker.module';
     MediaModule,
     SandboxModule,
     UsersModule,
+    CanvasModule,
   ],
   controllers: [AppController],
   providers: [AppService],

@@ -1,0 +1,19 @@
+import { IsIn, IsOptional, IsString } from 'class-validator';
+import { CANVAS_MODELS } from '../canvas.types';
+
+export class CreateCanvasDto {
+  /** 可缺省：缺省创建 idle 空画布；有则作为首轮目标入队跑 agent。 */
+  @IsOptional()
+  @IsString()
+  goal?: string;
+
+  /** 画布标题（可选）。 */
+  @IsOptional()
+  @IsString()
+  title?: string;
+
+  /** agent 模型（可选）；缺省/非法时 worker 回退 env 默认。 */
+  @IsOptional()
+  @IsIn(CANVAS_MODELS)
+  model?: string;
+}
