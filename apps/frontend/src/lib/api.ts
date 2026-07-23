@@ -223,6 +223,142 @@ export async function fetchMediaAssetBlob(versionId: string): Promise<Blob> {
   return res.blob();
 }
 
+// ——— 画布工作流 ———
+
+export type CanvasNodeType = "image_upload" | "image_gen" | "text" | "video_gen";
+
+export interface CanvasNodeDto {
+  id: string;
+  type: CanvasNodeType;
+  x: number;
+  y: number;
+  version: number;
+  label: string | null;
+  text: string | null;
+  prompt: string | null;
+  assetPath: string | null;
+  mediaGenerationId: string | null;
+  mediaVersionId: string | null;
+  mediaStatus: string | null;
+}
+
+export interface CanvasEdgeDto {
+  id: string;
+  source: string;
+  target: string;
+}
+
+export interface CanvasSnapshot {
+  id: string;
+  title: string;
+  status: string;
+  model: string | null;
+  revision: number;
+  nodes: CanvasNodeDto[];
+  edges: CanvasEdgeDto[];
+}
+
+export interface CanvasListItem {
+  id: string;
+  title: string;
+  status: string;
+  updatedAt: string;
+}
+
+export interface CanvasMessage {
+  id: string;
+  role: string;
+  type: string;
+  content: unknown;
+  seq: number;
+}
+
+/** 画布结构变更 op（用户空闲期编辑；agent 侧走工具，不经此）。 */
+export type CanvasOpInput =
+  | {
+      op: "add_node";
+      type: CanvasNodeType;
+      x?: number;
+      y?: number;
+      label?: string;
+      text?: string;
+      prompt?: string;
+    }
+  | { op: "update_node"; nodeId: string; label?: string; text?: string; prompt?: string }
+  | { op: "remove_node"; nodeId: string }
+  | { op: "add_edge"; source: string; target: string }
+  | { op: "remove_edge"; edgeId: string };
+
+export function createCanvas(input: {
+  goal?: string;
+  title?: string;
+  model?: string;
+}): Promise<{ sessionId: string }> {
+  return request("/canvas", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function listCanvases(): Promise<CanvasListItem[]> {
+  return request("/canvas");
+}
+
+export function renameCanvas(
+  id: string,
+  title: string,
+): Promise<{ id: string; title: string }> {
+  return request(`/canvas/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
+  });
+}
+
+export function getCanvasSnapshot(id: string): Promise<CanvasSnapshot> {
+  return request(`/canvas/${id}`);
+}
+
+export function getCanvasMessages(id: string): Promise<CanvasMessage[]> {
+  return request(`/canvas/${id}/messages`);
+}
+
+export function appendCanvasMessage(
+  id: string,
+  content: string,
+  model?: string,
+): Promise<{ sessionId: string }> {
+  return request(`/canvas/${id}/messages`, {
+    method: "POST",
+    body: JSON.stringify({ content, model }),
+  });
+}
+
+export function stopCanvas(id: string): Promise<{ stopped: boolean }> {
+  return request(`/canvas/${id}/stop`, { method: "POST" });
+}
+
+/** 用户结构编辑：带 baseRevision 做乐观并发；运行期后端拒绝（CANVAS_BUSY）。 */
+export function applyCanvasOp(
+  id: string,
+  op: CanvasOpInput,
+  baseRevision: number,
+): Promise<{ revision: number; patch: unknown }> {
+  return request(`/canvas/${id}/ops`, {
+    method: "POST",
+    body: JSON.stringify({ op, baseRevision }),
+  });
+}
+
+/** 节点位置更新（LWW）。 */
+export function moveCanvasNode(
+  id: string,
+  nodeId: string,
+  x: number,
+  y: number,
+): Promise<void> {
+  return request(`/canvas/${id}/nodes/${nodeId}/move`, {
+    method: "POST",
+    body: JSON.stringify({ x, y }),
+  });
+}
+
 // ——— Skills 技能管理 ———
 
 /** 技能注册表条目（GET /skills）。kind==='builtin' 为内置（不可启停/删除）。 */

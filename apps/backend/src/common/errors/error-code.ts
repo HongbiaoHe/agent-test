@@ -5,7 +5,7 @@ export interface ErrorDef {
 
 /**
  * 业务错误集中定义，按域分段：
- * 1xxxx 会话域 / 2xxxx agent 域 / 3xxxx 认证域(passkey) / 4xxxx 技能与沙箱域 / 5xxxx 系统域 / 6xxxx 媒体生成域
+ * 1xxxx 会话域 / 2xxxx agent 域 / 3xxxx 认证域(passkey) / 4xxxx 技能与沙箱域 / 5xxxx 系统域 / 6xxxx 媒体生成域 / 7xxxx 画布域
  * 新增业务错误只需往这里加一条。
  */
 export const ErrorCodes = {
@@ -93,4 +93,16 @@ export const ErrorCodes = {
     message:
       'Invalid reference image (must be a successfully generated image version belonging to yourself)',
   },
+  CANVAS_NOT_FOUND: { code: 70001, message: 'Canvas session not found' },
+  CANVAS_GOAL_EMPTY: { code: 70002, message: 'Canvas goal cannot be empty' },
+  CANVAS_BUSY: {
+    code: 70003,
+    message: 'Canvas agent is running, structural edits are locked',
+  },
+  CANVAS_CONFLICT: {
+    code: 70004,
+    message: 'Canvas has changed since your last sync, please reload',
+  },
+  CANVAS_NODE_NOT_FOUND: { code: 70005, message: 'Canvas node not found' },
+  CANVAS_TITLE_EMPTY: { code: 70006, message: 'Canvas title cannot be empty' },
 } as const satisfies Record<string, ErrorDef>;

@@ -111,6 +111,149 @@ model MediaVersion {
   @@index([generationId])
 }
 
+// ─────────────────────────────────────────────────────────────────────────────
+// 画布工作流（独立模块：独立会话/运行/消息/节点/边/操作日志，与上面的
+// Conversation/Message 互不影响。设计见 docs/superpowers/specs/2026-07-22-canvas-workflow-agent-design.md）
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 画布会话 = 一块画布 + 一条独立的 agent 对话线程（thread_id = 本 id）。 */
+model CanvasSession {
+  id       String  @id @default(cuid())
+  title    String  @default("未命名画布")
+  status   String  @default("idle") // idle | queued | running | waiting_approval | done | failed | stopped
+  model    String? // 本会话 agent 模型；空则 worker 回退默认
+  tenantId String
+  userId   String
+
+  // 乐观并发根版本 = 最新结构 op 的 seq。任一结构变更（增删节点/边、改节点 data）在同一
+  // 事务里自增；用户空闲期提交编辑时带上它做 CAS 冲突检测。位置(x/y) LWW 不占此版本。
+  revision Int @default(0)
+
+  runs     CanvasRun[]
+  messages CanvasMessage[]
+  nodes    CanvasNode[]
+  edges    CanvasEdge[]
+  ops      CanvasOp[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId])
+}
+
+/**
+ * 一次 harness agent 执行（一级实体：一个画布可多次 Run）。承载运行状态、触发目标、
+ * token 累计与起止时间；长跑（可能 >1h）的会计与审计单元。
+ */
+model CanvasRun {
+  id        String        @id @default(cuid())
+  sessionId String
+  session   CanvasSession @relation(fields: [sessionId], references: [id])
+  status    String        @default("queued") // queued | running | waiting_approval | done | failed | stopped
+  trigger   Json // 触发本次运行的用户消息/目标
+  model     String?
+  error     String?       @db.Text
+
+  // 本次运行累计 token（每次模型调用累加；明细见 CanvasTokenUsage）
+  promptTokens     Int @default(0)
+  completionTokens Int @default(0)
+  totalTokens      Int @default(0)
+
+  startedAt DateTime  @default(now())
+  endedAt   DateTime?
+
+  @@index([sessionId])
+}
+
+/** token 用量明细：每次模型调用一行（可审计、可按 run/session 聚合）。 */
+model CanvasTokenUsage {
+  id           String   @id @default(cuid())
+  sessionId    String
+  runId        String
+  model        String
+  inputTokens  Int
+  outputTokens Int
+  totalTokens  Int
+  createdAt    DateTime @default(now())
+
+  @@index([sessionId])
+  @@index([runId])
+}
+
+/** 画布 agent 的对话消息（结构同 Message，但独立表，互不影响）。 */
+model CanvasMessage {
+  id        String        @id @default(cuid())
+  sessionId String
+  session   CanvasSession @relation(fields: [sessionId], references: [id])
+  runId     String? // 归属的运行（可空：兼容跨轮）
+  role      String // user | assistant | tool
+  type      String // message | tool_start | tool_end | plan_update | control_request | result | error
+  content   Json
+  seq       Int
+  createdAt DateTime      @default(now())
+
+  @@index([sessionId, seq])
+}
+
+/**
+ * 画布节点（物化当前态）。type ∈ image_upload | image_gen | text | video_gen。
+ * 扁平强类型可空列（非 Json blob），按 type 填不同列：
+ *  - text        : text
+ *  - image_upload: assetPath（MVP 模拟上传占位）
+ *  - image_gen   : prompt, mediaGenerationId（状态靠 JOIN MediaVersion 算）
+ *  - video_gen   : prompt, mediaGenerationId
+ * version：节点级乐观锁，改 data 时自增；位置(x/y)走 LWW 不占版本。
+ */
+model CanvasNode {
+  id        String        @id @default(cuid())
+  sessionId String
+  session   CanvasSession @relation(fields: [sessionId], references: [id])
+  type      String
+  x         Float         @default(0)
+  y         Float         @default(0)
+
+  label             String? // 展示用标题（可选）
+  text              String? @db.Text // text 节点正文 / image_upload 说明
+  prompt            String? @db.Text // image_gen / video_gen 提示词
+  assetPath         String? // image_upload 已上传资产（MVP 模拟占位）
+  mediaGenerationId String? // 生成节点触发后回填；状态/资产靠 JOIN MediaVersion
+
+  version   Int      @default(0)
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([sessionId])
+}
+
+/** 画布连线（工作流有向边）。source/target 为 CanvasNode.id。 */
+model CanvasEdge {
+  id        String        @id @default(cuid())
+  sessionId String
+  session   CanvasSession @relation(fields: [sessionId], references: [id])
+  source    String
+  target    String
+  createdAt DateTime      @default(now())
+
+  @@index([sessionId])
+  @@unique([sessionId, source, target])
+}
+
+/**
+ * 操作日志（事件源，追加式）：每次结构变更（agent 或 user）追加一条，seq 单调递增 =
+ * session.revision。用于审计 / 回放 / 顺序仲裁。位置 move 不进日志（presentation, LWW）。
+ */
+model CanvasOp {
+  id        String        @id @default(cuid())
+  sessionId String
+  session   CanvasSession @relation(fields: [sessionId], references: [id])
+  seq       Int // = 变更后 session.revision
+  actor     String // agent | user
+  op        Json // { op: add_node|update_node|remove_node|add_edge|remove_edge, ... }
+  createdAt DateTime      @default(now())
+
+  @@unique([sessionId, seq])
+}
+
 /** 用户安装的技能（内置技能不入库）。落盘目录 SKILLS_DATA_DIR/<userId>/<name>/。 */
 model Skill {
   id          String   @id @default(cuid())

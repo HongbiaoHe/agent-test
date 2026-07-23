@@ -77,3 +77,64 @@ export function subscribeConversation(
 export function respondControl(conversationId: string, decisions: unknown[]) {
   getSocket().emit("control:response", { conversationId, decisions });
 }
+
+// ——— 画布：独立 socket.io namespace `/canvas`（与上面的默认 namespace 完全隔离）———
+
+export type CanvasEventType =
+  | ConversationEventType
+  | "canvas_patch"
+  | "token_usage";
+
+export interface CanvasEvent {
+  seq: string;
+  conversationId: string; // 后端信封字段名沿用；此处即 sessionId
+  type: CanvasEventType;
+  payload: unknown;
+  ts: number;
+}
+
+let canvasSocket: Socket | null = null;
+
+function getCanvasSocket(): Socket {
+  if (!canvasSocket) {
+    const isAbsolute = /^https?:\/\//.test(API_BASE);
+    canvasSocket = isAbsolute
+      ? io(`${API_BASE}/canvas`, { transports: ["websocket"] })
+      : io("/canvas", {
+          path: `${API_BASE}/socket.io`,
+          transports: ["websocket", "polling"],
+          extraHeaders: { "ngrok-skip-browser-warning": "1" },
+        });
+  }
+  return canvasSocket;
+}
+
+/** 订阅某画布会话的实时事件（含 canvas_patch / token_usage），返回取消订阅函数。 */
+export function subscribeCanvas(
+  sessionId: string,
+  onEvent: (e: CanvasEvent) => void,
+  onReconnect?: () => void,
+): () => void {
+  const s = getCanvasSocket();
+  const handler = (e: CanvasEvent) => {
+    if (e.conversationId === sessionId) onEvent(e);
+  };
+  let seenConnect = s.connected;
+  const onConnect = () => {
+    s.emit("canvas:subscribe", { sessionId });
+    if (seenConnect) onReconnect?.();
+    seenConnect = true;
+  };
+  s.on("canvas:event", handler);
+  s.on("connect", onConnect);
+  if (s.connected) s.emit("canvas:subscribe", { sessionId });
+  return () => {
+    s.off("canvas:event", handler);
+    s.off("connect", onConnect);
+  };
+}
+
+/** ask_user 回答回传（decisions：[{ type:'respond', message }]）。 */
+export function respondCanvasControl(sessionId: string, decisions: unknown[]) {
+  getCanvasSocket().emit("canvas:control:response", { sessionId, decisions });
+}
