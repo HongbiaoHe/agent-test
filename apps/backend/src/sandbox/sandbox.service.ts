@@ -7,6 +7,8 @@ import {
   listWorkspaceFiles,
   pickUserSandbox,
   readFilePreview,
+  startUserDesktop,
+  stopUserDesktop,
 } from '../agent/sandbox';
 import { ErrorCodes } from '../common/errors/error-code';
 import { BusinessException } from '../common/errors/business.exception';
@@ -109,6 +111,26 @@ export class SandboxStatusService {
       );
     }
     return readFilePreview(sb, filePath);
+  }
+
+  /**
+   * 启动图形桌面并返回 noVNC 地址（POST /sandbox/desktop）。
+   * 沙箱不存在或未运行 → SANDBOX_NOT_RUNNING（前端按钮已按 state 禁用，双保险）。
+   */
+  async startDesktop(userId: string): Promise<{ url: string }> {
+    const url = await startUserDesktop(userId);
+    if (!url) {
+      throw new BusinessException(
+        ErrorCodes.SANDBOX_NOT_RUNNING,
+        HttpStatus.CONFLICT,
+      );
+    }
+    return { url };
+  }
+
+  /** 停止图形桌面（DELETE /sandbox/desktop，Dialog 关闭时收尾语义，永不抛错）。 */
+  async stopDesktop(userId: string): Promise<void> {
+    await stopUserDesktop(userId);
   }
 
   /**

@@ -436,6 +436,64 @@ function fileDataMime(data: FileData): string {
   return 'mimeType' in data ? data.mimeType : 'application/octet-stream';
 }
 
+/** noVNC web 客户端端口（computerUse.start 拉起的 novnc 进程监听 6080） */
+const DESKTOP_PORT = 6080;
+/** 签名预览 URL 有效期（秒）：单次 Dialog 会话足够，重开重签 */
+const DESKTOP_URL_TTL_S = 3600;
+
+/**
+ * 启动用户沙箱的图形桌面并返回 noVNC 访问地址。
+ *
+ * GuardedSandbox 不暴露 computerUse/getSignedPreviewUrl，须走 SDK 原生对象
+ * （client.get(id)）。沙箱不存在或未运行返回 null（是否报错由调用方定语义，
+ * 不在这里唤醒停机沙箱——桌面只对运行中的沙箱有意义）。
+ * computerUse.start() 幂等：已 active 时秒回（实测拉起 Xvfb/XFCE/x11vnc/noVNC 约 3-5s）。
+ *
+ * ⚠️ stop→start 循环自愈（2026-07-25 实测 Daytona 缺陷）：computerUse.stop() 后再
+ * start() 会报 `failed to start: [novnc]`——start 按序拉起四进程，卡在 novnc（supervisor
+ * 状态残留），此时其余进程其实已在运行。恢复手段是对未运行进程逐个 restartProcess()
+ * （实测一次即全绿）。故 start 失败不直接抛：先探测补救，补救仍失败才抛原错误。
+ */
+export async function startUserDesktop(userId: string): Promise<string | null> {
+  if (!process.env.DAYTONA_API_KEY) return null;
+  const existing = await pickUserSandbox(userId);
+  if (!existing || existing.state !== 'started') return null;
+
+  const sb = await new Daytona().get(existing.id);
+  try {
+    await sb.computerUse.start();
+  } catch (startErr) {
+    // 自愈路径：把没跑起来的桌面进程逐个 restart；任何一步失败都抛回 start 的原错误
+    // （比 restart 的错误更能说明根因），由前端「重试」按钮兜底。
+    try {
+      for (const name of ['xvfb', 'xfce4', 'x11vnc', 'novnc']) {
+        const st = await sb.computerUse.getProcessStatus(name);
+        if (!st.running) await sb.computerUse.restartProcess(name);
+      }
+    } catch {
+      throw startErr;
+    }
+  }
+  const signed = await sb.getSignedPreviewUrl(DESKTOP_PORT, DESKTOP_URL_TTL_S);
+  return `${signed.url}/vnc.html?autoconnect=true&resize=scale`;
+}
+
+/**
+ * 停止用户沙箱的图形桌面（Dialog 关闭时调用）。
+ * 收尾语义：沙箱不存在/已停/stop 失败一律静默——桌面进程随沙箱 auto-stop 一并回收。
+ */
+export async function stopUserDesktop(userId: string): Promise<void> {
+  if (!process.env.DAYTONA_API_KEY) return;
+  try {
+    const existing = await pickUserSandbox(userId);
+    if (!existing || existing.state !== 'started') return;
+    const sb = await new Daytona().get(existing.id);
+    await sb.computerUse.stop();
+  } catch {
+    // 收尾失败无害：桌面随沙箱闲置自动停机一并回收
+  }
+}
+
 /**
  * 只查不建（conversations 文件接口用），按 userId 查找。
  *

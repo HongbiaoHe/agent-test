@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, Server, Timer, X } from "lucide-react";
+import { Loader2, Monitor, Server, Timer, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -22,6 +22,7 @@ import {
 import { fetchSandboxStatus, type SandboxStatus } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
+import { DesktopDialog } from "./desktop-dialog";
 import { FilePreview } from "./file-preview";
 import { FileTree } from "./file-tree";
 
@@ -243,6 +244,8 @@ function SandboxDetail({
       ? new Date(data.updatedAt).getTime() + data.autoDeleteMinutes * 60_000
       : null;
   const now = useNow(panelOpen && deleteAt !== null);
+  // 图形桌面 Dialog（noVNC）：打开懒启动、关闭即停（见 DesktopDialog）
+  const [desktopOpen, setDesktopOpen] = useState(false);
 
   if (!data) {
     return <p className="px-4 py-6 text-sm text-muted-foreground">Loading…</p>;
@@ -282,6 +285,21 @@ function SandboxDetail({
         {data.autoDeleteMinutes != null && data.autoDeleteMinutes >= 0 && (
           <InfoRow label="Auto-delete" value={`${data.autoDeleteMinutes} min after stop`} />
         )}
+      </div>
+
+      {/* 图形桌面入口：仅运行中可用（停机沙箱起不了 computerUse，也不应为此唤醒） */}
+      <div>
+        <Button
+          variant="outline"
+          size="sm"
+          className="w-full"
+          disabled={data.state !== "started"}
+          onClick={() => setDesktopOpen(true)}
+        >
+          <Monitor />
+          {data.state === "started" ? "Open desktop" : "Desktop (sandbox stopped)"}
+        </Button>
+        <DesktopDialog open={desktopOpen} onOpenChange={setDesktopOpen} />
       </div>
 
       <div className="space-y-2">

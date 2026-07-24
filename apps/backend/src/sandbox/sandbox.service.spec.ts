@@ -7,10 +7,14 @@ import { SandboxStatusService } from './sandbox.service';
 const mockPickUserSandbox = jest.fn();
 const mockFindUserSandbox = jest.fn();
 const mockListWorkspaceFiles = jest.fn();
+const mockStartUserDesktop = jest.fn();
+const mockStopUserDesktop = jest.fn();
 jest.mock('../agent/sandbox', () => ({
   pickUserSandbox: (...args: unknown[]) => mockPickUserSandbox(...args),
   findUserSandbox: (...args: unknown[]) => mockFindUserSandbox(...args),
   listWorkspaceFiles: (...args: unknown[]) => mockListWorkspaceFiles(...args),
+  startUserDesktop: (...args: unknown[]) => mockStartUserDesktop(...args),
+  stopUserDesktop: (...args: unknown[]) => mockStopUserDesktop(...args),
 }));
 
 describe('SandboxStatusService', () => {
@@ -111,5 +115,30 @@ describe('SandboxStatusService', () => {
   it('查询抛错 → 降级 exists:false（不向上抛）', async () => {
     mockPickUserSandbox.mockRejectedValue(new Error('network'));
     expect(await service.status('u1')).toEqual({ exists: false });
+  });
+
+  describe('desktop', () => {
+    it('startDesktop：helper 返回 url → 原样返回', async () => {
+      mockStartUserDesktop.mockResolvedValue(
+        'https://x/vnc.html?autoconnect=true&resize=scale',
+      );
+      expect(await service.startDesktop('u1')).toEqual({
+        url: 'https://x/vnc.html?autoconnect=true&resize=scale',
+      });
+      expect(mockStartUserDesktop).toHaveBeenCalledWith('u1');
+    });
+
+    it('startDesktop：helper 返回 null（无沙箱/未运行）→ SANDBOX_NOT_RUNNING', async () => {
+      mockStartUserDesktop.mockResolvedValue(null);
+      await expect(service.startDesktop('u1')).rejects.toMatchObject({
+        errCode: 40008,
+      });
+    });
+
+    it('stopDesktop：透传 helper 且不抛错', async () => {
+      mockStopUserDesktop.mockResolvedValue(undefined);
+      await expect(service.stopDesktop('u1')).resolves.toBeUndefined();
+      expect(mockStopUserDesktop).toHaveBeenCalledWith('u1');
+    });
   });
 });

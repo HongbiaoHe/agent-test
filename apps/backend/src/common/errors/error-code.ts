@@ -71,6 +71,10 @@ export const ErrorCodes = {
     code: 40006,
     message: 'Session sandbox does not exist or has been reclaimed',
   },
+  SANDBOX_NOT_RUNNING: {
+    code: 40008,
+    message: 'Sandbox is not running; desktop unavailable',
+  },
   INVALID_PATH: {
     code: 40007,
     message:

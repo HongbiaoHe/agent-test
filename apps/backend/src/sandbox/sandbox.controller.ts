@@ -1,4 +1,11 @@
-import { Controller, Get, Query, UseGuards } from '@nestjs/common';
+import {
+  Controller,
+  Delete,
+  Get,
+  Post,
+  Query,
+  UseGuards,
+} from '@nestjs/common';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { type AuthUser, JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { SandboxStatusService } from './sandbox.service';
@@ -25,5 +32,17 @@ export class SandboxController {
   @Get('file')
   readFile(@CurrentUser() user: AuthUser, @Query('path') path: string) {
     return this.sandbox.readFile(user.userId, path);
+  }
+
+  /** 启动图形桌面（幂等），返回 noVNC iframe 地址——桌面 Dialog 打开时调用。 */
+  @Post('desktop')
+  startDesktop(@CurrentUser() user: AuthUser) {
+    return this.sandbox.startDesktop(user.userId);
+  }
+
+  /** 停止图形桌面（收尾语义，静默容错）——桌面 Dialog 关闭时调用。 */
+  @Delete('desktop')
+  stopDesktop(@CurrentUser() user: AuthUser) {
+    return this.sandbox.stopDesktop(user.userId);
   }
 }

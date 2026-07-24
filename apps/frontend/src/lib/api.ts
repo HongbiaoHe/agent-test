@@ -129,6 +129,16 @@ export function fetchSandboxStatus(includeFiles = false): Promise<SandboxStatus>
   return request(`/sandbox/status${includeFiles ? "?files=1" : ""}`);
 }
 
+/** POST /sandbox/desktop：启动图形桌面（幂等），返回 noVNC iframe 地址。 */
+export function startSandboxDesktop(): Promise<{ url: string }> {
+  return request<{ url: string }>("/sandbox/desktop", { method: "POST" });
+}
+
+/** DELETE /sandbox/desktop：停止图形桌面（Dialog 关闭时 fire-and-forget）。 */
+export function stopSandboxDesktop(): Promise<void> {
+  return request<void>("/sandbox/desktop", { method: "DELETE" });
+}
+
 /** 工作区目录树的一层子项（GET /sandbox/dir，按目录懒加载）。 */
 export interface SandboxDirEntry {
   name: string;
