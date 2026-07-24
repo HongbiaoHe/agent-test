@@ -3,6 +3,7 @@ import { createDeepAgent, StateBackend } from 'deepagents';
 import { createMiddleware } from 'langchain';
 import { z } from 'zod';
 import { injectActivePlan, injectSkillReadPolicy } from './plan-injection';
+import { askUserTool } from './tools/ask-user.tool';
 import { getWeatherTool } from './tools/get-weather.tool';
 import { sendEmailTool } from './tools/send-email.tool';
 
@@ -207,6 +208,7 @@ export async function buildAgent(
     tools: [
       getWeatherTool,
       sendEmailTool,
+      askUserTool,
       ...((opts.extraTools ?? []) as never[]),
     ],
     backend,
@@ -214,7 +216,13 @@ export async function buildAgent(
     contextSchema,
     // 顺序即 recency：数组靠后 = 更内层 = systemMessage.concat 更晚 = 离模型更近。
     middleware,
-    interruptOn: { send_email: true },
+    // ask_user 只允许两种决策：approve=采纳建议答案（原参执行）；edit=前端把用户答案
+    // 写进 args.answers 后执行（本版 langchain HITL 无 respond，用 edit 承载用户答案）。
+    // 不提供 reject——对「提问」语义无意义（设计 §已确认的需求决策）。
+    interruptOn: {
+      send_email: true,
+      ask_user: { allowedDecisions: ['approve', 'edit'] },
+    },
     checkpointer: opts.checkpointer as never,
   });
 }

@@ -21,9 +21,13 @@ interface JobData {
   goal?: string;
   kind?: 'run' | 'resume' | 'timeout';
   decisions?: unknown[];
+  /** timeout job 专用：中断的工具名，超时行为按此分叉（ask_user 自动采纳建议 vs 默认拒绝） */
+  toolName?: string;
 }
 
 const TIMEOUT_MS = Number(process.env.APPROVAL_TIMEOUT_MS ?? 120000);
+/** ask_user 的服务端兜底超时：前端 60s 倒计时是主路径，这里只兜「页面已关」，须给足思考时间 */
+const ASK_USER_TIMEOUT_MS = Number(process.env.ASK_USER_TIMEOUT_MS ?? 600000);
 
 const ROLE_BY_TYPE: Record<string, string> = {
   message: 'assistant',
@@ -55,7 +59,7 @@ export class AgentProcessor extends WorkerHost {
     const { conversationId, kind, decisions } = job.data;
 
     if (kind === 'timeout') {
-      await this.handleTimeout(conversationId);
+      await this.handleTimeout(conversationId, job.data.toolName);
       return;
     }
 
@@ -251,10 +255,20 @@ export class AgentProcessor extends WorkerHost {
         const evt: RawEvent = { type: 'control_request', payload: value };
         await this.stream.publish(conversationId, evt);
         await this.persist(conversationId, evt, seq++);
+        // 超时行为/时长按中断的工具分叉：ask_user 用长兜底（前端 60s 倒计时是主路径），
+        // 其余（send_email 等审批）维持短超时自动拒绝
+        const interruptToolName = (
+          value as { actionRequests?: { name?: string }[] } | undefined
+        )?.actionRequests?.[0]?.name;
         await this.queue.add(
           'timeout',
-          { conversationId, kind: 'timeout' },
-          { delay: TIMEOUT_MS },
+          { conversationId, kind: 'timeout', toolName: interruptToolName },
+          {
+            delay:
+              interruptToolName === 'ask_user'
+                ? ASK_USER_TIMEOUT_MS
+                : TIMEOUT_MS,
+          },
         );
         return; // job 结束，释放 worker slot
       }
@@ -480,30 +494,46 @@ export class AgentProcessor extends WorkerHost {
     );
   }
 
-  /** 超时兜底：CAS 抢占成功则按默认 reject 续跑（用户已决策则 CAS 失败、忽略）。 */
-  private async handleTimeout(conversationId: string): Promise<void> {
+  /**
+   * 超时兜底：CAS 抢占成功后按工具分叉续跑（用户已决策则 CAS 失败、忽略）。
+   * - ask_user → approve：tool 执行返回建议答案（auto:true），即「自动采纳建议」。
+   * - 其余（send_email 等审批、旧 job 无 toolName）→ reject，维持原行为。
+   */
+  private async handleTimeout(
+    conversationId: string,
+    toolName?: string,
+  ): Promise<void> {
     const cas = await this.prisma.conversation.updateMany({
       where: { id: conversationId, status: 'waiting_approval' },
       data: { status: 'running' },
     });
     if (cas.count === 0) return; // 用户已决策，无需超时处理
 
-    this.logger.warn(`conversation=${conversationId} 审批超时，自动拒绝`);
+    const isAskUser = toolName === 'ask_user';
+    this.logger.warn(
+      `conversation=${conversationId} ${isAskUser ? '等待回答超时，自动采纳建议答案' : '审批超时，自动拒绝'}`,
+    );
     await this.prisma.approval.create({
       data: {
         conversationId,
         decision: 'timeout',
-        payload: { reason: 'approval_timeout' },
+        payload: {
+          reason: isAskUser ? 'ask_user_timeout' : 'approval_timeout',
+        },
       },
     });
     await this.stream.publish(conversationId, {
       type: 'message',
-      payload: { text: '⏱ 审批超时，已自动拒绝该操作。' },
+      payload: {
+        text: isAskUser
+          ? '⏱ 等待回答超时，已自动采用建议答案。'
+          : '⏱ 审批超时，已自动拒绝该操作。',
+      },
     });
     await this.queue.add('resume', {
       conversationId,
       kind: 'resume',
-      decisions: [{ type: 'reject' }],
+      decisions: [{ type: isAskUser ? 'approve' : 'reject' }],
     });
   }
 

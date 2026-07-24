@@ -20,6 +20,7 @@ import { type SkillKind, listCommands } from "@/lib/api";
 
 import type { Approval, ThreadItem } from "../_lib/thread";
 import { ApprovalPanel } from "./approval-panel";
+import { isAskUserApproval, QuestionPanel } from "./question-panel";
 import { ChatMessage } from "./chat-message";
 import { MediaCard } from "./media-card";
 import { ModelSwitcher } from "./model-switcher";
@@ -285,8 +286,14 @@ export function ChatThread({
           {/* 任务计划：固定在输入框上方，可折叠/展开 */}
           {plan && <TaskPlanPanel todos={plan.todos} />}
 
-          {/* 审批面板：与任务计划同区域，固定在输入框上方 */}
-          {approval && <ApprovalPanel approval={approval} onSubmit={onDecide} />}
+          {/* 审批/提问面板：与任务计划同区域，固定在输入框上方。
+              ask_user（单一调用且参数合法）走提问面板，其余走审批面板兜底 */}
+          {approval &&
+            (isAskUserApproval(approval) ? (
+              <QuestionPanel approval={approval} onSubmit={onDecide} />
+            ) : (
+              <ApprovalPanel approval={approval} onSubmit={onDecide} />
+            ))}
 
           {/* 命令补全面板（输入 / 时浮在输入框上方，按分类 Built-in/GitHub 分组）*/}
           {showCmdMenu && (

@@ -1142,3 +1142,92 @@ describe('AgentProcessor 主动停止', () => {
     expect(fakeAgent.stream).not.toHaveBeenCalled();
   });
 });
+
+describe('AgentProcessor 超时按 toolName 分叉', () => {
+  const makeDeps = () => {
+    const prisma = {
+      conversation: {
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+      },
+      approval: {
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+    const streamSvc = {
+      publish: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StreamService;
+    const skills = {} as unknown as SkillsService;
+    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+    return { prisma, streamSvc, skills, queue };
+  };
+
+  const makeProc = (deps: ReturnType<typeof makeDeps>) =>
+    new AgentProcessor(
+      deps.prisma,
+      deps.streamSvc,
+      deps.skills,
+      {},
+      deps.queue,
+      makeMediaService(),
+      new AbortRegistry(),
+    );
+
+  const timeoutJob = (toolName?: string) =>
+    ({
+      data: { conversationId: 'c-t', kind: 'timeout', toolName },
+    }) as unknown as Parameters<AgentProcessor['process']>[0];
+
+  it('ask_user 超时 → 自动 approve（采纳建议答案）', async () => {
+    const deps = makeDeps();
+    await makeProc(deps).process(timeoutJob('ask_user'));
+
+    expect(deps.queue.add).toHaveBeenCalledWith('resume', {
+      conversationId: 'c-t',
+      kind: 'resume',
+      decisions: [{ type: 'approve' }],
+    });
+    expect(deps.streamSvc.publish).toHaveBeenCalledWith('c-t', {
+      type: 'message',
+      payload: {
+        text: expect.stringContaining('已自动采用建议答案') as string,
+      },
+    });
+  });
+
+  it('send_email（非 ask_user）超时 → 保持自动拒绝', async () => {
+    const deps = makeDeps();
+    await makeProc(deps).process(timeoutJob('send_email'));
+
+    expect(deps.queue.add).toHaveBeenCalledWith('resume', {
+      conversationId: 'c-t',
+      kind: 'resume',
+      decisions: [{ type: 'reject' }],
+    });
+    expect(deps.streamSvc.publish).toHaveBeenCalledWith('c-t', {
+      type: 'message',
+      payload: { text: expect.stringContaining('已自动拒绝') as string },
+    });
+  });
+
+  it('旧 timeout job 无 toolName → 按拒绝兜底（向后兼容）', async () => {
+    const deps = makeDeps();
+    await makeProc(deps).process(timeoutJob(undefined));
+
+    expect(deps.queue.add).toHaveBeenCalledWith('resume', {
+      conversationId: 'c-t',
+      kind: 'resume',
+      decisions: [{ type: 'reject' }],
+    });
+  });
+
+  it('CAS 失败（用户已决策）→ 不做任何超时处理', async () => {
+    const deps = makeDeps();
+    (deps.prisma.conversation.updateMany as jest.Mock).mockResolvedValue({
+      count: 0,
+    });
+    await makeProc(deps).process(timeoutJob('ask_user'));
+
+    expect(deps.queue.add).not.toHaveBeenCalled();
+    expect(deps.streamSvc.publish).not.toHaveBeenCalled();
+  });
+});
