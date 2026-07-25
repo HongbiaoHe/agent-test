@@ -25,6 +25,7 @@ import type { ChatItem, ChatState } from "../_lib/chat";
 import { DEFAULT_CANVAS_MODEL } from "../_lib/models";
 import { Markdown } from "./markdown";
 import { CanvasModelSwitcher } from "./model-switcher";
+import { TokenUsageDialog } from "./token-usage-dialog";
 
 const TOOL_LABEL: Record<string, string> = {
   add_node: "Add node",
@@ -379,6 +380,7 @@ function AskPanel({
 }
 
 export function CanvasChat({
+  sessionId,
   chat,
   tokens,
   busy,
@@ -390,6 +392,8 @@ export function CanvasChat({
   onClear,
   clearing,
 }: {
+  /** 当前会话 id（null=未选中画布）；用于拉 token 用量详情 */
+  sessionId: string | null;
   chat: ChatState;
   tokens: number;
   busy: boolean;
@@ -405,6 +409,8 @@ export function CanvasChat({
   clearing: boolean;
 }) {
   const [text, setText] = useState("");
+  // token 消耗详情弹窗（点顶栏 token 徽标打开）
+  const [usageOpen, setUsageOpen] = useState(false);
   const [model, setModel] = useState(sessionModel ?? DEFAULT_CANVAS_MODEL);
   // 快照异步加载 / 切换会话后，把切换器同步到该会话实际模型（render 期调整 state，
   // 规避 Next16 的 effect-setState 限制）。用户本地改选后 sessionModel 不变，不会被覆盖。
@@ -438,7 +444,18 @@ export function CanvasChat({
       <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2.5">
         <span className="text-sm font-medium">Canvas Agent</span>
         <div className="flex items-center gap-1.5">
-          <Badge variant="secondary" title="Total tokens for this canvas (clearing history keeps it)">
+          {/* 点开看详情：按模型 / 每轮 / 每次调用 + 缓存命中率。无会话时降级为静态徽标 */}
+          <Badge
+            variant="secondary"
+            render={sessionId ? <button type="button" /> : undefined}
+            className={sessionId ? "cursor-pointer hover:bg-accent" : undefined}
+            title={
+              sessionId
+                ? "Total tokens for this canvas (click for the breakdown)"
+                : "Total tokens for this canvas (clearing history keeps it)"
+            }
+            onClick={sessionId ? () => setUsageOpen(true) : undefined}
+          >
             {tokens.toLocaleString()} tokens
           </Badge>
           {/* 清空会话记录 + agent 上下文（节点与 token 统计保留）；运行期禁用 */}
@@ -536,6 +553,14 @@ export function CanvasChat({
           </div>
         </div>
       </div>
+
+      {sessionId && (
+        <TokenUsageDialog
+          sessionId={sessionId}
+          open={usageOpen}
+          onOpenChange={setUsageOpen}
+        />
+      )}
     </div>
   );
 }

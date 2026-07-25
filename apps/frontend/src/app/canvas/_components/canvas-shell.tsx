@@ -57,6 +57,7 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
   );
   const chat = (
     <CanvasChat
+      sessionId={sessionId}
       chat={c.chat}
       tokens={c.tokens}
       busy={c.busy}

@@ -10,9 +10,13 @@ import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CANVAS_ABORTS } from './canvas.abort';
-import { buildCanvasAgent } from './canvas.agent.factory';
+import {
+  buildCanvasAgent,
+  resolveCanvasModelName,
+} from './canvas.agent.factory';
 import { CanvasService } from './canvas.service';
 import { createCanvasTools } from './canvas.tools';
+import { type CallUsage, extractUsages } from './token-usage';
 
 interface JobData {
   sessionId: string;
@@ -80,8 +84,9 @@ export class CanvasProcessor extends WorkerHost {
       const session = await this.prisma.canvasSession.findUniqueOrThrow({
         where: { id: sessionId },
       });
-      const modelName =
-        session.model ?? process.env.GOOGLE_GENAI_MODEL ?? 'gemini-3.5-flash';
+      // token 明细里模型名的回落值：必须与 factory 真正装配的模型同一口径
+      // （旧代码回落到 GOOGLE_GENAI_MODEL，会把画布默认模型错标成主 agent 的模型）
+      const modelName = resolveCanvasModelName(session.model);
 
       // Run 会计：run → 新建；resume → 复用最近未决 run
       runId = await this.ensureRun(
@@ -167,16 +172,9 @@ export class CanvasProcessor extends WorkerHost {
 
         // token 落库：updates 模式的完整 AIMessage 带 usage_metadata（按 message id 去重）
         if (mode === 'updates') {
-          const usage = extractUsage(data, seenUsageIds);
-          if (usage) {
+          for (const usage of extractUsages(data, seenUsageIds, modelName)) {
             cumulativeTotal += usage.total;
-            await this.recordUsage(
-              sessionId,
-              runId,
-              modelName,
-              usage,
-              cumulativeTotal,
-            );
+            await this.recordUsage(sessionId, runId, usage, cumulativeTotal);
           }
         }
 
@@ -332,22 +330,23 @@ export class CanvasProcessor extends WorkerHost {
     });
   }
 
-  /** 记一次 token 用量：明细行 + Run 累加 + 推流。 */
+  /** 记一次 token 用量（含缓存明细）：明细行 + Run 累加 + 推流。 */
   private async recordUsage(
     sessionId: string,
     runId: string,
-    model: string,
-    usage: { input: number; output: number; total: number },
+    usage: CallUsage,
     cumulativeTotal: number,
   ) {
     await this.prisma.canvasTokenUsage.create({
       data: {
         sessionId,
         runId,
-        model,
+        model: usage.model,
         inputTokens: usage.input,
         outputTokens: usage.output,
         totalTokens: usage.total,
+        cacheReadTokens: usage.cacheRead,
+        cacheCreationTokens: usage.cacheCreation,
       },
     });
     await this.prisma.canvasRun.update({
@@ -356,16 +355,20 @@ export class CanvasProcessor extends WorkerHost {
         promptTokens: { increment: usage.input },
         completionTokens: { increment: usage.output },
         totalTokens: { increment: usage.total },
+        cacheReadTokens: { increment: usage.cacheRead },
+        cacheCreationTokens: { increment: usage.cacheCreation },
       },
     });
     await this.stream.publish(sessionId, {
       type: 'token_usage',
       payload: {
         runId,
-        model,
+        model: usage.model,
         input: usage.input,
         output: usage.output,
         total: usage.total,
+        cacheRead: usage.cacheRead,
+        cacheCreation: usage.cacheCreation,
         cumulativeTotal,
       },
     });
@@ -485,35 +488,6 @@ export class CanvasProcessor extends WorkerHost {
       },
     });
   }
-}
-
-/**
- * 从 updates 模式的节点更新里抽取带 usage_metadata 的 AIMessage token 用量。
- * 按 message id 去重（同一 AIMessage 可能在多个节点出现）。抽不到返回 null（不阻断运行）。
- */
-function extractUsage(
-  data: unknown,
-  seen: Set<string>,
-): { input: number; output: number; total: number } | null {
-  if (!data || typeof data !== 'object') return null;
-  for (const value of Object.values(data as Record<string, unknown>)) {
-    if (!value || typeof value !== 'object') continue;
-    const msgs = (value as { messages?: unknown[] }).messages;
-    if (!Array.isArray(msgs)) continue;
-    for (const m of msgs) {
-      if (!isBaseMessage(m) || !isAIMessage(m)) continue;
-      const u = m.usage_metadata;
-      if (!u) continue;
-      const id = m.id ?? '';
-      if (id && seen.has(id)) continue;
-      if (id) seen.add(id);
-      const input = u.input_tokens ?? 0;
-      const output = u.output_tokens ?? 0;
-      const total = u.total_tokens ?? input + output;
-      if (input || output || total) return { input, output, total };
-    }
-  }
-  return null;
 }
 
 /**

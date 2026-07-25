@@ -145,6 +145,10 @@ export function useCanvas(sessionId: string | null) {
         if (e.type === "token_usage") {
           const p = e.payload as { cumulativeTotal?: number };
           if (typeof p.cumulativeTotal === "number") setTokens(p.cumulativeTotal);
+          // 详情报表失效：弹窗开着（有 observer）才会真去重拉，关着时零成本
+          void qc.invalidateQueries({
+            queryKey: ["canvas-token-usage", sessionId],
+          });
           return;
         }
         if (e.type === "messages_cleared") {

@@ -66,8 +66,12 @@ const planContinuationMiddleware = createMiddleware({
  * 不复用现有 agent 的 GOOGLE_GENAI_MODEL —— 换画布模型不波及主 agent。
  * 默认 gemini-3.1-pro-preview（3.1 里能做对话的强模型；3.1-flash 不存在=404、3.1-flash-lite 执行力弱）。
  */
+export function resolveCanvasModelName(model?: string | null): string {
+  return model ?? process.env.CANVAS_MODEL ?? 'gemini-3.1-pro-preview';
+}
+
 function resolveChatModel(model?: string) {
-  const name = model ?? process.env.CANVAS_MODEL ?? 'gemini-3.1-pro-preview';
+  const name = resolveCanvasModelName(model);
   if (name.includes(':')) return initChatModel(name);
   return initChatModel(name, { modelProvider: 'google-genai' });
 }

@@ -147,6 +147,65 @@ export interface CanvasSnapshot {
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
+// token 用量报表（GET /canvas/:id/token-usage）
+// 口径：cacheRead / cacheCreation 都是 input 的**子集**（provider 的 input_tokens 已含缓存部分），
+// 因此缓存命中率 = cacheRead / input，不能拿 total 当分母。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/** 一组调用的合计。 */
+export interface CanvasTokenTotals {
+  /** 模型调用次数 */
+  calls: number;
+  input: number;
+  output: number;
+  total: number;
+  /** 命中缓存被读取的输入 token（⊆ input） */
+  cacheRead: number;
+  /** 写入缓存的输入 token（⊆ input） */
+  cacheCreation: number;
+}
+
+/** 按模型分组的合计。 */
+export interface CanvasTokenModelUsage extends CanvasTokenTotals {
+  model: string;
+}
+
+/** 一次模型调用的明细。 */
+export interface CanvasTokenCall {
+  id: string;
+  model: string;
+  input: number;
+  output: number;
+  total: number;
+  cacheRead: number;
+  cacheCreation: number;
+  at: string;
+}
+
+/** 一轮运行（CanvasRun）的用量：合计 + 按模型 + 每次调用明细。 */
+export interface CanvasTokenRun {
+  runId: string;
+  /** 本轮请求的模型（会话当轮设置）；真实调用模型见 byModel / calls */
+  requestedModel: string | null;
+  status: string;
+  /** 触发本轮的用户目标文本（可能为空，如超时自动续跑） */
+  goal: string;
+  startedAt: string;
+  endedAt: string | null;
+  totals: CanvasTokenTotals;
+  byModel: CanvasTokenModelUsage[];
+  calls: CanvasTokenCall[];
+}
+
+/** 会话级 token 报表。 */
+export interface CanvasTokenReport {
+  totals: CanvasTokenTotals;
+  byModel: CanvasTokenModelUsage[];
+  /** 按轮倒序（最新一轮在前） */
+  runs: CanvasTokenRun[];
+}
+
+// ─────────────────────────────────────────────────────────────────────────────
 // 操作（op）—— applyOp 的输入。结构变更收敛到这几种，位置 move 走独立 LWW 路径不在此列。
 // ─────────────────────────────────────────────────────────────────────────────
 

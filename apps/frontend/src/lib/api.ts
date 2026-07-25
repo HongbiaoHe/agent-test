@@ -351,6 +351,60 @@ export function getCanvasMessages(id: string): Promise<CanvasMessage[]> {
 }
 
 /**
+ * token 用量报表（镜像后端 canvas.types）。
+ * 口径：cacheRead / cacheCreation 都是 input 的子集（provider 的 input_tokens 已含缓存部分），
+ * 所以缓存命中率 = cacheRead / input。
+ */
+export interface CanvasTokenTotals {
+  /** 模型调用次数 */
+  calls: number;
+  input: number;
+  output: number;
+  total: number;
+  cacheRead: number;
+  cacheCreation: number;
+}
+
+export interface CanvasTokenModelUsage extends CanvasTokenTotals {
+  model: string;
+}
+
+export interface CanvasTokenCall {
+  id: string;
+  model: string;
+  input: number;
+  output: number;
+  total: number;
+  cacheRead: number;
+  cacheCreation: number;
+  at: string;
+}
+
+export interface CanvasTokenRun {
+  runId: string;
+  /** 本轮请求的模型；真实调用模型见 byModel / calls */
+  requestedModel: string | null;
+  status: string;
+  goal: string;
+  startedAt: string;
+  endedAt: string | null;
+  totals: CanvasTokenTotals;
+  byModel: CanvasTokenModelUsage[];
+  calls: CanvasTokenCall[];
+}
+
+export interface CanvasTokenReport {
+  totals: CanvasTokenTotals;
+  byModel: CanvasTokenModelUsage[];
+  /** 按轮倒序（最新一轮在前） */
+  runs: CanvasTokenRun[];
+}
+
+export function getCanvasTokenUsage(id: string): Promise<CanvasTokenReport> {
+  return request(`/canvas/${id}/token-usage`);
+}
+
+/**
  * 清空会话记录与 agent 上下文（DELETE /canvas/:id/messages）。
  * 节点/连线与 token 统计保留；运行期后端会拒绝（CANVAS_BUSY）。
  */

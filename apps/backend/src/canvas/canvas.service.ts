@@ -20,9 +20,15 @@ import {
   type CanvasOpInput,
   type CanvasPatch,
   type CanvasSnapshot,
+  type CanvasTokenCall,
+  type CanvasTokenModelUsage,
+  type CanvasTokenReport,
+  type CanvasTokenRun,
+  type CanvasTokenTotals,
   canConnectNodeTypes,
   isCanvasNodeType,
 } from './canvas.types';
+import { groupByModel, sumCalls } from './token-usage';
 
 /**
  * checkpointer 的最小可用面（清空会话只需删 thread）。
@@ -38,6 +44,15 @@ const BUSY_STATUSES = ['queued', 'running', 'waiting_approval'];
 
 /** 内部哨兵：revision CAS 落空（并发写），触发重试。 */
 class RevisionRaceError extends Error {}
+
+/** 取 CanvasRun.trigger 里的 goal 文本（形状为 { goal: string }，见 processor.ensureRun）。 */
+function readTriggerGoal(trigger: Prisma.JsonValue): string {
+  if (!trigger || typeof trigger !== 'object' || Array.isArray(trigger)) {
+    return '';
+  }
+  const goal = trigger.goal;
+  return typeof goal === 'string' ? goal : '';
+}
 
 /**
  * 派生节点的对外输出（不落表，见 CanvasNodeDto.outputs）。
@@ -322,6 +337,71 @@ export class CanvasService {
       where: { sessionId: id },
       orderBy: { seq: 'asc' },
     });
+  }
+
+  /**
+   * token 用量报表（GET /canvas/:id/token-usage）：会话总计 + 按模型 + 按轮（含每次调用明细）。
+   *
+   * 数据源是 CanvasTokenUsage 明细行（每次模型调用一行），run 元信息（状态/目标/起止）来自
+   * CanvasRun。三层合计都由同一批明细行现算，口径必然自洽（不依赖 run 上的累加列）。
+   * 缓存命中率交给前端算（cacheRead / input），后端只给原始量。
+   */
+  async tokenReport(id: string, tenantId: string): Promise<CanvasTokenReport> {
+    await this.assertOwner(id, tenantId);
+    const [runs, rows] = await Promise.all([
+      this.prisma.canvasRun.findMany({
+        where: { sessionId: id },
+        orderBy: { startedAt: 'desc' },
+        select: {
+          id: true,
+          model: true,
+          status: true,
+          trigger: true,
+          startedAt: true,
+          endedAt: true,
+        },
+      }),
+      this.prisma.canvasTokenUsage.findMany({
+        where: { sessionId: id },
+        orderBy: { createdAt: 'asc' },
+      }),
+    ]);
+
+    const calls: CanvasTokenCall[] = rows.map((r) => ({
+      id: r.id,
+      model: r.model,
+      input: r.inputTokens,
+      output: r.outputTokens,
+      total: r.totalTokens,
+      cacheRead: r.cacheReadTokens,
+      cacheCreation: r.cacheCreationTokens,
+      at: r.createdAt.toISOString(),
+    }));
+    const callsByRun = new Map<string, CanvasTokenCall[]>();
+    rows.forEach((r, i) => {
+      const list = callsByRun.get(r.runId);
+      if (list) list.push(calls[i]);
+      else callsByRun.set(r.runId, [calls[i]]);
+    });
+
+    return {
+      totals: sumCalls(calls),
+      byModel: groupByModel(calls),
+      runs: runs.map((run): CanvasTokenRun => {
+        const runCalls = callsByRun.get(run.id) ?? [];
+        return {
+          runId: run.id,
+          requestedModel: run.model,
+          status: run.status,
+          goal: readTriggerGoal(run.trigger),
+          startedAt: run.startedAt.toISOString(),
+          endedAt: run.endedAt?.toISOString() ?? null,
+          totals: sumCalls(runCalls),
+          byModel: groupByModel(runCalls),
+          calls: runCalls,
+        };
+      }),
+    };
   }
 
   /** 追加用户消息并续跑（多轮，同 thread_id）。仅空闲态允许，否则 CANVAS_BUSY。 */

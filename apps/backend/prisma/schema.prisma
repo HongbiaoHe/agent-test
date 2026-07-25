@@ -158,6 +158,10 @@ model CanvasRun {
   promptTokens     Int @default(0)
   completionTokens Int @default(0)
   totalTokens      Int @default(0)
+  // 输入 token 里命中提示缓存的部分（cacheRead ⊆ promptTokens）与写缓存的部分。
+  // 本次升级前的历史 run 无缓存数据，按 0 计（命中率会偏低）。
+  cacheReadTokens     Int @default(0)
+  cacheCreationTokens Int @default(0)
 
   startedAt DateTime  @default(now())
   endedAt   DateTime?
@@ -165,7 +169,10 @@ model CanvasRun {
   @@index([sessionId])
 }
 
-/** token 用量明细：每次模型调用一行（可审计、可按 run/session 聚合）。 */
+/**
+ * token 用量明细：每次模型调用一行（可审计、可按 run/session/模型聚合）。
+ * model 记录**该次调用的真实模型**（优先取响应里的模型名，取不到用本次运行请求的模型）。
+ */
 model CanvasTokenUsage {
   id           String   @id @default(cuid())
   sessionId    String
@@ -174,6 +181,9 @@ model CanvasTokenUsage {
   inputTokens  Int
   outputTokens Int
   totalTokens  Int
+  // 缓存明细（⊆ inputTokens）：命中读取 / 写入缓存。历史行为 0（升级前无此数据）。
+  cacheReadTokens     Int @default(0)
+  cacheCreationTokens Int @default(0)
   createdAt    DateTime @default(now())
 
   @@index([sessionId])

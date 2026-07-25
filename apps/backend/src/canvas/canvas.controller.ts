@@ -60,6 +60,12 @@ export class CanvasController {
     return this.canvas.findMessages(id, user.tenantId);
   }
 
+  /** token 用量报表：会话总计 + 按模型 + 按轮（含每次调用明细与缓存命中量）。 */
+  @Get(':id/token-usage')
+  tokenUsage(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.canvas.tokenReport(id, user.tenantId);
+  }
+
   /** 清空会话记录与 agent 上下文（保留节点/连线与 token 审计）。运行期拒绝。 */
   @Delete(':id/messages')
   clearMessages(@Param('id') id: string, @CurrentUser() user: AuthUser) {
