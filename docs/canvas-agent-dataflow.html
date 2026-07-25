@@ -1,0 +1,813 @@
+<title>Canvas Agent 逐操作数据流</title>
+<style>
+  :root {
+    --bg: oklch(0.988 0.002 75);
+    --fg: oklch(0.18 0.005 60);
+    --muted: oklch(0.45 0.008 65);
+    --card: oklch(1 0 0);
+    --card-2: oklch(0.972 0.003 75);
+    --border: oklch(0.9 0.004 70);
+    --accent: oklch(0.7 0.14 70);
+    --accent-ink: oklch(0.45 0.12 70);
+    --tone-text: oklch(0.7 0.14 70);
+    --tone-upload: oklch(0.66 0.11 210);
+    --tone-image: oklch(0.62 0.17 292);
+    --tone-video: oklch(0.63 0.19 12);
+    --tone-ok: oklch(0.58 0.13 150);
+    --code-bg: oklch(0.955 0.004 75);
+    --dot: oklch(0.86 0.006 70);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: oklch(0.17 0.004 60);
+      --fg: oklch(0.95 0.002 80);
+      --muted: oklch(0.68 0.006 70);
+      --card: oklch(0.21 0.005 60);
+      --card-2: oklch(0.235 0.005 60);
+      --border: oklch(0.3 0.006 60);
+      --accent: oklch(0.79 0.13 70);
+      --accent-ink: oklch(0.82 0.12 70);
+      --tone-text: oklch(0.79 0.13 70);
+      --tone-upload: oklch(0.74 0.1 210);
+      --tone-image: oklch(0.72 0.15 292);
+      --tone-video: oklch(0.73 0.17 12);
+      --tone-ok: oklch(0.72 0.12 150);
+      --code-bg: oklch(0.25 0.005 60);
+      --dot: oklch(0.28 0.005 60);
+    }
+  }
+  :root[data-theme="dark"] {
+    --bg: oklch(0.17 0.004 60);
+    --fg: oklch(0.95 0.002 80);
+    --muted: oklch(0.68 0.006 70);
+    --card: oklch(0.21 0.005 60);
+    --card-2: oklch(0.235 0.005 60);
+    --border: oklch(0.3 0.006 60);
+    --accent: oklch(0.79 0.13 70);
+    --accent-ink: oklch(0.82 0.12 70);
+    --tone-text: oklch(0.79 0.13 70);
+    --tone-upload: oklch(0.74 0.1 210);
+    --tone-image: oklch(0.72 0.15 292);
+    --tone-video: oklch(0.73 0.17 12);
+    --tone-ok: oklch(0.72 0.12 150);
+    --code-bg: oklch(0.25 0.005 60);
+    --dot: oklch(0.28 0.005 60);
+  }
+  :root[data-theme="light"] {
+    --bg: oklch(0.988 0.002 75);
+    --fg: oklch(0.18 0.005 60);
+    --muted: oklch(0.45 0.008 65);
+    --card: oklch(1 0 0);
+    --card-2: oklch(0.972 0.003 75);
+    --border: oklch(0.9 0.004 70);
+    --accent: oklch(0.7 0.14 70);
+    --accent-ink: oklch(0.45 0.12 70);
+    --tone-text: oklch(0.7 0.14 70);
+    --tone-upload: oklch(0.66 0.11 210);
+    --tone-image: oklch(0.62 0.17 292);
+    --tone-video: oklch(0.63 0.19 12);
+    --tone-ok: oklch(0.58 0.13 150);
+    --code-bg: oklch(0.955 0.004 75);
+    --dot: oklch(0.86 0.006 70);
+  }
+
+  body {
+    background: var(--bg);
+    color: var(--fg);
+    font-family: -apple-system, BlinkMacSystemFont, "PingFang SC", "Noto Sans SC", "Microsoft YaHei", sans-serif;
+    line-height: 1.75;
+    margin: 0;
+    font-size: 15px;
+    -webkit-text-size-adjust: 100%;
+  }
+  main { max-width: 1080px; margin: 0 auto; padding: 0 32px 96px; }
+
+  header.hero {
+    background-image: radial-gradient(var(--dot) 1.2px, transparent 1.2px);
+    background-size: 22px 22px;
+    border-bottom: 1px solid var(--border);
+    padding: 68px 32px 52px;
+  }
+  .hero-inner { max-width: 1080px; margin: 0 auto; }
+  .hero .eyebrow {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 12px; letter-spacing: 0.14em; text-transform: uppercase;
+    color: var(--accent-ink); margin: 0 0 14px;
+  }
+  .hero h1 {
+    font-size: clamp(30px, 5vw, 44px); font-weight: 800; letter-spacing: -0.02em;
+    margin: 0 0 14px; text-wrap: balance;
+  }
+  .hero p.lede { max-width: 64ch; color: var(--muted); margin: 0 0 26px; font-size: 16px; }
+  .chips { display: flex; flex-wrap: wrap; gap: 8px; }
+  .chip {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace; font-size: 12px;
+    padding: 4px 12px; border: 1px solid var(--border); border-radius: 999px;
+    background: var(--card); color: var(--muted);
+  }
+  .chip b { color: var(--fg); font-weight: 600; }
+
+  nav.toc {
+    display: flex; flex-wrap: wrap; gap: 6px 18px;
+    padding: 18px 0; margin: 0;
+    border-bottom: 1px solid var(--border);
+    font-size: 13px;
+  }
+  nav.toc a { color: var(--muted); text-decoration: none; }
+  nav.toc a:hover, nav.toc a:focus-visible { color: var(--accent-ink); }
+  nav.toc a b { font-family: ui-monospace, Menlo, monospace; color: var(--accent-ink); font-weight: 600; margin-right: 4px; }
+
+  section { margin-top: 60px; }
+  .sec-head { display: flex; align-items: baseline; gap: 14px; margin-bottom: 6px; }
+  .sec-num {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 13px; font-weight: 700; color: var(--accent-ink);
+    border: 1px solid var(--border); border-radius: 8px;
+    padding: 2px 9px; background: var(--card); flex: none;
+  }
+  h2 { font-size: 24px; font-weight: 750; letter-spacing: -0.01em; margin: 0; text-wrap: balance; }
+  h3 {
+    font-size: 15px; font-weight: 700; margin: 32px 0 10px;
+    display: flex; align-items: center; gap: 10px;
+  }
+  h3::after { content: ""; flex: 1; height: 1px; background: var(--border); }
+  .sec-lede { color: var(--muted); max-width: 74ch; margin: 8px 0 20px; }
+  section > p { color: var(--muted); max-width: 74ch; margin: 14px 0; }
+
+  code, .mono {
+    font-family: ui-monospace, "SF Mono", Menlo, Consolas, monospace;
+    font-size: 0.88em;
+  }
+  code { background: var(--code-bg); border-radius: 5px; padding: 1.5px 6px; }
+  .loc {
+    font-family: ui-monospace, "SF Mono", Menlo, monospace;
+    font-size: 11.5px; color: var(--accent-ink);
+    background: color-mix(in oklch, var(--accent) 12%, transparent);
+    border-radius: 5px; padding: 1px 7px; white-space: nowrap;
+  }
+
+  .diagram {
+    border: 1px solid var(--border); border-radius: 14px; background: var(--card);
+    padding: 20px; overflow-x: auto; margin: 16px 0;
+  }
+  .diagram figcaption {
+    font-size: 12.5px; color: var(--muted); margin-top: 10px;
+    padding-top: 10px; border-top: 1px dashed var(--border);
+  }
+  figure { margin: 16px 0; }
+
+  .tbl-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 14px; background: var(--card); margin: 16px 0; }
+  table { border-collapse: collapse; width: 100%; font-size: 13.5px; }
+  th {
+    text-align: left; font-size: 11.5px; letter-spacing: 0.08em; text-transform: uppercase;
+    color: var(--muted); font-weight: 600; padding: 12px 16px;
+    border-bottom: 1px solid var(--border); white-space: nowrap;
+  }
+  td { padding: 10px 16px; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tr:last-child td { border-bottom: none; }
+  td .mono { white-space: nowrap; }
+  .num { font-variant-numeric: tabular-nums; color: var(--muted); }
+
+  .grid { display: grid; gap: 14px; margin: 16px 0; }
+  .grid.c2 { grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
+  .grid.c3 { grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
+  .grid.c4 { grid-template-columns: repeat(auto-fit, minmax(215px, 1fr)); }
+  .card {
+    border: 1px solid var(--border); border-radius: 14px; background: var(--card);
+    padding: 18px 20px;
+  }
+  .card h4 { margin: 0 0 8px; font-size: 14.5px; font-weight: 700; display: flex; align-items: center; gap: 8px; }
+  .card p { margin: 0; font-size: 13.5px; color: var(--muted); }
+  .card p + p { margin-top: 8px; }
+  .dot-mark { width: 9px; height: 9px; border-radius: 3px; flex: none; }
+  .tone-text-mark { background: var(--tone-text); }
+  .tone-upload-mark { background: var(--tone-upload); }
+  .tone-image-mark { background: var(--tone-image); }
+  .tone-video-mark { background: var(--tone-video); }
+
+  .note {
+    border: 1px solid var(--border); border-left: 3px solid var(--accent);
+    border-radius: 0 12px 12px 0; background: var(--card-2);
+    padding: 14px 18px; margin: 16px 0; font-size: 13.5px; color: var(--muted);
+  }
+  .note.risk { border-left-color: var(--tone-video); }
+  .note b { color: var(--fg); font-weight: 650; }
+  .note p { margin: 0; }
+  .note p + p { margin-top: 8px; }
+
+  .badge {
+    display: inline-block; font-size: 11px; font-weight: 600; border-radius: 5px;
+    padding: 1px 7px; letter-spacing: 0.03em; white-space: nowrap;
+  }
+  .b-stream { background: color-mix(in oklch, var(--tone-upload) 18%, transparent); color: var(--tone-upload); }
+  .b-db { background: color-mix(in oklch, var(--tone-image) 18%, transparent); color: var(--tone-image); }
+  .b-both { background: color-mix(in oklch, var(--tone-text) 20%, transparent); color: var(--accent-ink); }
+  .b-ok { background: color-mix(in oklch, var(--tone-ok) 18%, transparent); color: var(--tone-ok); }
+  .b-risk { background: color-mix(in oklch, var(--tone-video) 16%, transparent); color: var(--tone-video); }
+
+  .method {
+    font-family: ui-monospace, Menlo, monospace; font-size: 11px; font-weight: 700;
+    border-radius: 5px; padding: 1px 7px; margin-right: 6px;
+  }
+  .m-get { background: color-mix(in oklch, var(--tone-upload) 16%, transparent); color: var(--tone-upload); }
+  .m-post { background: color-mix(in oklch, var(--tone-image) 16%, transparent); color: var(--tone-image); }
+  .m-patch { background: color-mix(in oklch, var(--tone-text) 20%, transparent); color: var(--accent-ink); }
+  .m-del { background: color-mix(in oklch, var(--tone-video) 16%, transparent); color: var(--tone-video); }
+  .m-ws { background: color-mix(in oklch, var(--tone-ok) 18%, transparent); color: var(--tone-ok); }
+
+  footer {
+    margin-top: 76px; padding-top: 20px; border-top: 1px solid var(--border);
+    font-size: 12.5px; color: var(--muted);
+  }
+  footer .mono { font-size: 11.5px; }
+  a:focus-visible, button:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 4px; }
+  @media (prefers-reduced-motion: reduce) { * { transition: none !important; animation: none !important; } }
+  @media (max-width: 640px) {
+    main { padding: 0 18px 72px; }
+    header.hero { padding: 48px 18px 36px; }
+  }
+</style>
+
+<header class="hero">
+  <div class="hero-inner">
+    <p class="eyebrow">Dataflow Deep-Dive · apps/backend/src/canvas + apps/frontend/src/app/canvas</p>
+    <h1>Canvas Agent 逐操作数据流</h1>
+    <p class="lede">这块画布上每一个动作——发一句话、agent 建一个节点、拖一条连线、点一次「确认生成」——各自要穿过哪些模块、写哪几张表、发哪些事件、最后怎么回到屏幕上。本页按<b>操作</b>而非按<b>分层</b>组织，每条结论都带 <span class="loc">文件:行号</span> 出处。</p>
+    <div class="chips">
+      <span class="chip">前端 <b>Next.js 16 · @xyflow/react · TanStack Query · socket.io</b></span>
+      <span class="chip">后端 <b>NestJS · BullMQ · deepagents (LangGraph.js)</b></span>
+      <span class="chip">存储 <b>Prisma / MySQL · 7 张 Canvas 表</b></span>
+      <span class="chip">实时 <b>Redis Stream · namespace /canvas</b></span>
+      <span class="chip">基线提交 <b>a47d4fd</b></span>
+    </div>
+  </div>
+</header>
+
+<main>
+  <nav class="toc" aria-label="目录">
+    <a href="#s1"><b>01</b>总览管线</a>
+    <a href="#s2"><b>02</b>三份真相与数据模型</a>
+    <a href="#s3"><b>03</b>接口全表</a>
+    <a href="#s4"><b>04</b>会话状态机</a>
+    <a href="#s5"><b>05</b>一次 run 的生命周期</a>
+    <a href="#s6"><b>06</b>Agent 装配</a>
+    <a href="#s7"><b>07</b>唯一写入口 applyOp</a>
+    <a href="#s8"><b>08</b>节点 IO 契约</a>
+    <a href="#s9"><b>09</b>媒体生成支线</a>
+    <a href="#s10"><b>10</b>人工确认回路</a>
+    <a href="#s11"><b>11</b>前端投影与编辑</a>
+    <a href="#s12"><b>12</b>并发·去重·一致性</a>
+    <a href="#s13"><b>13</b>观察与风险点</a>
+    <a href="#s14"><b>14</b>验证索引</a>
+  </nav>
+
+  <!-- ────────────────────────────────────────────── 01 -->
+  <section id="s1">
+    <div class="sec-head"><span class="sec-num">01</span><h2>总览管线</h2></div>
+    <p class="sec-lede">五层：浏览器、NestJS 接口层、BullMQ Worker、数据层、媒体支线。全系统只有<b>一个结构写入口</b>——agent 工具与用户 REST 编辑都收敛到 <code>CanvasService.applyOp</code>，事务里同时改物化表、追加 op 日志、自增 revision，提交后经 Redis Stream 广播 <code>canvas_patch</code>，前端增量应用到 React Flow 投影。</p>
+    <figure class="diagram">
+      <pre class="mermaid">
+flowchart LR
+  subgraph FE["浏览器 · Next.js /canvas"]
+    UI["CanvasShell 三区布局"]
+    HK["useCanvas 状态编排"]
+    RF["FlowCanvas 画布投影"]
+    CH["CanvasChat 对话面板"]
+    AP["api.ts REST"]
+    SK["socket.ts WS"]
+  end
+  subgraph API["NestJS 接口层"]
+    CT["CanvasController<br/>JwtAuthGuard"]
+    GW["CanvasGateway<br/>namespace /canvas"]
+    SV["CanvasService<br/>applyOp 唯一写入口"]
+  end
+  subgraph WK["Worker · BullMQ canvas-run"]
+    Q[("canvas-run 队列")]
+    P["CanvasProcessor<br/>concurrency 5 · lock 5min"]
+    AG["deepagents Agent"]
+    TL["7 个画布工具"]
+  end
+  subgraph DATA["数据层"]
+    MY[("MySQL · 7 张 Canvas 表")]
+    RS[("Redis Stream<br/>conversation:sid:events")]
+    CP[("RedisSaver checkpointer<br/>thread_id = sessionId")]
+  end
+  subgraph MEDIA["媒体支线"]
+    MS["MediaService"]
+    MQ[("media-gen 队列")]
+    MP["MediaProcessor"]
+    FS[("data/media/ versionId.ext")]
+  end
+
+  UI --> HK
+  HK --> AP
+  HK --> SK
+  HK --> RF
+  HK --> CH
+  AP -->|"快照 / 历史 / 编辑 / 停止"| CT
+  SK <-->|"canvas:subscribe · canvas:event<br/>canvas:control:response"| GW
+  CT --> SV
+  SV -->|"queue.add run"| Q
+  Q --> P
+  P -->|"agent.stream"| AG
+  AG <--> CP
+  AG -->|tool_calls| TL
+  TL -->|"applyOp actor=agent"| SV
+  TL -->|generate_media_node| MS
+  SV -->|"事务写"| MY
+  SV -->|"XADD canvas_patch"| RS
+  P -->|"消息 / 工具 / token 落库"| MY
+  P -->|"XADD 事件"| RS
+  MS --> MQ --> MP
+  MP --> FS
+  MP -->|"XADD media_update"| RS
+  RS -->|"stream.subscribe from $"| GW
+  GW -->|"resume 入队"| Q
+      </pre>
+      <figcaption>模块边界即目录边界：画布的队列、abort 注册表、模型白名单全部独立于主 agent（<span class="loc">canvas.module.ts:17-32</span>、<span class="loc">canvas.abort.ts:8</span>、<span class="loc">canvas.types.ts:18</span>）；共用的只有 StreamService、checkpointer、MediaService 与事件归一器。</figcaption>
+    </figure>
+  </section>
+
+  <!-- ────────────────────────────────────────────── 02 -->
+  <section id="s2">
+    <div class="sec-head"><span class="sec-num">02</span><h2>三份真相与数据模型</h2></div>
+    <p class="sec-lede">一块画布同时维护三份独立的状态，各有各的版本机制与生命周期。理解它们的边界，就能解释「为什么清空对话不会删节点」「为什么拖动节点不占 revision」「为什么 patch 里生成节点的 outputs 总是空的」。</p>
+
+    <div class="grid c3">
+      <div class="card">
+        <h4><span class="dot-mark tone-image-mark"></span>画布结构</h4>
+        <p><code>CanvasNode</code> / <code>CanvasEdge</code> 物化当前态，<code>CanvasOp</code> 追加式事件源，<code>session.revision</code> 作乐观并发游标。</p>
+        <p>位置 x/y 走 LWW 旁路：<b>不占 revision、不进 op 日志</b><span class="loc">schema.prisma:128-130</span></p>
+      </div>
+      <div class="card">
+        <h4><span class="dot-mark tone-upload-mark"></span>对话历史</h4>
+        <p><code>CanvasMessage(seq)</code> 既是聊天区的回放源，也是 worker 每轮重放给模型的上下文来源。</p>
+        <p>token 审计另存 <code>CanvasRun</code> + <code>CanvasTokenUsage</code>，与对话解耦。</p>
+      </div>
+      <div class="card">
+        <h4><span class="dot-mark tone-text-mark"></span>Agent 上下文</h4>
+        <p>RedisSaver checkpointer，<code>thread_id = sessionId</code><span class="loc">canvas.processor.ts:95</span>。承载 LangGraph 的中断点与续跑状态。</p>
+        <p>需 Redis Stack（RediSearch/RedisJSON）<span class="loc">checkpointer.provider.ts:6-8</span></p>
+      </div>
+    </div>
+
+    <div class="note">
+      <p><b>清空会话</b>（<code>DELETE /canvas/:id/messages</code>）只清后两份中的前者与第三份：删 <code>CanvasMessage</code> + <code>checkpointer.deleteThread</code>，<b>保留</b>节点连线与 token 审计——「花掉的 token 是真花了」<span class="loc">canvas.service.ts:281-316</span>。checkpointer 删除失败只告警，因为 DB 历史已清就达成了「无上下文」的主目标<span class="loc">canvas.service.ts:302-308</span>。</p>
+    </div>
+
+    <figure class="diagram">
+      <pre class="mermaid">
+erDiagram
+  CanvasSession ||--o{ CanvasRun : runs
+  CanvasSession ||--o{ CanvasMessage : messages
+  CanvasSession ||--o{ CanvasNode : nodes
+  CanvasSession ||--o{ CanvasEdge : edges
+  CanvasSession ||--o{ CanvasOp : ops
+  CanvasRun ||--o{ CanvasTokenUsage : usages
+  CanvasNode }o..o| MediaGeneration : mediaGenerationId
+  MediaGeneration ||--o{ MediaVersion : versions
+  CanvasSession {
+    string status "idle queued running waiting_approval done failed stopped"
+    int revision "乐观并发游标 等于最新 op.seq"
+    string model "本会话 agent 模型"
+    string tenantId
+  }
+  CanvasRun {
+    json trigger "触发本次运行的目标"
+    int totalTokens "run 级累计"
+    string status "resume 复用最近未决 run"
+    datetime endedAt
+  }
+  CanvasTokenUsage {
+    string model "每次模型调用一行"
+    int inputTokens
+    int outputTokens
+  }
+  CanvasMessage {
+    string role "user assistant tool"
+    string type "message tool_start tool_end plan_update control_request result error"
+    json content
+    int seq "历史重放顺序"
+  }
+  CanvasNode {
+    string type "text image_upload image_gen video_gen"
+    float x "LWW 不占 revision"
+    string text "text 节点正文"
+    string mediaGenerationId "状态靠 JOIN MediaVersion"
+    int version "节点级乐观锁"
+  }
+  CanvasEdge {
+    string source "unique session source target"
+    string target
+  }
+  CanvasOp {
+    int seq "unique sessionId seq 等于变更后 revision"
+    string actor "agent user"
+    json op "事件源日志 追加式"
+  }
+      </pre>
+      <figcaption><code>CanvasNodeDto</code> 上的 <code>mediaVersionId</code> / <code>mediaStatus</code> / <code>outputs</code> 三个字段<b>都不落表</b>，由快照层 JOIN 最新 <code>MediaVersion</code> 现算<span class="loc">canvas.service.ts:230-270</span>——这是刻意避免脆弱回写，代价见 §11 的 patch 兜底。</figcaption>
+    </figure>
+  </section>
+
+  <!-- ────────────────────────────────────────────── 03 -->
+  <section id="s3">
+    <div class="sec-head"><span class="sec-num">03</span><h2>接口全表</h2></div>
+    <p class="sec-lede">REST 在类级挂 <code>JwtAuthGuard</code><span class="loc">canvas.controller.ts:23</span>，业务层再按 <code>tenantId</code> 做归属校验（<code>assertOwner</code><span class="loc">canvas.service.ts:693</span>）。WebSocket 走独立 namespace <code>/canvas</code>，握手时校验 Bearer JWT<span class="loc">canvas.gateway.ts:51-66</span>。浏览器侧不手动带 token——Next middleware 对 <code>/api-backend/*</code> 统一注入 <code>Authorization</code><span class="loc">middleware.ts:24-28</span>。</p>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>用户动作</th><th>接口</th><th>服务端行为</th><th>出处</th></tr></thead>
+      <tbody>
+        <tr><td>新建画布</td><td class="mono"><span class="method m-post">POST</span>/canvas</td><td>无 goal → <code>idle</code> 空画布；有 goal → <code>queued</code> + 落首条 user 消息(seq 0) + 入队 run</td><td><span class="loc">controller:27</span> <span class="loc">service:97-130</span></td></tr>
+        <tr><td>侧栏列表（滚动加载）</td><td class="mono"><span class="method m-get">GET</span>/canvas</td><td>cursor 分页，多取一探测下一页；<code>orderBy [updatedAt desc, id desc]</code> 保证同秒时序稳定</td><td><span class="loc">controller:39</span> <span class="loc">service:137-157</span></td></tr>
+        <tr><td>打开画布</td><td class="mono"><span class="method m-get">GET</span>/canvas/:id</td><td>session + 节点 + 边 + <code>totalTokens</code> 聚合；生成节点 JOIN 最新 MediaVersion</td><td><span class="loc">controller:52</span> <span class="loc">service:231-270</span></td></tr>
+        <tr><td>对话历史</td><td class="mono"><span class="method m-get">GET</span>/canvas/:id/messages</td><td>CanvasMessage 按 seq 升序全量</td><td><span class="loc">controller:58</span> <span class="loc">service:319</span></td></tr>
+        <tr><td>清空会话记录</td><td class="mono"><span class="method m-del">DELETE</span>/canvas/:id/messages</td><td>删消息 + 删 checkpointer thread + 归 idle + 广播 <code>messages_cleared</code>；运行期拒绝</td><td><span class="loc">controller:64</span> <span class="loc">service:281-316</span></td></tr>
+        <tr><td>发消息（多轮续跑）</td><td class="mono"><span class="method m-post">POST</span>/canvas/:id/messages</td><td>仅空闲态允许 → <code>queued</code> + 落 user 消息 + 入队 run；顺带写入本次选的模型</td><td><span class="loc">controller:69</span> <span class="loc">service:328-370</span></td></tr>
+        <tr><td>侧栏内联重命名</td><td class="mono"><span class="method m-patch">PATCH</span>/canvas/:id</td><td>空白标题拒绝 <code>CANVAS_TITLE_EMPTY</code></td><td><span class="loc">controller:85</span> <span class="loc">service:160-171</span></td></tr>
+        <tr><td>停止运行</td><td class="mono"><span class="method m-post">POST</span>/canvas/:id/stop</td><td>abort + 取消该会话的媒体生成 + CAS→stopped；abort 未命中且 CAS 命中则补发 result</td><td><span class="loc">controller:94</span> <span class="loc">service:376-404</span></td></tr>
+        <tr><td>结构编辑（空闲期）</td><td class="mono"><span class="method m-post">POST</span>/canvas/:id/ops</td><td>先 <code>snapshot</code> 校归属 → zod 收窄 op → <code>applyOp(user, baseRevision)</code></td><td><span class="loc">controller:103-113</span> <span class="loc">op-schema.ts:10</span></td></tr>
+        <tr><td>拖动节点落点</td><td class="mono"><span class="method m-post">POST</span>/canvas/:id/nodes/:nodeId/move</td><td>LWW 轻量路径：直接写 x/y，不占 revision、不进 op 日志、不会 409</td><td><span class="loc">controller:116</span> <span class="loc">service:664-686</span></td></tr>
+        <tr><td>订阅实时事件</td><td class="mono"><span class="method m-ws">WS</span>canvas:subscribe</td><td>租户校验 → 从 Redis Stream <code>'$'</code> 起读，只推订阅后的新事件</td><td><span class="loc">gateway:68-102</span></td></tr>
+        <tr><td>回答提问 / 确认操作</td><td class="mono"><span class="method m-ws">WS</span>canvas:control:response</td><td>CAS <code>waiting_approval → running</code>（防重复提交）+ 入队 <code>resume(decisions)</code></td><td><span class="loc">gateway:104-127</span></td></tr>
+      </tbody>
+    </table></div>
+    <p>前端 REST 客户端集中在 <span class="loc">api.ts:319-399</span>，WS 客户端在 <span class="loc">socket.ts:98-142</span>。媒体资产走另一条带鉴权的二进制通道 <code>GET /media/versions/:id/asset</code><span class="loc">media.controller.ts:53-63</span>，前端用 <code>fetchMediaAssetBlob</code> 绕开信封解析器直接取 blob<span class="loc">api.ts:224-234</span>。</p>
+  </section>
+
+  <!-- ────────────────────────────────────────────── 04 -->
+  <section id="s4">
+    <div class="sec-head"><span class="sec-num">04</span><h2>会话状态机</h2></div>
+    <p class="sec-lede">状态存在 <code>CanvasSession.status</code>，是「画布是否只读」的唯一判据：<code>queued / running / waiting_approval</code> 三态属 <code>BUSY_STATUSES</code><span class="loc">canvas.service.ts:37</span>，此时用户的结构写被服务端拒（agent 不受限，它就是运行者）。每一次迁移都用 <code>updateMany + where status</code> 做 CAS，避免与并发的 stop 抢状态。</p>
+    <figure class="diagram">
+      <pre class="mermaid">
+stateDiagram-v2
+  direction LR
+  [*] --> idle : 建画布·无 goal
+  [*] --> queued : 建画布·带 goal
+  idle --> queued : 发消息
+  queued --> running : worker CAS 门<br/>processor:72
+  running --> waiting_approval : 中断（3 个工具）<br/>processor:221-244
+  waiting_approval --> running : 用户回答/确认<br/>gateway:114-126
+  waiting_approval --> running : 600s 超时自动 reject<br/>processor:449-469
+  running --> done : 流耗尽·无中断<br/>processor:247
+  running --> failed : 异常<br/>processor:270-281
+  queued --> stopped : stop
+  running --> stopped : stop / abort
+  waiting_approval --> stopped : stop
+  done --> queued : 发消息·多轮
+  failed --> queued : 发消息
+  stopped --> queued : 发消息
+      </pre>
+      <figcaption>前端另有一层「乐观 busy」：发消息瞬间就 <code>setPending(true)</code>，不等服务端确认；<code>busy = pending || chat.ask != null</code><span class="loc">use-canvas.ts:183</span>，所以点下发送那一刻画布立即转只读。</figcaption>
+    </figure>
+  </section>
+
+  <!-- ────────────────────────────────────────────── 05 -->
+  <section id="s5">
+    <div class="sec-head"><span class="sec-num">05</span><h2>一次 run 的生命周期</h2></div>
+    <p class="sec-lede">独立队列 <code>canvas-run</code>，job 三种 kind：<code>run</code>（新目标）/ <code>resume</code>（中断续跑）/ <code>timeout</code>（提问超时兜底）。Worker 按长跑设计：<code>concurrency 5, lockDuration 300000</code><span class="loc">canvas.processor.ts:43</span>——BullMQ 在 job 活跃期间自动续锁，小时级任务不会被误判 stalled 重复消费。</p>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>#</th><th>步骤</th><th>做了什么</th><th>出处</th></tr></thead>
+      <tbody>
+        <tr><td class="num">1</td><td>timeout 分流</td><td>kind=timeout → 若仍 <code>waiting_approval</code>，以 reject 决策自动续跑，并推一条「用户长时间未回答」提示</td><td><span class="loc">:62-65, :449-469</span></td></tr>
+        <tr><td class="num">2</td><td>注册 abort</td><td>模块专属 <code>CANVAS_ABORTS</code> 注册表，按 sessionId</td><td><span class="loc">:67</span> <span class="loc">abort.ts:8</span></td></tr>
+        <tr><td class="num">3</td><td>CAS 门</td><td><code>status != 'stopped'</code> → <code>running</code>；落空说明排队期间被停，直接收尾不起跑</td><td><span class="loc">:72-79</span></td></tr>
+        <tr><td class="num">4</td><td>Run 会计</td><td>run → 新建 <code>CanvasRun</code>；resume → 复用最近 <code>waiting_approval/running</code> 的 run</td><td><span class="loc">:87-92, :297-326</span></td></tr>
+        <tr><td class="num">5</td><td>构造输入</td><td>resume → <code>Command({resume:{decisions}})</code>；run → <b><code>loadHistory</code> 从 DB 重放</b>（deepagents 跑完 state 不留对话，多轮记忆全靠这一步）</td><td><span class="loc">:98-104, :386-423</span></td></tr>
+        <tr><td class="num">6</td><td>计划回注</td><td>取最近 <code>plan_update</code>；<b>全部 completed 则不注入</b>，否则新命令会被误当成「继续这份已完成的计划」</td><td><span class="loc">:107, :425-447</span></td></tr>
+        <tr><td class="num">7</td><td>装配并流式执行</td><td><code>streamMode ['updates','messages']</code> + <code>subgraphs</code> + <code>recursionLimit 500</code>；context 带 activePlan / userId / sessionId</td><td><span class="loc">:109-134</span></td></tr>
+        <tr><td class="num">8</td><td>消费流</td><td>见下方映射表</td><td><span class="loc">:165-212</span></td></tr>
+        <tr><td class="num">9</td><td>中断检测</td><td><code>getState().tasks[].interrupts</code> 非空 → 推 <code>control_request</code> + CAS→<code>waiting_approval</code> + 排 600s timeout job → return</td><td><span class="loc">:215-244</span></td></tr>
+        <tr><td class="num">10</td><td>终态收口</td><td>done / failed / stopped 三分支，finalize <code>CanvasRun</code>（status / endedAt / error），推 <code>result</code> 或 <code>error</code></td><td><span class="loc">:246-293</span></td></tr>
+      </tbody>
+    </table></div>
+
+    <h3>流式事件映射</h3>
+    <p><code>normalize(ns, mode, data)</code> 把 LangGraph 的三元组归一成 <code>RawEvent</code>，只认 5 种<span class="loc">event-normalizer.ts:25-86</span>。<span class="badge b-stream">推流</span> = XADD 到 Redis Stream；<span class="badge b-db">落库</span> = 写 <code>CanvasMessage</code>。</p>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>流来源</th><th>归一为</th><th>去向</th><th>Worker 特殊处理</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">messages + AIMessageChunk</td><td><code>token</code></td><td><span class="badge b-stream">推流</span></td><td>累进 <code>buf</code>，边界处 flush 成一条 message 才落库<span class="loc">:185-189</span></td></tr>
+        <tr><td class="mono">messages + ToolMessage</td><td><code>tool_end</code></td><td><span class="badge b-both">推流 + 落库</span></td><td>payload 带 name / content / status</td></tr>
+        <tr><td class="mono">updates + {todos}</td><td><code>plan_update</code></td><td><span class="badge b-both">推流 + 落库</span></td><td>下一轮 <code>buildActivePlan</code> 的读取源</td></tr>
+        <tr><td class="mono">updates + AIMessage(tool_calls)</td><td><code>tool_start</code></td><td><span class="badge b-both">推流 + 落库</span></td><td><b>按 AIMessage id 去重</b>——updates 会跨节点回显同一条，不去重就变成「添加节点 ×3」<span class="loc">:198-204</span></td></tr>
+        <tr><td class="mono">updates + AIMessage(文本)</td><td><code>message</code></td><td><span class="badge b-both">推流 + 落库</span></td><td><b>按文本去重</b>（<code>lastFlushed</code>），实测一段曾被落 4 次<span class="loc">:154-163</span></td></tr>
+        <tr><td class="mono">updates（任意，带 usage_metadata）</td><td><code>token_usage</code></td><td><span class="badge b-stream">推流</span> + 计量表</td><td>按 msg id 去重 → <code>CanvasTokenUsage</code> 明细 + <code>CanvasRun</code> 累加 + 推 <code>cumulativeTotal</code>（<b>会话级</b>口径，刷新不归零）<span class="loc">:336-372</span></td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="note">
+      <p><b><code>loadHistory</code> 的三条规则</b><span class="loc">canvas.processor.ts:386-423</span>：只取 <code>type ∈ {message, tool_end}</code>；截末 200 条；然后<b>掐头直到首条是 user</b>（否则模型看到半截 tool 结果开局）。<code>tool_end</code> 重放时合成 <code>tool_call_id: synth_&lt;name&gt;_&lt;seq&gt;</code> 以满足消息格式约束。</p>
+    </div>
+  </section>
+
+  <!-- ────────────────────────────────────────────── 06 -->
+  <section id="s6">
+    <div class="sec-head"><span class="sec-num">06</span><h2>Agent 装配</h2></div>
+    <p class="sec-lede"><code>buildCanvasAgent</code><span class="loc">canvas.agent.factory.ts:97</span> 用 <code>createDeepAgent</code> 装配：StateBackend + checkpointer 续跑 + 四层中间件 + 三工具中断。模型默认 <code>gemini-3.1-pro-preview</code>，走独立的 <code>CANVAS_MODEL</code> env，换画布模型不波及主 agent<span class="loc">factory:69-73</span>；裸名走 google-genai，带冒号（如 <code>deepseek:deepseek-v4-pro</code>）走对应 provider。</p>
+
+    <h3>中间件链 —— 顺序即 recency</h3>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>#</th><th>中间件</th><th>作用</th><th>出处</th></tr></thead>
+      <tbody>
+        <tr><td class="num">1</td><td class="mono">modelCallLimitMiddleware</td><td>threadLimit 500，触顶<b>优雅结束</b>（end）而非抛错</td><td><span class="loc">factory:130</span></td></tr>
+        <tr><td class="num">2</td><td class="mono">toolCallLimitMiddleware</td><td>threadLimit 2000，exitBehavior continue</td><td><span class="loc">factory:131</span></td></tr>
+        <tr><td class="num">3</td><td class="mono">planContinuationMiddleware</td><td>把既有计划 concat 到系统提示末尾，压过 deepagents 自带 <code>todoListMiddleware</code> 那句「随时重订计划」</td><td><span class="loc">factory:59-62</span> <span class="loc">plan-injection.ts:13-26</span></td></tr>
+        <tr><td class="num">4</td><td class="mono">canvasLiveStateMiddleware</td><td><b>每次模型调用前</b>取最新画布状态 + 放置安全区，注入系统提示最末——离模型最近，读到的画布最新鲜</td><td><span class="loc">factory:105-123</span></td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="note">
+      <p><b>为什么没有 <code>get_canvas</code> 工具</b><span class="loc">canvas.tools.ts:26</span>：画布状态改为每轮<b>推</b>给模型而非让模型<b>拉</b>。<code>agentCanvasContext</code><span class="loc">canvas.service.ts:191-228</span> 生成的文本包含全部节点（id / 类型 / 前 30 字描述 / 坐标 / 生成状态）、全部连线，以及按卡片实际尺寸（W 280 × H 220，GAP 40）算出的<b>放置安全区</b>——「新节点必须放到 x ≥ 右边界 或 y ≥ 下边界」。省一轮工具往返，且模型不可能读到陈旧画布。</p>
+    </div>
+
+    <h3>7 个工具</h3>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>工具</th><th>落到哪</th><th>返回</th><th>中断</th></tr></thead>
+      <tbody>
+        <tr><td class="mono">add_node</td><td><code>applyOp(add_node)</code></td><td><code>{nodeId, revision}</code></td><td>—</td></tr>
+        <tr><td class="mono">update_node</td><td><code>applyOp(update_node)</code>，含 x/y 重排</td><td><code>{ok, revision}</code></td><td>—</td></tr>
+        <tr><td class="mono">connect_nodes</td><td><code>applyOp(add_edge)</code>，事务内校验类型契约</td><td><code>{edgeId, revision}</code></td><td>—</td></tr>
+        <tr><td class="mono">delete_node</td><td><code>applyOp(remove_node)</code>，级联删边</td><td><code>{ok, revision}</code></td><td>—</td></tr>
+        <tr><td class="mono">clear_canvas</td><td><code>applyOp(clear)</code>，一次删光</td><td><code>{cleared, revision}</code></td><td><span class="badge b-risk">approve / reject</span></td></tr>
+        <tr><td class="mono">generate_media_node</td><td><code>MediaService.createGeneration</code> + 回填</td><td><code>{generationId, status:'queued', …}</code></td><td><span class="badge b-risk">approve / reject</span></td></tr>
+        <tr><td class="mono">ask_user</td><td>不落任何东西，返回值即问题</td><td>被用户答案替换</td><td><span class="badge b-risk">edit / reject</span></td></tr>
+      </tbody>
+    </table></div>
+    <p>系统提示里有三条硬纪律直接对应这套工具设计<span class="loc">factory:39-49</span>：<b>①</b> 被 reject 就是用户放弃了该意图，禁止换个工具达成同一目的、也禁止再用 <code>ask_user</code> 就同一操作复述确认；<b>②</b> <code>clear_canvas</code> 与 <code>generate_media_node</code> 自身已内建确认环节，不要先 <code>ask_user</code> 问一遍（否则确认从按钮退化成开放式问答）；<b>③</b> 搭错优先 <code>update_node</code> 改，禁止「建一批再全删重做」。</p>
+  </section>
+
+  <!-- ────────────────────────────────────────────── 07 -->
+  <section id="s7">
+    <div class="sec-head"><span class="sec-num">07</span><h2>唯一写入口 applyOp</h2></div>
+    <p class="sec-lede">六种结构 op（<code>add_node / update_node / remove_node / add_edge / remove_edge / clear</code>）无论来自 agent 工具还是用户 REST，都走这一条路径<span class="loc">canvas.service.ts:417-532</span>。三层防护叠加：进程内串行 → 事务内 revision CAS → 唯一键兜底。</p>
+    <figure class="diagram">
+      <pre class="mermaid">
+flowchart TD
+  A["applyOp(sessionId, actor, op, baseRevision?)"] --> S["serialize：同会话 promise 链串行<br/>service:426-428, 462-474"]
+  S --> R{"有界重试 ×5<br/>service:436-459"}
+  R --> T["Prisma $transaction"]
+  T --> C1{"actor=user 且 session busy？"}
+  C1 -->|是| E1["CANVAS_BUSY<br/>运行期只读"]
+  C1 -->|否| C2{"actor=user 且<br/>baseRevision ≠ 当前 revision？"}
+  C2 -->|是| E2["409 CANVAS_CONFLICT<br/>前端重拉快照"]
+  C2 -->|否| CAS["revision CAS 先行<br/>updateMany where revision=旧值<br/>service:513-517"]
+  CAS -->|落空| RR["RevisionRaceError<br/>在写表之前回滚"]
+  RR --> R
+  CAS -->|命中| M["写物化表 + node.version++<br/>service:535-658"]
+  M --> OP["追加 CanvasOp(seq = 新 revision)<br/>unique(sessionId,seq) 兜底跨进程<br/>service:521-528"]
+  OP --> B["事务提交后 XADD canvas_patch<br/>service:429-432"]
+      </pre>
+      <figcaption>CAS 放在写物化表<b>之前</b>是关键：并发写里只有一个能命中旧 revision，落空的那个在动任何数据之前就回滚，避免撞上 <code>CanvasOp</code> 的唯一键才发现冲突。</figcaption>
+    </figure>
+    <div class="grid c2">
+      <div class="card">
+        <h4>各 op 的落表细节</h4>
+        <p><code>add_edge</code> 对 <code>unique(sessionId, source, target)</code> 做 upsert，重复连线幂等<span class="loc">:632-642</span>。</p>
+        <p><code>remove_node</code> 先删两端命中的边再删节点<span class="loc">:596-602</span>。<code>clear</code> 先边后点一次清空<span class="loc">:651-656</span>。</p>
+        <p><code>update_node</code> 每次 <code>version++</code>，改 x/y 也算结构变更（与 move 旁路不同）<span class="loc">:567-581</span>。</p>
+      </div>
+      <div class="card">
+        <h4>广播时机</h4>
+        <p><code>stream.publish</code> 在 <b>serialize 之外、事务提交之后</b>——保证前端收到 patch 时数据已落库。</p>
+        <p>patch 都带变更后 revision（<code>move_node</code> 除外）；revision 跳变 &gt; 1 说明漏事件，前端可据此重拉快照兜底<span class="loc">canvas.types.ts:210-221</span>。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ────────────────────────────────────────────── 08 -->
+  <section id="s8">
+    <div class="sec-head"><span class="sec-num">08</span><h2>节点 IO 契约</h2></div>
+    <p class="sec-lede">节点之间流动的是<b>类型化的输出</b>，不是自由连线。契约以 <code>CANVAS_NODE_IO</code> 为权威<span class="loc">canvas.types.ts:78-86</span>，前端在 <code>node-io.ts:14</code> 镜像一份用于拖线时提前拦截，服务端在 <code>add_edge</code> 事务内再校验一次——前端拦不住的这里也拦。</p>
+    <div class="grid c4">
+      <div class="card"><h4><span class="dot-mark tone-text-mark"></span>text</h4><p>入 —— · 出 <code>text</code></p><p>正文非空才产出输出；无输入端口，任何指向它的连线都非法。</p></div>
+      <div class="card"><h4><span class="dot-mark tone-upload-mark"></span>image_upload</h4><p>入 —— · 出 <code>image</code></p><p>MVP 模拟上传：content 破例存 <code>assetPath</code> 而非 versionId，因此<b>暂不参与生成</b>。</p></div>
+      <div class="card"><h4><span class="dot-mark tone-image-mark"></span>image_gen</h4><p>入 <code>text, image</code> · 出 <code>image</code></p><p>自身不带提示词——prompt 与参考图<b>全部来自入边</b>。</p></div>
+      <div class="card"><h4><span class="dot-mark tone-video-mark"></span>video_gen</h4><p>入 <code>text, image</code> · 出 <code>video</code></p><p>暂不收 video 输入：底层管线把参考版本按图片读盘，视频只用 refs[0] 当首帧。</p></div>
+    </div>
+    <p>连线合法性判据只有一句：<b>source 的任一输出类型被 target 接受即可</b><span class="loc">canvas.types.ts:92-98</span>。<code>outputs</code> 是派生字段，由 <code>deriveOutputs</code> 按节点类型现算<span class="loc">canvas.service.ts:46-68</span>——text 看正文是否非空、image_upload 看 assetPath、生成节点看 <code>media.status === 'done'</code>。未就绪一律空数组，下游因此拿不到素材。</p>
+  </section>
+
+  <!-- ────────────────────────────────────────────── 09 -->
+  <section id="s9">
+    <div class="sec-head"><span class="sec-num">09</span><h2>媒体生成支线</h2></div>
+    <p class="sec-lede">这是全系统最长的一条链：一次工具调用要穿过 canvas 模块、media 模块、第二条队列、Google 生成 API、本地磁盘，再经由 Redis Stream 绕回前端的快照失效。</p>
+    <figure class="diagram">
+      <pre class="mermaid">
+flowchart TD
+  T["generate_media_node(nodeId)"] --> HITL{"interruptOn 拦截<br/>用户 approve？"}
+  HITL -->|reject| SKIP["带定制文案回灌模型：<br/>放弃本次生成，禁止重试或绕道"]
+  HITL -->|approve| V{"节点类型是<br/>image_gen / video_gen？"}
+  V -->|否| ERR["返回 error JSON<br/>tools:119-127"]
+  V -->|是| UP["沿入边收集上游<br/>tools:129-133"]
+  UP --> PR{"上游有 text 输出？"}
+  PR -->|无| ERR2["报错并指引：先建 text 节点写提示词再连线<br/>tools:138-143"]
+  PR -->|有| ASM["拼素材：text 输出拼 prompt（多条编号换行）<br/>image_gen 的 image 输出作参考图<br/>image_upload 跳过并在返回值里报出<br/>tools:134-158"]
+  ASM --> CG["MediaService.createGeneration<br/>(sessionId as conversationId, userId, type, prompt, refs)<br/>media.service.ts:41"]
+  CG --> VAL["validateReferences 先校验<br/>不合法则不建任何 DB 行"]
+  VAL --> ROW["MediaGeneration + MediaVersion(queued)"]
+  ROW --> Q2[("media-gen 队列<br/>job 'generate' · jobId = versionId")]
+  ROW --> EV0["XADD media_update:queued"]
+  CG --> BF["applyOp update_node<br/>回填 mediaGenerationId<br/>tools:169-173"]
+  Q2 --> MP["MediaProcessor · lockDuration 22min"]
+  MP --> G1["status → generating + XADD"]
+  G1 --> RF3["loadRefs：读盘转 base64<br/>waitForRef 轮询 5s / 上限 5min"]
+  RF3 --> API["Google 生成 API<br/>图片单次 · 视频轮询 10s / 上限 10min"]
+  API --> ABT{"signal.aborted？"}
+  ABT -->|是| FAIL["status → failed（用户已停止）<br/>结果作废不落盘"]
+  DISK["落盘 data/media/ versionId.ext"]
+  ABT -->|否| DISK
+  DISK --> DONE["status → done + filePath + XADD"]
+  DONE --> FE3["前端收 media_update →<br/>invalidate 快照 query"]
+  FE3 --> JOIN["快照重新 JOIN MediaVersion →<br/>节点获得 mediaVersionId / mediaStatus / outputs"]
+  JOIN --> BLOB["useMediaAssetUrl 取带鉴权的 blob →<br/>卡片封面渲染"]
+      </pre>
+      <figcaption>媒体事件与画布事件<b>共用同一条 Redis Stream</b>——<code>conversation:&lt;sessionId&gt;:events</code>，因为 canvas 把 sessionId 当作 conversationId 传给 media<span class="loc">canvas.tools.ts:161-167</span>。这也是 <code>stop</code> 能用 <code>cancelByConversation(sessionId)</code> 一次取消该画布全部在途生成的原因<span class="loc">canvas.service.ts:380</span>。</figcaption>
+    </figure>
+    <div class="note">
+      <p><b>前端为什么不解析 <code>media_update</code> 的 payload</b><span class="loc">use-canvas.ts:157-161</span>：节点的媒体字段是快照层 JOIN 出来的派生值，事件里那份状态没有权威性。收到事件只做一件事——让快照 query 失效、重拉。代价是一次多余的往返，收益是不必在两处维护同一份状态推导。</p>
+    </div>
+  </section>
+
+  <!-- ────────────────────────────────────────────── 10 -->
+  <section id="s10">
+    <div class="sec-head"><span class="sec-num">10</span><h2>人工确认回路</h2></div>
+    <p class="sec-lede">三个工具会中断执行等用户，但决策集不同<span class="loc">factory:146-152</span>：<code>ask_user</code> 是 <b>edit / reject</b>，两个破坏性/耗配额的工具是 <b>approve / reject</b>。用 <code>edit</code> 传答案是被迫的——langchain 1.4.2 的 HITL 没有 <code>respond</code> 决策，于是把用户答案写进 <code>ask_user</code> 的 args，工具随即以「答案」为返回值执行。</p>
+    <figure class="diagram">
+      <pre class="mermaid">
+sequenceDiagram
+  autonumber
+  actor U as 用户
+  participant FE as useCanvas / CanvasChat
+  participant GW as CanvasGateway
+  participant Q as canvas-run 队列
+  participant W as CanvasProcessor
+  participant AG as deepagents
+  participant CP as RedisSaver
+  participant RS as Redis Stream
+
+  AG-->>W: 工具触发 interrupt
+  W->>W: getState 发现 interrupts 非空
+  W->>RS: XADD control_request（含 actionRequests）
+  W->>Q: add('timeout', delay 600s)
+  W-->>W: CAS running→waiting_approval，本 job 结束
+  RS->>GW: 事件流
+  GW->>FE: canvas:event
+  FE->>FE: extractAsk 按 tool 名选交互形态<br/>ask_user→提问框 / 其余→确认按钮
+  alt 用户回答或批准
+    U->>FE: 输入答案 / 点 Approve
+    FE->>GW: canvas:control:response（edit 或 approve）
+  else 用户拒绝
+    U->>FE: 点 Reject
+    FE->>GW: reject + 按工具定制的回灌文案
+  else 600s 无人处理
+    Q->>W: timeout job
+    W->>Q: add('resume', reject「按最佳判断继续」)
+  end
+  GW->>GW: CAS waiting_approval→running（防重复提交）
+  GW->>Q: add('resume', decisions)
+  Q->>W: process(resume)
+  W->>CP: Command({resume:{decisions}}) 从断点续跑
+  CP-->>AG: 恢复图状态
+  AG-->>W: 继续执行剩余计划
+      </pre>
+      <figcaption><code>reject</code> 必须带明确文案回灌模型<span class="loc">use-canvas.ts:239-245</span>：默认拒绝语义太模糊，模型会出现「用户拒绝清空、agent 却说已清空」的幻觉。文案按被拒工具定制——拒绝生成说「不要声称已生成任何内容」，拒绝清空说「禁止改用 delete_node 逐个删」。</figcaption>
+    </figure>
+  </section>
+
+  <!-- ────────────────────────────────────────────── 11 -->
+  <section id="s11">
+    <div class="sec-head"><span class="sec-num">11</span><h2>前端投影与编辑</h2></div>
+    <p class="sec-lede">全部状态收敛在一个 hook<span class="loc">use-canvas.ts:46</span>：REST 快照与历史作基底，socket 事件作增量，两者不重叠（服务端从 <code>'$'</code> 起读）。<code>CanvasShell</code> 挂在 layout 层，<code>/canvas ↔ /canvas/[id]</code> 切换不重挂载。</p>
+    <figure class="diagram">
+      <pre class="mermaid">
+flowchart TD
+  RS2[("Redis Stream")] -->|"subscribe from $"| GW2["CanvasGateway emit canvas:event"]
+  GW2 --> SK2["subscribeCanvas<br/>按 conversationId 过滤<br/>socket.ts:121-123"]
+  SK2 --> D{"useCanvas 事件分发<br/>use-canvas.ts:136-175"}
+  D -->|canvas_patch| P1["applyPatch 增量应用<br/>canvas-state.ts:23"]
+  D -->|token_usage| P2["setTokens(cumulativeTotal)"]
+  D -->|media_update| P3["invalidate 快照 query"]
+  D -->|messages_cleared| P5["清空本地对话投影<br/>多端同步"]
+  D -->|"message / token / tool<br/>plan / control_request / result"| P4["liveChat 追加 → foldChat<br/>chat.ts:226"]
+  Q1["GET /canvas/:id"] -->|基底| P1
+  Q3["GET /canvas/:id/messages"] -->|"基底 buildBaseChat"| P4
+  P3 --> Q1
+  P1 --> RF2["FlowCanvas：canvas → RF nodes/edges<br/>保留 selected 避免浮窗闪退<br/>flow-canvas.tsx:255-262"]
+  P4 --> CH2["CanvasChat：气泡 / 工具组 / 计划卡 / 确认面板"]
+  RF2 --> FIT["FitOnChange：agent 操控期<br/>500ms 收集窗口批量聚焦新增节点<br/>flow-canvas.tsx:166-226"]
+  SK2 -.->|"重连 onReconnect"| RE["refetch 快照 + 历史<br/>补齐断线窗口"]
+      </pre>
+      <figcaption>重连语义：<code>seenConnect</code> 初值为当前连接态，首次 connect 不触发 <code>onReconnect</code>，之后每次重连都触发<span class="loc">socket.ts:124-129</span>——因为服务端从 <code>'$'</code> 起读，断线期间的事件不会补发，必须靠重拉对齐。</figcaption>
+    </figure>
+
+    <h3>用户编辑动作与落点</h3>
+    <p>运行期 <code>readOnly</code> 把 <code>nodesDraggable / nodesConnectable / elementsSelectable</code> 全关、<code>deleteKeyCode</code> 置 null<span class="loc">flow-canvas.tsx:393-399</span>，同时叠一层呼吸光晕与「Agent working · Canvas read-only」徽标。</p>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>动作</th><th>前端处理</th><th>最终落点</th><th>出处</th></tr></thead>
+      <tbody>
+        <tr><td>拖动节点</td><td>位置没变视作点击（保持选中让浮窗浮出），真拖过才发请求并取消选中</td><td><code>POST /nodes/:id/move</code>（LWW）</td><td><span class="loc">flow-canvas.tsx:372-388</span></td></tr>
+        <tr><td>拖连线</td><td><code>isValidConnection</code> 按镜像契约提前拦，不让用户白拖一趟</td><td><code>add_edge</code> op</td><td><span class="loc">flow-canvas.tsx:389-392, 420-425</span></td></tr>
+        <tr><td>改标题 / 正文</td><td>本地草稿 → 键入即点亮 loading → 停 600ms 或失焦提交；值没变则撤销 loading</td><td><code>update_node</code> op</td><td><span class="loc">node-editor-toolbar.tsx:252-278</span></td></tr>
+        <tr><td>删除（键盘 / 按钮）</td><td><code>onDelete</code> 一次拿到节点与边，过滤掉「两端将被删」的边（服务端已级联）</td><td><code>remove_node</code> / <code>remove_edge</code></td><td><span class="loc">flow-canvas.tsx:404-414</span></td></tr>
+        <tr><td>Cmd/Ctrl+D 复制</td><td>window 级监听 + 输入场景守卫；偏移 +40,+40，媒资不随副本</td><td><code>add_node</code> op</td><td><span class="loc">flow-canvas.tsx:324-360</span></td></tr>
+        <tr><td>发消息 / 停止</td><td>发送即乐观插气泡并转 busy</td><td><code>POST /messages</code> · <code>POST /stop</code></td><td><span class="loc">use-canvas.ts:191-204</span></td></tr>
+      </tbody>
+    </table></div>
+
+    <div class="grid c2">
+      <div class="card">
+        <h4>保存状态机</h4>
+        <p>「触发就开始，直到落终态」：键入即 <code>markSaving</code>（不等防抖），请求发出时 <code>beginSave</code> 计数 +1，返回时 <code>settleSave</code> 计数 -1——<b>仅当无其他在途请求时才落终态</b>，避免连续编辑时先返回的响应提前把 loading 清掉<span class="loc">use-canvas.ts:320-361</span>。</p>
+        <p>徽标全画布只有一处（左上角），聚合所有节点状态：任一 saving → 保存中；否则有 error → 失败；否则 saved<span class="loc">flow-canvas.tsx:100-113</span>。</p>
+      </div>
+      <div class="card">
+        <h4>两处非直觉的兜底</h4>
+        <p><b>revision 用 ref 不用 state</b><span class="loc">use-canvas.ts:105-116</span>：连续编辑时 React 还没重渲染、patch 也没到，用闭包里的旧 revision 发第二个 op 必然 409。</p>
+        <p><b>patch 的 outputs 要保留旧值</b><span class="loc">canvas-state.ts:79-92</span>：patch 不带 media JOIN，生成节点的 outputs 恒为空；只对 <code>image_gen/video_gen</code> 兜底，text 类不能兜（否则清空正文后 outputs 卡住不清）。</p>
+      </div>
+    </div>
+  </section>
+
+  <!-- ────────────────────────────────────────────── 12 -->
+  <section id="s12">
+    <div class="sec-head"><span class="sec-num">12</span><h2>并发 · 去重 · 一致性</h2></div>
+    <p class="sec-lede">这套系统里同时存在三个写者（agent 工具、用户 REST、媒体回填）和两条推送链路，下面是全部竞态点与对应的防护手段。</p>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>竞态场景</th><th>防护</th><th>出处</th></tr></thead>
+      <tbody>
+        <tr><td>agent 一个回合并行触发多个结构工具</td><td>service 内 <code>chains</code> promise 链按 sessionId 串行</td><td><span class="loc">canvas.service.ts:79, 462-474</span></td></tr>
+        <tr><td>用户连续编辑抢同一 revision 基线</td><td>前端 <code>opChain</code> 串行 + <code>revisionRef</code> 即时推进</td><td><span class="loc">use-canvas.ts:118, 296-314</span></td></tr>
+        <tr><td>跨进程 / 跨 worker 并发写</td><td>事务内 revision CAS + <code>unique(sessionId,seq)</code> + 有界重试 ×5</td><td><span class="loc">canvas.service.ts:436-459, 513-517</span></td></tr>
+        <tr><td>用户客户端状态过期</td><td><code>baseRevision</code> 不符 → 409 → 前端重拉快照</td><td><span class="loc">canvas.service.ts:498-507</span></td></tr>
+        <tr><td>排队中的 job 在起跑前被 stop</td><td>worker 起跑 CAS 门 <code>status != 'stopped'</code></td><td><span class="loc">canvas.processor.ts:72-79</span></td></tr>
+        <tr><td>stop 与 worker 抢着发 result</td><td><code>abort()</code> 返回 true ⇒ worker 收尾；false 且 CAS 命中 ⇒ stop 端点补发。恰好一份</td><td><span class="loc">abort-registry.ts:9-11</span> <span class="loc">canvas.service.ts:387-402</span></td></tr>
+        <tr><td>同一确认被点两次</td><td>gateway CAS <code>waiting_approval → running</code>，第二次返回 <code>already_resolved</code></td><td><span class="loc">canvas.gateway.ts:114-124</span></td></tr>
+        <tr><td>updates 跨节点回显同一 AIMessage</td><td>后端按 msg id 去重 <code>tool_start</code>、按文本去重 <code>message</code>、按 msg id 去重 usage；前端再做一层防御性去重</td><td><span class="loc">canvas.processor.ts:146-163, 198-204</span> <span class="loc">chat.ts:108-137</span></td></tr>
+        <tr><td>长跑 job 被判 stalled 重复消费</td><td><code>lockDuration</code>：canvas-run 5min、media-gen 22min</td><td><span class="loc">canvas.processor.ts:43</span> <span class="loc">media.processor.ts:45</span></td></tr>
+        <tr><td>停止后图片仍在生成</td><td>生成调用返回后再查一次 <code>signal.aborted</code>，已停则结果作废不落盘</td><td><span class="loc">media.processor.ts:108</span></td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <!-- ────────────────────────────────────────────── 13 -->
+  <section id="s13">
+    <div class="sec-head"><span class="sec-num">13</span><h2>观察与风险点</h2></div>
+    <p class="sec-lede">本次通读中发现的、当前不影响功能但值得留档的四处。均未改动代码。</p>
+
+    <div class="note risk">
+      <p><b>① <code>normalizeUpdate</code> 每批只产出一个事件</b><span class="loc">event-normalizer.ts:59-84</span></p>
+      <p>遍历 <code>Object.values(data)</code> 时首个命中即 return。若同一批更新里既有 <code>{todos}</code> 节点又有带 <code>tool_calls</code> 的 messages 节点，靠前的赢，另一个被丢弃——表现为聊天区偶尔少一张工具卡（工具本身仍会执行）。</p>
+    </div>
+
+    <div class="note risk">
+      <p><b>② <code>stream.subscribe</code> 的默认 <code>fromId = '0'</code></b><span class="loc">stream.service.ts:44</span></p>
+      <p>默认从流最早一条重放全部历史；两个网关都靠显式传 <code>'$'</code> 才避免与 REST 历史重复渲染。新增调用方若忘记传，会静默重放整条流。</p>
+    </div>
+
+    <div class="note risk">
+      <p><b>③ 同一 socket 上的 XREAD reader 只增不减</b><span class="loc">canvas.gateway.ts:77-93</span></p>
+      <p><code>subscribed</code> Set 只 add 不 delete，reader 的 <code>stopped</code> 只在 <code>disconnect</code> 时置真；前端清理函数也只 <code>off</code> 监听器、不发退订<span class="loc">socket.ts:133-136</span>。所以在一个长连 socket 上每浏览一块画布就多一个常驻 <code>XREAD BLOCK 2000</code> 循环与一条 Redis duplicate 连接，跨画布事件靠前端按 id 过滤。功能正确，长会话下是资源问题。</p>
+    </div>
+
+    <div class="note risk">
+      <p><b>④ 两处过时的注释与死代码</b></p>
+      <p><code>socket.ts:139</code> 注释仍写 <code>decisions: [{type:'respond'}]</code>，实际发的是 <code>edit</code>（<code>use-canvas.ts:228</code>）。<code>canvas-chat.tsx:68</code> 的 <code>toolDetail</code> 还留着 <code>get_canvas</code> 分支，该工具已在 <code>canvas.tools.ts:26</code> 移除。</p>
+    </div>
+  </section>
+
+  <!-- ────────────────────────────────────────────── 14 -->
+  <section id="s14">
+    <div class="sec-head"><span class="sec-num">14</span><h2>验证索引</h2></div>
+    <p class="sec-lede">本页所有结论的一手出处。行号基于提交 <code>a47d4fd</code>，全部经逐文件通读核对，非推测。</p>
+    <div class="tbl-wrap"><table>
+      <thead><tr><th>主题</th><th>文件</th><th>关键行</th></tr></thead>
+      <tbody>
+        <tr><td>REST 端点与守卫</td><td class="mono">canvas/canvas.controller.ts</td><td class="mono">23, 27, 39, 52, 58, 64, 69, 85, 94, 103, 116</td></tr>
+        <tr><td>会话管理 + applyOp</td><td class="mono">canvas/canvas.service.ts</td><td class="mono">37, 46, 79, 97, 137, 191, 231, 281, 328, 376, 417, 462, 476, 535, 664, 693</td></tr>
+        <tr><td>Worker 状态机与流消费</td><td class="mono">canvas/canvas.processor.ts</td><td class="mono">24, 43, 59, 72, 87, 98, 107, 121, 154, 165, 198, 215, 246, 297, 336, 386, 425, 449</td></tr>
+        <tr><td>Agent 装配</td><td class="mono">canvas/canvas.agent.factory.ts</td><td class="mono">16, 52, 59, 69, 97, 105, 129, 136, 146</td></tr>
+        <tr><td>工具定义</td><td class="mono">canvas/canvas.tools.ts</td><td class="mono">21, 26, 29, 56, 82, 100, 115, 191, 204</td></tr>
+        <tr><td>WS 网关</td><td class="mono">canvas/canvas.gateway.ts</td><td class="mono">37, 51, 68, 77, 90, 95, 104</td></tr>
+        <tr><td>领域类型与契约</td><td class="mono">canvas/canvas.types.ts</td><td class="mono">18, 33, 78, 92, 105, 120, 137, 214, 230</td></tr>
+        <tr><td>op zod 校验 / abort / 模块</td><td class="mono">canvas/{op-schema, abort, module}.ts</td><td class="mono">10 / 8 / 17</td></tr>
+        <tr><td>数据表</td><td class="mono">prisma/schema.prisma</td><td class="mono">120, 148, 169, 184, 207, 229, 245</td></tr>
+        <tr><td>事件总线</td><td class="mono">events/stream.service.ts</td><td class="mono">14, 19, 40, 44</td></tr>
+        <tr><td>事件归一 / 计划注入 / abort / checkpointer</td><td class="mono">agent/*.ts</td><td class="mono">normalizer 25-86 · plan-injection 13 · abort-registry 21,33 · checkpointer 10</td></tr>
+        <tr><td>媒体生成</td><td class="mono">media/{service, processor, controller}.ts</td><td class="mono">41, 177, 290 / 45, 58, 108, 165 / 53</td></tr>
+        <tr><td>前端状态编排</td><td class="mono">canvas/_hooks/use-canvas.ts</td><td class="mono">46, 69, 105, 136, 183, 191, 223, 235, 257, 296, 320</td></tr>
+        <tr><td>画布投影与交互</td><td class="mono">canvas/_components/flow-canvas.tsx</td><td class="mono">42, 100, 152, 166, 255, 289, 324, 372, 389, 404, 420</td></tr>
+        <tr><td>节点编辑浮窗</td><td class="mono">canvas/_components/node-editor-toolbar.tsx</td><td class="mono">29, 40, 63, 223, 252, 266</td></tr>
+        <tr><td>对话折叠 / patch 应用 / IO 契约</td><td class="mono">canvas/_lib/{chat, canvas-state, node-io}.ts</td><td class="mono">48, 69, 217 / 23, 72 / 14, 54, 69</td></tr>
+        <tr><td>API / socket 客户端</td><td class="mono">lib/{api, socket}.ts</td><td class="mono">224, 319-399 / 83, 100, 115, 140</td></tr>
+        <tr><td>鉴权注入</td><td class="mono">middleware.ts</td><td class="mono">24-28</td></tr>
+        <tr><td>行为佐证（单测）</td><td class="mono">canvas/canvas.service.spec.ts</td><td class="mono">94, 108, 121, 213, 239, 261, 308, 331, 395, 456</td></tr>
+      </tbody>
+    </table></div>
+  </section>
+
+  <footer>
+    <p>基线提交 <span class="mono">a47d4fd</span> · 生成于 2026-07-25 · 姊妹文档：<span class="mono">docs/canvas-agent-architecture.html</span>（按分层组织，行号基于 87eb05b，部分已过时）。</p>
+    <p>本页按操作组织；若代码有变更，请以 <span class="mono">§14 验证索引</span> 中的文件为准重新核对行号。</p>
+  </footer>
+</main>
