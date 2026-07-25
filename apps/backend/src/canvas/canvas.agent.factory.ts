@@ -45,7 +45,7 @@ const CANVAS_SYSTEM_PROMPT = `你是"画布工作流编排 Agent"：在一块可
 - 只搭建与用户目标相关的节点，不堆砌无关节点；不要反复重排。
 - 画布状态已随每轮实时注入（见「当前画布实时状态」），**不要调用工具查询画布**；\`add_node\`/\`connect_nodes\` 的返回值也已含 nodeId/edgeId，直接用。
 - \`write_todos\` 用来维护同一份计划的状态推进（pending→in_progress→completed），**不要反复整表重写计划**。
-- 触发生成前确保该 image_gen/video_gen 节点已写好 prompt。
+- 触发生成前确保该 image_gen/video_gen 节点已写好 prompt。\`generate_media_node\` **自身已内建"请用户确认"环节**（同 clear_canvas）——需要生成时**直接调用它**即可，**绝不要先用 \`ask_user\` 问"要不要生成 / 确认生成吗"**；被拒绝即用户放弃该次生成，不要重试或绕道。
 - 不确定的关键选择（而非细枝末节）才用 ask_user，避免频繁打断。`;
 
 /** 运行时 context：activePlan（跨轮计划回注）+ userId + sessionId。 */
@@ -147,6 +147,8 @@ export async function buildCanvasAgent(
       ask_user: { allowedDecisions: ['edit', 'reject'] },
       // 清空画布有破坏性 → 暂停等用户 approve/reject（approve 才执行清空）
       clear_canvas: { allowedDecisions: ['approve', 'reject'] },
+      // 生成消耗配额/时间 → 不自动执行，弹确认（approve 才真正触发生成）
+      generate_media_node: { allowedDecisions: ['approve', 'reject'] },
     },
     checkpointer: opts.checkpointer as never,
   });

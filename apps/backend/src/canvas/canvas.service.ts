@@ -3,6 +3,7 @@ import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { Queue } from 'bullmq';
 import { Prisma } from '@prisma/client';
 import { AbortRegistry } from '../agent/abort-registry';
+import { CHECKPOINTER } from '../agent/checkpointer.provider';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
 import { StreamService } from '../events/stream.service';
@@ -14,18 +15,57 @@ import {
   type CanvasActor,
   type CanvasEdgeDto,
   type CanvasNodeDto,
+  type CanvasNodeOutput,
   type CanvasNodeType,
   type CanvasOpInput,
   type CanvasPatch,
   type CanvasSnapshot,
+  canConnectNodeTypes,
   isCanvasNodeType,
 } from './canvas.types';
+
+/**
+ * checkpointer 的最小可用面（清空会话只需删 thread）。
+ * RedisSaver 实现了 deleteThread（@langchain/langgraph-checkpoint-redis dist/index.d.ts:26），
+ * 这里按最小接口约束注入项，避免整个 service 依赖其全量类型。
+ */
+interface ThreadDeletableCheckpointer {
+  deleteThread(threadId: string): Promise<void>;
+}
 
 /** 画布"忙"状态：此时用户结构编辑被服务端拒绝（运行期只读）。 */
 const BUSY_STATUSES = ['queued', 'running', 'waiting_approval'];
 
 /** 内部哨兵：revision CAS 落空（并发写），触发重试。 */
 class RevisionRaceError extends Error {}
+
+/**
+ * 派生节点的对外输出（不落表，见 CanvasNodeDto.outputs）。
+ * 统一包成数组便于以后一次产多份；当前每种节点最多一份，未就绪即空数组。
+ */
+function deriveOutputs(
+  type: CanvasNodeType,
+  n: { text: string | null; assetPath: string | null },
+  media?: { id: string; status: string },
+): CanvasNodeOutput[] {
+  switch (type) {
+    case 'text':
+      return n.text?.trim() ? [{ type: 'text', content: n.text }] : [];
+    // MVP 模拟上传：没有 MediaVersion，content 破例存 assetPath
+    case 'image_upload':
+      return n.assetPath ? [{ type: 'image', content: n.assetPath }] : [];
+    case 'image_gen':
+    case 'video_gen':
+      return media?.status === 'done'
+        ? [
+            {
+              type: type === 'video_gen' ? 'video' : 'image',
+              content: media.id,
+            },
+          ]
+        : [];
+  }
+}
 
 /**
  * 画布业务层：会话管理 + 唯一结构写入口 applyOp（事务：物化表 + CanvasOp 日志 + revision）。
@@ -44,6 +84,9 @@ export class CanvasService {
     @InjectQueue('canvas-run') private readonly queue: Queue,
     private readonly media: MediaService,
     @Inject(CANVAS_ABORTS) private readonly aborts: AbortRegistry,
+    // 只用到 deleteThread（清空 agent 上下文）；按最小接口注入，避免依赖 RedisSaver 全量类型
+    @Inject(CHECKPOINTER)
+    private readonly checkpointer: ThreadDeletableCheckpointer,
   ) {}
 
   // ───────────────────────────────────────────────────────────────────────────
@@ -86,13 +129,31 @@ export class CanvasService {
     return { sessionId: s.id };
   }
 
-  /** 列出当前租户的画布。 */
-  async list(tenantId: string) {
-    return this.prisma.canvasSession.findMany({
+  /**
+   * 列出当前租户的画布（cursor 分页，前端滚动加载）。
+   * 多取一探测下一页：满页时 nextCursor = 本页末项 id，前端带它取下一页
+   * （cursor+skip:1 跳过锚点自身）；orderBy 带 id 兜底保证同 updatedAt 时序稳定。
+   */
+  async list(
+    tenantId: string,
+    opts: { cursor?: string; limit?: number } = {},
+  ): Promise<{
+    items: { id: string; title: string; status: string; updatedAt: Date }[];
+    nextCursor: string | null;
+  }> {
+    const limit = Math.min(Math.max(opts.limit ?? 30, 1), 100);
+    const rows = await this.prisma.canvasSession.findMany({
       where: { tenantId },
-      orderBy: { updatedAt: 'desc' },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
       select: { id: true, title: true, status: true, updatedAt: true },
+      take: limit + 1,
+      ...(opts.cursor ? { cursor: { id: opts.cursor }, skip: 1 } : {}),
     });
+    const items = rows.slice(0, limit);
+    return {
+      items,
+      nextCursor: rows.length > limit ? items[items.length - 1].id : null,
+    };
   }
 
   /** 重命名画布（仅改标题）。空白标题拒绝；归属经 assertOwner 校验。 */
@@ -130,7 +191,8 @@ export class CanvasService {
   async agentCanvasContext(sessionId: string): Promise<string> {
     const snap = await this.buildSnapshot(sessionId);
     const W = 280;
-    const H = 180;
+    // 媒体型卡片改成「封面满宽置顶」后变高（128px 封面 + 标题/提示词约 60px），H 跟着抬到 220
+    const H = 220;
     const GAP = 40;
 
     const nodeLines = snap.nodes.map((n) => {
@@ -187,17 +249,70 @@ export class CanvasService {
         .filter((g): g is string => !!g),
     );
 
+    // 会话累计 token：run 级持久化列的聚合（明细在 CanvasTokenUsage，快照只回总量）
+    const tokenAgg = await this.prisma.canvasRun.aggregate({
+      where: { sessionId: id },
+      _sum: { totalTokens: true },
+    });
+
     return {
       id: session.id,
       title: session.title,
       status: session.status,
       model: session.model,
       revision: session.revision,
+      totalTokens: tokenAgg._sum.totalTokens ?? 0,
       nodes: session.nodes.map((n) =>
         this.toNodeDto(n, latestByGen.get(n.mediaGenerationId ?? '')),
       ),
       edges: session.edges.map((e) => this.toEdgeDto(e)),
     };
+  }
+
+  /**
+   * 清空会话记录与 agent 上下文（DELETE /canvas/:id/messages）。
+   *
+   * 清什么：CanvasMessage（对话历史，也是 worker loadHistory 的重放源）+ checkpointer 里
+   * 该 thread 的 LangGraph 状态（中断/续跑上下文）。清完 agent 下一轮从零上下文起跑。
+   * 不清什么：节点/连线（用户的画布成果）、CanvasRun / CanvasTokenUsage（token 消耗审计，
+   * 花掉的 token 是真花了，会话框仍显示历史累计）。
+   * 运行期拒绝（CANVAS_BUSY）：正在跑的 run 还会继续写消息，清空会留下半截历史。
+   */
+  async clearMessages(
+    id: string,
+    tenantId: string,
+  ): Promise<{ cleared: true }> {
+    const session = await this.prisma.canvasSession.findFirst({
+      where: { id, tenantId },
+      select: { id: true, status: true },
+    });
+    if (!session) {
+      throw new BusinessException(
+        ErrorCodes.CANVAS_NOT_FOUND,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    if (!['idle', 'done', 'failed', 'stopped'].includes(session.status)) {
+      throw new BusinessException(ErrorCodes.CANVAS_BUSY);
+    }
+
+    await this.prisma.canvasMessage.deleteMany({ where: { sessionId: id } });
+    // agent 上下文：RedisSaver.deleteThread（thread_id = sessionId，见 canvas.processor）。
+    // 失败只告警——DB 历史已清即达成"无上下文"主目标（checkpointer 残留会被下轮覆盖）。
+    try {
+      await this.checkpointer.deleteThread(id);
+    } catch (e) {
+      this.logger.warn(
+        `清空 checkpointer thread 失败 session=${id}: ${String(e)}`,
+      );
+    }
+    await this.prisma.canvasSession.update({
+      where: { id },
+      data: { status: 'idle' },
+    });
+    // 广播：多端/同页其他订阅者据此清空本地对话投影
+    await this.stream.publish(id, { type: 'messages_cleared', payload: {} });
+    return { cleared: true };
   }
 
   /** 画布 agent 对话消息（历史回放源，按 seq）。 */
@@ -488,6 +603,31 @@ export class CanvasService {
         return { op: 'remove_node', nodeId: op.nodeId, revision };
       }
       case 'add_edge': {
+        // 类型契约校验（CANVAS_NODE_IO）：target 不接受 source 的输出类型即拒绝，
+        // 用户拖线与 agent connect_nodes 走同一条路径，前端拦不住的这里也拦。
+        // 只作用于新增，历史遗留的非法边不动。
+        const ends = await tx.canvasNode.findMany({
+          where: { sessionId, id: { in: [op.source, op.target] } },
+          select: { id: true, type: true },
+        });
+        const src = ends.find((n) => n.id === op.source);
+        const dst = ends.find((n) => n.id === op.target);
+        if (!src || !dst) {
+          throw new BusinessException(
+            ErrorCodes.CANVAS_NODE_NOT_FOUND,
+            HttpStatus.NOT_FOUND,
+          );
+        }
+        if (
+          !isCanvasNodeType(src.type) ||
+          !isCanvasNodeType(dst.type) ||
+          !canConnectNodeTypes(src.type, dst.type)
+        ) {
+          throw new BusinessException(
+            ErrorCodes.CANVAS_EDGE_INVALID,
+            HttpStatus.BAD_REQUEST,
+          );
+        }
         // 幂等：同 (sessionId,source,target) 已存在则复用（unique 约束）
         const edge = await tx.canvasEdge.upsert({
           where: {
@@ -612,6 +752,7 @@ export class CanvasService {
       mediaGenerationId: n.mediaGenerationId,
       mediaVersionId: media?.id ?? null,
       mediaStatus: media?.status ?? null,
+      outputs: deriveOutputs(type, n, media),
     };
   }
 

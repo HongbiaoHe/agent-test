@@ -83,7 +83,9 @@ export function respondControl(conversationId: string, decisions: unknown[]) {
 export type CanvasEventType =
   | ConversationEventType
   | "canvas_patch"
-  | "token_usage";
+  | "token_usage"
+  // 会话记录与 agent 上下文被清空：各端据此清掉本地对话投影
+  | "messages_cleared";
 
 export interface CanvasEvent {
   seq: string;

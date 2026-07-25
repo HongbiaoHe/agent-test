@@ -27,13 +27,12 @@ export function createCanvasTools(
   // （见 CanvasService.agentCanvasContext + canvasLiveStateMiddleware），agent 直接读提示即可。
 
   const addNode = tool(
-    async ({ type, label, text, prompt, x, y }) => {
+    async ({ type, label, text, x, y }) => {
       const r = await canvas.applyOp(ctx.sessionId, 'agent', {
         op: 'add_node',
         type,
         label,
         text,
-        prompt,
         x,
         y,
       });
@@ -43,15 +42,11 @@ export function createCanvasTools(
     {
       name: 'add_node',
       description:
-        '在画布上新建一个节点。type：text(文本) | image_upload(上传图片占位) | image_gen(生图) | video_gen(生视频)。生成类节点用 prompt 写提示词；text 节点用 text 写正文。x/y 为画布坐标（按工作流从左到右布局，纵向错开避免重叠）。返回 nodeId。',
+        '在画布上新建一个节点。type：text(文本) | image_upload(上传图片占位) | image_gen(生图) | video_gen(生视频)。提示词写在 text 节点的 text 里，再连到生成节点——生成节点自身不接受提示词参数。x/y 为画布坐标（按工作流从左到右布局，纵向错开避免重叠）。返回 nodeId。',
       schema: z.object({
         type: nodeTypeEnum,
         label: z.string().optional().describe('节点标题（可选）'),
-        text: z.string().optional().describe('text 节点正文'),
-        prompt: z
-          .string()
-          .optional()
-          .describe('image_gen/video_gen 的生成提示词'),
+        text: z.string().optional().describe('text 节点正文（即提示词）'),
         x: z.number().optional(),
         y: z.number().optional(),
       }),
@@ -59,13 +54,12 @@ export function createCanvasTools(
   );
 
   const updateNode = tool(
-    async ({ nodeId, label, text, prompt, x, y }) => {
+    async ({ nodeId, label, text, x, y }) => {
       const r = await canvas.applyOp(ctx.sessionId, 'agent', {
         op: 'update_node',
         nodeId,
         label,
         text,
-        prompt,
         x,
         y,
       });
@@ -74,12 +68,11 @@ export function createCanvasTools(
     {
       name: 'update_node',
       description:
-        '修改已存在节点的 label / text / prompt，或移动节点位置 x/y（放入安全区避免重叠）。',
+        '修改已存在节点的 label / text（text 即 text 节点的正文/提示词），或移动节点位置 x/y（放入安全区避免重叠）。生成节点没有可改的提示词字段——要换提示词就改它上游 text 节点的 text。',
       schema: z.object({
         nodeId: z.string(),
         label: z.string().optional(),
         text: z.string().optional(),
-        prompt: z.string().optional(),
         x: z.number().optional().describe('新的画布 x 坐标'),
         y: z.number().optional().describe('新的画布 y 坐标'),
       }),
@@ -99,7 +92,7 @@ export function createCanvasTools(
     {
       name: 'connect_nodes',
       description:
-        '用有向连线连接两个节点（sourceId → targetId，表示 source 是 target 的上游输入）。例如把 image_gen 连到 video_gen 表示用生成的图作视频首帧。',
+        '用有向连线连接两个节点（sourceId → targetId，表示 source 是 target 的上游输入）。生成节点的提示词与参考图全靠这些入边提供：text 节点连过去就是提示词，image_gen 连过去就是参考图（video_gen 取第一张当首帧）。类型契约：text 输出 text；image_upload 输出 image；image_gen 接受 text/image 输出 image；video_gen 接受 text/image 输出 video（暂不支持 video 输入）。text 与 image_upload 没有输入端口，任何指向它们的连线都会被拒绝。',
       schema: z.object({ sourceId: z.string(), targetId: z.string() }),
     },
   );
@@ -132,32 +125,44 @@ export function createCanvasTools(
           type: node.type,
         });
       }
-      if (!node.prompt?.trim()) {
-        return JSON.stringify({
-          error: '该节点尚无 prompt，请先 update_node 写好提示词',
-        });
-      }
-
-      // 沿入边收集上游已完成的图片版本作参考图/首帧
+      // 素材全部来自入边：生成节点自身不带提示词（契约见 canvas.types 的 CANVAS_NODE_IO）
       const upstreamIds = snap.edges
         .filter((e) => e.target === nodeId)
         .map((e) => e.source);
-      const referenceVersionIds = snap.nodes
-        .filter(
-          (n) =>
-            upstreamIds.includes(n.id) &&
-            (n.type === 'image_gen' || n.type === 'image_upload') &&
-            n.mediaStatus === 'done' &&
-            !!n.mediaVersionId,
-        )
-        .map((n) => n.mediaVersionId as string);
+      const upstream = snap.nodes.filter((n) => upstreamIds.includes(n.id));
+
+      // text 输出 → 拼成本次生成的提示词（多个上游文本按边顺序编号拼接）
+      const promptParts = upstream.flatMap((n) =>
+        n.outputs.filter((o) => o.type === 'text').map((o) => o.content),
+      );
+      if (promptParts.length === 0) {
+        return JSON.stringify({
+          error:
+            '该节点没有可用的提示词：生成节点不自带 prompt，请先 add_node 建一个 text 节点写好提示词，再 connect_nodes 连到它',
+        });
+      }
+      // image 输出 → 参考图（视频取第一张作首帧）。只收 image_gen：image_upload 的 content
+      // 是 assetPath 不是 versionId（MVP 模拟上传），传给 media 会被 validateReferences 拒。
+      const referenceVersionIds = upstream
+        .filter((n) => n.type === 'image_gen')
+        .flatMap((n) =>
+          n.outputs.filter((o) => o.type === 'image').map((o) => o.content),
+        );
+      const skippedUploads = upstream.filter(
+        (n) => n.type === 'image_upload' && n.outputs.length > 0,
+      ).length;
+
+      const prompt =
+        promptParts.length === 1
+          ? promptParts[0]
+          : promptParts.map((t, i) => `${i + 1}. ${t}`).join('\n');
 
       const type = node.type === 'video_gen' ? 'video' : 'image';
       const { generationId } = await media.createGeneration(
         ctx.sessionId,
         ctx.userId,
         type,
-        node.prompt,
+        prompt,
         referenceVersionIds.length ? referenceVersionIds : undefined,
       );
       // 回填 generationId：快照/前端据此显示生成状态与资产
@@ -169,13 +174,16 @@ export function createCanvasTools(
       return JSON.stringify({
         generationId,
         status: 'queued',
+        promptParts: promptParts.length,
         references: referenceVersionIds.length,
+        // 明确回报被跳过的上游资源，模型不会误以为它们参与了生成
+        skippedImageUpload: skippedUploads, // MVP 模拟上传，无 versionId 可引用
       });
     },
     {
       name: 'generate_media_node',
       description:
-        '触发某个 image_gen / video_gen 节点的实际生成（异步）。会自动沿该节点的入边收集上游已生成完成的图片作为参考图（视频取首帧）。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
+        '触发某个 image_gen / video_gen 节点的实际生成（异步）。素材全部取自入边：上游 text 节点的正文拼成提示词，上游 image_gen 的图片作参考图（视频取第一张当首帧）。生成节点自身不带 prompt——没有上游 text 就会报错，此时应先建 text 节点再连线。上游 image_upload 暂不参与生成（模拟上传无资产可引用），会在返回值里报出。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
       schema: z.object({ nodeId: z.string() }),
     },
   );

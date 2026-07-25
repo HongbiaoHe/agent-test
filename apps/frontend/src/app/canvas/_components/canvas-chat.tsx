@@ -5,6 +5,7 @@ import {
   Check,
   ChevronDown,
   CircleDot,
+  Eraser,
   Loader2,
   Pause,
   Send,
@@ -26,15 +27,18 @@ import { Markdown } from "./markdown";
 import { CanvasModelSwitcher } from "./model-switcher";
 
 const TOOL_LABEL: Record<string, string> = {
-  add_node: "添加节点",
-  update_node: "更新节点",
-  connect_nodes: "连接节点",
-  delete_node: "删除节点",
-  generate_media_node: "触发生成",
-  get_canvas: "读取画布",
-  ask_user: "向你提问",
-  write_todos: "规划任务",
+  add_node: "Add node",
+  update_node: "Update node",
+  connect_nodes: "Connect nodes",
+  delete_node: "Delete node",
+  generate_media_node: "Run generation",
+  get_canvas: "Read canvas",
+  ask_user: "Ask you",
+  write_todos: "Plan tasks",
 };
+
+/** 确认型中断工具（approve/reject 二选一），与后端 interruptOn 配置对应。 */
+const CONFIRM_TOOLS = new Set(["clear_canvas", "generate_media_node"]);
 
 type ToolItem = Extract<ChatItem, { kind: "tool" }>;
 
@@ -48,21 +52,21 @@ function toolDetail(item: ToolItem): string {
   const a = item.args ?? {};
   switch (item.name) {
     case "add_node": {
-      const parts = [a.type, a.label, a.prompt ?? a.text]
+      const parts = [a.type, a.label, a.text]
         .filter(Boolean)
         .map((x) => preview(x, 32));
       return parts.join(" · ");
     }
     case "update_node":
-      return preview(a.prompt ?? a.text ?? a.label ?? a.nodeId);
+      return preview(a.text ?? a.label ?? a.nodeId);
     case "connect_nodes":
-      return "新增一条连线";
+      return "Added an edge";
     case "delete_node":
-      return "移除一个节点";
+      return "Removed a node";
     case "generate_media_node":
-      return item.done ? "已发起生成" : "触发生成…";
+      return item.done ? "Generation started" : "Starting generation…";
     case "get_canvas":
-      return "查看当前节点与连线";
+      return "Read nodes and edges";
     case "ask_user":
       return preview(a.question);
     default:
@@ -128,7 +132,7 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
           {names}
         </span>
         <span className="shrink-0 text-[10px] text-muted-foreground">
-          {running ? "执行中…" : `${tools.length} 步`}
+          {running ? "Running…" : `${tools.length} steps`}
         </span>
         <ChevronDown
           className={cn(
@@ -236,10 +240,10 @@ function TaskPlanPanel({
         ) : (
           <CircleDot className="size-3.5 shrink-0 text-muted-foreground" />
         )}
-        <span className="flex-1">任务计划</span>
+        <span className="flex-1">Task plan</span>
         {paused && (
           <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
-            已暂停
+            Paused
           </span>
         )}
         <span className="text-[10px] text-muted-foreground">
@@ -293,27 +297,43 @@ function AskPanel({
 }) {
   const [text, setText] = useState("");
 
-  // 确认型（clear_canvas 等破坏性操作）：只给「确认 / 取消」两个按钮，不填答案
-  if (ask.tool === "clear_canvas") {
+  // 确认型（破坏性/消耗性操作）：只给「确认 / 取消」两个按钮，不填答案。
+  // clear_canvas 走 destructive 红色语义；generate_media_node 是普通消耗确认走 primary。
+  if (CONFIRM_TOOLS.has(ask.tool)) {
+    const destructive = ask.tool === "clear_canvas";
+    const text =
+      ask.tool === "clear_canvas"
+        ? "This clears the whole canvas (every node and edge). It cannot be undone. Proceed?"
+        : ask.question;
     return (
-      <div className="space-y-2.5 rounded-lg border border-destructive/40 bg-destructive/5 p-3">
+      <div
+        className={cn(
+          "space-y-2.5 rounded-lg border p-3",
+          destructive
+            ? "border-destructive/40 bg-destructive/5"
+            : "border-primary/40 bg-primary/5",
+        )}
+      >
         <div className="flex items-center gap-2 text-sm font-medium text-foreground">
-          <AlertTriangle className="size-4 text-destructive" />
-          Agent 请求确认
+          <AlertTriangle
+            className={cn(
+              "size-4",
+              destructive ? "text-destructive" : "text-primary",
+            )}
+          />
+          Agent needs approval
         </div>
-        <p className="text-sm text-muted-foreground">
-          即将清空整块画布（删除全部节点与连线），此操作不可撤销。确认执行？
-        </p>
+        <p className="text-sm text-muted-foreground">{text}</p>
         <div className="flex gap-2">
           <Button
             size="sm"
-            variant="destructive"
+            variant={destructive ? "destructive" : "default"}
             onClick={() => onResolve(true)}
           >
-            确认清空
+            {destructive ? "Clear canvas" : "Approve"}
           </Button>
           <Button size="sm" variant="outline" onClick={() => onResolve(false)}>
-            取消
+            Cancel
           </Button>
         </div>
       </div>
@@ -324,7 +344,7 @@ function AskPanel({
     <div className="space-y-2 rounded-lg border border-primary/40 bg-primary/5 p-3">
       <div className="flex items-center gap-2 text-sm font-medium text-foreground">
         <Sparkles className="size-4 text-primary" />
-        Agent 提问
+        Agent asks
       </div>
       <p className="text-sm text-muted-foreground">{ask.question}</p>
       {ask.options.length > 0 && (
@@ -340,7 +360,7 @@ function AskPanel({
         <Textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="输入你的回答…"
+          placeholder="Type your answer…"
           className="min-h-9 resize-none"
         />
         <Button
@@ -351,7 +371,7 @@ function AskPanel({
             setText("");
           }}
         >
-          回答
+          Send answer
         </Button>
       </div>
     </div>
@@ -367,6 +387,8 @@ export function CanvasChat({
   onStop,
   onAnswer,
   onResolve,
+  onClear,
+  clearing,
 }: {
   chat: ChatState;
   tokens: number;
@@ -377,6 +399,10 @@ export function CanvasChat({
   onStop: () => void;
   onAnswer: (msg: string) => void;
   onResolve: (approve: boolean) => void;
+  /** 清空会话记录与 agent 上下文（由 shell 弹确认后调用） */
+  onClear: () => void;
+  /** 清空请求在途：按钮转圈禁用 */
+  clearing: boolean;
 }) {
   const [text, setText] = useState("");
   const [model, setModel] = useState(sessionModel ?? DEFAULT_CANVAS_MODEL);
@@ -410,10 +436,29 @@ export function CanvasChat({
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2.5">
-        <span className="text-sm font-medium">画布 Agent</span>
-        <Badge variant="secondary" title="本次运行累计 token">
-          {tokens.toLocaleString()} tokens
-        </Badge>
+        <span className="text-sm font-medium">Canvas Agent</span>
+        <div className="flex items-center gap-1.5">
+          <Badge variant="secondary" title="Total tokens for this canvas (clearing history keeps it)">
+            {tokens.toLocaleString()} tokens
+          </Badge>
+          {/* 清空会话记录 + agent 上下文（节点与 token 统计保留）；运行期禁用 */}
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            aria-label="Clear chat history"
+            title={
+              busy ? "Cannot clear while running" : "Clear chat history and agent context (nodes stay)"
+            }
+            disabled={busy || clearing}
+            onClick={onClear}
+          >
+            {clearing ? (
+              <Loader2 className="animate-spin" />
+            ) : (
+              <Eraser />
+            )}
+          </Button>
+        </div>
       </div>
 
       {/* min-h-0 关键：让 ScrollArea 在 flex 列里可收缩并内部滚动，而不是撑高整列溢出屏幕 */}
@@ -455,7 +500,7 @@ export function CanvasChat({
               }
             }}
             placeholder={
-              busy ? "Agent 运行中…" : "描述你想要的工作流，Agent 会自动搭建"
+              busy ? "Agent running…" : "Describe the workflow, the agent builds it"
             }
             disabled={busy}
             rows={1}
@@ -475,14 +520,14 @@ export function CanvasChat({
                 className="h-8 gap-1.5 rounded-lg px-2.5 text-xs"
               >
                 <Square className="size-3.5" />
-                停止
+                Stop
               </Button>
             ) : (
               <Button
                 size="icon"
                 onClick={submit}
                 disabled={!text.trim()}
-                title="发送 (Enter)"
+                title="Send (Enter)"
                 className="size-8 rounded-lg transition-transform active:translate-y-px disabled:opacity-40"
               >
                 <Send className="size-4" />

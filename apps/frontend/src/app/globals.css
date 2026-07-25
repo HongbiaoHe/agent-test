@@ -164,6 +164,35 @@
     @apply bg-background text-foreground font-sans;
   }
 
+  /* 触屏：输入控件字号小于 16px 时，iOS Safari 一聚焦就把整页放大（且不会自动缩回）。
+     统一在 coarse 指针下抬到 16px——这是唯一不牺牲可访问性的解法
+     （另一种常见做法是给 viewport meta 加 maximum-scale=1，那会连带禁掉用户手动缩放）。 */
+  @media (pointer: coarse) {
+    input,
+    textarea,
+    select {
+      font-size: 16px;
+    }
+  }
+
+  /* 全屏应用外壳所在的路由（带 [data-app-shell] 的页面，如 /canvas）：把文档钉死在可视区、
+     禁止整页滚动。
+
+     为什么需要：手机浏览器里 html 的 height:100% 按「初始包含块」解析，而初始包含块用的是
+     **大视口**（地址栏收起时的高度）。地址栏显示时可视区更矮，于是文档天生比可视区高一截 →
+     在底部上滑会把整页顶上去，外壳下方露出大片背景色（真机实测到的现象）。
+     钉死之后地址栏不再随滚动收放，外壳的 100svh 就精确等于可视区。
+     overscroll-behavior:none 顺带掐掉橡皮筋回弹与下拉刷新。
+
+     用 :has() 而不是给 body 加类：根 layout 是所有路由共用的，落地页必须能滚，
+     只能按「页面里有没有全屏外壳」来判定。 */
+  html:has([data-app-shell]),
+  html:has([data-app-shell]) body {
+    height: 100svh;
+    overflow: hidden;
+    overscroll-behavior: none;
+  }
+
   /* 点击即时反馈：所有按钮 / 链接 / 可点元素按下瞬间轻微变淡，松开即恢复。
      组件库 Button 已有按下位移（active:translate-y-px），但原生 <a>/<button>/[role=button]
      缺反馈——这里全局统一补齐。:where() 零特异性，不覆盖组件自身 hover/active 样式；
@@ -347,44 +376,41 @@
     0 0 0 1px var(--border), 0 2px 8px oklch(0 0 0 / 0.35);
 }
 
-/* 画布节点「类型身份」视觉：每个节点经内联 style 设 `--tone`（= 某个 --node-* token），
-   下方所有强调件（左导轨 / 图标 chip / 表头淡染 / 连接点 / hover&选中环）统一从 --tone 取色，
-   卡片主体保持中性 bg-card 保证可读。改类型色只需换 --tone，无需动组件。 */
+/* 画布节点「内容优先」视觉：媒体预览满宽置顶 + 类型 chip 浮在预览左上角，标题与提示词退到下方。
+   卡片主体全中性（守 manus「靠深浅不靠彩色」），类型色 --tone 只留在连接点上标示端口类型。
+   生成中另给整卡一圈旋转高光环 + 封面满幅高光横扫，范围大、缩放后也能看出哪个节点在跑。 */
 .canvas-node {
   position: relative;
   transition:
     border-color 0.15s ease,
     box-shadow 0.15s ease;
 }
-/* 左侧彩色导轨：贴左边框，仅左角随卡片圆角收口，宽 3px 不影响连接点（不能用 overflow:hidden，
-   否则会裁掉半悬在边缘的 handle）。 */
-.canvas-node__rail {
+/* 封面：满宽置顶、零内边距，只收上方两角——不能给整卡 overflow:hidden，
+   否则半悬在边缘的 handle 会被裁掉。 */
+.canvas-node__cover {
+  position: relative;
+  overflow: hidden;
+  border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0;
+  background: var(--muted);
+}
+/* 类型 chip：浮在封面左上，深底浅字 + 轻模糊，压得住任意明暗的图片 */
+.canvas-node__chip {
   position: absolute;
-  left: 0;
-  top: 0;
-  bottom: 0;
+  left: 0.5rem;
+  top: 0.5rem;
   z-index: 1;
-  width: 3px;
-  background: var(--tone);
-  border-radius: var(--radius) 0 0 var(--radius);
-}
-.canvas-node__header {
-  background: color-mix(in oklch, var(--tone) 10%, var(--card));
-  border-bottom-color: color-mix(in oklch, var(--tone) 24%, var(--border));
-}
-/* 彩色图标 chip：类型色图标 + 同色极淡底 */
-.canvas-node__icon {
   display: inline-flex;
   align-items: center;
-  justify-content: center;
-  width: 1.5rem;
-  height: 1.5rem;
-  flex-shrink: 0;
-  border-radius: calc(var(--radius) - 4px);
-  color: var(--tone);
-  background: color-mix(in oklch, var(--tone) 18%, transparent);
+  gap: 0.3rem;
+  padding: 0.15rem 0.45rem;
+  border-radius: 999px;
+  font-size: 10.5px;
+  line-height: 1.6;
+  color: oklch(0.98 0 0);
+  background: oklch(0.18 0.005 60 / 0.6);
+  backdrop-filter: blur(6px);
 }
-/* 连接点染成类型色（源端=该节点类型色，直观标示数据从哪来） */
+/* 连接点染成类型色：卡面已全中性，端口是唯一保留类型身份的地方 */
 .canvas-node .react-flow__handle {
   width: 9px;
   height: 9px;
@@ -392,14 +418,93 @@
   border: 1.5px solid var(--card);
 }
 .canvas-node:hover {
-  border-color: color-mix(in oklch, var(--tone) 38%, var(--border));
+  border-color: color-mix(in oklch, var(--foreground) 18%, var(--border));
 }
-/* 选中：类型色描边 + 柔和同色投影 */
+/* 选中：中性焦点环（类型色不参与状态表达，避免和「在跑 / 失败」抢注意） */
 .react-flow__node.selected .canvas-node {
-  border-color: color-mix(in oklch, var(--tone) 55%, var(--border));
+  border-color: var(--ring);
   box-shadow:
-    0 0 0 1px color-mix(in oklch, var(--tone) 55%, transparent),
-    0 6px 18px color-mix(in oklch, var(--tone) 22%, transparent);
+    0 0 0 1px var(--ring),
+    0 6px 18px oklch(0 0 0 / 0.1);
+}
+
+/* 生成中·效果一：整卡旋转高光环。复用 .glow-border 的 conic + 异或 mask 手法，但做成独立
+   absolute 元素而不是 ::before——::before 会被静态子元素盖住，得靠 `> *` 强制 position:relative，
+   那会打坏 react-flow handle 的 absolute 定位。ring 只占边缘 2px 且 pointer-events:none。 */
+.canvas-node__glow {
+  position: absolute;
+  inset: -1px;
+  z-index: 2;
+  border-radius: calc(var(--radius) + 1px);
+  padding: 2px;
+  background: conic-gradient(
+    from var(--glow-angle),
+    var(--glow-color) 0deg,
+    var(--glow-color) 25deg,
+    var(--border) 90deg,
+    var(--border) 150deg,
+    var(--glow-color) 180deg,
+    var(--glow-color) 205deg,
+    var(--border) 270deg,
+    var(--border) 330deg,
+    var(--glow-color) 360deg
+  );
+  mask:
+    linear-gradient(#000 0 0) content-box,
+    linear-gradient(#000 0 0);
+  mask-composite: exclude;
+  pointer-events: none;
+  animation: glow-border-spin 2.4s linear infinite;
+}
+/* 生成中·效果二：封面满幅高光横扫（复用上方 media-card-shimmer keyframe）。 */
+.canvas-node__shimmer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.canvas-node__shimmer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 55%;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklch, var(--foreground) 12%, transparent),
+    transparent
+  );
+  animation: media-card-shimmer 1.5s ease-in-out infinite;
+}
+/* 连线流光：在原贝塞尔路径上叠一段高亮虚线，dashoffset 递减 → 光段沿 source→target 方向跑。
+   触发时机见 canvas-edges.tsx（目标节点在生成 / 两端有节点被选中）。
+   高亮色同样用 --glow-color：dark 是近白亮光，light 是暖中灰（比默认连线深，在浅底上才看得见）。
+   dasharray 取「一段长光带 + 大段留白」而不是密集短划，否则会读成行军蚁虚线；
+   位移终值必须等于 dasharray 之和，循环才无缝。drop-shadow 给光带一点柔边，才像光而不像线。 */
+@keyframes canvas-edge-flow {
+  to {
+    stroke-dashoffset: -82;
+  }
+}
+.canvas-edge__flow {
+  stroke: var(--glow-color);
+  stroke-width: 2.5;
+  stroke-linecap: round;
+  stroke-dasharray: 22 60;
+  filter: drop-shadow(0 0 3px var(--glow-color));
+  pointer-events: none;
+  animation: canvas-edge-flow 1.2s linear infinite;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas-node__glow,
+  .canvas-node__shimmer::after,
+  .canvas-edge__flow {
+    animation: none;
+  }
 }
 
 /* highlight.js 语法配色：统一映射到上方 --syntax-* token（亮暗自适应）。

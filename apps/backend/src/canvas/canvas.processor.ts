@@ -136,7 +136,13 @@ export class CanvasProcessor extends WorkerHost {
       let seq = await this.prisma.canvasMessage.count({
         where: { sessionId },
       });
-      let cumulativeTotal = 0;
+      // 会话级累计起点 = 历史全部 run 的持久化总量：token_usage 事件的 cumulativeTotal
+      // 因此是**会话级**口径（与快照 totalTokens 一致），前端直显、刷新/多轮不归零。
+      const prevAgg = await this.prisma.canvasRun.aggregate({
+        where: { sessionId },
+        _sum: { totalTokens: true },
+      });
+      let cumulativeTotal = prevAgg._sum.totalTokens ?? 0;
       const seenUsageIds = new Set<string>();
       // tool_start echo 去重：updates 会跨节点回显同一带 tool_calls 的 AIMessage（同 id），
       // 不去重会导致一次工具调用显示成多张卡片（用户观察到的"添加节点 ×3"）。

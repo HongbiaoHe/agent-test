@@ -109,4 +109,9 @@ export const ErrorCodes = {
   },
   CANVAS_NODE_NOT_FOUND: { code: 70005, message: 'Canvas node not found' },
   CANVAS_TITLE_EMPTY: { code: 70006, message: 'Canvas title cannot be empty' },
+  CANVAS_EDGE_INVALID: {
+    code: 70007,
+    message:
+      'Invalid connection (target node does not accept this source output type)',
+  },
 } as const satisfies Record<string, ErrorDef>;

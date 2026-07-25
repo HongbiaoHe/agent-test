@@ -1,4 +1,4 @@
-import { Activity, ArrowRight, Box, FileCheck, GitBranch, Layers, MessageSquare, Play, Repeat, Sparkles, Wifi, Workflow, Zap } from "lucide-react";
+import { Activity, ArrowDown, ArrowRight, Bot, Box, FileCheck, Film, GitBranch, Image as ImageIcon, Layers, Link2, MessageSquare, Network, Play, Repeat, Sparkles, Type, Wifi, Workflow, Zap } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -37,6 +37,35 @@ const steps = [
     description:
       "Reasoning, tool calls, and results stream back live over WebSocket — nothing happens behind a curtain.",
   },
+];
+
+/** 画布区的三条要点：与实际实现一致（端口契约 / 素材全靠入边 / agent 代搭）。 */
+const canvasPoints = [
+  {
+    icon: Network,
+    title: "Typed nodes, typed edges",
+    description:
+      "Every node declares what it accepts and what it produces. Text feeds a generator; a generator feeds the next one. Invalid wiring is refused before it reaches the queue.",
+  },
+  {
+    icon: Link2,
+    title: "Inputs are the prompt",
+    description:
+      "A generation node carries no prompt field of its own. It reads the prompt and the reference frames from whatever you connect upstream, so editing one text node re-aims everything downstream.",
+  },
+  {
+    icon: Bot,
+    title: "Let the agent wire it",
+    description:
+      "Describe the pipeline in a sentence. The agent places the nodes, connects them, triggers generation, and you watch the cards fill in over the same live stream.",
+  },
+];
+
+/** 画布区右栏的流程示意（不是产品截图，是三类节点如何串起来的图示）。 */
+const canvasFlow = [
+  { icon: Type, label: "Text", detail: "The prompt" },
+  { icon: ImageIcon, label: "Image", detail: "Generated, or uploaded" },
+  { icon: Film, label: "Video", detail: "Takes the image as first frame" },
 ];
 
 const stack = [
@@ -114,6 +143,95 @@ export default async function HomePage() {
               </li>
             ))}
           </ol>
+        </div>
+      </ScrollReveal>
+
+      {/* Canvas：唯一的左右分栏区块（其余区块都是居中标题 + 卡片网格，不再重复同一种版式）。
+          右栏是三类节点如何串起来的流程图示，不是伪造的产品截图。 */}
+      <ScrollReveal id="canvas" className="border-t border-border bg-muted/30">
+        <div className="mx-auto w-full max-w-6xl px-4 py-20 sm:px-6 sm:py-28">
+          <div className="grid items-start gap-12 lg:grid-cols-[1fr_22rem] lg:gap-16">
+            {/* 左：文案 + 要点 + 入口 */}
+            <div>
+              <h2
+                data-reveal
+                className="text-2xl font-semibold tracking-tight sm:text-3xl"
+              >
+                Wire the workflow on a canvas
+              </h2>
+              <p
+                data-reveal
+                className="mt-3 max-w-xl text-pretty text-muted-foreground"
+              >
+                Text, image, and video nodes on one board. Connect them and the
+                prompt and reference frames flow downstream on their own.
+              </p>
+
+              <ul className="mt-10 space-y-6">
+                {canvasPoints.map(({ icon: Icon, title, description }) => (
+                  <li key={title} data-reveal className="flex gap-4">
+                    <span className="flex size-9 shrink-0 items-center justify-center rounded-lg bg-accent text-accent-foreground">
+                      <Icon className="size-5" />
+                    </span>
+                    <div className="min-w-0">
+                      <h3 className="font-medium">{title}</h3>
+                      <p className="mt-1.5 max-w-xl text-sm text-muted-foreground">
+                        {description}
+                      </p>
+                    </div>
+                  </li>
+                ))}
+              </ul>
+
+              <div data-reveal className="mt-10">
+                <Button
+                  size="lg"
+                  nativeButton={false}
+                  render={<Link href={isLoggedIn ? "/canvas" : "/login"} />}
+                >
+                  {isLoggedIn ? "Open the canvas" : "Sign in to try it"}
+                  <ArrowRight className="size-4" />
+                </Button>
+              </div>
+            </div>
+
+            {/* 右：流程图示 */}
+            <div
+              data-reveal
+              className="rounded-xl border border-border bg-card p-6"
+            >
+              <ol className="space-y-1">
+                {canvasFlow.map(({ icon: Icon, label, detail }, i) => (
+                  <li key={label}>
+                    <div className="flex items-center gap-3 rounded-lg border border-border bg-background px-3 py-2.5">
+                      <span className="flex size-8 shrink-0 items-center justify-center rounded-md bg-accent text-accent-foreground">
+                        <Icon className="size-4" />
+                      </span>
+                      <div className="min-w-0">
+                        <div className="text-sm font-medium">{label}</div>
+                        <div className="truncate text-xs text-muted-foreground">
+                          {detail}
+                        </div>
+                      </div>
+                    </div>
+                    {/* 连接符：最后一个节点后面不画 */}
+                    {i < canvasFlow.length - 1 && (
+                      <div
+                        className="flex justify-center py-1 text-muted-foreground"
+                        aria-hidden
+                      >
+                        <ArrowDown className="size-4" />
+                      </div>
+                    )}
+                  </li>
+                ))}
+              </ol>
+              <p className="mt-5 text-xs text-muted-foreground">
+                Nodes stay editable while the agent works, and every change
+                broadcasts to anyone else watching the same board.
+              </p>
+            </div>
+          </div>
         </div>
       </ScrollReveal>
 
@@ -421,6 +539,14 @@ export default async function HomePage() {
                 Links
               </h3>
               <ul className="space-y-2 text-sm">
+                <li>
+                  <Link
+                    href={isLoggedIn ? "/canvas" : "/login"}
+                    className="text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    Canvas workflow
+                  </Link>
+                </li>
                 <li>
                   <Link
                     href="/login"

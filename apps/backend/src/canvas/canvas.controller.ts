@@ -1,10 +1,12 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
   Patch,
   Post,
+  Query,
   UseGuards,
 } from '@nestjs/common';
 import { CurrentUser } from '../auth/current-user.decorator';
@@ -33,9 +35,17 @@ export class CanvasController {
     );
   }
 
+  /** 画布列表（cursor 分页：?cursor=<上页末项 id>&limit=30，前端滚动加载）。 */
   @Get()
-  list(@CurrentUser() user: AuthUser) {
-    return this.canvas.list(user.tenantId);
+  list(
+    @CurrentUser() user: AuthUser,
+    @Query('cursor') cursor?: string,
+    @Query('limit') limit?: string,
+  ) {
+    return this.canvas.list(user.tenantId, {
+      cursor,
+      limit: limit ? Number(limit) : undefined,
+    });
   }
 
   /** 画布快照（节点 + 边 + 生成节点媒体状态）。 */
@@ -48,6 +58,12 @@ export class CanvasController {
   @Get(':id/messages')
   messages(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.canvas.findMessages(id, user.tenantId);
+  }
+
+  /** 清空会话记录与 agent 上下文（保留节点/连线与 token 审计）。运行期拒绝。 */
+  @Delete(':id/messages')
+  clearMessages(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.canvas.clearMessages(id, user.tenantId);
   }
 
   @Post(':id/messages')

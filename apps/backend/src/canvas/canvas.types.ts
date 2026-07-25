@@ -50,10 +50,57 @@ export function isCanvasNodeType(v: unknown): v is CanvasNodeType {
   );
 }
 
+/** 节点端口上流动的资源类型。连线合法性与 outputs 形状都以它为单位。 */
+export type CanvasIoType = 'text' | 'image' | 'video';
+
+/**
+ * 节点的一份输出。统一包成对象数组便于扩展——当前每个节点恒为 0 或 1 份。
+ * content 的语义随 type 变：
+ *  - text        → 字面文本；
+ *  - image/video → MediaVersion.id（前端经带鉴权的 blob 接口取资产）；
+ *  - 例外：image_upload 目前是 MVP 模拟上传，没有 MediaVersion，content 存 assetPath。
+ */
+export interface CanvasNodeOutput {
+  type: CanvasIoType;
+  content: string;
+}
+
+/**
+ * 每种节点的输入/输出契约（后端权威，前端在 canvas/_lib/node-io.ts 镜像）。
+ * 入边数量不限（多输入），outputs 也是数组（多输出）——当前生成管线一次只产一份。
+ *
+ * 生成节点自身不带提示词：prompt 与参考图**全部来自入边**（上游 text 输出拼成提示词，
+ * 上游 image 输出作参考图），见 canvas.tools 的 generate_media_node。
+ *
+ * ⚠️ video_gen 暂不接受 video 输入：底层管线吃不下视频参考——media.processor 的 loadRefs
+ * 把参考版本按图片读盘，视频生成只用 refs[0] 当首帧。等管线支持了再往 inputs 里加 'video'。
+ */
+export const CANVAS_NODE_IO: Record<
+  CanvasNodeType,
+  { inputs: readonly CanvasIoType[]; outputs: readonly CanvasIoType[] }
+> = {
+  text: { inputs: [], outputs: ['text'] },
+  image_upload: { inputs: [], outputs: ['image'] },
+  image_gen: { inputs: ['text', 'image'], outputs: ['image'] },
+  video_gen: { inputs: ['text', 'image'], outputs: ['video'] },
+};
+
+/**
+ * 连线是否合法：source 的任一输出类型被 target 接受即可。
+ * target 无输入端口（text / image_upload）→ 一律非法。
+ */
+export function canConnectNodeTypes(
+  source: CanvasNodeType,
+  target: CanvasNodeType,
+): boolean {
+  const accepted = CANVAS_NODE_IO[target].inputs;
+  return CANVAS_NODE_IO[source].outputs.some((t) => accepted.includes(t));
+}
+
 /**
  * 节点对外形状（REST 快照 + patch 事件 node 字段）。
  * media 字段（mediaVersionId/mediaStatus）由快照层按 mediaGenerationId JOIN MediaVersion 算出，
- * 不落 CanvasNode 表（避免脆弱回写）。
+ * 不落 CanvasNode 表（避免脆弱回写）。outputs 同理是派生字段。
  */
 export interface CanvasNodeDto {
   id: string;
@@ -70,6 +117,13 @@ export interface CanvasNodeDto {
   mediaVersionId: string | null;
   /** 生成节点最新状态：queued|generating|done|failed（JOIN 得出）。 */
   mediaStatus: string | null;
+  /**
+   * 该节点当前可供下游消费的输出（派生，不落表）。未就绪时为空数组：
+   * text 正文为空、image_upload 未上传、生成节点未 done 都是 []。
+   * ⚠️ patch 事件里的 node 不带 media JOIN，生成节点的 outputs 会是 []——
+   * 前端 applyPatch 的 upsertNode 已对此做保留旧值兜底，勿依赖 patch 里的 outputs。
+   */
+  outputs: CanvasNodeOutput[];
 }
 
 /** 一条连线的对外形状。 */
@@ -86,6 +140,8 @@ export interface CanvasSnapshot {
   status: string;
   model: string | null;
   revision: number;
+  /** 会话累计 token（全部 run 的 totalTokens 聚合，持久化口径；实时增量走 token_usage 事件） */
+  totalTokens: number;
   nodes: CanvasNodeDto[];
   edges: CanvasEdgeDto[];
 }

@@ -237,6 +237,18 @@ export async function fetchMediaAssetBlob(versionId: string): Promise<Blob> {
 
 export type CanvasNodeType = "image_upload" | "image_gen" | "text" | "video_gen";
 
+/** 节点端口上流动的资源类型（镜像后端 canvas.types）。 */
+export type CanvasIoType = "text" | "image" | "video";
+
+/**
+ * 节点的一份输出（镜像后端 canvas.types）。content 语义随 type：
+ * text → 字面文本；image/video → mediaVersionId；image_upload 破例存 assetPath。
+ */
+export interface CanvasNodeOutput {
+  type: CanvasIoType;
+  content: string;
+}
+
 export interface CanvasNodeDto {
   id: string;
   type: CanvasNodeType;
@@ -250,6 +262,8 @@ export interface CanvasNodeDto {
   mediaGenerationId: string | null;
   mediaVersionId: string | null;
   mediaStatus: string | null;
+  /** 可供下游消费的输出（服务端派生）。⚠️ patch 里生成节点的这项恒为空，见 canvas-state 的 upsertNode */
+  outputs: CanvasNodeOutput[];
 }
 
 export interface CanvasEdgeDto {
@@ -264,6 +278,8 @@ export interface CanvasSnapshot {
   status: string;
   model: string | null;
   revision: number;
+  /** 会话累计 token（后端 run 聚合的持久化口径；实时增量由 token_usage 事件覆盖） */
+  totalTokens: number;
   nodes: CanvasNodeDto[];
   edges: CanvasEdgeDto[];
 }
@@ -293,6 +309,7 @@ export type CanvasOpInput =
       label?: string;
       text?: string;
       prompt?: string;
+      assetPath?: string;
     }
   | { op: "update_node"; nodeId: string; label?: string; text?: string; prompt?: string }
   | { op: "remove_node"; nodeId: string }
@@ -307,8 +324,12 @@ export function createCanvas(input: {
   return request("/canvas", { method: "POST", body: JSON.stringify(input) });
 }
 
-export function listCanvases(): Promise<CanvasListItem[]> {
-  return request("/canvas");
+/** 画布列表（cursor 分页）：cursor 传上一页 nextCursor；nextCursor=null 表示没有更多。 */
+export function listCanvases(
+  cursor?: string,
+): Promise<{ items: CanvasListItem[]; nextCursor: string | null }> {
+  const q = cursor ? `?cursor=${encodeURIComponent(cursor)}` : "";
+  return request(`/canvas${q}`);
 }
 
 export function renameCanvas(
@@ -327,6 +348,14 @@ export function getCanvasSnapshot(id: string): Promise<CanvasSnapshot> {
 
 export function getCanvasMessages(id: string): Promise<CanvasMessage[]> {
   return request(`/canvas/${id}/messages`);
+}
+
+/**
+ * 清空会话记录与 agent 上下文（DELETE /canvas/:id/messages）。
+ * 节点/连线与 token 统计保留；运行期后端会拒绝（CANVAS_BUSY）。
+ */
+export function clearCanvasMessages(id: string): Promise<{ cleared: true }> {
+  return request(`/canvas/${id}/messages`, { method: "DELETE" });
 }
 
 export function appendCanvasMessage(

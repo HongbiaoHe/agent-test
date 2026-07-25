@@ -2,7 +2,7 @@ import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Injectable, Logger } from '@nestjs/common';
-import { GoogleGenAI } from '@google/genai';
+import { GoogleGenAI, type GenerateVideosOperation } from '@google/genai';
 
 /** 生成结果：原始字节 + MIME 类型（落盘与 Content-Type 都需要它）。 */
 export interface MediaBytes {
@@ -15,6 +15,11 @@ export interface MediaRef {
   data: string; // base64
   mimeType: string;
 }
+
+/** 视频轮询容忍的**连续**失败次数（成功一次即清零）。见 pollVideosOperation 的说明。 */
+const POLL_MAX_FAILURES = 3;
+/** 视频下载总尝试次数（首次 + 重试）。 */
+const DOWNLOAD_ATTEMPTS = 3;
 
 /**
  * @google/genai 的薄封装——本文件是整个项目里**唯一**触碰 @google/genai 的地方
@@ -129,19 +134,12 @@ export class GoogleMediaClient {
     });
     this.logger.log(`视频生成已提交 operation=${op.name}`);
 
-    const deadline = Date.now() + timeoutMs;
-    while (!op.done) {
-      // 协作取消：用户停止后不再继续轮询（已提交的云端任务由 Google 侧自行完成/过期）
-      if (opts?.signal?.aborted) {
-        throw new Error(`视频生成已取消 operation=${op.name}`);
-      }
-      if (Date.now() >= deadline) {
-        throw new Error(`视频生成超时（>${timeoutMs}ms）operation=${op.name}`);
-      }
-      await new Promise((r) => setTimeout(r, intervalMs));
+    op = await this.pollVideosOperation(
+      op,
       // getVideosOperation 接收上一份 operation，回填 done/response（genai.d.ts:8974）
-      op = await ai.operations.getVideosOperation({ operation: op });
-    }
+      (cur) => ai.operations.getVideosOperation({ operation: cur }),
+      { intervalMs, timeoutMs, signal: opts?.signal },
+    );
 
     if (op.error) {
       throw new Error(`视频生成失败：${JSON.stringify(op.error)}`);
@@ -159,7 +157,10 @@ export class GoogleMediaClient {
       const tmp = mkdtempSync(join(tmpdir(), 'veo-'));
       const downloadPath = join(tmp, 'video.mp4');
       try {
-        await ai.files.download({ file: video, downloadPath });
+        // 下载几 MB 的 mp4 比轮询更容易撞上瞬时网络失败，失败一次不该让整条任务作废
+        await this.retryTransient('视频下载', DOWNLOAD_ATTEMPTS, () =>
+          ai.files.download({ file: video, downloadPath }),
+        );
         return {
           bytes: readFileSync(downloadPath),
           mimeType: video.mimeType ?? 'video/mp4',
@@ -171,5 +172,79 @@ export class GoogleMediaClient {
     throw new Error(
       '视频生成失败：operation 完成但无视频数据（无 videoBytes 也无 uri）',
     );
+  }
+
+  /**
+   * 轮询 videos operation 直到 done。抽成独立方法便于单测（可注入小间隔与假 poller），
+   * 与 MediaProcessor.waitForRef 同一套路。
+   *
+   * 为什么要容错：视频链路跨度长（提交 + 每 10s 轮询 + 下载数 MB），本机直连 Google 的 TLS
+   * 握手时快时慢（实测 0.6s~15s），单次轮询抛 `fetch failed` 是常态；而云端任务往往还在正常跑，
+   * 一次瞬时失败就把整条 version 判死是错的。故容忍**连续** maxConsecutiveFailures 次失败，
+   * 成功一次即清零；超过上限才抛最后那个错误。
+   *
+   * 不区分错误类型：undici 的 `fetch failed` 没有稳定错误码，真·永久错误（如模型名非法）也会被
+   * 重试几轮，但有失败上限与 deadline 兜底，最坏只是晚几十秒报同一个错。
+   */
+  async pollVideosOperation(
+    initial: GenerateVideosOperation,
+    poll: (op: GenerateVideosOperation) => Promise<GenerateVideosOperation>,
+    opts: {
+      intervalMs: number;
+      timeoutMs: number;
+      maxConsecutiveFailures?: number;
+      signal?: AbortSignal;
+    },
+  ): Promise<GenerateVideosOperation> {
+    const maxFailures = opts.maxConsecutiveFailures ?? POLL_MAX_FAILURES;
+    const deadline = Date.now() + opts.timeoutMs;
+    let op = initial;
+    let failures = 0;
+
+    while (!op.done) {
+      // 协作取消：用户停止后不再继续轮询（已提交的云端任务由 Google 侧自行完成/过期）
+      if (opts.signal?.aborted) {
+        throw new Error(`视频生成已取消 operation=${op.name}`);
+      }
+      if (Date.now() >= deadline) {
+        throw new Error(
+          `视频生成超时（>${opts.timeoutMs}ms）operation=${op.name}`,
+        );
+      }
+      await new Promise((r) => setTimeout(r, opts.intervalMs));
+      try {
+        op = await poll(op);
+        failures = 0;
+      } catch (e) {
+        failures++;
+        if (failures > maxFailures) throw e;
+        this.logger.warn(
+          `轮询失败（连续第 ${failures} 次，上限 ${maxFailures}）operation=${op.name}：${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+    }
+    return op;
+  }
+
+  /** 瞬时失败重试：立即重试 attempts 次（不退避——本机的失败是握手抖动，不是限流）。 */
+  private async retryTransient<T>(
+    label: string,
+    attempts: number,
+    fn: () => Promise<T>,
+  ): Promise<T> {
+    for (let i = 1; ; i++) {
+      try {
+        return await fn();
+      } catch (e) {
+        if (i >= attempts) throw e;
+        this.logger.warn(
+          `${label}失败（第 ${i}/${attempts} 次）：${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+    }
   }
 }

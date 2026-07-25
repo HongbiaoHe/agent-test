@@ -54,7 +54,12 @@ function extractAsk(payload: Record<string, unknown>): AskRequest | null {
       ? (first as { name: string }).name
       : "ask_user";
   const args = (first as { args?: Record<string, unknown> } | undefined)?.args;
-  const question = typeof args?.question === "string" ? args.question : "需要你确认后继续";
+  // generate_media_node 无 question 参数：给确认面板生成友好文案（带目标节点 id）
+  const fallback =
+    tool === "generate_media_node"
+      ? `Run generation for this node?${typeof args?.nodeId === "string" ? ` (node ${args.nodeId})` : ""}`
+      : "Needs your approval to continue";
+  const question = typeof args?.question === "string" ? args.question : fallback;
   const options = Array.isArray(args?.options)
     ? (args?.options as unknown[]).filter((o): o is string => typeof o === "string")
     : [];
@@ -196,7 +201,7 @@ export function reduce(state: ChatState, ev: ChatEvent): ChatState {
           {
             id: id(),
             kind: "error",
-            message: String(ev.payload.message ?? "出错了"),
+            message: String(ev.payload.message ?? "Something went wrong"),
           },
         ]),
         status: "failed",

@@ -9,6 +9,7 @@ export type ConversationEventType =
   | 'media_update' // 媒体生成卡片状态变更（不落 messages 表，仅经 Redis Stream 推流）
   | 'canvas_patch' // 画布节点/边增量变更（画布模块专用，不落 messages 表，仅经 Redis Stream 推流）
   | 'token_usage' // 单次模型调用 token 用量（画布模块专用，不落 messages 表，仅经 Redis Stream 推流）
+  | 'messages_cleared' // 会话记录与 agent 上下文被清空（画布模块专用；各端据此清空本地对话投影）
   | 'error';
 
 export interface ConversationEvent {

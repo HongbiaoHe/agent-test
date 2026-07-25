@@ -76,11 +76,19 @@ function upsertNode(
   const idx = nodes.findIndex((n) => n.id === node.id);
   if (idx === -1) return [...nodes, node];
   const next = nodes.slice();
-  // update_node 的 patch 不带 media 字段（快照才 JOIN）；保留已有 media 状态，避免闪回 null
+  // 只有生成节点的 outputs 依赖 media JOIN，patch 里恒为空 → 沿用旧值，避免闪回「未生成」。
+  // text / image_upload 的 outputs 只看节点自身字段，patch 里就是准的，不能兜底
+  // （否则清空正文后 outputs 卡在旧值不清）。
+  const joinDerived = node.type === "image_gen" || node.type === "video_gen";
   next[idx] = {
     ...node,
+    // update_node 的 patch 不带 media 字段（快照才 JOIN）；保留已有状态，避免闪回 null
     mediaVersionId: node.mediaVersionId ?? nodes[idx].mediaVersionId,
     mediaStatus: node.mediaStatus ?? nodes[idx].mediaStatus,
+    outputs:
+      joinDerived && node.outputs.length === 0
+        ? nodes[idx].outputs
+        : node.outputs,
   };
   return next;
 }

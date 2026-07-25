@@ -10,6 +10,7 @@
 import { getQueueToken } from '@nestjs/bullmq';
 import { Test } from '@nestjs/testing';
 import { AbortRegistry } from '../agent/abort-registry';
+import { CHECKPOINTER } from '../agent/checkpointer.provider';
 import { CANVAS_ABORTS } from './canvas.abort';
 import { CanvasService } from './canvas.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -23,6 +24,7 @@ interface MockTx {
   canvasNode: {
     create: jest.Mock;
     findFirst: jest.Mock;
+    findMany: jest.Mock;
     update: jest.Mock;
     delete: jest.Mock;
   };
@@ -36,6 +38,7 @@ function makeTx(): MockTx {
     canvasNode: {
       create: jest.fn(),
       findFirst: jest.fn(),
+      findMany: jest.fn(),
       update: jest.fn(),
       delete: jest.fn(),
     },
@@ -50,8 +53,18 @@ describe('CanvasService', () => {
   const mockPrisma = {
     $transaction: jest.fn(),
     canvasNode: { updateMany: jest.fn() },
-    canvasSession: { findFirst: jest.fn() },
+    canvasSession: {
+      findFirst: jest.fn(),
+      findMany: jest.fn(),
+      findUnique: jest.fn(),
+      update: jest.fn(),
+    },
+    canvasRun: { aggregate: jest.fn(), deleteMany: jest.fn() },
+    canvasTokenUsage: { deleteMany: jest.fn() },
+    canvasMessage: { deleteMany: jest.fn(), count: jest.fn() },
   };
+  // checkpointer：清空会话时需删掉该 thread 的 agent 上下文（RedisSaver.deleteThread）
+  const mockCheckpointer = { deleteThread: jest.fn() };
   const mockStream = { publish: jest.fn() };
   const mockQueue = { add: jest.fn() };
   const mockMedia = { cancelByConversation: jest.fn() };
@@ -70,6 +83,7 @@ describe('CanvasService', () => {
         { provide: getQueueToken('canvas-run'), useValue: mockQueue },
         { provide: MediaService, useValue: mockMedia },
         { provide: CANVAS_ABORTS, useValue: new AbortRegistry() },
+        { provide: CHECKPOINTER, useValue: mockCheckpointer },
       ],
     }).compile();
     service = module.get(CanvasService);
@@ -153,6 +167,167 @@ describe('CanvasService', () => {
     );
   });
 
+  it('add_node：text 节点的 outputs 由正文派生（正文为空则为空数组）', async () => {
+    tx.canvasSession.findUnique.mockResolvedValue({
+      id: 's1',
+      status: 'running',
+      revision: 1,
+    });
+    tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
+    const base = {
+      id: 'n-new',
+      type: 'text',
+      x: 0,
+      y: 0,
+      version: 0,
+      label: null,
+      prompt: null,
+      assetPath: null,
+      mediaGenerationId: null,
+    };
+
+    tx.canvasNode.create.mockResolvedValue({ ...base, text: 'hi' });
+    const withText = await service.applyOp('s1', 'agent', {
+      op: 'add_node',
+      type: 'text',
+      text: 'hi',
+    });
+    expect(withText.patch).toMatchObject({
+      op: 'add_node',
+      node: { outputs: [{ type: 'text', content: 'hi' }] },
+    });
+
+    tx.canvasSession.findUnique.mockResolvedValue({
+      id: 's1',
+      status: 'running',
+      revision: 2,
+    });
+    tx.canvasNode.create.mockResolvedValue({ ...base, text: '   ' });
+    const blank = await service.applyOp('s1', 'agent', {
+      op: 'add_node',
+      type: 'text',
+    });
+    expect(blank.patch).toMatchObject({ node: { outputs: [] } });
+  });
+
+  it('add_edge：text → image_gen 合法，落库并广播', async () => {
+    tx.canvasSession.findUnique.mockResolvedValue({
+      id: 's1',
+      status: 'running',
+      revision: 3,
+    });
+    tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
+    tx.canvasNode.findMany.mockResolvedValue([
+      { id: 'a', type: 'text' },
+      { id: 'b', type: 'image_gen' },
+    ]);
+    tx.canvasEdge.upsert.mockResolvedValue({
+      id: 'e1',
+      source: 'a',
+      target: 'b',
+    });
+
+    const r = await service.applyOp('s1', 'agent', {
+      op: 'add_edge',
+      source: 'a',
+      target: 'b',
+    });
+    expect(r.patch).toMatchObject({ op: 'add_edge', edge: { id: 'e1' } });
+    expect(tx.canvasEdge.upsert).toHaveBeenCalled();
+  });
+
+  it('add_edge：video_gen → image_gen 非法（image_gen 只收 text/image）', async () => {
+    tx.canvasSession.findUnique.mockResolvedValue({
+      id: 's1',
+      status: 'running',
+      revision: 3,
+    });
+    tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
+    tx.canvasNode.findMany.mockResolvedValue([
+      { id: 'a', type: 'video_gen' },
+      { id: 'b', type: 'image_gen' },
+    ]);
+
+    await expect(
+      service.applyOp('s1', 'agent', {
+        op: 'add_edge',
+        source: 'a',
+        target: 'b',
+      }),
+    ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_EDGE_INVALID.code });
+    expect(tx.canvasEdge.upsert).not.toHaveBeenCalled();
+  });
+
+  it('add_edge：video_gen → video_gen 非法（video 输入暂不支持）', async () => {
+    tx.canvasSession.findUnique.mockResolvedValue({
+      id: 's1',
+      status: 'running',
+      revision: 3,
+    });
+    tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
+    tx.canvasNode.findMany.mockResolvedValue([
+      { id: 'a', type: 'video_gen' },
+      { id: 'b', type: 'video_gen' },
+    ]);
+
+    await expect(
+      service.applyOp('s1', 'agent', {
+        op: 'add_edge',
+        source: 'a',
+        target: 'b',
+      }),
+    ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_EDGE_INVALID.code });
+    expect(tx.canvasEdge.upsert).not.toHaveBeenCalled();
+  });
+
+  it('add_edge：image_gen → video_gen 合法（图作首帧）', async () => {
+    tx.canvasSession.findUnique.mockResolvedValue({
+      id: 's1',
+      status: 'running',
+      revision: 3,
+    });
+    tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
+    tx.canvasNode.findMany.mockResolvedValue([
+      { id: 'a', type: 'image_gen' },
+      { id: 'b', type: 'video_gen' },
+    ]);
+    tx.canvasEdge.upsert.mockResolvedValue({
+      id: 'e2',
+      source: 'a',
+      target: 'b',
+    });
+
+    const r = await service.applyOp('s1', 'agent', {
+      op: 'add_edge',
+      source: 'a',
+      target: 'b',
+    });
+    expect(r.patch).toMatchObject({ op: 'add_edge', edge: { id: 'e2' } });
+  });
+
+  it('add_edge：指向无输入端口的 text 节点 → CANVAS_EDGE_INVALID，不落库', async () => {
+    tx.canvasSession.findUnique.mockResolvedValue({
+      id: 's1',
+      status: 'running',
+      revision: 3,
+    });
+    // revision CAS 在 op 分派之前跑，故仍要 mock；校验抛错后整个事务回滚
+    tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
+    tx.canvasNode.findMany.mockResolvedValue([
+      { id: 'a', type: 'image_gen' },
+      { id: 'b', type: 'text' },
+    ]);
+
+    await expect(
+      service.applyOp('s1', 'agent', {
+        op: 'add_edge',
+        source: 'a',
+        target: 'b',
+      }),
+    ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_EDGE_INVALID.code });
+    expect(tx.canvasEdge.upsert).not.toHaveBeenCalled();
+  });
+
   it('moveNode：LWW updateMany + 广播 move_node（不占 revision）', async () => {
     mockPrisma.canvasSession.findFirst.mockResolvedValue({
       id: 's1',
@@ -177,5 +352,136 @@ describe('CanvasService', () => {
         payload: expect.objectContaining({ op: 'move_node', x: 100, y: 200 }),
       }),
     );
+  });
+
+  describe('list 分页', () => {
+    const rows = (n: number) =>
+      Array.from({ length: n }, (_, i) => ({
+        id: `c${i}`,
+        title: `画布${i}`,
+        status: 'idle',
+        updatedAt: new Date(),
+      }));
+
+    it('满页 → 裁剪到 limit 并给 nextCursor=末项 id（多取一探测）', async () => {
+      mockPrisma.canvasSession.findMany.mockResolvedValue(rows(3));
+      const r = await service.list('t1', { limit: 2 });
+      expect(r.items).toHaveLength(2);
+      expect(r.nextCursor).toBe('c1');
+      expect(mockPrisma.canvasSession.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          take: 3,
+          orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+        }),
+      );
+    });
+
+    it('不足一页 → nextCursor=null', async () => {
+      mockPrisma.canvasSession.findMany.mockResolvedValue(rows(1));
+      const r = await service.list('t1', { limit: 2 });
+      expect(r.items).toHaveLength(1);
+      expect(r.nextCursor).toBeNull();
+    });
+
+    it('带 cursor → prisma 调用含 cursor + skip 1', async () => {
+      mockPrisma.canvasSession.findMany.mockResolvedValue(rows(1));
+      await service.list('t1', { cursor: 'c9', limit: 2 });
+      expect(mockPrisma.canvasSession.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({ cursor: { id: 'c9' }, skip: 1 }),
+      );
+    });
+  });
+
+  describe('clearMessages（清空会话记录 + agent 上下文）', () => {
+    beforeEach(() => {
+      mockPrisma.canvasSession.findFirst.mockResolvedValue({
+        id: 's1',
+        userId: 'u1',
+        status: 'idle',
+        revision: 3,
+      });
+    });
+
+    it('空闲期：删消息 + 删 checkpointer thread + status 归 idle + 广播', async () => {
+      const r = await service.clearMessages('s1', 't1');
+
+      expect(mockPrisma.canvasMessage.deleteMany).toHaveBeenCalledWith({
+        where: { sessionId: 's1' },
+      });
+      expect(mockCheckpointer.deleteThread).toHaveBeenCalledWith('s1');
+      expect(mockPrisma.canvasSession.update).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 's1' },
+          data: { status: 'idle' },
+        }),
+      );
+      expect(mockStream.publish).toHaveBeenCalledWith('s1', {
+        type: 'messages_cleared',
+        payload: {},
+      });
+      expect(r).toEqual({ cleared: true });
+    });
+
+    it('token 审计（CanvasRun / CanvasTokenUsage）保留不删', async () => {
+      await service.clearMessages('s1', 't1');
+      expect(mockPrisma.canvasRun.deleteMany).not.toHaveBeenCalled();
+      expect(mockPrisma.canvasTokenUsage.deleteMany).not.toHaveBeenCalled();
+    });
+
+    it('运行期拒绝（CANVAS_BUSY），不删任何数据', async () => {
+      mockPrisma.canvasSession.findFirst.mockResolvedValue({
+        id: 's1',
+        userId: 'u1',
+        status: 'running',
+        revision: 3,
+      });
+      await expect(service.clearMessages('s1', 't1')).rejects.toMatchObject({
+        errCode: ErrorCodes.CANVAS_BUSY.code,
+      });
+      expect(mockPrisma.canvasMessage.deleteMany).not.toHaveBeenCalled();
+      expect(mockCheckpointer.deleteThread).not.toHaveBeenCalled();
+    });
+
+    it('checkpointer 删除失败不影响清空（DB 已清即成功）', async () => {
+      mockCheckpointer.deleteThread.mockRejectedValueOnce(
+        new Error('redis down'),
+      );
+      await expect(service.clearMessages('s1', 't1')).resolves.toEqual({
+        cleared: true,
+      });
+      expect(mockPrisma.canvasMessage.deleteMany).toHaveBeenCalled();
+    });
+  });
+
+  describe('snapshot totalTokens', () => {
+    it('聚合该会话全部 run 的 totalTokens 回传（无 run 时为 0）', async () => {
+      // assertOwner 归属校验
+      mockPrisma.canvasSession.findFirst.mockResolvedValue({
+        id: 's1',
+        userId: 'u1',
+        status: 'idle',
+        revision: 0,
+      });
+      mockPrisma.canvasSession.findUnique.mockResolvedValue({
+        id: 's1',
+        title: 't',
+        status: 'idle',
+        model: null,
+        revision: 0,
+        nodes: [],
+        edges: [],
+      });
+      mockPrisma.canvasRun.aggregate.mockResolvedValue({
+        _sum: { totalTokens: 1234 },
+      });
+
+      const snap = await service.snapshot('s1', 't1');
+
+      expect(snap.totalTokens).toBe(1234);
+      expect(mockPrisma.canvasRun.aggregate).toHaveBeenCalledWith({
+        where: { sessionId: 's1' },
+        _sum: { totalTokens: true },
+      });
+    });
   });
 });
