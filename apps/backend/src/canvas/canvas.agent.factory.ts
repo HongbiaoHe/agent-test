@@ -1,5 +1,7 @@
 import { initChatModel } from 'langchain/chat_models/universal';
 import { createDeepAgent, StateBackend } from 'deepagents';
+import { type BaseMessage } from '@langchain/core/messages';
+import { injectLiveCanvasState } from './canvas-state-injection';
 import {
   createMiddleware,
   modelCallLimitMiddleware,
@@ -25,7 +27,7 @@ const CANVAS_SYSTEM_PROMPT = `你是"画布工作流编排 Agent"：在一块可
 
 ## 工作方式（持续执行 + 规划）
 1. 先用 \`write_todos\` 把目标拆成有序步骤（如：设计分镜 → 建文本节点 → 建生图节点并连线 → 触发生图 → 建生视频节点并连线 → 触发生视频）。逐步推进，完成一步标记一步。
-2. **画布当前状态（全部节点/连线/节点 id + 放置安全区）每一轮都会自动注入在系统提示末尾的「当前画布实时状态」区块里——直接读它，无需调用任何工具查询画布。**
+2. **画布当前状态（全部节点/连线/节点 id + 放置安全区）会作为「当前画布实时状态」消息自动注入到对话里——每次模型调用前都会追加一份最新的，因此对话中可能存在多份：一律以出现在最后的那一份为准（更靠前的都是已过期的历史快照）。直接读它，无需调用任何工具查询画布。**
 3. 用 \`add_node\` / \`connect_nodes\` / \`update_node\` 搭建结构。**新节点的位置(x,y)必须放进「放置安全区」给出的坐标范围**（现有节点的右侧或下方），否则会与已有节点重叠。需要**重排/挪动已有节点**时，用 \`update_node\` 带上新的 x/y（同样放进安全区，避免重叠）。
 4. 生成节点搭好、提示词就绪后，用 \`generate_media_node\` 触发实际生成——它会自动沿该节点的入边收集上游已完成的图片版本作为参考图/首帧。生成是异步的：触发后立即返回，卡片状态会自动更新，**不要轮询或重复触发同一节点**。
 5. 需要用户澄清（风格、数量、方向等）时，用 \`ask_user\` 提问并等待回答后再继续。
@@ -103,27 +105,27 @@ export async function buildCanvasAgent(
 ): Promise<BuiltCanvasAgent> {
   const model = await resolveChatModel(opts.model);
 
-  // 实时画布状态中间件：每次模型调用前按 sessionId 取最新「节点/连线 + 安全区」注入系统提示末尾。
-  // 闭包 opts.liveCanvasContext（worker 用 CanvasService 提供）。放在中间件链最后 = 离模型最近，
-  // 保证模型读到的画布状态最新鲜。
+  // 实时画布状态中间件：每次模型调用前按 sessionId 取最新「节点/连线 + 安全区」，作为一条新消息
+  // **追加到 messages 末尾**（闭包 opts.liveCanvasContext，worker 用 CanvasService 提供）。
+  //
+  // 为什么不能 concat 进 systemMessage：wrapModelCall 每次模型调用都会执行，而画布状态在一轮内随
+  // 每个 add_node / connect_nodes 变化。拼进 system prompt 会让每次调用的前缀都不同 —— system
+  // prompt 排在 messages 之前，前缀一变，整段对话历史的 prompt cache 全部失效。实测一轮 15 次
+  // 调用 0 命中（Gemini 隐式缓存是前缀匹配，连轮内都命不中）。
+  //
+  // 追加到 messages 末尾则是 append-only：第 N 次调用的前缀 = 第 N-1 次的全部内容 + 新增部分，
+  // 每次都能命中此前的完整前缀。代价是上下文里留有历史状态快照，但它们全部按缓存价计费，净赚；
+  // 系统提示已声明「以最后一份为准」，避免模型读到过期快照。
   const canvasStateMiddleware = createMiddleware({
     name: 'canvasLiveStateMiddleware',
-    wrapModelCall: (async (
+    wrapModelCall: ((
       request: {
-        systemMessage: { concat: (s: string) => unknown };
+        messages: BaseMessage[];
         runtime?: { context?: { sessionId?: string } };
       },
       handler: (req: unknown) => unknown,
-    ) => {
-      const sid = request.runtime?.context?.sessionId;
-      if (!sid || !opts.liveCanvasContext) return handler(request);
-      const text = await opts.liveCanvasContext(sid);
-      if (!text) return handler(request);
-      return handler({
-        ...request,
-        systemMessage: request.systemMessage.concat(`\n\n${text}`),
-      });
-    }) as never,
+    ) =>
+      injectLiveCanvasState(request, handler, opts.liveCanvasContext)) as never,
   });
 
   // guardrails：长跑需较高上限，触顶优雅结束（end）而非抛错。中间件顺序即 recency，
