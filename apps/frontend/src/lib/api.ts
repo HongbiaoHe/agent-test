@@ -277,6 +277,8 @@ export interface CanvasSnapshot {
   title: string;
   status: string;
   model: string | null;
+  /** 思考深度档位（auto|off|on|low|medium|high）；null = 跟随模型默认。 */
+  thinkingLevel: string | null;
   revision: number;
   /** 会话累计 token（后端 run 聚合的持久化口径；实时增量由 token_usage 事件覆盖） */
   totalTokens: number;
@@ -320,6 +322,7 @@ export function createCanvas(input: {
   goal?: string;
   title?: string;
   model?: string;
+  thinkingLevel?: string;
 }): Promise<{ sessionId: string }> {
   return request("/canvas", { method: "POST", body: JSON.stringify(input) });
 }
@@ -360,6 +363,8 @@ export interface CanvasTokenTotals {
   calls: number;
   input: number;
   output: number;
+  /** 思考 token = total − input − output（Gemini 只把思考记进 total；DeepSeek 恒为 0） */
+  reasoning: number;
   total: number;
   cacheRead: number;
   cacheCreation: number;
@@ -416,10 +421,11 @@ export function appendCanvasMessage(
   id: string,
   content: string,
   model?: string,
+  thinkingLevel?: string,
 ): Promise<{ sessionId: string }> {
   return request(`/canvas/${id}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content, model }),
+    body: JSON.stringify({ content, model, thinkingLevel }),
   });
 }
 

@@ -122,12 +122,19 @@ model CanvasSession {
   title    String  @default("未命名画布")
   status   String  @default("idle") // idle | queued | running | waiting_approval | done | failed | stopped
   model    String? // 本会话 agent 模型；空则 worker 回退默认
+  // 思考深度档位（auto|off|on|low|medium|high）；空 = 跟随模型默认。
+  // 各家能力不对等（deepseek 仅开关、gemini 支持分级），映射见 canvas/thinking-level.ts
+  thinkingLevel String?
   tenantId String
   userId   String
 
   // 乐观并发根版本 = 最新结构 op 的 seq。任一结构变更（增删节点/边、改节点 data）在同一
   // 事务里自增；用户空闲期提交编辑时带上它做 CAS 冲突检测。位置(x/y) LWW 不占此版本。
   revision Int @default(0)
+
+  // 重放给 agent 的历史起点（CanvasMessage.seq）。**钉住**而非每轮按窗口末尾倒数，
+  // 否则消息一涨裁剪点就平移，整段前缀跟着变、prompt cache 全废（见 processor.loadHistory）。
+  historyBaseSeq Int @default(0)
 
   runs     CanvasRun[]
   messages CanvasMessage[]
@@ -177,6 +184,11 @@ model CanvasTokenUsage {
   id           String   @id @default(cuid())
   sessionId    String
   runId        String
+  // 产生这次用量的 AIMessage id。checkpointer 恢复时会把历史 AIMessage 重新 emit 到 updates 流，
+  // 跨 run 的内存去重集合拦不住 → 同一次模型调用被反复记账（实测同 session 三个 run 各重放前 17 条，
+  // 且 cacheRead 记为历史原值 0，既虚高账单又拉低命中率）。落库 + 唯一约束让重放天然幂等。
+  // 可空：升级前的历史行无此值。
+  messageId    String?
   model        String
   inputTokens  Int
   outputTokens Int
@@ -186,6 +198,7 @@ model CanvasTokenUsage {
   cacheCreationTokens Int @default(0)
   createdAt    DateTime @default(now())
 
+  @@unique([sessionId, messageId])
   @@index([sessionId])
   @@index([runId])
 }

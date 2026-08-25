@@ -192,14 +192,14 @@ export function useCanvas(sessionId: string | null) {
       : (serverStatus ?? "idle");
 
   // —— actions ——
-  async function send(text: string, model?: string) {
+  async function send(text: string, model?: string, thinkingLevel?: string) {
     if (!sessionId) return;
     setLiveChat((prev) => [
       ...prev,
       { type: "message", role: "user", payload: { text } },
     ]);
     setPending(true);
-    await appendCanvasMessage(sessionId, text, model);
+    await appendCanvasMessage(sessionId, text, model, thinkingLevel);
   }
 
   async function stop() {
@@ -373,6 +373,7 @@ export function useCanvas(sessionId: string | null) {
     readOnly: busy,
     /** 会话当前 agent 模型（用于初始化输入框的模型切换器）；未设时为 null。 */
     model: snapQ.data?.model ?? null,
+    thinkingLevel: snapQ.data?.thinkingLevel ?? null,
     isLoading: !!sessionId && (snapQ.isLoading || msgQ.isLoading),
     /** update_node 保存状态（nodeId → saving/saved/error），驱动画布左上角的保存指示 */
     saveStates,

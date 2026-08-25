@@ -5,7 +5,11 @@ import { Inject, Logger } from '@nestjs/common';
 import { Job, Queue } from 'bullmq';
 import { AbortRegistry } from '../agent/abort-registry';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
-import { normalize, RawEvent } from '../agent/event-normalizer';
+import {
+  extractThinkingBlocks,
+  normalize,
+  RawEvent,
+} from '../agent/event-normalizer';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -17,6 +21,11 @@ import {
 import { CanvasService } from './canvas.service';
 import { createCanvasTools } from './canvas.tools';
 import { type CallUsage, extractUsages } from './token-usage';
+import { planHistoryWindow } from './history-window';
+import {
+  CANVAS_THINKING_LEVELS,
+  type CanvasThinkingLevel,
+} from './thinking-level';
 
 interface JobData {
   sessionId: string;
@@ -27,8 +36,16 @@ interface JobData {
 
 const TIMEOUT_MS = Number(process.env.CANVAS_APPROVAL_TIMEOUT_MS ?? 600000);
 
+/** DB 里存的是自由字符串（旧行/手改可能超出白名单）→ 收窄成档位，非法值按 null（跟随模型默认）。 */
+function asThinkingLevel(v: string | null): CanvasThinkingLevel | null {
+  return CANVAS_THINKING_LEVELS.includes(v as CanvasThinkingLevel)
+    ? (v as CanvasThinkingLevel)
+    : null;
+}
+
 const ROLE_BY_TYPE: Record<string, string> = {
   message: 'assistant',
+  reasoning: 'assistant',
   result: 'assistant',
   plan_update: 'assistant',
   tool_start: 'assistant',
@@ -115,9 +132,16 @@ export class CanvasProcessor extends WorkerHost {
         sessionId,
         userId: session.userId,
       });
+      // 显式缓存开启时由中间件回填缓存真实大小；provider 报的 cache_read 在这种模式下
+      // 被流式聚合重复累加（实测 9076 的缓存报成 36304），必须用这个值才能算准命中率。
+      let explicitCacheTokens = 0;
       const agent = await buildCanvasAgent({
         checkpointer: this.checkpointer,
         model: session.model ?? undefined,
+        thinkingLevel: asThinkingLevel(session.thinkingLevel),
+        onExplicitCacheTokens: (tokens) => {
+          explicitCacheTokens = tokens;
+        },
         tools,
         // 每轮把最新画布状态 + 安全区注入提示词（省去 get_canvas 调用、保证实时性）
         liveCanvasContext: (sid) => this.canvas.agentCanvasContext(sid),
@@ -148,15 +172,35 @@ export class CanvasProcessor extends WorkerHost {
         _sum: { totalTokens: true },
       });
       let cumulativeTotal = prevAgg._sum.totalTokens ?? 0;
-      const seenUsageIds = new Set<string>();
+      // 用**已落库**的 messageId 预热去重集合：checkpointer 恢复会把历史 AIMessage 重新 emit 到
+      // updates 流（实测同 session 后续 run 逐条重放前 17 次调用、时间戳挤在同一毫秒段），
+      // 只靠 run 内的内存集合拦不住，会把历史调用重复记账（cacheRead 记历史原值 0 → 账单虚高、
+      // 命中率被拉低）。
+      const seenUsageIds = await this.loadSeenUsageIds(sessionId);
       // tool_start echo 去重：updates 会跨节点回显同一带 tool_calls 的 AIMessage（同 id），
       // 不去重会导致一次工具调用显示成多张卡片（用户观察到的"添加节点 ×3"）。
       const seenToolStartIds = new Set<string>();
+      // Gemini 思考块的去重集合（updates 会跨节点回显同一条 AIMessage）
+      const seenThinkingIds = new Set<string>();
 
       // 去重：deepagents 的 updates 流会在同一轮把同一个 AIMessage 跨多个节点回显多次，
       // 每次都会触发 flush → 同一段助手文本被重复 publish+persist（实测一段被落 4 次）。
       // 记录上一段已刷文本，相同则跳过。
       let lastFlushed = '';
+      // 思考流缓冲：增量已随事件实时推给前端，这里只负责攒完整段落落库一条 reasoning 消息。
+      // 收口时机 = 思考之后的第一个其它事件（正文 token / 完整消息 / 工具调用）或本轮结束。
+      let reasoningBuf = '';
+      const flushReasoning = async () => {
+        const text = reasoningBuf;
+        reasoningBuf = '';
+        if (!text) return;
+        await this.persist(
+          sessionId,
+          runId,
+          { type: 'reasoning', payload: { text } },
+          seq++,
+        );
+      };
       const flush = async (override?: string) => {
         const text = override ?? buf;
         buf = '';
@@ -172,14 +216,35 @@ export class CanvasProcessor extends WorkerHost {
 
         // token 落库：updates 模式的完整 AIMessage 带 usage_metadata（按 message id 去重）
         if (mode === 'updates') {
-          for (const usage of extractUsages(data, seenUsageIds, modelName)) {
+          for (const usage of extractUsages(
+            data,
+            seenUsageIds,
+            modelName,
+            explicitCacheTokens,
+          )) {
             cumulativeTotal += usage.total;
             await this.recordUsage(sessionId, runId, usage, cumulativeTotal);
+          }
+          // Gemini 的思考正文只能从 updates 拿（messages 流会把它丢掉，见
+          // extractThinkingBlocks 注释）。整段一次给出，非流式。
+          for (const text of extractThinkingBlocks(data, seenThinkingIds)) {
+            reasoningBuf += text;
+            await this.stream.publish(sessionId, {
+              type: 'reasoning',
+              payload: { text },
+            });
           }
         }
 
         const raw = normalize(ns, mode, data);
         if (!raw) continue;
+        if (raw.type === 'reasoning') {
+          reasoningBuf += String((raw.payload as { text?: string }).text ?? '');
+          await this.stream.publish(sessionId, raw);
+          continue;
+        }
+        // 思考之后的第一个事件即代表这段思考已结束 → 先把它收口落库，保证 seq 顺序在前
+        await flushReasoning();
         if (raw.type === 'token') {
           buf += String((raw.payload as { text?: string }).text ?? '');
           await this.stream.publish(sessionId, raw);
@@ -207,6 +272,7 @@ export class CanvasProcessor extends WorkerHost {
         await this.stream.publish(sessionId, raw);
         await this.persist(sessionId, runId, raw, seq++);
       }
+      await flushReasoning();
       await flush();
 
       // 审批中断（ask_user）：暂停等用户回答
@@ -330,6 +396,18 @@ export class CanvasProcessor extends WorkerHost {
     });
   }
 
+  /**
+   * 该 session 已记账的 AIMessage id 集合，用于跨 run 幂等（见调用处注释）。
+   * 只取 messageId 非空的行：升级前的历史行没有 id，无从去重，按现状放行。
+   */
+  private async loadSeenUsageIds(sessionId: string): Promise<Set<string>> {
+    const rows = await this.prisma.canvasTokenUsage.findMany({
+      where: { sessionId, messageId: { not: null } },
+      select: { messageId: true },
+    });
+    return new Set(rows.map((r) => r.messageId as string));
+  }
+
   /** 记一次 token 用量（含缓存明细）：明细行 + Run 累加 + 推流。 */
   private async recordUsage(
     sessionId: string,
@@ -341,6 +419,7 @@ export class CanvasProcessor extends WorkerHost {
       data: {
         sessionId,
         runId,
+        messageId: usage.messageId,
         model: usage.model,
         inputTokens: usage.input,
         outputTokens: usage.output,
@@ -389,10 +468,19 @@ export class CanvasProcessor extends WorkerHost {
   private async loadHistory(
     sessionId: string,
   ): Promise<{ role: string; content: string; tool_call_id?: string }[]> {
-    const MAX_MSGS = 200;
+    // 从**钉住的基点**重放，而不是每次从末尾倒数固定条数——后者会让历史头部逐轮平移，
+    // 整段前缀跟着变、prompt cache 全废（推导见 history-window.ts）。
+    const session = await this.prisma.canvasSession.findUnique({
+      where: { id: sessionId },
+      select: { historyBaseSeq: true },
+    });
+    const baseSeq = session?.historyBaseSeq ?? 0;
     const rows = await this.prisma.canvasMessage.findMany({
       where: {
         sessionId,
+        seq: { gte: baseSeq },
+        // 刻意不含 reasoning：思考只给用户看，回灌给模型既没用又费 token
+        // （推理型模型每轮自己重新思考，历史思考不进下一轮上下文）
         type: { in: ['message', 'tool_end'] },
         role: { in: ['user', 'assistant', 'tool'] },
       },
@@ -400,9 +488,12 @@ export class CanvasProcessor extends WorkerHost {
       select: { role: true, content: true, type: true, seq: true },
     });
 
-    let slice = rows.length > MAX_MSGS ? rows.slice(-MAX_MSGS) : rows;
-    while (slice.length > 0 && slice[0].role !== 'user') {
-      slice = slice.slice(1);
+    const { slice, nextBaseSeq } = planHistoryWindow(rows);
+    if (nextBaseSeq !== null) {
+      await this.prisma.canvasSession.update({
+        where: { id: sessionId },
+        data: { historyBaseSeq: nextBaseSeq },
+      });
     }
 
     return slice.map((m) => {

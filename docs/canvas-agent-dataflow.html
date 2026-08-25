@@ -513,7 +513,7 @@ stateDiagram-v2
         <tr><td class="num">1</td><td class="mono">modelCallLimitMiddleware</td><td>threadLimit 500，触顶<b>优雅结束</b>（end）而非抛错</td><td><span class="loc">factory:130</span></td></tr>
         <tr><td class="num">2</td><td class="mono">toolCallLimitMiddleware</td><td>threadLimit 2000，exitBehavior continue</td><td><span class="loc">factory:131</span></td></tr>
         <tr><td class="num">3</td><td class="mono">planContinuationMiddleware</td><td>把既有计划 concat 到系统提示末尾，压过 deepagents 自带 <code>todoListMiddleware</code> 那句「随时重订计划」</td><td><span class="loc">factory:59-62</span> <span class="loc">plan-injection.ts:13-26</span></td></tr>
-        <tr><td class="num">4</td><td class="mono">canvasLiveStateMiddleware</td><td><b>每次模型调用前</b>取最新画布状态 + 放置安全区，注入系统提示最末——离模型最近，读到的画布最新鲜</td><td><span class="loc">factory:105-123</span></td></tr>
+        <tr><td class="num">4</td><td class="mono">canvasLiveStateMiddleware</td><td>模型调用前取最新画布状态 + 放置安全区，<b>画布有变化时</b>经 <span class="mono">beforeModel</span> 作为一条消息写进 state（不是拼进系统提示，也不是 wrapModelCall 的一次性 request——那两种写法都会让前缀每轮变化、prompt cache 全废）。节点 id 用短 id（cuid 后 6 位）省 token</td><td><span class="loc">factory:116-134</span></td></tr>
       </tbody>
     </table></div>
 

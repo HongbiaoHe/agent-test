@@ -2,7 +2,11 @@ import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { MediaService } from '../media/media.service';
 import { CanvasService } from './canvas.service';
-import { CANVAS_NODE_TYPES, type CanvasNodeType } from './canvas.types';
+import {
+  CANVAS_NODE_TYPES,
+  type CanvasNodeType,
+  shortNodeId,
+} from './canvas.types';
 
 /** 工具运行上下文：worker 闭包注入当前画布会话与可信 userId（不经模型，无注入风险）。 */
 export interface CanvasToolContext {
@@ -23,8 +27,15 @@ export function createCanvasTools(
   media: MediaService,
   ctx: CanvasToolContext,
 ) {
-  // 注：不再提供 get_canvas 工具——画布状态（节点/连线/安全区）已由 worker 每轮实时注入系统提示
-  // （见 CanvasService.agentCanvasContext + canvasLiveStateMiddleware），agent 直接读提示即可。
+  // 注：不再提供 get_canvas 工具——画布状态（节点/连线/安全区）已由 worker 自动注入对话
+  // （见 CanvasService.agentCanvasContext + canvasLiveStateMiddleware），agent 直接读消息即可。
+
+  /**
+   * 解析模型给的节点 id。注入的画布状态里用的是短 id（完整 cuid 后 6 位，省 token），
+   * 而 add_node 的返回值是完整 id —— 模型两种都可能回传，统一在这里反解成完整 id。
+   * 解析不到（不存在 / 后缀有歧义）返回 null，各工具据此回一条明确错误给模型。
+   */
+  const resolveId = (id: string) => canvas.resolveNodeId(ctx.sessionId, id);
 
   const addNode = tool(
     async ({ type, label, text, x, y }) => {
@@ -37,7 +48,11 @@ export function createCanvasTools(
         y,
       });
       const node = 'node' in r.patch ? r.patch.node : null;
-      return JSON.stringify({ nodeId: node?.id, revision: r.revision });
+      // 回短 id：与注入的画布状态同一套写法，模型不必在两种 id 之间切换
+      return JSON.stringify({
+        nodeId: node ? shortNodeId(node.id) : undefined,
+        revision: r.revision,
+      });
     },
     {
       name: 'add_node',
@@ -55,9 +70,11 @@ export function createCanvasTools(
 
   const updateNode = tool(
     async ({ nodeId, label, text, x, y }) => {
+      const full = await resolveId(nodeId);
+      if (!full) return JSON.stringify({ error: '节点不存在', nodeId });
       const r = await canvas.applyOp(ctx.sessionId, 'agent', {
         op: 'update_node',
-        nodeId,
+        nodeId: full,
         label,
         text,
         x,
@@ -81,10 +98,21 @@ export function createCanvasTools(
 
   const connectNodes = tool(
     async ({ sourceId, targetId }) => {
+      const [source, target] = await Promise.all([
+        resolveId(sourceId),
+        resolveId(targetId),
+      ]);
+      if (!source || !target) {
+        return JSON.stringify({
+          error: '节点不存在',
+          ...(source ? {} : { sourceId }),
+          ...(target ? {} : { targetId }),
+        });
+      }
       const r = await canvas.applyOp(ctx.sessionId, 'agent', {
         op: 'add_edge',
-        source: sourceId,
-        target: targetId,
+        source,
+        target,
       });
       const edge = 'edge' in r.patch ? r.patch.edge : null;
       return JSON.stringify({ edgeId: edge?.id, revision: r.revision });
@@ -99,9 +127,11 @@ export function createCanvasTools(
 
   const deleteNode = tool(
     async ({ nodeId }) => {
+      const full = await resolveId(nodeId);
+      if (!full) return JSON.stringify({ error: '节点不存在', nodeId });
       const r = await canvas.applyOp(ctx.sessionId, 'agent', {
         op: 'remove_node',
-        nodeId,
+        nodeId: full,
       });
       return JSON.stringify({ ok: true, revision: r.revision });
     },
@@ -114,8 +144,9 @@ export function createCanvasTools(
 
   const generateMediaNode = tool(
     async ({ nodeId }) => {
+      const full = await resolveId(nodeId);
       const snap = await canvas.agentSnapshot(ctx.sessionId);
-      const node = snap.nodes.find((n) => n.id === nodeId);
+      const node = full ? snap.nodes.find((n) => n.id === full) : undefined;
       if (!node) {
         return JSON.stringify({ error: '节点不存在', nodeId });
       }
@@ -127,7 +158,7 @@ export function createCanvasTools(
       }
       // 素材全部来自入边：生成节点自身不带提示词（契约见 canvas.types 的 CANVAS_NODE_IO）
       const upstreamIds = snap.edges
-        .filter((e) => e.target === nodeId)
+        .filter((e) => e.target === node.id)
         .map((e) => e.source);
       const upstream = snap.nodes.filter((n) => upstreamIds.includes(n.id));
 
@@ -168,7 +199,7 @@ export function createCanvasTools(
       // 回填 generationId：快照/前端据此显示生成状态与资产
       await canvas.applyOp(ctx.sessionId, 'agent', {
         op: 'update_node',
-        nodeId,
+        nodeId: node.id,
         mediaGenerationId: generationId,
       });
       return JSON.stringify({

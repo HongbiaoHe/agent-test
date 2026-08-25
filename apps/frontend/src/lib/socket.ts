@@ -7,6 +7,8 @@ const API_BASE =
 
 export type ConversationEventType =
   | "token"
+  // 模型思考过程增量（推理型模型才有）；落 messages 表，但不回放给模型
+  | "reasoning"
   | "message"
   | "tool_start"
   | "tool_end"

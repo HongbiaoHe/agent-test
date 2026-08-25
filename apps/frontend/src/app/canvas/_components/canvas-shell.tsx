@@ -62,6 +62,7 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
       tokens={c.tokens}
       busy={c.busy}
       sessionModel={c.model}
+      sessionThinkingLevel={c.thinkingLevel}
       onSend={c.send}
       onStop={c.stop}
       onAnswer={c.answerAsk}

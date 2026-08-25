@@ -52,7 +52,7 @@ describe('CanvasService', () => {
   let tx: MockTx;
   const mockPrisma = {
     $transaction: jest.fn(),
-    canvasNode: { updateMany: jest.fn() },
+    canvasNode: { updateMany: jest.fn(), findMany: jest.fn() },
     canvasSession: {
       findFirst: jest.fn(),
       findMany: jest.fn(),
@@ -482,6 +482,81 @@ describe('CanvasService', () => {
         where: { sessionId: 's1' },
         _sum: { totalTokens: true },
       });
+    });
+  });
+
+  /**
+   * 短 id：注入给模型的画布状态用完整 cuid 的后 6 位（完整 id 会让这段膨胀近 3 倍，而它每次
+   * 画布变化都要追加进上下文）。工具侧靠 resolveNodeId 反解，短 id / 完整 id 都要吃。
+   */
+  describe('短 id 与反解', () => {
+    // 同一秒创建的 cuid，前 8 位相同、后 6 位不同 —— 正是不能用前缀、只能用后缀的原因
+    const idA = 'cms7n6wca00jjsp0somugi7qu';
+    const idB = 'cms7n6wco00jrsp0s6esi073c';
+
+    it('注入文本里的节点与连线 id 都是后 6 位短 id', async () => {
+      mockPrisma.canvasSession.findUnique.mockResolvedValue({
+        id: 's1',
+        title: 't',
+        status: 'idle',
+        model: null,
+        revision: 0,
+        nodes: [
+          {
+            id: idA,
+            type: 'text',
+            x: 40,
+            y: 40,
+            label: '创意',
+            text: null,
+            prompt: null,
+            assetPath: null,
+            mediaGenerationId: null,
+          },
+          {
+            id: idB,
+            type: 'image_gen',
+            x: 360,
+            y: 40,
+            label: null,
+            text: null,
+            prompt: '出图',
+            assetPath: null,
+            mediaGenerationId: null,
+          },
+        ],
+        edges: [{ id: 'e1', source: idA, target: idB }],
+      });
+      mockPrisma.canvasRun.aggregate.mockResolvedValue({
+        _sum: { totalTokens: 0 },
+      });
+
+      const text = await service.agentCanvasContext('s1');
+
+      expect(text).toContain('- ugi7qu [text] "创意" @(40,40)');
+      expect(text).toContain('- si073c [image_gen] "出图" @(360,40)');
+      expect(text).toContain('- ugi7qu → si073c'); // 连线两端也用短 id
+      expect(text).not.toContain(idA);
+      expect(text).not.toContain(idB);
+    });
+
+    it('反解：短 id 按后缀匹配，完整 id 精确匹配', async () => {
+      mockPrisma.canvasNode.findMany.mockResolvedValue([
+        { id: idA },
+        { id: idB },
+      ]);
+      await expect(service.resolveNodeId('s1', 'ugi7qu')).resolves.toBe(idA);
+      await expect(service.resolveNodeId('s1', idB)).resolves.toBe(idB);
+    });
+
+    it('反解不到 / 后缀有歧义 → null（由工具回明确错误给模型）', async () => {
+      mockPrisma.canvasNode.findMany.mockResolvedValue([
+        { id: 'aaaaaa' },
+        { id: 'bbaaaa' },
+      ]);
+      await expect(service.resolveNodeId('s1', 'zzzzzz')).resolves.toBeNull();
+      // 'aaaa' 同时是两个 id 的后缀 → 歧义，不能猜
+      await expect(service.resolveNodeId('s1', 'aaaa')).resolves.toBeNull();
     });
   });
 });

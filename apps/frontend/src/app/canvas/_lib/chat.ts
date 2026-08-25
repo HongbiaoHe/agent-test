@@ -20,6 +20,8 @@ export interface AskRequest {
 export type ChatItem =
   | { id: string; kind: "user"; text: string }
   | { id: string; kind: "assistant"; text: string; streaming: boolean }
+  /** 模型思考过程（推理型模型才有）：流式累加，其后第一个其它事件到来即收口。 */
+  | { id: string; kind: "reasoning"; text: string; streaming: boolean }
   | {
       id: string;
       kind: "tool";
@@ -66,7 +68,18 @@ function extractAsk(payload: Record<string, unknown>): AskRequest | null {
   return { tool, question, options };
 }
 
-export function reduce(state: ChatState, ev: ChatEvent): ChatState {
+/** 把仍在流的思考块收口（后端在思考之后的第一个事件处同样收口落库，两边语义一致）。 */
+function sealReasoning(state: ChatState): ChatState {
+  const last = state.items[state.items.length - 1];
+  if (last?.kind !== "reasoning" || !last.streaming) return state;
+  const items = state.items.slice();
+  items[items.length - 1] = { ...last, streaming: false };
+  return { ...state, items };
+}
+
+export function reduce(input: ChatState, ev: ChatEvent): ChatState {
+  // 思考之后的第一个其它事件即代表这段思考结束
+  const state = ev.type === "reasoning" ? input : sealReasoning(input);
   const id = () => `i${state.nextId}`;
   const bump = (items: ChatItem[]): ChatState => ({
     ...state,
@@ -75,6 +88,20 @@ export function reduce(state: ChatState, ev: ChatEvent): ChatState {
   });
 
   switch (ev.type) {
+    case "reasoning": {
+      const text = String(ev.payload.text ?? "");
+      if (!text) return state;
+      const last = state.items[state.items.length - 1];
+      if (last?.kind === "reasoning" && last.streaming) {
+        const items = state.items.slice();
+        items[items.length - 1] = { ...last, text: last.text + text };
+        return { ...state, items };
+      }
+      return bump([
+        ...state.items,
+        { id: id(), kind: "reasoning", text, streaming: true },
+      ]);
+    }
     case "token": {
       const text = String(ev.payload.text ?? "");
       if (!text) return state;
@@ -220,7 +247,8 @@ export function buildBaseChat(messages: CanvasMessage[]): ChatState {
     const payload = (m.content ?? {}) as Record<string, unknown>;
     s = reduce(s, { type: m.type, role: m.role, payload });
   }
-  return s;
+  // 历史里最后一条若是思考，没有后续事件替它收口 → 这里补一次，避免复原出永远转圈的思考块
+  return sealReasoning(s);
 }
 
 export function foldChat(base: ChatState, events: ChatEvent[]): ChatState {

@@ -1,5 +1,6 @@
 export type ConversationEventType =
   | 'token'
+  | 'reasoning' // 模型思考过程增量（推理型模型才有；落 messages 表，但不回放给模型）
   | 'message'
   | 'tool_start'
   | 'tool_end'

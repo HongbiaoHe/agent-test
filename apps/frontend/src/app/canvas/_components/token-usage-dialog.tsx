@@ -28,6 +28,8 @@ import { canvasModelLabel } from "../_lib/models";
  *
  * 口径：cacheRead ⊆ input（provider 回的 input_tokens 已含缓存部分），
  * 所以缓存命中率 = cacheRead / input，分母不能用 total。
+ * 「思考」= total − input − output：Gemini 把思考量只记进 total，单列出来才能让
+ * 「输入 + 输出 + 思考 = 合计」成立；DeepSeek 把它算进 output，这一项恒为 0。
  * 数据随 token_usage 事件失效重拉（见 use-canvas），运行期打开也是最新的。
  */
 export function TokenUsageDialog({
@@ -117,7 +119,7 @@ export function TokenUsageDialog({
   );
 }
 
-/** 会话总结：总量 + 输入/输出拆分 + 缓存命中率条。 */
+/** 会话总结：总量 + 输入/输出/思考拆分 + 缓存命中率条。 */
 function SummaryCard({
   totals,
   refreshing,
@@ -136,9 +138,14 @@ function SummaryCard({
           <Loader2 className="size-3 animate-spin text-muted-foreground" />
         )}
       </div>
-      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-4">
+      {/*
+        「思考」= total − input − output：Gemini 只把思考量记进 total，不列出来的话
+        「输入 + 输出」加起来对不上上面的合计。DeepSeek 把它算进 output，这一项为 0。
+      */}
+      <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
         <Stat label="输入" value={totals.input} />
         <Stat label="输出" value={totals.output} />
+        <Stat label="思考" value={totals.reasoning} />
         <Stat label="命中缓存" value={totals.cacheRead} />
         <Stat label="模型调用" value={totals.calls} suffix="次" />
       </div>
@@ -217,6 +224,9 @@ function ModelRow({ usage }: { usage: CanvasTokenModelUsage }) {
       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground tabular-nums">
         <span>输入 {usage.input.toLocaleString()}</span>
         <span>输出 {usage.output.toLocaleString()}</span>
+        {usage.reasoning > 0 && (
+          <span>思考 {usage.reasoning.toLocaleString()}</span>
+        )}
         <span>{usage.calls} 次调用</span>
       </div>
       <div className="mt-2">
@@ -258,6 +268,9 @@ function RunRow({ run }: { run: CanvasTokenRun }) {
             <span>{formatTime(run.startedAt)}</span>
             <span>输入 {run.totals.input.toLocaleString()}</span>
             <span>输出 {run.totals.output.toLocaleString()}</span>
+            {run.totals.reasoning > 0 && (
+              <span>思考 {run.totals.reasoning.toLocaleString()}</span>
+            )}
             <span>{run.totals.calls} 次调用</span>
             <span>命中 {rate === null ? "—" : `${(rate * 100).toFixed(1)}%`}</span>
           </div>

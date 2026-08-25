@@ -21,7 +21,7 @@ export const CANVAS_MODELS = [
   'gemini-3.5-flash',
   'gemini-3.5-flash-lite',
   'gemini-3.6-flash',
-  'gemini-3-pro-preview',
+  // 注：gemini-3-pro-preview 已移除——该模型 ID 在 API 上恒 404（2026-08-25 实测 5/5 失败）
   'gemini-3-flash-preview',
   'deepseek:deepseek-v4-flash',
   'deepseek:deepseek-v4-pro',
@@ -139,6 +139,8 @@ export interface CanvasSnapshot {
   title: string;
   status: string;
   model: string | null;
+  /** 思考深度档位（auto|off|on|low|medium|high）；null = 跟随模型默认。 */
+  thinkingLevel: string | null;
   revision: number;
   /** 会话累计 token（全部 run 的 totalTokens 聚合，持久化口径；实时增量走 token_usage 事件） */
   totalTokens: number;
@@ -158,6 +160,14 @@ export interface CanvasTokenTotals {
   calls: number;
   input: number;
   output: number;
+  /**
+   * 思考 token = total − input − output。
+   *
+   * Gemini 把思考量只记进 total，既不算进 input 也不算进 output（实测 in=16 / out=742 /
+   * total=1911，差的 1153 就是思考）。不单列这一项，弹窗里「输入 + 输出」就对不上「总计」。
+   * DeepSeek 把 reasoning 计入 output，所以它这一项恒为 0。
+   */
+  reasoning: number;
   total: number;
   /** 命中缓存被读取的输入 token（⊆ input） */
   cacheRead: number;
@@ -293,4 +303,18 @@ export interface TokenUsagePayload {
   output: number;
   total: number;
   cumulativeTotal: number;
+}
+
+/**
+ * 注入给模型的节点 id 长度：完整 cuid 的**后 6 位**。
+ *
+ * 为省 prompt token —— 完整 cuid 25 字符，48 节点 + 42 连线的画布里光 id 就占掉近 2/3 篇幅。
+ * 取**后缀**而非前缀：cuid 前段是时间戳，同一秒创建的节点会撞（实测 48 节点只剩 28 个唯一前 8 位）；
+ * 后段是随机串，实测全库 1334 个节点后 6 位零碰撞。
+ */
+export const SHORT_NODE_ID_LEN = 6;
+
+/** 完整节点 id → 注入给模型的短 id。 */
+export function shortNodeId(id: string): string {
+  return id.slice(-SHORT_NODE_ID_LEN);
 }

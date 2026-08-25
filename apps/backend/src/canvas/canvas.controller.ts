@@ -32,6 +32,7 @@ export class CanvasController {
       user.tenantId,
       user.userId,
       dto.model,
+      dto.thinkingLevel,
     );
   }
 
@@ -84,6 +85,7 @@ export class CanvasController {
       user.tenantId,
       user.userId,
       dto.model,
+      dto.thinkingLevel,
     );
   }
 

@@ -2,6 +2,7 @@
 
 import {
   AlertTriangle,
+  Brain,
   Check,
   ChevronDown,
   CircleDot,
@@ -22,9 +23,14 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 import type { ChatItem, ChatState } from "../_lib/chat";
-import { DEFAULT_CANVAS_MODEL } from "../_lib/models";
+import {
+  DEFAULT_CANVAS_MODEL,
+  type ThinkingLevel,
+  supportsThinkingLevel,
+} from "../_lib/models";
 import { Markdown } from "./markdown";
 import { CanvasModelSwitcher } from "./model-switcher";
+import { CanvasThinkingSwitcher } from "./thinking-switcher";
 import { TokenUsageDialog } from "./token-usage-dialog";
 
 const TOOL_LABEL: Record<string, string> = {
@@ -42,6 +48,16 @@ const TOOL_LABEL: Record<string, string> = {
 const CONFIRM_TOOLS = new Set(["clear_canvas", "generate_media_node"]);
 
 type ToolItem = Extract<ChatItem, { kind: "tool" }>;
+
+/** 把（可能过期的）档位归一到当前模型支持的取值；不支持则回落 auto。 */
+function normalizeThinking(
+  model: string,
+  level: string | null | undefined,
+): ThinkingLevel {
+  const lv = (level ?? "auto") as ThinkingLevel;
+  return supportsThinkingLevel(model, lv) ? lv : "auto";
+}
+type ReasoningItem = Extract<ChatItem, { kind: "reasoning" }>;
 
 function preview(v: unknown, n = 48): string {
   const s = typeof v === "string" ? v : v == null ? "" : JSON.stringify(v);
@@ -153,6 +169,48 @@ function ToolGroup({ tools }: { tools: ToolItem[] }) {
   );
 }
 
+/**
+ * 思考过程块：可折叠。流式期间默认展开（让用户看到 agent 正在想什么），思考结束自动收起；
+ * 用户手动点过之后就以手动状态为准，不再被自动折叠打断。
+ */
+function ReasoningBlock({ item }: { item: ReasoningItem }) {
+  const [manual, setManual] = useState<boolean | null>(null);
+  const open = manual ?? item.streaming;
+
+  return (
+    <div className="overflow-hidden rounded-md border border-border bg-muted/40">
+      <button
+        type="button"
+        onClick={() => setManual(!open)}
+        aria-expanded={open}
+        className="flex w-full cursor-pointer items-center gap-2 px-2.5 py-1.5 text-left text-xs transition-colors hover:bg-accent"
+      >
+        {item.streaming ? (
+          <Loader2 className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
+        ) : (
+          <Brain className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
+        <span className="min-w-0 flex-1 truncate text-muted-foreground">
+          {item.streaming ? "Thinking…" : "Thought process"}
+        </span>
+        <ChevronDown
+          className={cn(
+            "size-4 shrink-0 text-muted-foreground transition-transform",
+            open ? "" : "-rotate-90",
+          )}
+        />
+      </button>
+      {open && (
+        <div className="max-h-64 overflow-y-auto border-t border-border px-2.5 py-2">
+          <p className="whitespace-pre-wrap break-words text-xs leading-relaxed text-muted-foreground">
+            {item.text}
+          </p>
+        </div>
+      )}
+    </div>
+  );
+}
+
 function Item({ item }: { item: ChatItem }) {
   switch (item.kind) {
     case "user":
@@ -163,6 +221,8 @@ function Item({ item }: { item: ChatItem }) {
           </div>
         </div>
       );
+    case "reasoning":
+      return <ReasoningBlock item={item} />;
     case "assistant":
       return (
         <div className="max-w-[90%] rounded-lg bg-muted px-3 py-2 text-foreground">
@@ -385,6 +445,7 @@ export function CanvasChat({
   tokens,
   busy,
   sessionModel,
+  sessionThinkingLevel,
   onSend,
   onStop,
   onAnswer,
@@ -399,7 +460,9 @@ export function CanvasChat({
   busy: boolean;
   /** 会话当前模型（初始化切换器）；null 时用默认。 */
   sessionModel?: string | null;
-  onSend: (text: string, model?: string) => void;
+  /** 会话当前思考深度档位（初始化切换器）；null = 跟随模型默认（auto）。 */
+  sessionThinkingLevel?: string | null;
+  onSend: (text: string, model?: string, thinkingLevel?: ThinkingLevel) => void;
   onStop: () => void;
   onAnswer: (msg: string) => void;
   onResolve: (approve: boolean) => void;
@@ -419,6 +482,23 @@ export function CanvasChat({
     setSeenSessionModel(sessionModel);
     setModel(sessionModel);
   }
+  // 思考深度：同上的同步套路（render 期调整 state，不用 effect）。
+  // 存库的档位可能已不被当前模型支持（换过模型，或能力表更新——例如 gemini-3.6-flash 其实
+  // 不接受关闭思考），一律先归一，避免切换器显示一个下拉里根本没有的档位。
+  const [thinking, setThinking] = useState<ThinkingLevel>(() =>
+    normalizeThinking(sessionModel ?? DEFAULT_CANVAS_MODEL, sessionThinkingLevel),
+  );
+  const [seenThinking, setSeenThinking] = useState(sessionThinkingLevel ?? null);
+  if (sessionThinkingLevel && sessionThinkingLevel !== seenThinking) {
+    setSeenThinking(sessionThinkingLevel);
+    setThinking(normalizeThinking(model, sessionThinkingLevel));
+  }
+
+  /** 换模型时把不适用的档位收回 auto——两家能力不对等，留着会变成点了没反应的假选项。 */
+  function changeModel(next: string) {
+    setModel(next);
+    if (!supportsThinkingLevel(next, thinking)) setThinking("auto");
+  }
   const bottomRef = useRef<HTMLDivElement>(null);
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ block: "end" });
@@ -427,7 +507,7 @@ export function CanvasChat({
   function submit() {
     const t = text.trim();
     if (!t || busy) return;
-    onSend(t, model);
+    onSend(t, model, thinking);
     setText("");
   }
 
@@ -524,11 +604,19 @@ export function CanvasChat({
             className="max-h-40 min-h-0 resize-none border-0 bg-transparent p-0 text-sm leading-relaxed shadow-none placeholder:text-muted-foreground/70 focus-visible:border-0 focus-visible:ring-0 disabled:bg-transparent disabled:opacity-100 dark:bg-transparent"
           />
           <div className="mt-2 flex items-center justify-between gap-2">
-            <CanvasModelSwitcher
-              value={model}
-              onChange={setModel}
-              disabled={busy}
-            />
+            <div className="flex min-w-0 items-center gap-1">
+              <CanvasModelSwitcher
+                value={model}
+                onChange={changeModel}
+                disabled={busy}
+              />
+              <CanvasThinkingSwitcher
+                model={model}
+                value={thinking}
+                onChange={setThinking}
+                disabled={busy}
+              />
+            </div>
             {busy ? (
               <Button
                 variant="destructive"

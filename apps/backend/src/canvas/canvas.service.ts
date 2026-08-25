@@ -27,6 +27,7 @@ import {
   type CanvasTokenTotals,
   canConnectNodeTypes,
   isCanvasNodeType,
+  shortNodeId,
 } from './canvas.types';
 import { groupByModel, sumCalls } from './token-usage';
 
@@ -115,11 +116,13 @@ export class CanvasService {
     tenantId: string,
     userId: string,
     model?: string,
+    thinkingLevel?: string,
   ): Promise<{ sessionId: string }> {
     const baseData = {
       tenantId,
       userId,
       model,
+      thinkingLevel,
       ...(title?.trim() ? { title } : {}),
     };
     if (!goal?.trim()) {
@@ -210,12 +213,16 @@ export class CanvasService {
     const H = 220;
     const GAP = 40;
 
+    // id 一律用短 id（完整 cuid 的后 6 位）：完整 id 会让本段膨胀近 3 倍，而这段每次画布变化都要
+    // 追加一份进上下文。工具侧用 resolveNodeId 反解，短 id / 完整 id 都吃。
     const nodeLines = snap.nodes.map((n) => {
       const desc = (n.label ?? n.text ?? n.prompt ?? '').slice(0, 30);
       const media = n.mediaStatus ? ` <生成:${n.mediaStatus}>` : '';
-      return `- ${n.id} [${n.type}] "${desc}" @(${Math.round(n.x)},${Math.round(n.y)})${media}`;
+      return `- ${shortNodeId(n.id)} [${n.type}] "${desc}" @(${Math.round(n.x)},${Math.round(n.y)})${media}`;
     });
-    const edgeLines = snap.edges.map((e) => `- ${e.source} → ${e.target}`);
+    const edgeLines = snap.edges.map(
+      (e) => `- ${shortNodeId(e.source)} → ${shortNodeId(e.target)}`,
+    );
 
     let safe: string;
     if (snap.nodes.length === 0) {
@@ -235,11 +242,26 @@ export class CanvasService {
     }
 
     return (
-      `## 当前画布实时状态（每轮自动注入，直接使用，无需调用任何工具查询画布）\n` +
+      `## 当前画布实时状态（画布一有变化就自动追加最新一份，直接使用，无需调用任何工具查询画布）\n` +
       `节点（${snap.nodes.length}）：\n${nodeLines.join('\n') || '（无）'}\n\n` +
       `连线（${snap.edges.length}）：\n${edgeLines.join('\n') || '（无）'}\n\n` +
       `### 放置安全区（避免节点重叠）\n${safe}`
     );
+  }
+
+  /**
+   * 把模型给的节点 id 解析成完整 id。注入给模型的是短 id（后 6 位，见 shortNodeId），
+   * 但模型也可能回传 add_node 返回值里的完整 id —— 两种都要吃。
+   * 完整 id 走精确匹配；否则按后缀匹配，匹配不到或有歧义返回 null，由调用方报错给模型。
+   */
+  async resolveNodeId(sessionId: string, id: string): Promise<string | null> {
+    const nodes = await this.prisma.canvasNode.findMany({
+      where: { sessionId },
+      select: { id: true },
+    });
+    if (nodes.some((n) => n.id === id)) return id;
+    const matched = nodes.filter((n) => n.id.endsWith(id));
+    return matched.length === 1 ? matched[0].id : null;
   }
 
   /** 构建快照：session + 节点 + 边；生成节点按 mediaGenerationId JOIN 最新 MediaVersion。 */
@@ -275,6 +297,7 @@ export class CanvasService {
       title: session.title,
       status: session.status,
       model: session.model,
+      thinkingLevel: session.thinkingLevel,
       revision: session.revision,
       totalTokens: tokenAgg._sum.totalTokens ?? 0,
       nodes: session.nodes.map((n) =>
@@ -411,6 +434,7 @@ export class CanvasService {
     tenantId: string,
     userId: string,
     model?: string,
+    thinkingLevel?: string,
   ): Promise<{ sessionId: string }> {
     if (!content?.trim()) {
       throw new BusinessException(ErrorCodes.CANVAS_GOAL_EMPTY);
@@ -431,7 +455,12 @@ export class CanvasService {
 
     await this.prisma.canvasSession.update({
       where: { id },
-      data: { status: 'queued', ...(model ? { model } : {}) },
+      data: {
+        status: 'queued',
+        ...(model ? { model } : {}),
+        // 显式传了才覆盖：不传保留会话既有档位
+        ...(thinkingLevel ? { thinkingLevel } : {}),
+      },
     });
     const seq = await this.prisma.canvasMessage.count({
       where: { sessionId: id },
