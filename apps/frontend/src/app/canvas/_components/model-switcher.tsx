@@ -19,28 +19,28 @@ import {
 
 /**
  * 模型实测能力说明（hover 选项时贴在右侧）。数据与来源见 _lib/models.ts 的 CanvasModelCaps。
- * tooltip 底色是 foreground（深），所以正文用 background 系反色，次要信息降透明度。
+ * tooltip 走 surface 变体（与下拉同为 popover 底），所以这里用常规语义色即可。
  */
 function ModelCapsCard({ caps }: { caps: CanvasModelCaps }) {
   return (
     <span className="flex flex-col gap-1.5">
       <span className="flex flex-col">
-        <span className="text-[10px] uppercase tracking-wide text-background/60">
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
           Prompt cache
         </span>
-        <span className="text-background">{caps.cache}</span>
+        <span className="text-foreground">{caps.cache}</span>
       </span>
       <span className="flex flex-col">
-        <span className="text-[10px] uppercase tracking-wide text-background/60">
+        <span className="text-[10px] uppercase tracking-wide text-muted-foreground">
           Thinking depth
         </span>
-        <span className="text-background">{caps.thinking}</span>
+        <span className="text-foreground">{caps.thinking}</span>
       </span>
       {caps.notes?.length ? (
-        <span className="flex flex-col gap-1 border-t border-background/20 pt-1.5">
+        <span className="flex flex-col gap-1 border-t border-border pt-1.5">
           {caps.notes.map((n) => (
-            <span key={n} className="flex items-start gap-1.5 text-warning">
-              <AlertTriangle className="mt-px size-3 shrink-0" />
+            <span key={n} className="flex items-start gap-1.5 text-foreground">
+              <AlertTriangle className="mt-px size-3 shrink-0 text-warning" />
               <span>{n}</span>
             </span>
           ))}
@@ -136,6 +136,7 @@ export function CanvasModelSwitcher({
                   <TooltipContent
                     side="right"
                     sideOffset={10}
+                    variant="surface"
                     className="max-w-72 flex-col items-start gap-1.5 px-3 py-2 text-left"
                   >
                     <ModelCapsCard caps={m.caps} />
