@@ -23,6 +23,7 @@ import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
 import type { ChatItem, ChatState } from "../_lib/chat";
+import { PHASE_UI, agentPhase } from "../_lib/thinking-phase";
 import {
   DEFAULT_CANVAS_MODEL,
   type ThinkingLevel,
@@ -30,6 +31,7 @@ import {
 } from "../_lib/models";
 import { Markdown } from "./markdown";
 import { CanvasModelSwitcher } from "./model-switcher";
+import { CanvasThinkingIndicator } from "./thinking-indicator";
 import { CanvasThinkingSwitcher } from "./thinking-switcher";
 import { TokenUsageDialog } from "./token-usage-dialog";
 
@@ -474,6 +476,8 @@ export function CanvasChat({
   const [text, setText] = useState("");
   // token 消耗详情弹窗（点顶栏 token 徽标打开）
   const [usageOpen, setUsageOpen] = useState(false);
+  // agent 当前阶段：决定流末尾指示器显不显示、以哪种形态显示
+  const phase = agentPhase(chat.items, busy);
   const [model, setModel] = useState(sessionModel ?? DEFAULT_CANVAS_MODEL);
   // 快照异步加载 / 切换会话后，把切换器同步到该会话实际模型（render 期调整 state，
   // 规避 Next16 的 effect-setState 限制）。用户本地改选后 sessionModel 不变，不会被覆盖。
@@ -575,6 +579,21 @@ export function CanvasChat({
 
       {planTodos && planTodos.length > 0 && !planAllDone && (
         <TaskPlanPanel todos={planTodos} active={busy} />
+      )}
+
+      {/* agent 状态条：固定在输入框正上方，不随消息流滚走——执行期间要始终看得见。
+          不给底色也不描边——它是消息区的延续，不是独立面板，多一道分隔线只会把聊天区切碎。
+          刻意不带 key={phase}：执行中阶段切得很勤，重挂载会让文案每次都从头淡入，
+          反而比阶段本身更抢眼。保持挂载，只换 animation / phrases。
+          左内边距比常规 px-4 少一点，是因为指示器自带光晕呼吸位，补齐后正好对上消息区。 */}
+      {!chat.ask && phase && (
+        <div className="shrink-0 py-2 pr-4 pl-2">
+          <CanvasThinkingIndicator
+            size={18}
+            animation={PHASE_UI[phase].animation}
+            phrases={PHASE_UI[phase].phrases}
+          />
+        </div>
       )}
 
       <div className="shrink-0 border-t border-border p-3">

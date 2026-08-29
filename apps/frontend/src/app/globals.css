@@ -52,6 +52,16 @@
   --node-image: oklch(0.62 0.17 292);
   --node-video: oklch(0.63 0.19 12);
 
+  /* 「思考中」指示器（见 canvas/_components/thinking-indicator.tsx）。琥珀色相与 --node-text 一致，
+     但亮暗两套要分开调：亮底上「发光」不成立——底已接近最亮，半透明暖色压上去只会变暗发浑，
+     读作污渍而非光。所以 light 保持鲜亮金橙的方格，但把晕的浓度压到 dark 的一半以下；
+     dark 底色深，方格再提亮、晕再加浓也只会读作发光。 */
+  --thinking-cell: oklch(0.74 0.185 68);
+  /* 脉动最暗处的格子透明度：亮底对比余量小，压太低整格会消失 */
+  --thinking-cell-dim: 0.36;
+  /* 光晕浓度而非光晕颜色——颜色一律从 --thinking-cell 派生，组件的 color prop 才只需覆盖一个变量 */
+  --thinking-glow-strength: 26%;
+
   /* 旋转高光边框（GlowBorder）的柔光色：light 用暖中灰（白卡上可见但不刺黑），dark 见 .dark */
   --glow-color: oklch(0.64 0.015 60);
 
@@ -107,6 +117,11 @@
   --node-upload: oklch(0.74 0.1 210);
   --node-image: oklch(0.72 0.15 292);
   --node-video: oklch(0.73 0.17 12);
+
+  /* 暗底上发光成立：提亮方格、加浓光晕，最暗处可以压得更低（底色深，弱格子仍可辨） */
+  --thinking-cell: oklch(0.85 0.175 72);
+  --thinking-cell-dim: 0.15;
+  --thinking-glow-strength: 58%;
 
   /* dark 下柔光用近白亮光（暗卡上更醒目） */
   --glow-color: oklch(0.92 0.002 80);
@@ -505,6 +520,251 @@
   .canvas-edge__flow {
     animation: none;
   }
+}
+
+/* 「Agent 思考中」指示器（见 canvas/_components/thinking-indicator.tsx）：3×3 方格错峰脉动
+   + 同色柔光晕。配色走 --thinking-*（定义与亮暗差异的理由见 :root 处注释）。
+   keyframe 必须全局声明（组件内 <style> React 不会注入，同 media-card-shimmer）。 */
+@keyframes canvas-thinking-cell {
+  0%,
+  100% {
+    opacity: var(--thinking-cell-dim);
+  }
+  50% {
+    opacity: 1;
+  }
+}
+/* wave / orbit 用：亮相短促，才读得出「一道扫过去」而不是整片一起呼吸 */
+@keyframes canvas-thinking-sweep {
+  0%,
+  62%,
+  100% {
+    opacity: var(--thinking-cell-dim);
+  }
+  16% {
+    opacity: 1;
+  }
+}
+@keyframes canvas-thinking-glow {
+  0%,
+  100% {
+    opacity: 0.34;
+    transform: scale(0.92);
+  }
+  50% {
+    opacity: 0.7;
+    transform: scale(1.03);
+  }
+}
+/* 换词：旧词上移淡出、新词从下升入，两段重叠播放才不会中间空一帧。
+   位移用 100% 是相对词本身的行高，配合容器 overflow:hidden 读作「滚上去」。 */
+@keyframes canvas-thinking-phrase-in {
+  from {
+    opacity: 0;
+    transform: translateY(100%);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@keyframes canvas-thinking-phrase-out {
+  from {
+    opacity: 1;
+    transform: none;
+  }
+  to {
+    opacity: 0;
+    transform: translateY(-100%);
+  }
+}
+
+/* 外壳：所有尺寸都从 --tt-size 派生，组件的 size prop 只改这一个值就整体等比缩放。
+   系数以 24px 为基准量出（gap/内边距 10px、字号 14px、点 3px、blur 3px）。 */
+.canvas-thinking {
+  --tt-size: 24px;
+  display: flex;
+  align-items: center;
+  gap: calc(var(--tt-size) * 0.42);
+  /* 光晕会外扩出方阵约 0.37×size，而聊天区 ScrollArea 的裁剪边界正好压在内容左缘
+     （px-4 加在 scroll-area 上，不在真正会裁剪的 viewport 里），不留这段左半圈会被切齐 */
+  padding-left: calc(var(--tt-size) * 0.42);
+  font-size: calc(var(--tt-size) * 0.58);
+}
+
+.canvas-thinking-grid {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  flex-shrink: 0;
+  width: var(--tt-size);
+  height: var(--tt-size);
+}
+/* 方形光晕：纯色方块靠 blur 向外扩散——渐变只会给出圆形，方块+模糊才留得住方轮廓。
+   中心那块被方阵自己盖住，实际露出的是四周一圈，由 blur 从内到外递减。
+   颜色一律从 --thinking-cell 派生（组件 color prop 因此只需覆盖方格色），
+   浓度由 --thinking-glow-strength 按主题给（亮底要淡得多，见 :root 说明）。 */
+.canvas-thinking-grid::before {
+  content: "";
+  position: absolute;
+  inset: -18%;
+  z-index: 0;
+  border-radius: 2px;
+  background: color-mix(
+    in oklch,
+    var(--thinking-cell) var(--thinking-glow-strength),
+    transparent
+  );
+  filter: blur(calc(var(--tt-size) * 0.125));
+  pointer-events: none;
+  animation: canvas-thinking-glow 2.6s ease-in-out infinite;
+}
+.canvas-thinking-cell {
+  position: relative;
+  z-index: 1;
+  background: var(--thinking-cell);
+  animation: canvas-thinking-cell 1.5s ease-in-out infinite;
+}
+
+/* animation="pulse"（默认）：9 格错峰呼吸。delay 与 duration 都刻意取不等差、互质感的值——
+   等差会被读成扫描式进度条，周期不同才不会整体同步循环，看起来才像在「想」而不是在「转圈」。 */
+.canvas-thinking-cell:nth-child(1) {
+  animation-delay: 0s;
+  animation-duration: 1.5s;
+}
+.canvas-thinking-cell:nth-child(2) {
+  animation-delay: 0.62s;
+  animation-duration: 1.7s;
+}
+.canvas-thinking-cell:nth-child(3) {
+  animation-delay: 0.24s;
+  animation-duration: 1.36s;
+}
+.canvas-thinking-cell:nth-child(4) {
+  animation-delay: 0.86s;
+  animation-duration: 1.62s;
+}
+.canvas-thinking-cell:nth-child(5) {
+  animation-delay: 0.38s;
+  animation-duration: 1.44s;
+}
+.canvas-thinking-cell:nth-child(6) {
+  animation-delay: 1.02s;
+  animation-duration: 1.78s;
+}
+.canvas-thinking-cell:nth-child(7) {
+  animation-delay: 0.14s;
+  animation-duration: 1.56s;
+}
+.canvas-thinking-cell:nth-child(8) {
+  animation-delay: 0.72s;
+  animation-duration: 1.32s;
+}
+.canvas-thinking-cell:nth-child(9) {
+  animation-delay: 0.46s;
+  animation-duration: 1.68s;
+}
+
+/* animation="wave"：沿主对角线推进的斜向波，delay 按 (row + col) 递增，全格同周期 */
+[data-thinking-anim="wave"] .canvas-thinking-cell {
+  animation-name: canvas-thinking-sweep;
+  animation-duration: 1.3s;
+}
+[data-thinking-anim="wave"] .canvas-thinking-cell:nth-child(1) {
+  animation-delay: 0s;
+}
+[data-thinking-anim="wave"] .canvas-thinking-cell:nth-child(2),
+[data-thinking-anim="wave"] .canvas-thinking-cell:nth-child(4) {
+  animation-delay: 0.13s;
+}
+[data-thinking-anim="wave"] .canvas-thinking-cell:nth-child(3),
+[data-thinking-anim="wave"] .canvas-thinking-cell:nth-child(5),
+[data-thinking-anim="wave"] .canvas-thinking-cell:nth-child(7) {
+  animation-delay: 0.26s;
+}
+[data-thinking-anim="wave"] .canvas-thinking-cell:nth-child(6),
+[data-thinking-anim="wave"] .canvas-thinking-cell:nth-child(8) {
+  animation-delay: 0.39s;
+}
+[data-thinking-anim="wave"] .canvas-thinking-cell:nth-child(9) {
+  animation-delay: 0.52s;
+}
+
+/* animation="orbit"：外圈 8 格顺时针依次点亮，中心格常亮当轴 */
+[data-thinking-anim="orbit"] .canvas-thinking-cell {
+  animation-name: canvas-thinking-sweep;
+  animation-duration: 1.6s;
+}
+[data-thinking-anim="orbit"] .canvas-thinking-cell:nth-child(1) {
+  animation-delay: 0s;
+}
+[data-thinking-anim="orbit"] .canvas-thinking-cell:nth-child(2) {
+  animation-delay: 0.2s;
+}
+[data-thinking-anim="orbit"] .canvas-thinking-cell:nth-child(3) {
+  animation-delay: 0.4s;
+}
+[data-thinking-anim="orbit"] .canvas-thinking-cell:nth-child(6) {
+  animation-delay: 0.6s;
+}
+[data-thinking-anim="orbit"] .canvas-thinking-cell:nth-child(9) {
+  animation-delay: 0.8s;
+}
+[data-thinking-anim="orbit"] .canvas-thinking-cell:nth-child(8) {
+  animation-delay: 1s;
+}
+[data-thinking-anim="orbit"] .canvas-thinking-cell:nth-child(7) {
+  animation-delay: 1.2s;
+}
+[data-thinking-anim="orbit"] .canvas-thinking-cell:nth-child(4) {
+  animation-delay: 1.4s;
+}
+[data-thinking-anim="orbit"] .canvas-thinking-cell:nth-child(5) {
+  animation: none;
+  opacity: 1;
+}
+
+/* 换词窗口：占满方阵右侧的剩余宽度，词长变化就不会推着布局左右抖。
+   overflow:hidden 把进出场的词裁在这一行里；line-height 给足，否则 g/y/p 的下伸部分会被切。 */
+.canvas-thinking-phrase {
+  position: relative;
+  flex: 1;
+  min-width: 0;
+  overflow: hidden;
+  line-height: 1.5;
+}
+.canvas-thinking-phrase-in {
+  display: block;
+  animation: canvas-thinking-phrase-in 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+/* 退场的词脱离文档流，免得撑高窗口；播完停在透明态等下一次被替换 */
+.canvas-thinking-phrase-out {
+  position: absolute;
+  inset: 0;
+  display: block;
+  pointer-events: none;
+  animation: canvas-thinking-phrase-out 420ms cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas-thinking-grid::before,
+  .canvas-thinking-cell,
+  .canvas-thinking-phrase-in,
+  .canvas-thinking-phrase-out {
+    animation: none;
+  }
+  /* 不动画就不该留着退场的那个词压在上面 */
+  .canvas-thinking-phrase-out {
+    display: none;
+  }
+  /* 停动画后要落在一个能看清的静态态，而不是 keyframe 起点的近透明 */
+  .canvas-thinking-cell {
+    opacity: 0.72;
+  }
+  .canvas-thinking-grid::before {
+    opacity: 0.45;
+  }
+
 }
 
 /* highlight.js 语法配色：统一映射到上方 --syntax-* token（亮暗自适应）。
