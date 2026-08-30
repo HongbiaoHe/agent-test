@@ -368,28 +368,16 @@
     transform: translateY(0) scale(1);
   }
 }
-.canvas-working-badge {
+/* 顶部那些「只出现一会儿」的状态胶囊（agent 运行中、节点保存中）共用的入场动效 */
+.canvas-badge-pop {
   animation: canvas-badge-in 0.32s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 @media (prefers-reduced-motion: reduce) {
-  .canvas-working-badge {
+  .canvas-badge-pop {
     animation: none;
   }
 }
 
-/* ReactFlow 缩放/复位操控按钮的暗色适配：xyflow 内置暗色主题门控在 `.react-flow.dark`
-   （类需挂在其自身根节点，靠 colorMode prop 添加），而本项目 next-themes 把 `.dark` 挂在
-   <html> 上，二者匹配不到 → 暗色下按钮仍是默认奶油底。这里直接覆盖 xyflow 消费的基础变量，
-   映射到暖中性 token，使操控条在暗色下变成浮层深底 + 前景色图标。 */
-.dark .react-flow {
-  --xy-controls-button-background-color: var(--popover);
-  --xy-controls-button-background-color-hover: var(--accent);
-  --xy-controls-button-color: var(--foreground);
-  --xy-controls-button-color-hover: var(--foreground);
-  --xy-controls-button-border-color: var(--border);
-  --xy-controls-box-shadow:
-    0 0 0 1px var(--border), 0 2px 8px oklch(0 0 0 / 0.35);
-}
 
 /* 画布节点「内容优先」视觉：媒体预览满宽置顶 + 类型 chip 浮在预览左上角，标题与提示词退到下方。
    卡片主体全中性（守 manus「靠深浅不靠彩色」），类型色 --tone 只留在连接点上标示端口类型。
@@ -545,6 +533,27 @@
     opacity: 1;
   }
 }
+/* standby 用：呼吸。单一平缓的起伏，没有心跳那种双跳与长停顿——
+   0→42% 吸气、42→56% 顶端微顿、56→100% 呼气（呼比吸稍慢，和真人一样）。
+   时序函数走 ease-in-out：呼吸的柔和全在两端的加减速上，用 linear 会变成机械的三角波。
+
+   峰值不写死，而是从 dim 按增益推：--br-gain 是「从 dim 到全亮之间走多远」。
+   写死数值会在亮色下翻车——亮色 dim 是 0.36，外圈那种 0.3 的峰值反而比基线还暗，
+   整块方阵会变成反向闪烁。 */
+@keyframes canvas-thinking-breathe {
+  0%,
+  100% {
+    opacity: var(--thinking-cell-dim);
+  }
+  42% {
+    opacity: calc(var(--thinking-cell-dim) + var(--br-range) * var(--br-gain));
+  }
+  56% {
+    opacity: calc(
+      var(--thinking-cell-dim) + var(--br-range) * var(--br-gain) * 0.92
+    );
+  }
+}
 @keyframes canvas-thinking-glow {
   0%,
   100% {
@@ -556,6 +565,23 @@
     transform: scale(1.03);
   }
 }
+/* standby 的光晕：跟着呼吸一起涨落，幅度只有工作态的一半左右 */
+@keyframes canvas-thinking-glow-standby {
+  0%,
+  100% {
+    opacity: 0.1;
+    transform: scale(0.93);
+  }
+  42% {
+    opacity: 0.3;
+    transform: scale(1.03);
+  }
+  56% {
+    opacity: 0.28;
+    transform: scale(1.02);
+  }
+}
+
 /* 换词：旧词上移淡出、新词从下升入，两段重叠播放才不会中间空一帧。
    位移用 100% 是相对词本身的行高，配合容器 overflow:hidden 读作「滚上去」。 */
 @keyframes canvas-thinking-phrase-in {
@@ -724,6 +750,75 @@
   opacity: 1;
 }
 
+/* animation="standby"：agent 空闲时的常驻待机灯，节律是呼吸——活着，但没在干活。
+   周期 4.5s（约 13 次/分，比真人静息还慢一档；照真实呼吸频率会显得急）。
+   nth-child(n) 是为了跟上面 pulse 的逐格规则同特异性，靠定义顺序覆盖掉它的 delay/duration。 */
+[data-thinking-anim="standby"] .canvas-thinking-cell:nth-child(n) {
+  --br-range: calc(1 - var(--thinking-cell-dim));
+  animation-name: canvas-thinking-breathe;
+  animation-duration: 4.5s;
+  animation-timing-function: ease-in-out;
+  animation-delay: 0s;
+}
+
+/* 九格逐个给不同的增益与起始延时：这口气自中心向外漫开，越靠外越弱、到得越晚。
+   增益两两不同（不是按角/边分两组），亮度才有错落感而不是三档色阶；
+   延时铺在 0.55s 内——占周期的一成多，读起来是同一口气在扩散，不是九格各喘各的。
+   排布：1 2 3 / 4 5 6 / 7 8 9，5 是中心。 */
+[data-thinking-anim="standby"] .canvas-thinking-cell:nth-child(5) {
+  --br-gain: 0.7;
+  animation-delay: 0s;
+}
+[data-thinking-anim="standby"] .canvas-thinking-cell:nth-child(2) {
+  --br-gain: 0.46;
+  animation-delay: 0.18s;
+}
+[data-thinking-anim="standby"] .canvas-thinking-cell:nth-child(8) {
+  --br-gain: 0.4;
+  animation-delay: 0.24s;
+}
+[data-thinking-anim="standby"] .canvas-thinking-cell:nth-child(6) {
+  --br-gain: 0.36;
+  animation-delay: 0.21s;
+}
+[data-thinking-anim="standby"] .canvas-thinking-cell:nth-child(4) {
+  --br-gain: 0.31;
+  animation-delay: 0.3s;
+}
+[data-thinking-anim="standby"] .canvas-thinking-cell:nth-child(1) {
+  --br-gain: 0.26;
+  animation-delay: 0.4s;
+}
+[data-thinking-anim="standby"] .canvas-thinking-cell:nth-child(9) {
+  --br-gain: 0.22;
+  animation-delay: 0.44s;
+}
+[data-thinking-anim="standby"] .canvas-thinking-cell:nth-child(3) {
+  --br-gain: 0.18;
+  animation-delay: 0.5s;
+}
+[data-thinking-anim="standby"] .canvas-thinking-cell:nth-child(7) {
+  --br-gain: 0.15;
+  animation-delay: 0.55s;
+}
+/* 光晕的时序也得一起换，否则它还在按默认曲线走，和方格的呼吸对不上 */
+[data-thinking-anim="standby"]::before {
+  animation-name: canvas-thinking-glow-standby;
+  animation-duration: 4.5s;
+  animation-timing-function: ease-in-out;
+}
+
+/* 常驻动画必须尊重减弱动效偏好：它不像工作态那样有时限，停不下来就是长期干扰 */
+@media (prefers-reduced-motion: reduce) {
+  [data-thinking-anim="standby"] .canvas-thinking-cell:nth-child(n),
+  [data-thinking-anim="standby"]::before {
+    animation: none;
+  }
+  [data-thinking-anim="standby"] .canvas-thinking-cell:nth-child(n) {
+    opacity: var(--thinking-cell-dim);
+  }
+}
+
 /* 换词窗口：占满方阵右侧的剩余宽度，词长变化就不会推着布局左右抖。
    overflow:hidden 把进出场的词裁在这一行里；line-height 给足，否则 g/y/p 的下伸部分会被切。 */
 .canvas-thinking-phrase {
@@ -810,4 +905,48 @@
 .hljs-selector-id,
 .hljs-meta {
   color: var(--syntax-property);
+}
+
+/* ── 悬浮面板（components/ui/floating-panel）的进出场 ─────────────────────────
+   只动 opacity / transform：这两个属性可以直接在合成层上做，不触发布局与重绘。
+
+   卡顿来自另外两处，都已去掉：
+   1) 几何属性（left/top/width/height）曾一并挂过渡——面板是整屏高的大容器，每帧都要
+      重新布局 + 重绘整棵子树。现在一律不过渡：拖动期间它们由 JS 每帧直接写内联样式，
+      挂过渡只会拖影；吸附落位本就有虚线预览框先告知落点，瞬时到位反而干脆。
+   2) 面板底色曾是半透明 + backdrop-filter。淡入淡出时每帧都要按新的透明度重新采样
+      底下那整块画布（还带运行光晕动画），代价极高。改成不透明 --card 后这项归零。
+
+   visibility 用「0s + 收起延迟」显式驱动，不进过渡列表：浏览器对 visibility 有插值特例
+   （端点含 visible 时整段都显示），依赖它不如把意图写明——展开立刻可见，收起等淡出走完再藏。 */
+.floating-panel {
+  visibility: visible;
+  opacity: 1;
+  /* 提前提升成合成层，淡入淡出时不必每帧重绘整棵面板内容（对话流 DOM 很大）。
+     只写 opacity，不写 transform——will-change 里出现 transform 会让面板成为内部
+     position:fixed 元素的包含块，模型/思考档位切换器那层 `fixed inset-0` 点击遮罩
+     就只能盖住面板而不是整屏。展开态 transform 本就是 none，不影响收起时的缩放淡出。 */
+  will-change: opacity;
+  transition:
+    opacity 200ms ease-out,
+    transform 200ms ease-out,
+    visibility 0s;
+}
+
+.floating-panel[data-open="false"] {
+  visibility: hidden;
+  opacity: 0;
+  /* 退场比进场快（ux: exit-faster-than-enter），收起才跟手 */
+  transition:
+    opacity 140ms ease-in,
+    transform 140ms ease-in,
+    visibility 0s linear 140ms;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .floating-panel,
+  .floating-panel[data-open="false"] {
+    transition-duration: 0s;
+    transition-delay: 0s;
+  }
 }

@@ -2,7 +2,6 @@
 
 import {
   Background,
-  Controls,
   ReactFlow,
   useEdgesState,
   useNodesState,
@@ -12,11 +11,9 @@ import {
   type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { AlertCircle, Check, Loader2, Lock } from "lucide-react";
 import { createContext, useEffect, useMemo, useRef } from "react";
 
 import type { CanvasOpInput } from "@/lib/api";
-import { cn } from "@/lib/utils";
 
 import type { CanvasState } from "../_lib/canvas-state";
 import {
@@ -27,6 +24,7 @@ import {
 import type { SaveState } from "../_hooks/use-canvas";
 import { edgeTypes, type FlowEdgeData } from "./canvas-edges";
 import { nodeTypes } from "./canvas-nodes";
+import { CanvasZoomControls } from "./canvas-zoom-controls";
 
 /** 节点内容可编辑字段（update_node op 的子集，位置/媒体不在此列）。 */
 export interface NodeContentPatch {
@@ -97,54 +95,6 @@ function toRfEdges(canvas: CanvasState): Edge[] {
  * 保存状态徽标（画布左上角，全画布唯一一处）：聚合所有节点的 update_node 状态。
  * 任一节点在保存 → 保存中；否则有失败 → 失败；否则刚成功 → 已保存；都没有则不渲染。
  */
-function SaveStatusBadge({
-  saveStates,
-}: {
-  saveStates: Record<string, SaveState>;
-}) {
-  const values = Object.values(saveStates);
-  const state: SaveState | null = values.includes("saving")
-    ? "saving"
-    : values.includes("error")
-      ? "error"
-      : values.includes("saved")
-        ? "saved"
-        : null;
-  if (!state) return null;
-
-  const view = {
-    saving: {
-      icon: <Loader2 className="size-3.5 animate-spin" />,
-      text: "Saving…",
-      tone: "text-muted-foreground",
-    },
-    saved: {
-      icon: <Check className="size-3.5" />,
-      text: "Saved",
-      tone: "text-success",
-    },
-    error: {
-      icon: <AlertCircle className="size-3.5" />,
-      text: "Save failed, reloaded",
-      tone: "text-destructive",
-    },
-  }[state];
-
-  return (
-    <div
-      className={cn(
-        "pointer-events-none absolute left-4 top-4 z-10 flex items-center gap-1.5 rounded-full border border-border/60 bg-card/80 px-2.5 py-1.5 text-xs shadow-sm backdrop-blur-md",
-        view.tone,
-      )}
-      role="status"
-      aria-live="polite"
-    >
-      {view.icon}
-      <span className="font-medium">{view.text}</span>
-    </div>
-  );
-}
-
 /**
  * 首帧聚焦：快照异步落地时 mount 时点节点为空，<ReactFlow fitView> 落空——
  * 首次节点从空变非空后补一次 fitView。一次性（ref），随 FlowCanvas key=sessionId 重挂载重置。
@@ -233,6 +183,7 @@ export function FlowCanvas({
   saveStates,
   onMarkSaving,
   onCancelSaving,
+  onPaneClick,
 }: {
   canvas: CanvasState;
   readOnly: boolean;
@@ -244,6 +195,8 @@ export function FlowCanvas({
   onMarkSaving: (nodeId: string) => void;
   /** 内容回退到原值、无 op 可发 → 撤销 loading */
   onCancelSaving: (nodeId: string) => void;
+  /** 点画布空白处（不含节点/连线）：桌面端据此收起未钉住的悬浮面板 */
+  onPaneClick?: () => void;
 }) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
@@ -369,6 +322,7 @@ export function FlowCanvas({
         edgeTypes={edgeTypes}
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
+        onPaneClick={onPaneClick}
         onNodeDragStop={(_e, node) => {
           // d3-drag 对「按下即松开」的纯点击同样发 dragStop：位置没变就当点击处理，
           // 保持选中让编辑浮窗浮出，也不发无意义的 move_node op。
@@ -429,7 +383,7 @@ export function FlowCanvas({
         proOptions={{ hideAttribution: true }}
       >
         <Background />
-        <Controls showInteractive={false} />
+        <CanvasZoomControls />
         {/* 首帧聚焦：快照落地后补一次 fitView（修"切画布空白"） */}
         <FitOnFirstLoad count={nodes.length} />
         {/* agent 操控期：把刚新增的节点聚焦到画布中央 */}
@@ -439,26 +393,9 @@ export function FlowCanvas({
         />
       </ReactFlow>
       </CanvasEditorContext.Provider>
-      {/* 保存指示：画布左上角统一一处（不在每个节点上），聚合全部节点的 update_node 状态 */}
-      <SaveStatusBadge saveStates={saveStates} />
-      {readOnly && (
-        <>
-          {/* 四周呼吸式光晕：表现 AI 正在奋力操控画布（动效见 globals.css .canvas-working-overlay） */}
-          <div className="canvas-working-overlay" aria-hidden />
-          <div className="canvas-working-badge pointer-events-none absolute right-4 top-4 z-10 flex items-center gap-2.5 rounded-full border border-border/60 bg-card/70 py-1.5 pl-2.5 pr-3 text-xs shadow-lg backdrop-blur-md">
-            <Loader2
-              className="size-3.5 animate-spin text-foreground/80"
-              strokeWidth={2.5}
-            />
-            <span className="font-medium text-foreground">Agent working</span>
-            <span className="h-3 w-px bg-border" aria-hidden />
-            <span className="flex items-center gap-1 text-muted-foreground">
-              <Lock className="size-3" strokeWidth={2.5} />
-              Canvas read-only
-            </span>
-          </div>
-        </>
-      )}
+      {/* 四周呼吸式光晕：表现 AI 正在奋力操控画布（动效见 globals.css .canvas-working-overlay）。
+          「Agent working / 只读」的文字状态在顶部 header 里，不在画布内 */}
+      {readOnly && <div className="canvas-working-overlay" aria-hidden />}
     </div>
   );
 }

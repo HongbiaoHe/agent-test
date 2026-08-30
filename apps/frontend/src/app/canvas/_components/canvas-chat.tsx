@@ -6,7 +6,6 @@ import {
   Check,
   ChevronDown,
   CircleDot,
-  Eraser,
   Loader2,
   Pause,
   Send,
@@ -16,7 +15,6 @@ import {
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
@@ -33,7 +31,6 @@ import { Markdown } from "./markdown";
 import { CanvasModelSwitcher } from "./model-switcher";
 import { CanvasThinkingIndicator } from "./thinking-indicator";
 import { CanvasThinkingSwitcher } from "./thinking-switcher";
-import { TokenUsageDialog } from "./token-usage-dialog";
 
 const TOOL_LABEL: Record<string, string> = {
   add_node: "Add node",
@@ -442,9 +439,7 @@ function AskPanel({
 }
 
 export function CanvasChat({
-  sessionId,
   chat,
-  tokens,
   busy,
   sessionModel,
   sessionThinkingLevel,
@@ -452,13 +447,8 @@ export function CanvasChat({
   onStop,
   onAnswer,
   onResolve,
-  onClear,
-  clearing,
 }: {
-  /** 当前会话 id（null=未选中画布）；用于拉 token 用量详情 */
-  sessionId: string | null;
   chat: ChatState;
-  tokens: number;
   busy: boolean;
   /** 会话当前模型（初始化切换器）；null 时用默认。 */
   sessionModel?: string | null;
@@ -468,14 +458,8 @@ export function CanvasChat({
   onStop: () => void;
   onAnswer: (msg: string) => void;
   onResolve: (approve: boolean) => void;
-  /** 清空会话记录与 agent 上下文（由 shell 弹确认后调用） */
-  onClear: () => void;
-  /** 清空请求在途：按钮转圈禁用 */
-  clearing: boolean;
 }) {
   const [text, setText] = useState("");
-  // token 消耗详情弹窗（点顶栏 token 徽标打开）
-  const [usageOpen, setUsageOpen] = useState(false);
   // agent 当前阶段：决定流末尾指示器显不显示、以哪种形态显示
   const phase = agentPhase(chat.items, busy);
   const [model, setModel] = useState(sessionModel ?? DEFAULT_CANVAS_MODEL);
@@ -525,43 +509,6 @@ export function CanvasChat({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      <div className="flex shrink-0 items-center justify-between border-b border-border px-4 py-2.5">
-        <span className="text-sm font-medium">Canvas Agent</span>
-        <div className="flex items-center gap-1.5">
-          {/* 点开看详情：按模型 / 每轮 / 每次调用 + 缓存命中率。无会话时降级为静态徽标 */}
-          <Badge
-            variant="secondary"
-            render={sessionId ? <button type="button" /> : undefined}
-            className={sessionId ? "cursor-pointer hover:bg-accent" : undefined}
-            title={
-              sessionId
-                ? "Total tokens for this canvas (click for the breakdown)"
-                : "Total tokens for this canvas (clearing history keeps it)"
-            }
-            onClick={sessionId ? () => setUsageOpen(true) : undefined}
-          >
-            {tokens.toLocaleString()} tokens
-          </Badge>
-          {/* 清空会话记录 + agent 上下文（节点与 token 统计保留）；运行期禁用 */}
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            aria-label="Clear chat history"
-            title={
-              busy ? "Cannot clear while running" : "Clear chat history and agent context (nodes stay)"
-            }
-            disabled={busy || clearing}
-            onClick={onClear}
-          >
-            {clearing ? (
-              <Loader2 className="animate-spin" />
-            ) : (
-              <Eraser />
-            )}
-          </Button>
-        </div>
-      </div>
-
       {/* min-h-0 关键：让 ScrollArea 在 flex 列里可收缩并内部滚动，而不是撑高整列溢出屏幕 */}
       <ScrollArea className="min-h-0 flex-1 px-4">
         <div className="flex flex-col gap-2.5 py-4">
@@ -660,14 +607,6 @@ export function CanvasChat({
           </div>
         </div>
       </div>
-
-      {sessionId && (
-        <TokenUsageDialog
-          sessionId={sessionId}
-          open={usageOpen}
-          onOpenChange={setUsageOpen}
-        />
-      )}
     </div>
   );
 }

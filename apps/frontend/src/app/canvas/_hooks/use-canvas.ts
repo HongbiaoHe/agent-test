@@ -368,6 +368,8 @@ export function useCanvas(sessionId: string | null) {
     canvas,
     chat,
     tokens,
+    /** 画布标题（快照未落地时为 null），顶部 header 展示用 */
+    title: snapQ.data?.title ?? null,
     status,
     busy,
     readOnly: busy,

@@ -1,13 +1,6 @@
 "use client";
 
-import {
-  LayoutGrid,
-  MessagesSquare,
-  PanelLeftClose,
-  PanelLeftOpen,
-  PanelRightClose,
-  PanelRightOpen,
-} from "lucide-react";
+import { LayoutGrid, MessagesSquare } from "lucide-react";
 import { useState } from "react";
 
 import { Button } from "@/components/ui/button";
@@ -25,14 +18,23 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from "@/components/ui/drawer";
-import { cn } from "@/lib/utils";
+import {
+  FloatingPanel,
+  PanelHeader,
+  PanelTrigger,
+  PanelTriggerRail,
+} from "@/components/ui/floating-panel";
 
+import { useAgentPhaseUi } from "../_hooks/use-agent-phase-ui";
 import { useCanvas } from "../_hooks/use-canvas";
+import { useCanvasPanels } from "../_hooks/use-canvas-panels";
 import { useIsMobile } from "../_hooks/use-is-mobile";
-import { usePanelCollapsed } from "../_hooks/use-panel-collapsed";
 import { CanvasChat } from "./canvas-chat";
+import { CanvasHeader } from "./canvas-header";
 import { CanvasSidebar } from "./canvas-sidebar";
+import { ChatHeaderActions } from "./chat-header-actions";
 import { FlowCanvas } from "./flow-canvas";
+import { ThinkingGrid } from "./thinking-indicator";
 
 export function CanvasShell({ sessionId }: { sessionId: string | null }) {
   // 收起完全走 CSS（内容保持挂载）：useCanvas 在本组件、CanvasChat 收起也不卸载，
@@ -40,12 +42,17 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
   const c = useCanvas(sessionId);
   // 清空会话记录的二次确认弹窗
   const [confirmClear, setConfirmClear] = useState(false);
-  const [leftCollapsed, toggleLeft] = usePanelCollapsed("left");
-  const [rightCollapsed, toggleRight] = usePanelCollapsed("right");
-  // < md 改成底部抽屉：两侧栏各占 64/96 宽，手机上画布基本没地方了
+  // 悬浮面板的定位基准：画布区域本身。面板绝对定位在它里面，不再占布局宽度。
+  // 存元素而不是 ref：桌面/手机分支互斥渲染，这个容器会整个换掉，
+  // 用 state 才能让面板的 ResizeObserver 跟着换到新节点上（否则会一直量旧节点的 0×0）
+  const [bounds, setBounds] = useState<HTMLDivElement | null>(null);
+  const panels = useCanvasPanels(bounds);
+  // < md 改成底部抽屉：面板即便悬浮也会盖掉手机上本就不多的画布
   const isMobile = useIsMobile();
   const [listOpen, setListOpen] = useState(false);
   const [chatOpen, setChatOpen] = useState(false);
+  // 对话入口按钮的执行态：面板收起 / 抽屉关着时，agent 在干什么只能从入口透出来
+  const agentUi = useAgentPhaseUi(c.chat.items, c.busy);
 
   // 两块面板各只实例化一份：CanvasChat 里有输入草稿、模型选择与滚动位置，
   // 桌面栏与移动抽屉各挂一份会各存一套。桌面/手机两条分支互斥渲染，故不会重复挂载。
@@ -57,9 +64,7 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
   );
   const chat = (
     <CanvasChat
-      sessionId={sessionId}
       chat={c.chat}
-      tokens={c.tokens}
       busy={c.busy}
       sessionModel={c.model}
       sessionThinkingLevel={c.thinkingLevel}
@@ -67,106 +72,134 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
       onStop={c.stop}
       onAnswer={c.answerAsk}
       onResolve={c.resolveControl}
-      onClear={() => setConfirmClear(true)}
+    />
+  );
+  const chatActions = (
+    <ChatHeaderActions
+      sessionId={sessionId}
+      tokens={c.tokens}
+      busy={c.busy}
       clearing={c.clearing}
+      onClear={() => setConfirmClear(true)}
     />
   );
 
   return (
-    <div className="flex h-full w-full flex-col md:flex-row">
-      {/* 左侧：画布列表 + 折叠把手（手机上整块不渲染，改走底部抽屉） */}
-      {!isMobile && (
-        <div className="relative flex h-full shrink-0">
-          {/* 宽度与图标方向由 <html data-canvas-left> 驱动（layout 的预水合脚本在首屏绘制前写好），
-              不用 React state —— 否则 SSR 首帧总是展开态，读到缓存的"已收起"会闪一下再收起。 */}
-          <div
-            className={cn(
-              "h-full w-64 overflow-hidden transition-[width] duration-200",
-              "[html[data-canvas-left=collapsed]_&]:w-0",
-            )}
-          >
-            {sidebar}
-          </div>
-          <button
-            type="button"
-            onClick={toggleLeft}
-            title={leftCollapsed ? "Show canvas list" : "Hide canvas list"}
-            aria-label={leftCollapsed ? "Show canvas list" : "Hide canvas list"}
-            className="absolute top-1/2 right-0 z-20 flex size-6 -translate-y-1/2 translate-x-full items-center justify-center rounded-r-md border border-l-0 border-border bg-card text-muted-foreground shadow-sm transition-colors hover:text-foreground"
-          >
-            <PanelLeftClose className="size-4 [html[data-canvas-left=collapsed]_&]:hidden" />
-            <PanelLeftOpen className="hidden size-4 [html[data-canvas-left=collapsed]_&]:block" />
-          </button>
-        </div>
-      )}
-
-      {sessionId ? (
-        <>
-          <div className="relative min-w-0 flex-1">
-            {/* key=sessionId：切画布重挂载 react-flow 实例（视口/选中态归零并重新 fitView）。
-                否则视口停留在上一块画布的坐标，新画布节点在视野外 → 表现为"切换后空白" */}
-            <FlowCanvas
-              key={sessionId}
-              canvas={c.canvas}
-              readOnly={c.readOnly}
-              onMoveNode={c.moveNode}
-              onApplyOp={c.applyUserOp}
-              saveStates={c.saveStates}
-              onMarkSaving={c.markSaving}
-              onCancelSaving={c.cancelSaving}
-            />
-          </div>
-
-          {/* 右侧：对话栏 + 折叠把手。收起用 CSS（w-0），CanvasChat 始终挂载 → agent 继续执行不受影响 */}
-          {!isMobile && (
-            <div className="relative flex h-full shrink-0">
-              <button
-                type="button"
-                onClick={toggleRight}
-                title={rightCollapsed ? "Show chat" : "Hide chat"}
-                aria-label={rightCollapsed ? "Show chat" : "Hide chat"}
-                className="absolute top-1/2 left-0 z-20 flex size-6 -translate-x-full -translate-y-1/2 items-center justify-center rounded-l-md border border-r-0 border-border bg-background text-muted-foreground shadow-sm transition-colors hover:text-foreground"
-              >
-                <PanelRightClose className="size-4 [html[data-canvas-right=collapsed]_&]:hidden" />
-                <PanelRightOpen className="hidden size-4 [html[data-canvas-right=collapsed]_&]:block" />
-              </button>
-              {/* 同左栏：宽度走 <html data-canvas-right>，避免首帧闪现 */}
-              <div
-                className={cn(
-                  "h-full w-96 overflow-hidden transition-[width] duration-200",
-                  "[html[data-canvas-right=collapsed]_&]:w-0",
-                )}
-              >
-                <div className="flex h-full w-96 flex-col border-l border-border bg-background">
-                  {chat}
-                </div>
-              </div>
+    <div className="flex h-full w-full flex-col">
+      {/* 画布铺满：两块面板改为悬浮在它之上，不再从两侧挤压 */}
+      <div className="relative min-h-0 min-w-0 flex-1">
+        {sessionId ? (
+          <>
+          {/* key=sessionId：切画布重挂载 react-flow 实例（视口/选中态归零并重新 fitView）。
+             否则视口停留在上一块画布的坐标，新画布节点在视野外 → 表现为"切换后空白" */}
+          <FlowCanvas
+            key={sessionId}
+            canvas={c.canvas}
+            readOnly={c.readOnly}
+            onMoveNode={c.moveNode}
+            onApplyOp={c.applyUserOp}
+            saveStates={c.saveStates}
+            onMarkSaving={c.markSaving}
+            onCancelSaving={c.cancelSaving}
+            onPaneClick={isMobile ? undefined : panels.dismissUnpinned}
+          />
+          {/* 顶部悬浮控件：返回 + 画布名（可改名）+ 保存状态 / 运行状态 / 主题切换。
+              桌面与手机都展示，只有小屏的紧凑样式不同；空态页不渲染——
+              那里没有「这块画布」可返回，也没得可命名 */}
+          <CanvasHeader
+            sessionId={sessionId}
+            title={c.title}
+            saveStates={c.saveStates}
+            busy={c.busy}
+          />
+          </>
+        ) : (
+          /* 空态：px-6 + max-w 是必须的——没有它，这句话在 375px 屏上会顶到左右边缘。
+             手机上再给一个入口按钮，否则用户得自己发现底部那条 Canvases。 */
+          <div className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
+            <span className="flex size-12 items-center justify-center rounded-xl bg-muted text-muted-foreground">
+              <LayoutGrid className="size-6" />
+            </span>
+            <div className="space-y-1.5">
+              <p className="text-sm font-medium text-foreground">
+                No canvas selected
+              </p>
+              <p className="max-w-xs text-pretty text-sm text-muted-foreground">
+                Pick one from the list or create a new one, then describe the
+                workflow in one sentence.
+              </p>
             </div>
-          )}
-        </>
-      ) : (
-        /* 空态：px-6 + max-w 是必须的——没有它，这句话在 375px 屏上会顶到左右边缘。
-           手机上再给一个入口按钮，否则用户得自己发现底部那条 Canvases。 */
-        <div className="flex flex-1 flex-col items-center justify-center gap-4 px-6 text-center">
-          <span className="flex size-12 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-            <LayoutGrid className="size-6" />
-          </span>
-          <div className="space-y-1.5">
-            <p className="text-sm font-medium text-foreground">
-              No canvas selected
-            </p>
-            <p className="max-w-xs text-pretty text-sm text-muted-foreground">
-              Pick one from the list or create a new one, then describe the
-              workflow in one sentence.
-            </p>
+            {isMobile && (
+              <Button variant="outline" onClick={() => setListOpen(true)}>
+                <LayoutGrid className="size-4" /> Browse canvases
+              </Button>
+            )}
           </div>
-          {isMobile && (
-            <Button variant="outline" onClick={() => setListOpen(true)}>
-              <LayoutGrid className="size-4" /> Browse canvases
-            </Button>
-          )}
-        </div>
-      )}
+        )}
+
+        {/* 悬浮层：自身穿透点击（pointer-events-none），只有触发按钮与面板接管指针 */}
+        {!isMobile && (
+          <div
+            ref={setBounds}
+            className="pointer-events-none absolute inset-0 z-20"
+          >
+            {/* 两个入口并成右侧一条竖轨（导航位置恒定，不随面板停在哪侧而变） */}
+            <PanelTriggerRail side="right" inset={panels.triggerRailInset}>
+              <PanelTrigger
+                side="right"
+                icon={<LayoutGrid className="size-5" />}
+                label="Canvases"
+                open={panels.listOpen}
+                onClick={() => panels.setListOpen(!panels.listOpen)}
+              />
+              {sessionId && (
+                <PanelTrigger
+                  side="right"
+                  // 空闲也用方阵，只是换成待机灯：这个入口是 agent 在画布上唯一的常驻
+                  // 化身，静态图标看不出它是活的
+                  icon={
+                    <ThinkingGrid
+                      size={20}
+                      animation={agentUi?.animation ?? "standby"}
+                    />
+                  }
+                  label="Canvas Agent"
+                  tooltip={agentUi?.phrase ?? "Agent standing by"}
+                  open={panels.chatOpen}
+                  onClick={() => panels.setChatOpen(!panels.chatOpen)}
+                />
+              )}
+            </PanelTriggerRail>
+
+            <FloatingPanel
+              panel={panels.list}
+              open={panels.listOpen}
+              icon={<LayoutGrid className="size-4" />}
+              title="Canvases"
+              pinned={panels.listPinned}
+              onPinnedChange={panels.setListPinned}
+              onClose={() => panels.setListOpen(false)}
+            >
+              {sidebar}
+            </FloatingPanel>
+
+            {sessionId && (
+              <FloatingPanel
+                panel={panels.chat}
+                open={panels.chatOpen}
+                icon={<MessagesSquare className="size-4" />}
+                title="Canvas Agent"
+                actions={chatActions}
+                pinned={panels.chatPinned}
+                onPinnedChange={panels.setChatPinned}
+                onClose={() => panels.setChatOpen(false)}
+              >
+                {chat}
+              </FloatingPanel>
+            )}
+          </div>
+        )}
+      </div>
 
       {/* 手机：底部固定条（拇指可达）+ 两个从下往上弹的抽屉。
           抽屉关闭时内容不挂载，但 socket 与 agent 都在 useCanvas（本组件）里，不受影响；
@@ -184,11 +217,18 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
             <span className="h-5 w-px bg-border" aria-hidden />
             <Button
               variant="ghost"
-              className="flex-1"
+              className="min-w-0 flex-1"
               disabled={!sessionId}
               onClick={() => setChatOpen(true)}
             >
-              <MessagesSquare className="size-4" /> Chat
+              {/* 执行中：静态图标换成对应阶段的脉动方阵，文字换成该阶段文案。
+                  抽屉关着时这是唯一能看到 agent 在干什么的地方 */}
+              {agentUi ? (
+                <ThinkingGrid size={16} animation={agentUi.animation} />
+              ) : (
+                <MessagesSquare className="size-4" />
+              )}
+              <span className="truncate">{agentUi?.phrase ?? "Chat"}</span>
             </Button>
           </nav>
 
@@ -198,6 +238,12 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
               <DrawerHeader className="sr-only">
                 <DrawerTitle>Canvas list</DrawerTitle>
               </DrawerHeader>
+              {/* 标题栏与桌面面板同一个组件，两处外壳里长得一致 */}
+              <PanelHeader
+                icon={<LayoutGrid className="size-4" />}
+                title={<span className="font-semibold">Canvas workflow</span>}
+                className="border-b-0 px-4 pt-3 pb-0"
+              />
               <div className="min-h-0 flex-1 overflow-hidden">{sidebar}</div>
             </DrawerContent>
           </Drawer>
@@ -207,6 +253,11 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
               <DrawerHeader className="sr-only">
                 <DrawerTitle>Chat</DrawerTitle>
               </DrawerHeader>
+              <PanelHeader
+                title="Canvas Agent"
+                actions={chatActions}
+                className="px-4 py-2.5"
+              />
               <div className="flex min-h-0 flex-1 flex-col">{chat}</div>
             </DrawerContent>
           </Drawer>

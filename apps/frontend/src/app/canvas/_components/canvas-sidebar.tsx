@@ -6,7 +6,7 @@ import {
   useQueryClient,
   type InfiniteData,
 } from "@tanstack/react-query";
-import { Loader2, Plus, LayoutGrid, Pencil } from "lucide-react";
+import { Loader2, Plus, Pencil } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
@@ -132,15 +132,11 @@ export function CanvasSidebar({
     setEditingId(null);
   }
 
-  // max-md:w-full：手机上它装在底部抽屉里，撑满抽屉宽度而不是留一截空白
+  // 宽度、底色与标题栏都由外层容器给（桌面=FloatingPanel，手机=底部抽屉），
+  // 这里只负责列表本身，同一份内容才能塞进两种外壳
   return (
-    <aside className="flex h-full w-64 shrink-0 flex-col border-r border-border bg-card max-md:w-full max-md:border-r-0">
-      <div className="flex items-center justify-between px-4 py-3">
-        <span className="flex items-center gap-2 text-sm font-semibold">
-          <LayoutGrid className="size-4" /> Canvas workflow
-        </span>
-      </div>
-      <div className="px-3">
+    <div className="flex h-full w-full min-h-0 flex-col">
+      <div className="px-3 pt-3">
         <Button
           className="w-full"
           size="sm"
@@ -226,6 +222,6 @@ export function CanvasSidebar({
           )}
         </div>
       </ScrollArea>
-    </aside>
+    </div>
   );
 }
