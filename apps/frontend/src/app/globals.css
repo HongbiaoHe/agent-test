@@ -950,3 +950,41 @@
     transition-delay: 0s;
   }
 }
+
+/* ── 画布索引页（canvas/_components/canvas-gallery）─────────────────────────
+   点阵底纹：与画布内的 react-flow Background 同一种视觉暗号——「这一整页列的都是画布」。
+   用径向渐变遮罩把它压到四周，中间读文字的地方保持干净，不跟正文抢注意力。 */
+.canvas-gallery-grain {
+  background-image: radial-gradient(
+    circle at center,
+    var(--border) 1px,
+    transparent 1px
+  );
+  background-size: 22px 22px;
+  mask-image: radial-gradient(
+    ellipse 78% 62% at 50% 42%,
+    transparent 35%,
+    black 100%
+  );
+}
+
+/* 列表入场：整页一次编排好的错落浮现，比一堆零散的 hover 微交互更有存在感。
+   delay 由组件按行号内联给（只给前若干行，长列表末尾不该干等）。 */
+@keyframes canvas-row-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.canvas-row-in {
+  animation: canvas-row-in 0.5s cubic-bezier(0.16, 1, 0.3, 1) both;
+}
+@media (prefers-reduced-motion: reduce) {
+  .canvas-row-in {
+    animation: none;
+  }
+}

@@ -30,6 +30,7 @@ import { useCanvas } from "../_hooks/use-canvas";
 import { useCanvasPanels } from "../_hooks/use-canvas-panels";
 import { useIsMobile } from "../_hooks/use-is-mobile";
 import { CanvasChat } from "./canvas-chat";
+import { CanvasGallery } from "./canvas-gallery";
 import { CanvasHeader } from "./canvas-header";
 import { CanvasSidebar } from "./canvas-sidebar";
 import { ChatHeaderActions } from "./chat-header-actions";
@@ -114,31 +115,14 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
           />
           </>
         ) : (
-          /* 空态：px-6 + max-w 是必须的——没有它，这句话在 375px 屏上会顶到左右边缘。
-             手机上再给一个入口按钮，否则用户得自己发现底部那条 Canvases。 */
-          <div className="flex h-full flex-col items-center justify-center gap-4 px-6 text-center">
-            <span className="flex size-12 items-center justify-center rounded-xl bg-muted text-muted-foreground">
-              <LayoutGrid className="size-6" />
-            </span>
-            <div className="space-y-1.5">
-              <p className="text-sm font-medium text-foreground">
-                No canvas selected
-              </p>
-              <p className="max-w-xs text-pretty text-sm text-muted-foreground">
-                Pick one from the list or create a new one, then describe the
-                workflow in one sentence.
-              </p>
-            </div>
-            {isMobile && (
-              <Button variant="outline" onClick={() => setListOpen(true)}>
-                <LayoutGrid className="size-4" /> Browse canvases
-              </Button>
-            )}
-          </div>
+          /* 未选中画布 → 索引页。这一页只有「挑一块画布进去」一件事，
+             所以画布内的悬浮面板与边缘入口都不出现（见下方 sessionId 门控） */
+          <CanvasGallery />
         )}
 
-        {/* 悬浮层：自身穿透点击（pointer-events-none），只有触发按钮与面板接管指针 */}
-        {!isMobile && (
+        {/* 悬浮层：自身穿透点击（pointer-events-none），只有触发按钮与面板接管指针。
+            索引页不挂——那里没有「当前画布」，列表/对话/缩放都无从谈起 */}
+        {!isMobile && sessionId && (
           <div
             ref={setBounds}
             className="pointer-events-none absolute inset-0 z-20"
@@ -204,7 +188,7 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
       {/* 手机：底部固定条（拇指可达）+ 两个从下往上弹的抽屉。
           抽屉关闭时内容不挂载，但 socket 与 agent 都在 useCanvas（本组件）里，不受影响；
           代价只是关掉对话后输入框草稿不留存。 */}
-      {isMobile && (
+      {isMobile && sessionId && (
         <>
           <nav className="flex shrink-0 items-center gap-1 border-t border-border bg-background px-2 py-1.5">
             <Button

@@ -21,15 +21,10 @@ import { Input } from "@/components/ui/input";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { cn } from "@/lib/utils";
 
-const STATUS_DOT: Record<string, string> = {
-  running: "bg-primary animate-pulse",
-  queued: "bg-primary/60",
-  waiting_approval: "bg-amber-500",
-  done: "bg-muted-foreground/40",
-  failed: "bg-destructive",
-  stopped: "bg-muted-foreground/40",
-  idle: "bg-muted-foreground/30",
-};
+import {
+  CANVAS_STATUS_DOT,
+  CANVAS_STATUS_DOT_FALLBACK,
+} from "../_lib/canvas-status";
 
 /** 分页缓存结构（useInfiniteQuery pages）：与 listCanvases 返回一致 */
 type CanvasPage = { items: CanvasListItem[]; nextCursor: string | null };
@@ -154,7 +149,7 @@ export function CanvasSidebar({
               <span
                 className={cn(
                   "size-2 shrink-0 rounded-full",
-                  STATUS_DOT[c.status] ?? "bg-muted-foreground/30",
+                  CANVAS_STATUS_DOT[c.status] ?? CANVAS_STATUS_DOT_FALLBACK,
                 )}
               />
             );
