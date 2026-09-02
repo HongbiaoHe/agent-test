@@ -6,6 +6,7 @@ import type { ChatItem } from "../canvas/_lib/chat";
 
 import {
   CanvasThinkingIndicator,
+  ThinkingGrid,
   type ThinkingAnimation,
 } from "../canvas/_components/thinking-indicator";
 import {
@@ -34,6 +35,60 @@ function Row({
         {note && (
           <span className="text-[11px] text-muted-foreground">{note}</span>
         )}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 动画方式专用的一行，按「规格表」排：左边定宽样本井，右边标题 + 规格表。
+ *
+ * 样本只放方阵不放文案——这一节的变量是 9 格编排，轮换文案在这里是噪音，
+ * 而且 .canvas-thinking 的字号是 0.58×size，size=32 时它有 18.6px，比页面 h2 还大，
+ * 会盖过真正的主角（animation 名）。井定宽也让四张卡不受文案换行影响、高度齐平。
+ */
+function AnimationRow({
+  code,
+  tag,
+  motion,
+  scene,
+  usedBy,
+  children,
+}: {
+  code: string;
+  tag: string;
+  motion: string;
+  scene: string;
+  usedBy: string;
+  children: React.ReactNode;
+}) {
+  return (
+    <div className="flex gap-4 rounded-lg border border-border bg-card p-4">
+      {/* 样本井：凹陷底色把「组件输出」和卡片正文分开 */}
+      <div className="grid size-[76px] shrink-0 place-items-center rounded-md border border-border bg-muted/50">
+        {children}
+      </div>
+
+      <div className="flex min-w-0 flex-1 flex-col">
+        <div className="flex items-baseline justify-between gap-3 border-b border-border pb-2">
+          <code className="truncate font-mono text-[13px] font-medium text-foreground">
+            {code}
+          </code>
+          <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] text-muted-foreground">
+            {tag}
+          </span>
+        </div>
+
+        <dl className="grid grid-cols-[2.75rem_1fr] gap-x-2.5 pt-2 text-xs leading-5">
+          <dt className="text-muted-foreground">状态</dt>
+          <dd className="text-foreground">{scene}</dd>
+          <dt className="text-muted-foreground">节律</dt>
+          <dd className="text-foreground">{motion}</dd>
+          <dt className="text-muted-foreground">取用点</dt>
+          <dd className="font-mono text-[11px] text-muted-foreground">
+            {usedBy}
+          </dd>
+        </dl>
       </div>
     </div>
   );
@@ -116,10 +171,50 @@ const PHASE_CASES: { label: string; items: ChatItem[]; busy: boolean }[] = [
   },
 ];
 
-const ANIMATIONS: { value: ThinkingAnimation; note: string }[] = [
-  { value: "pulse", note: "9 格错峰呼吸，周期互不相同（默认）" },
-  { value: "wave", note: "沿主对角线推进的斜向波" },
-  { value: "orbit", note: "外圈顺时针依次点亮，中心常亮当轴" },
+/**
+ * 四种编排各自的节律、对应的状态、以及代码里谁在用。
+ * 顺序按「忙 → 闲」排：前三种是 agent 执行期间的工作态，standby 是空闲常驻态。
+ */
+const ANIMATIONS: {
+  value: ThinkingAnimation;
+  /** 忙 / 闲的分组标签，顺带标出组件默认值 */
+  tag: string;
+  /** 什么状态下该用它 */
+  scene: string;
+  /** 九格怎么动 */
+  motion: string;
+  /** 代码里的实际取用点 */
+  usedBy: string;
+}[] = [
+  {
+    value: "pulse",
+    tag: "执行态 · 默认",
+    scene: "thinking —— 推理文本正在流式产出，agent 真的在「想」",
+    motion: "9 格错峰呼吸，各格周期互不相同",
+    usedBy: "PHASE_UI.thinking",
+  },
+  {
+    value: "wave",
+    tag: "执行态",
+    scene: "working / responding —— 工具还没回，或正文正在逐字吐出；都是「在推进」",
+    motion: "沿主对角线推进的斜向波，全格同周期、delay 按 row+col 递增",
+    usedBy: "PHASE_UI.working / .responding",
+  },
+  {
+    value: "orbit",
+    tag: "执行态",
+    scene: "loading —— 请求刚发出、或上一步已收口而下一步未明",
+    motion: "外圈 8 格顺时针依次点亮，中心格常亮当轴",
+    usedBy: "PHASE_UI.loading",
+  },
+  {
+    value: "standby",
+    tag: "空闲态",
+    scene:
+      "agent 空闲 —— 活着但没在干活。不属于 AgentPhase，是 agentUi 为空时的兜底；可长期常驻，故单独尊重 prefers-reduced-motion",
+    motion: "4.5s 一口气的缓慢呼吸，自中心向外漫开，逐格亮度递减",
+    usedBy: "canvas-shell.tsx:160",
+  },
 ];
 
 export default function Page() {
@@ -167,12 +262,19 @@ export default function Page() {
 
         <Section
           title="动画方式"
-          desc="animation 控制 9 格的编排。wave / orbit 用更短促的脉冲，才读得出方向。"
+          desc="animation 控制 9 格的编排。样本只放方阵——这一节的变量是编排本身，轮换文案在这里只会抢戏。"
         >
-          {ANIMATIONS.map(({ value, note }) => (
-            <Row key={value} code={`animation="${value}"`} note={note}>
-              <CanvasThinkingIndicator animation={value} size={32} />
-            </Row>
+          {ANIMATIONS.map(({ value, tag, motion, scene, usedBy }) => (
+            <AnimationRow
+              key={value}
+              code={`animation="${value}"`}
+              tag={tag}
+              motion={motion}
+              scene={scene}
+              usedBy={usedBy}
+            >
+              <ThinkingGrid animation={value} size={44} />
+            </AnimationRow>
           ))}
         </Section>
 

@@ -29,6 +29,7 @@ import { useAgentPhaseUi } from "../_hooks/use-agent-phase-ui";
 import { useCanvas } from "../_hooks/use-canvas";
 import { useCanvasPanels } from "../_hooks/use-canvas-panels";
 import { useIsMobile } from "../_hooks/use-is-mobile";
+import { CanvasBoot } from "./canvas-boot";
 import { CanvasChat } from "./canvas-chat";
 import { CanvasGallery } from "./canvas-gallery";
 import { CanvasHeader } from "./canvas-header";
@@ -121,6 +122,9 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
             saveStates={c.saveStates}
             busy={c.busy}
           />
+          {/* 骨架屏：盖在画布之上，快照与历史都落地（且至少驻留 500ms）后爆开退场。
+              key=sessionId：切画布要从等待态重新走一遍 */}
+          <CanvasBoot key={`boot-${sessionId}`} loading={c.isLoading} />
           </>
         ) : (
           /* 未选中画布 → 索引页。这一页只有「挑一块画布进去」一件事，
