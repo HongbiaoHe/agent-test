@@ -196,14 +196,15 @@ const ANIMATIONS: {
   {
     value: "wave",
     tag: "执行态",
-    scene: "working / responding —— 工具还没回，或正文正在逐字吐出；都是「在推进」",
+    scene:
+      "working —— 工具没回、正文在产出、计划在执行，整段执行都归这一档",
     motion: "沿主对角线推进的斜向波，全格同周期、delay 按 row+col 递增",
-    usedBy: "PHASE_UI.working / .responding",
+    usedBy: "PHASE_UI.working",
   },
   {
     value: "orbit",
     tag: "执行态",
-    scene: "loading —— 请求刚发出、或上一步已收口而下一步未明",
+    scene: "loading —— 请求刚发出，或推理 / 工具刚收口而下一步未明",
     motion: "外圈 8 格顺时针依次点亮，中心格常亮当轴",
     usedBy: "PHASE_UI.loading",
   },

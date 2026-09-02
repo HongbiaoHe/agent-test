@@ -12,7 +12,7 @@ import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
 import { ThemeToggle } from "@/app/_components/theme-toggle";
-import { Button } from "@/components/ui/button";
+import { Button, buttonVariants } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { Skeleton } from "@/components/ui/skeleton";
 import {
@@ -29,6 +29,9 @@ import {
   CANVAS_STATUS_LABEL,
   relativeTime,
 } from "../_lib/canvas-status";
+import { PHASE_UI } from "../_lib/thinking-phase";
+
+import { ThinkingGrid } from "./thinking-indicator";
 
 /** 分页缓存结构（useInfiniteQuery pages）：与 listCanvases 返回一致 */
 type CanvasPage = { items: CanvasListItem[]; nextCursor: string | null };
@@ -133,6 +136,9 @@ export function CanvasGallery() {
     setEditingId(null);
   }
 
+  // 入口按钮：指针悬停或键盘聚焦时，方阵从待机灯切成思考态
+  const [previewHot, setPreviewHot] = useState(false);
+
   const showEmpty = !list.isLoading && items.length === 0;
 
   return (
@@ -166,6 +172,32 @@ export function CanvasGallery() {
             </p>
           </div>
           <div className="flex shrink-0 items-center gap-2">
+            {/* 思考指示器规格页入口。图标直接用 ThinkingGrid：入口本身就是它要预览的东西，
+                比塞一个 lucide 图标更说明问题。做成 icon-only ghost 是有意压低——
+                它是组件规格页，不该和 New canvas 争位置。
+
+                静置时是待机灯（这一页没有 agent 在跑），碰上去立刻转成思考态：
+                这个入口通向的就是「思考中」，让它在被指到的那一刻自己演一遍。
+                focus 走同一套，键盘用户拿到的反馈才和指针一致。
+                canvas-thinking-instant 负责把 pulse 的错峰 delay 归零，理由见 globals.css。 */}
+            <Link
+              href="/thinking-preview"
+              aria-label="Thinking indicator preview"
+              title="Thinking indicator preview"
+              className={buttonVariants({ variant: "ghost", size: "icon-sm" })}
+              onMouseEnter={() => setPreviewHot(true)}
+              onMouseLeave={() => setPreviewHot(false)}
+              onFocus={() => setPreviewHot(true)}
+              onBlur={() => setPreviewHot(false)}
+            >
+              <ThinkingGrid
+                size={14}
+                animation={
+                  previewHot ? PHASE_UI.thinking.animation : "standby"
+                }
+                className={previewHot ? "canvas-thinking-instant" : undefined}
+              />
+            </Link>
             <ThemeToggle />
             <Button
               onClick={() => createMut.mutate()}
