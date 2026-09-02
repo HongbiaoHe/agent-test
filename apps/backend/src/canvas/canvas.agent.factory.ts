@@ -15,6 +15,7 @@ import { z } from 'zod';
 import { GoogleGenAI } from '@google/genai';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { keepsNativeBlocks, stripNonPortableBlocks } from './portable-content';
+import type { CanvasApprovalMode } from './canvas.types';
 import {
   type CanvasThinkingLevel,
   thinkingModelParams,
@@ -120,6 +121,8 @@ export interface BuildCanvasAgentOptions {
   model?: string;
   /** 思考深度档位（会话级）；null/缺省 = 跟随模型默认。 */
   thinkingLevel?: CanvasThinkingLevel | null;
+  /** 敏感操作审批模式（会话级）；auto = 不设任何中断，一路做完。缺省 review。 */
+  approvalMode?: CanvasApprovalMode;
   /**
    * 显式缓存生效时回填缓存的真实 token 数。worker 用它校正 token 会计
    * （provider 报的 cache_read 在显式缓存下被重复累加，不可直接用）。
@@ -359,13 +362,20 @@ export async function buildCanvasAgent(
     // ask_user：暂停等用户输入。langchain 1.4.2 的 HITL 决策仅 approve/edit/reject（无 respond）——
     // 用 edit 把用户答案写进 ask_user 的 args，工具随即以"答案"为返回值执行，模型据此续跑；
     // reject 作"跳过/按最佳判断继续"兜底（其 message 会回传给模型）。
-    interruptOn: {
-      ask_user: { allowedDecisions: ['edit', 'reject'] },
-      // 清空画布有破坏性 → 暂停等用户 approve/reject（approve 才执行清空）
-      clear_canvas: { allowedDecisions: ['approve', 'reject'] },
-      // 生成消耗配额/时间 → 不自动执行，弹确认（approve 才真正触发生成）
-      generate_media_node: { allowedDecisions: ['approve', 'reject'] },
-    },
+    // 审批模式（会话级）。auto：整个 interruptOn 都不给——一旦留下任何一项，
+    // agent 还是会在那里停下等人，就不叫全自动了。
+    // review（默认）：破坏性与消耗性操作暂停等确认，需要澄清时也能等人回答。
+    ...(opts.approvalMode === 'auto'
+      ? {}
+      : {
+          interruptOn: {
+            ask_user: { allowedDecisions: ['edit', 'reject'] },
+            // 清空画布有破坏性 → 暂停等用户 approve/reject（approve 才执行清空）
+            clear_canvas: { allowedDecisions: ['approve', 'reject'] },
+            // 生成消耗配额/时间 → 不自动执行，弹确认（approve 才真正触发生成）
+            generate_media_node: { allowedDecisions: ['approve', 'reject'] },
+          },
+        }),
     checkpointer: opts.checkpointer as never,
   });
 }

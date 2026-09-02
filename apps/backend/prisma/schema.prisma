@@ -125,6 +125,10 @@ model CanvasSession {
   // 思考深度档位（auto|off|on|low|medium|high）；空 = 跟随模型默认。
   // 各家能力不对等（deepseek 仅开关、gemini 支持分级），映射见 canvas/thinking-level.ts
   thinkingLevel String?
+
+  // 敏感操作的审批模式：review(默认，破坏性/消耗性操作暂停等用户确认) | auto(全自动，不打断)。
+  // 存会话上而不是每条消息：这是"这块画布怎么跑"的偏好，跨轮保持。
+  approvalMode  String?
   tenantId String
   userId   String
 

@@ -26,6 +26,7 @@ import {
   CANVAS_THINKING_LEVELS,
   type CanvasThinkingLevel,
 } from './thinking-level';
+import { asApprovalMode } from './canvas.types';
 
 interface JobData {
   sessionId: string;
@@ -128,9 +129,11 @@ export class CanvasProcessor extends WorkerHost {
       // 逐步推进不重订）。buildActivePlan 内已跳过「全部完成」的计划（做完的不再回注，见其实现）。
       const activePlan = await this.buildActivePlan(sessionId);
 
+      const approvalMode = asApprovalMode(session.approvalMode);
       const tools = createCanvasTools(this.canvas, this.media, {
         sessionId,
         userId: session.userId,
+        approvalMode,
       });
       // 显式缓存开启时由中间件回填缓存真实大小；provider 报的 cache_read 在这种模式下
       // 被流式聚合重复累加（实测 9076 的缓存报成 36304），必须用这个值才能算准命中率。
@@ -139,6 +142,7 @@ export class CanvasProcessor extends WorkerHost {
         checkpointer: this.checkpointer,
         model: session.model ?? undefined,
         thinkingLevel: asThinkingLevel(session.thinkingLevel),
+        approvalMode,
         onExplicitCacheTokens: (tokens) => {
           explicitCacheTokens = tokens;
         },

@@ -34,6 +34,7 @@ export class CanvasController {
       user.userId,
       dto.model,
       dto.thinkingLevel,
+      dto.approvalMode,
     );
   }
 
@@ -93,6 +94,7 @@ export class CanvasController {
       user.userId,
       dto.model,
       dto.thinkingLevel,
+      dto.approvalMode,
     );
   }
 

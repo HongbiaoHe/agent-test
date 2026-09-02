@@ -29,6 +29,25 @@ export const CANVAS_MODELS = [
 
 export type CanvasModel = (typeof CANVAS_MODELS)[number];
 
+/**
+ * 敏感操作的审批模式。
+ * - review：破坏性（clear_canvas）与消耗性（generate_media_node）操作暂停等用户确认，
+ *   agent 需要澄清时可以 ask_user 等人回答。默认。
+ * - auto：全自动。不设任何中断，agent 按自己的判断一路做完；ask_user 也不再等人，
+ *   直接告诉它没人可答、自行决定。
+ */
+export type CanvasApprovalMode = 'review' | 'auto';
+
+export const CANVAS_APPROVAL_MODES: readonly CanvasApprovalMode[] = [
+  'review',
+  'auto',
+] as const;
+
+/** 归一化：不认识的值（含 null/旧数据）一律按 review——放行是不可逆的，默认必须是保守的那个。 */
+export function asApprovalMode(v: unknown): CanvasApprovalMode {
+  return v === 'auto' ? 'auto' : 'review';
+}
+
 /** 画布节点类型：上传图片 / 生图 / 文本 / 生视频 / 视频拼接。 */
 export type CanvasNodeType =
   | 'image_upload'
@@ -151,6 +170,8 @@ export interface CanvasSnapshot {
   model: string | null;
   /** 思考深度档位（auto|off|on|low|medium|high）；null = 跟随模型默认。 */
   thinkingLevel: string | null;
+  /** 敏感操作审批模式（归一化后，恒有值） */
+  approvalMode: CanvasApprovalMode;
   revision: number;
   /** 会话累计 token（全部 run 的 totalTokens 聚合，持久化口径；实时增量走 token_usage 事件） */
   totalTokens: number;

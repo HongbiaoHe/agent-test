@@ -235,6 +235,12 @@ export async function fetchMediaAssetBlob(versionId: string): Promise<Blob> {
 
 // ——— 画布工作流 ———
 
+/**
+ * 敏感操作审批模式（镜像后端 canvas.types）。
+ * review：破坏性/消耗性操作暂停等确认；auto：全自动，不打断。
+ */
+export type CanvasApprovalMode = "review" | "auto";
+
 export type CanvasNodeType =
   | "image_upload"
   | "image_gen"
@@ -284,6 +290,8 @@ export interface CanvasSnapshot {
   model: string | null;
   /** 思考深度档位（auto|off|on|low|medium|high）；null = 跟随模型默认。 */
   thinkingLevel: string | null;
+  /** 敏感操作审批模式（后端已归一化，恒有值） */
+  approvalMode: CanvasApprovalMode;
   revision: number;
   /** 会话累计 token（后端 run 聚合的持久化口径；实时增量由 token_usage 事件覆盖） */
   totalTokens: number;
@@ -437,10 +445,11 @@ export function appendCanvasMessage(
   content: string,
   model?: string,
   thinkingLevel?: string,
+  approvalMode?: string,
 ): Promise<{ sessionId: string }> {
   return request(`/canvas/${id}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content, model, thinkingLevel }),
+    body: JSON.stringify({ content, model, thinkingLevel, approvalMode }),
   });
 }
 

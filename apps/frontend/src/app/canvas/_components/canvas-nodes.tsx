@@ -432,14 +432,53 @@ function HeroFrame({
 }
 
 /**
- * 生成中 / 资产在途的主视觉骨架：一块会扫光的占位，让「这张卡在跑」缩得很小时也看得出来。
+ * 生成中 / 排队中 / 资产在途的主视觉骨架：一块会扫光的占位。
  * 视频比图更宽，按各自常见比例占位，出片时高度跳变小一些。
+ *
+ * 「在跑」这件事交给扫光动画本身表达，不再另起一行文字——一屏几十张卡时，
+ * 每张都顶着一句「Rendering video…」只是噪音。到底是在跑还是在排队，
+ * 用角上一枚小标签区分就够了（排队要等前面跑完，与"已经在跑"是两回事，不能不分）。
  */
-function HeroSkeleton({ kind }: { kind: "image" | "video" }) {
+function HeroSkeleton({
+  kind,
+  state,
+  runningLabel = "Generating",
+  full,
+}: {
+  kind: "image" | "video";
+  /** 不传 = 只是资产在途（已 done，正在拉 blob），不必标注 */
+  state?: "generating" | "queued";
+  /** 「在跑」的措辞：生成说 Generating，拼接说 Merging */
+  runningLabel?: string;
+  /** 骨架就是卡面的全部（在跑时正文不渲染）：四角都要圆 */
+  full?: boolean;
+}) {
   return (
-    <HeroFrame busy>
+    <HeroFrame busy full={full}>
       <div className={kind === "video" ? "aspect-video" : "aspect-[4/3]"} />
+      {state && <BusyBadge state={state} runningLabel={runningLabel} />}
     </HeroFrame>
+  );
+}
+
+/** 骨架角上的状态角标：转圈=在跑，钟=在排队。与序列预览的段数角标同一套形态。 */
+function BusyBadge({
+  state,
+  runningLabel,
+}: {
+  state: "generating" | "queued";
+  runningLabel: string;
+}) {
+  const running = state === "generating";
+  return (
+    <span className="pointer-events-none absolute right-1.5 bottom-1.5 flex items-center gap-1 rounded-full bg-foreground/75 px-1.5 py-0.5 text-[10px] text-background">
+      {running ? (
+        <Loader2 className="size-2.5 animate-spin" aria-hidden />
+      ) : (
+        <Clock className="size-2.5" aria-hidden />
+      )}
+      {running ? runningLabel : "Queued"}
+    </span>
   );
 }
 
@@ -675,8 +714,12 @@ function MediaGenNode({
     a.click();
   };
 
-  // 出片且资产就绪 → 卡面只留画面（标题/提示词/来源摘要移到编辑面板里去看）
-  const mediaOnly = done && asset.status === "ready";
+  // 卡面只留画面的两种情形：出片且资产就绪，以及**正在跑**。
+  // 在跑时同样只留骨架 + 角标——标题与提示词在这时候帮不上忙，
+  // 一屏几十张卡各顶三行字，反而看不出哪几张在动。要看内容点开面板。
+  const busyNow =
+    data.mediaStatus === "generating" || data.mediaStatus === "queued";
+  const mediaOnly = (done && asset.status === "ready") || busyNow;
 
   let hero: React.ReactNode = null;
   if (done) {
@@ -698,8 +741,8 @@ function MediaGenNode({
     data.mediaStatus === "queued"
   ) {
     // 排队中同样出骨架：队列并发有限，后面的任务要等前面跑完，
-    // 不给占位的话这些节点看起来像根本没被触发。
-    hero = <HeroSkeleton kind={kind} />;
+    // 不给占位的话这些节点看起来像根本没被触发。两者靠骨架上的角标区分。
+    hero = <HeroSkeleton kind={kind} state={data.mediaStatus} full />;
   }
 
   const heroActions =
@@ -718,27 +761,12 @@ function MediaGenNode({
       </>
     ) : null;
 
+  // 在跑（generating / queued）时整条状态条都不出：骨架的扫光与角标已经说明进度。
+  // 必须**整段跳过**——只删掉那两个分支的话会掉进末尾的 else，
+  // 变成一边转圈一边写着「Ready — ask the agent to render it」。
   let status: React.ReactNode = null;
-  if (!done) {
-    if (data.mediaStatus === "generating") {
-      status = (
-        <StatusLine
-          icon={<Loader2 className="size-3 animate-spin" aria-hidden />}
-          text={kind === "video" ? "Rendering video…" : "Rendering image…"}
-        />
-      );
-    } else if (data.mediaStatus === "queued") {
-      status = (
-        <StatusLine
-          icon={<Clock className="size-3" aria-hidden />}
-          text={
-            kind === "video"
-              ? "Queued — video render starts when a slot frees up"
-              : "Queued — render starts when a slot frees up"
-          }
-        />
-      );
-    } else if (data.mediaStatus === "failed") {
+  if (!done && !busyNow) {
+    if (data.mediaStatus === "failed") {
       status = (
         <StatusLine
           icon={<AlertTriangle className="size-3" aria-hidden />}
@@ -853,7 +881,10 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
   const title = d.label?.trim() || NODE_META.video_concat.label;
   const done = d.mediaStatus === "done" && !!d.mediaVersionId;
   const asset = useMediaAsset(done ? d.mediaVersionId : null);
+  const busyNow = d.mediaStatus === "generating" || d.mediaStatus === "queued";
   const merged = done && asset.status === "ready";
+  // 同生成节点：合成完只留成片，合成中只留骨架 + 角标
+  const mediaOnly = merged || busyNow;
 
   const download = () => {
     if (asset.status !== "ready") return;
@@ -882,7 +913,14 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
         <HeroSkeleton kind="video" />
       );
   } else if (d.mediaStatus === "generating" || d.mediaStatus === "queued") {
-    hero = <HeroSkeleton kind="video" />;
+    hero = (
+      <HeroSkeleton
+        kind="video"
+        state={d.mediaStatus}
+        runningLabel="Merging"
+        full
+      />
+    );
   } else if (clips.length > 0) {
     hero = (
       <HeroFrame>
@@ -891,23 +929,10 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
     );
   }
 
+  // 在跑时整条状态条都不出（否则会掉进末尾的分支，一边合成一边还给一个 Merge 按钮）
   let status: React.ReactNode = null;
-  if (!done) {
-    if (d.mediaStatus === "generating") {
-      status = (
-        <StatusLine
-          icon={<Loader2 className="size-3 animate-spin" aria-hidden />}
-          text="Merging clips…"
-        />
-      );
-    } else if (d.mediaStatus === "queued") {
-      status = (
-        <StatusLine
-          icon={<Clock className="size-3" aria-hidden />}
-          text="Queued — merge starts when a slot frees up"
-        />
-      );
-    } else if (d.mediaStatus === "failed") {
+  if (!done && !busyNow) {
+    if (d.mediaStatus === "failed") {
       status = (
         <StatusLine
           icon={<AlertTriangle className="size-3" aria-hidden />}
@@ -979,7 +1004,7 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
         }
         status={status}
         footer={<InputSummary inputs={inputs} />}
-        mediaOnly={merged}
+        mediaOnly={mediaOnly}
         hasTarget
         hasSource
       />

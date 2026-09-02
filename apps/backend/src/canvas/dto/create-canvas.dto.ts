@@ -1,5 +1,5 @@
 import { IsIn, IsOptional, IsString } from 'class-validator';
-import { CANVAS_MODELS } from '../canvas.types';
+import { CANVAS_APPROVAL_MODES, CANVAS_MODELS } from '../canvas.types';
 import { CANVAS_THINKING_LEVELS } from '../thinking-level';
 
 export class CreateCanvasDto {
@@ -22,4 +22,9 @@ export class CreateCanvasDto {
   @IsOptional()
   @IsIn(CANVAS_THINKING_LEVELS)
   thinkingLevel?: string;
+
+  /** 敏感操作审批模式：review(默认) | auto。 */
+  @IsOptional()
+  @IsIn(CANVAS_APPROVAL_MODES)
+  approvalMode?: string;
 }

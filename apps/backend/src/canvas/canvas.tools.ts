@@ -4,6 +4,7 @@ import { MediaService } from '../media/media.service';
 import { CanvasService } from './canvas.service';
 import {
   CANVAS_NODE_TYPES,
+  type CanvasApprovalMode,
   collectVideoSources,
   type CanvasNodeType,
   shortNodeId,
@@ -11,6 +12,8 @@ import {
 
 /** 工具运行上下文：worker 闭包注入当前画布会话与可信 userId（不经模型，无注入风险）。 */
 export interface CanvasToolContext {
+  /** 审批模式：auto 下不会有任何中断，ask_user 因此没人可答（见该工具实现） */
+  approvalMode?: CanvasApprovalMode;
   sessionId: string;
   userId: string;
 }
@@ -40,6 +43,15 @@ export function createCanvasTools(
 
   const addNode = tool(
     async ({ type, label, text, x, y }) => {
+      // type 在 schema 里是可选的，真正的必填校验放在这儿：模型偶尔会漏传它
+      // （实测漏过一次，只给了 label/text/x/y）。让 zod 直接拒的话，报错会以一大坨
+      // 带堆栈的异常进对话历史、废掉一整轮；这里返回一句话，模型下一步就能补上——
+      // 与本文件其它工具报「节点不存在」是同一套做法。
+      if (!type) {
+        return JSON.stringify({
+          error: `缺少必填参数 type，取值：${CANVAS_NODE_TYPES.join(' | ')}`,
+        });
+      }
       const r = await canvas.applyOp(ctx.sessionId, 'agent', {
         op: 'add_node',
         type,
@@ -60,7 +72,11 @@ export function createCanvasTools(
       description:
         '在画布上新建一个节点。type：text(文本) | image_upload(上传图片占位) | image_gen(生图) | video_gen(生视频) | video_concat(把多段上游视频按顺序拼成一条)。提示词写在 text 节点的 text 里，再连到生成节点——生成节点自身不接受提示词参数。x/y 为画布坐标（按工作流从左到右布局，纵向错开避免重叠）。返回 nodeId。',
       schema: z.object({
-        type: nodeTypeEnum,
+        type: nodeTypeEnum
+          .optional()
+          .describe(
+            '节点类型（必填）：text 文本 / image_upload 上传图片占位 / image_gen 生图 / video_gen 生视频 / video_concat 视频拼接',
+          ),
         label: z.string().optional().describe('节点标题（可选）'),
         text: z.string().optional().describe('text 节点正文（即提示词）'),
         x: z.number().optional(),
@@ -292,7 +308,12 @@ export function createCanvasTools(
 
   const askUser = tool(
     ({ question }: { question: string }) => {
-      // 实际中断由 interruptOn 拦截；这里的返回值仅在恢复时被用户答案替换（respond 决策）。
+      // 全自动模式下没有 interruptOn，这里不会被拦截、也没有人会回答。
+      // 直接把这件事讲明，模型才不会干等或反复追问——返回原问题的话它会以为拿到了答案。
+      if (ctx.approvalMode === 'auto') {
+        return '当前是全自动模式，没有人会回答。请按你的最佳判断自行决定并继续，不要再提问。';
+      }
+      // review 模式：实际中断由 interruptOn 拦截；这里的返回值仅在恢复时被用户答案替换。
       return question;
     },
     {

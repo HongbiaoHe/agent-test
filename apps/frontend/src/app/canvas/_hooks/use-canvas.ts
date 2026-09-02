@@ -202,14 +202,25 @@ export function useCanvas(sessionId: string | null) {
       : (serverStatus ?? "idle");
 
   // —— actions ——
-  async function send(text: string, model?: string, thinkingLevel?: string) {
+  async function send(
+    text: string,
+    model?: string,
+    thinkingLevel?: string,
+    approvalMode?: string,
+  ) {
     if (!sessionId) return;
     setLiveChat((prev) => [
       ...prev,
       { type: "message", role: "user", payload: { text } },
     ]);
     setPending(true);
-    await appendCanvasMessage(sessionId, text, model, thinkingLevel);
+    await appendCanvasMessage(
+      sessionId,
+      text,
+      model,
+      thinkingLevel,
+      approvalMode,
+    );
   }
 
   async function stop() {
@@ -516,6 +527,8 @@ export function useCanvas(sessionId: string | null) {
     retryMedia,
     /** 触发视频拼接（video_concat 卡片上的 Merge） */
     mergeVideo,
+    /** 敏感操作审批模式（会话级，后端已归一化） */
+    approvalMode: snapQ.data?.approvalMode ?? "review",
     /** 「加入对话」圈定的节点 id（空 = 关注整块画布） */
     focusNodeIds: snapQ.data?.focusNodeIds ?? EMPTY_FOCUS,
     setFocus,

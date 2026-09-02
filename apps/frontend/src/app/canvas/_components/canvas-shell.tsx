@@ -70,6 +70,7 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
       busy={c.busy}
       sessionModel={c.model}
       sessionThinkingLevel={c.thinkingLevel}
+      sessionApprovalMode={c.approvalMode}
       onSend={c.send}
       onStop={c.stop}
       onAnswer={c.answerAsk}

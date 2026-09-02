@@ -984,6 +984,16 @@
   }
 }
 
+/* 需要「立刻起振」的场合（如索引页入口 hover 从 standby 切到 thinking）：
+   把错峰 delay 归零。pulse 的 delay 最长 1.02s，且 delay 期间没有 fill-mode，
+   格子会停在全亮——不归零的话 hover 后要干等一秒才动，读起来像卡住而不是在想。
+   duration 仍是 9 个互质感的值，几个循环内自己就重新错开，错峰性质不丢。
+   放在所有 [data-thinking-anim] 规则之后：与 .canvas-thinking-cell:nth-child()
+   同特异性（0,2,0），靠定义顺序取胜。 */
+.canvas-thinking-instant .canvas-thinking-cell {
+  animation-delay: 0s;
+}
+
 /* 换词窗口：占满方阵右侧的剩余宽度，词长变化就不会推着布局左右抖。
    overflow:hidden 把进出场的词裁在这一行里；line-height 给足，否则 g/y/p 的下伸部分会被切。 */
 .canvas-thinking-phrase {

@@ -22,6 +22,8 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
+import type { CanvasApprovalMode } from "@/lib/api";
+
 import type { ChatItem, ChatState } from "../_lib/chat";
 import { PHASE_UI, agentPhase } from "../_lib/thinking-phase";
 import {
@@ -29,6 +31,7 @@ import {
   type ThinkingLevel,
   supportsThinkingLevel,
 } from "../_lib/models";
+import { CanvasApprovalSwitcher } from "./approval-switcher";
 import { Markdown } from "./markdown";
 import { CanvasModelSwitcher } from "./model-switcher";
 import { CanvasThinkingIndicator } from "./thinking-indicator";
@@ -489,6 +492,7 @@ export function CanvasChat({
   busy,
   sessionModel,
   sessionThinkingLevel,
+  sessionApprovalMode,
   onSend,
   onStop,
   onAnswer,
@@ -503,7 +507,14 @@ export function CanvasChat({
   sessionModel?: string | null;
   /** 会话当前思考深度档位（初始化切换器）；null = 跟随模型默认（auto）。 */
   sessionThinkingLevel?: string | null;
-  onSend: (text: string, model?: string, thinkingLevel?: ThinkingLevel) => void;
+  /** 会话的敏感操作审批模式（后端归一化后恒有值） */
+  sessionApprovalMode?: CanvasApprovalMode;
+  onSend: (
+    text: string,
+    model?: string,
+    thinkingLevel?: ThinkingLevel,
+    approvalMode?: CanvasApprovalMode,
+  ) => void;
   onStop: () => void;
   onAnswer: (msg: string) => void;
   onResolve: (approve: boolean) => void;
@@ -531,6 +542,16 @@ export function CanvasChat({
   const [thinking, setThinking] = useState<ThinkingLevel>(() =>
     normalizeThinking(sessionModel ?? DEFAULT_CANVAS_MODEL, sessionThinkingLevel),
   );
+  // 审批模式：同上的 render 期同步套路。默认 review——放行是不可逆的，
+  // 快照还没到手时不能先按"全自动"渲染。
+  const [approval, setApproval] = useState<CanvasApprovalMode>(
+    sessionApprovalMode ?? "review",
+  );
+  const [seenApproval, setSeenApproval] = useState(sessionApprovalMode ?? null);
+  if (sessionApprovalMode && sessionApprovalMode !== seenApproval) {
+    setSeenApproval(sessionApprovalMode);
+    setApproval(sessionApprovalMode);
+  }
   const [seenThinking, setSeenThinking] = useState(sessionThinkingLevel ?? null);
   if (sessionThinkingLevel && sessionThinkingLevel !== seenThinking) {
     setSeenThinking(sessionThinkingLevel);
@@ -550,7 +571,7 @@ export function CanvasChat({
   function submit() {
     const t = text.trim();
     if (!t || busy) return;
-    onSend(t, model, thinking);
+    onSend(t, model, thinking, approval);
     setText("");
   }
 
@@ -656,6 +677,11 @@ export function CanvasChat({
                 model={model}
                 value={thinking}
                 onChange={setThinking}
+                disabled={busy}
+              />
+              <CanvasApprovalSwitcher
+                value={approval}
+                onChange={setApproval}
                 disabled={busy}
               />
             </div>

@@ -1,5 +1,5 @@
 import { IsIn, IsNotEmpty, IsOptional, IsString } from 'class-validator';
-import { CANVAS_MODELS } from '../canvas.types';
+import { CANVAS_APPROVAL_MODES, CANVAS_MODELS } from '../canvas.types';
 import { CANVAS_THINKING_LEVELS } from '../thinking-level';
 
 export class AppendCanvasMessageDto {
@@ -15,4 +15,9 @@ export class AppendCanvasMessageDto {
   @IsOptional()
   @IsIn(CANVAS_THINKING_LEVELS)
   thinkingLevel?: string;
+
+  /** 敏感操作审批模式：review | auto。不传保留会话既有设置。 */
+  @IsOptional()
+  @IsIn(CANVAS_APPROVAL_MODES)
+  approvalMode?: string;
 }

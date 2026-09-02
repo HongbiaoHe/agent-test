@@ -23,6 +23,7 @@ import {
   type CanvasTokenCall,
   type CanvasTokenReport,
   type CanvasTokenRun,
+  asApprovalMode,
   canConnectNodeTypes,
   collectVideoSources,
   isCanvasNodeType,
@@ -123,12 +124,14 @@ export class CanvasService {
     userId: string,
     model?: string,
     thinkingLevel?: string,
+    approvalMode?: string,
   ): Promise<{ sessionId: string }> {
     const baseData = {
       tenantId,
       userId,
       model,
       thinkingLevel,
+      approvalMode,
       ...(title?.trim() ? { title } : {}),
     };
     if (!goal?.trim()) {
@@ -389,6 +392,7 @@ export class CanvasService {
       status: session.status,
       model: session.model,
       thinkingLevel: session.thinkingLevel,
+      approvalMode: asApprovalMode(session.approvalMode),
       revision: session.revision,
       totalTokens: tokenAgg._sum.totalTokens ?? 0,
       // 圈定的节点里可能有已被删掉的，过滤掉再回给前端，免得画布上标不出来又清不掉
@@ -559,6 +563,7 @@ export class CanvasService {
     userId: string,
     model?: string,
     thinkingLevel?: string,
+    approvalMode?: string,
   ): Promise<{ sessionId: string }> {
     if (!content?.trim()) {
       throw new BusinessException(ErrorCodes.CANVAS_GOAL_EMPTY);
@@ -584,6 +589,7 @@ export class CanvasService {
         ...(model ? { model } : {}),
         // 显式传了才覆盖：不传保留会话既有档位
         ...(thinkingLevel ? { thinkingLevel } : {}),
+        ...(approvalMode ? { approvalMode } : {}),
       },
     });
     const seq = await this.prisma.canvasMessage.count({
