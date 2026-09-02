@@ -7,6 +7,7 @@ import { AppService } from './app.service';
 import { EventsModule } from './events/events.module';
 import { PrismaModule } from './prisma/prisma.module';
 import { RedisModule } from './redis/redis.module';
+import { AigcModule } from './aigc/aigc.module';
 import { AuthModule } from './auth/auth.module';
 import { CanvasModule } from './canvas/canvas.module';
 import { CommandsModule } from './commands/commands.module';
@@ -41,6 +42,7 @@ import { WorkerModule } from './worker/worker.module';
       },
     }),
     AuthModule,
+    AigcModule,
     PrismaModule,
     RedisModule,
     CommandsModule,

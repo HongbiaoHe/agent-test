@@ -1,51 +1,44 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
-import { mkdir, readFile, writeFile } from 'node:fs/promises';
+import { mkdir } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Job } from 'bullmq';
 import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
+import { AigcService } from '../aigc/aigc.service';
+import { videoRefRole } from '../aigc/aigc.catalog';
+import type { AigcReference } from '../aigc/aigc.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
-import { GoogleMediaClient, MediaRef } from './google-media.client';
 import { concatVideos } from './video-concat';
-import { mediaDataDir, MediaType } from './media.service';
+import {
+  mediaDataDir,
+  MediaService,
+  MediaType,
+  MEDIA_OPEN_STATUSES,
+  readParams,
+  RECONCILE_MAX_ATTEMPTS,
+} from './media.service';
 
 interface MediaJobData {
   versionId: string;
+  /** 对账轮询（job 名 'poll'）的第几轮，用于封顶。 */
+  attempt?: number;
 }
 
 /**
- * 由 MIME 推资产文件后缀（纯函数，便于单测）。
- * jpeg→jpg、png→png、其余图像兜底 png；视频统一 mp4。
- */
-export function decideExt(mimeType: string): string {
-  if (mimeType.startsWith('video/')) return 'mp4';
-  if (mimeType === 'image/jpeg') return 'jpg';
-  if (mimeType === 'image/png') return 'png';
-  // 其余未知图像类型兜底 png（generateContent 图像分支才会走到这）
-  return 'png';
-}
-
-/** 由参考资产文件后缀推 MIME（图生图/视频首帧的 inlineData/image 需要它）。 */
-export function mimeForExt(filePath: string): string {
-  if (filePath.endsWith('.png')) return 'image/png';
-  if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg'))
-    return 'image/jpeg';
-  if (filePath.endsWith('.webp')) return 'image/webp';
-  // 参考图只允许 image 类型版本（service 已校验），兜底 png
-  return 'image/png';
-}
-
-/**
- * 媒体生成 worker：消费 media-gen 队列的 { versionId }。
- * 流程：load version+generation → generating(推流) → 调 google client → 落盘 → done/failed(推流)。
+ * 媒体生成 worker：消费 media-gen 队列的三种 job。
+ *
+ *  - `generate`：等上游参考图就绪 → 把任务**提交**给 aigc（异步接单）→ 记下 task_id 后收工。
+ *    生成本身在 aigc 那头跑，结果经回调回来（MediaCallbackController → MediaService.applyTaskResult）；
+ *    worker 不干等，队列槽位立刻释放（此前直连模型时一条视频要占着槽位几分钟）。
+ *  - `poll`：回调的兜底对账（回调是 best-effort，隧道没开就一条都到不了），见 scheduleReconcile。
+ *  - `concat`：本地 ffmpeg 拼接，不经 aigc，整段逻辑不变。
+ *
  * 只在状态变更时推流（generating / done|failed），轮询 tick 不推（避免前端失效风暴，设计 Issue 9）。
  */
-// lockDuration 提高到 1320_000（22 分钟）：参考图等待最长 5 分钟 + 视频生成最长 10 分钟，
-// 两者串联最坏情况约 15 分钟，1320s 留足余量，避免 BullMQ 判 stalled 重跑（重复付费）。
-// concurrency=3：BullMQ 默认 1，会把互不相干的任务排成一条队——一次批准 6 个视频要串行跑
-// 六轮（实测每条约 1 分钟），且一条在等上游参考图时后面全被堵住。3 条并行既缩短总时长，
-// 又给 Google 侧的并发配额留余量。
+// lockDuration 保持 1320_000（22 分钟）：generate job 现在只等参考图（最长 5 分钟）+ 提交，
+// 但 concat 跑本地 ffmpeg 仍可能很久，留足余量避免 BullMQ 判 stalled 重跑（重复付费）。
+// concurrency=3：BullMQ 默认 1，会把互不相干的任务排成一条队——一条在等上游参考图时后面全被堵住。
 @Processor('media-gen', { concurrency: 3, lockDuration: 1_320_000 })
 export class MediaProcessor extends WorkerHost {
   private readonly logger = new Logger(MediaProcessor.name);
@@ -53,13 +46,19 @@ export class MediaProcessor extends WorkerHost {
   constructor(
     private readonly prisma: PrismaService,
     private readonly stream: StreamService,
-    private readonly client: GoogleMediaClient,
+    private readonly aigc: AigcService,
+    private readonly media: MediaService,
     @Inject(MEDIA_ABORTS) private readonly aborts: AbortRegistry,
   ) {
     super();
   }
 
   async process(job: Job<MediaJobData>): Promise<void> {
+    // 对账轮询不动状态、不占 abort 句柄，单独一条路径
+    if (job.name === 'poll') {
+      await this.reconcile(job.data.versionId, job.data.attempt ?? 1);
+      return;
+    }
     const { versionId } = job.data;
     const version = await this.prisma.mediaVersion.findUnique({
       where: { id: versionId },
@@ -73,7 +72,8 @@ export class MediaProcessor extends WorkerHost {
     const type = generation.type as MediaType;
 
     // 协作取消句柄：stop 端点经 MediaService.cancelByConversation → abort(versionId)。
-    // 视频轮询与参考图等待循环每轮检查 signal；图片单次短调用，结束后检查并丢弃结果。
+    // 本 job 里能被打断的是「等上游参考图」与「ffmpeg 拼接」两段循环（每轮检查 signal）；
+    // 已经提交给 aigc 的那些由 cancelByConversation 自己判失败（那时没有 worker 攥着它）。
     const { signal, dispose } = this.aborts.register(versionId);
     try {
       await this.prisma.mediaVersion.update({
@@ -111,48 +111,39 @@ export class MediaProcessor extends WorkerHost {
         return;
       }
 
-      // 参考图：从 DB 取引用版本的 filePath → 读盘转 base64。资产缺失则抛错使本版本 failed（不静默忽略）。
-      const refs = await this.loadRefs(version.referenceVersionIds, { signal });
-
-      // 按类型调对应生成；图片快、视频长任务内部轮询。
-      // 图生图：refs 全传；视频首帧：仅取第一张参考图。
-      const result =
-        type === 'image'
-          ? await this.client.generateImageBytes(
-              version.prompt,
-              version.model,
-              refs,
-            )
-          : await this.client.generateVideoBytes(
-              version.prompt,
-              version.model,
-              {
-                firstFrame: refs[0],
-                signal,
-              },
-            );
-      // 图片调用期间被停止：结果作废（不落盘），统一走 catch 的「用户已停止」收尾
+      // 参考图：等上游版本就绪，再换成 aigc 能下载的签名公网地址（它只收 URL，不收 base64）。
+      const references = await this.loadRefUrls(
+        version.referenceVersionIds,
+        type,
+        version.channel,
+        { signal },
+      );
+      // 等参考图期间被停止：不再往 aigc 发单（发了就要付费），走 catch 的「用户已停止」收尾
       if (signal.aborted) throw new Error('用户已停止');
 
-      // 落盘：文件名 = <versionId>.<ext>（cuid 不可枚举）；filePath 存相对路径
-      const ext = decideExt(result.mimeType);
-      const fileName = `${versionId}.${ext}`;
-      const dir = mediaDataDir();
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, fileName), result.bytes);
-
-      await this.prisma.mediaVersion.update({
-        where: { id: versionId },
-        data: { status: 'done', filePath: fileName, completedAt: new Date() },
-      });
-      await this.publish(
-        generation.conversationId,
-        generation.id,
-        versionId,
+      // 接单：模型与档位取本版本落库的那份（建版本时已按目录归一），
+      // 参考图会让 aigc 侧的 derived 维度变化，故 submit 内部还会再收窄一次并回传实际生效值。
+      const { taskId, config } = await this.aigc.submit({
         type,
-        'done',
+        prompt: version.prompt,
+        config: {
+          channel: version.channel ?? '',
+          model: version.model,
+          params: readParams(version.params),
+        },
+        references,
+        callbackUrl: await this.media.callbackUrl(),
+        // 回调里原样带回，方便在 aigc 后台按我方版本号对账（我方仍按 task_id 反查）
+        metadata: { versionId, generationId: generation.id },
+      });
+      await this.media.markSubmitted(versionId, taskId, config);
+      // 回调是 best-effort，配一条兜底轮询；到终态或轮满即止。
+      // 它同时兜住一个窄窗口：回调比上面这行落库更快到达时按 task_id 反查不到版本、
+      // 那次回调会被丢弃，30 秒后的第一轮对账会把结果补回来。
+      await this.media.scheduleReconcile(versionId, 1);
+      this.logger.log(
+        `media 已提交 aigc versionId=${versionId} task=${taskId} ${config.channel}/${config.model}`,
       );
-      this.logger.log(`media 生成完成 versionId=${versionId} file=${fileName}`);
     } catch (e) {
       // 协作取消统一在此落 failed(用户已停止)；其余按原始报错落 failed
       const message = signal.aborted
@@ -162,19 +153,14 @@ export class MediaProcessor extends WorkerHost {
           : String(e);
       if (signal.aborted) {
         this.logger.log(`media 生成已取消 versionId=${versionId}`);
-      } else {
-        this.logger.error(`media 生成失败 versionId=${versionId} ${message}`);
       }
-      await this.prisma.mediaVersion.update({
-        where: { id: versionId },
-        data: { status: 'failed', error: message, completedAt: new Date() },
-      });
-      await this.publish(
-        generation.conversationId,
-        generation.id,
+      // 经 settleFailed 落库（带未完成状态条件）而不是直接 update：
+      // 提交成功后才抛错的情况下，回调可能已经把这版推向 done，不该被覆盖成 failed。
+      await this.media.settleFailed(
         versionId,
+        generation.id,
+        generation.conversationId,
         type,
-        'failed',
         message,
       );
     } finally {
@@ -182,13 +168,6 @@ export class MediaProcessor extends WorkerHost {
     }
   }
 
-  /**
-   * 把参考版本 id 列表解析为 base64 字节 + MIME。
-   * 若参考版本尚未 done（queued/generating），轮询 DB 等待（默认每 5s，上限 5 分钟）。
-   * 变 failed 或超时 → 抛错，让本版本 failed 并把原因带给前端。
-   * filePath 缺失或磁盘文件读不到 → 同样抛错（不静默忽略）。
-   * 顺序与传入 id 一致（视频首帧依赖第一张）。
-   */
   /**
    * 按 referenceVersionIds 的**顺序**把源视频接成一条，返回落盘的文件名。
    *
@@ -232,25 +211,38 @@ export class MediaProcessor extends WorkerHost {
     return fileName;
   }
 
-  private async loadRefs(
+  /**
+   * 把参考版本 id 列表换成 aigc 能下载的**签名公网地址**。
+   *
+   * 若参考版本尚未 done（queued/generating），轮询 DB 等待（默认每 5s，上限 5 分钟）——
+   * 画布上常是「上游图还在生成，下游已被批准」。变 failed 或超时 → 抛错，让本版本 failed。
+   * 顺序与传入 id 一致（视频首帧依赖第一张）。
+   *
+   * 视频只取**第一张**：byteplus/fal 的首尾帧一次只认一个 first_frame，
+   * 其余渠道也没有「多张参考图」的一致语义——与改造前「视频取第一张作首帧」保持一致。
+   */
+  private async loadRefUrls(
     referenceVersionIds: unknown,
+    type: MediaType,
+    channel: string | null,
     opts: {
       pollIntervalMs?: number;
       timeoutMs?: number;
       signal?: AbortSignal;
     } = {},
-  ): Promise<MediaRef[]> {
-    const ids = Array.isArray(referenceVersionIds)
-      ? (referenceVersionIds as string[])
+  ): Promise<AigcReference[]> {
+    const all = Array.isArray(referenceVersionIds)
+      ? referenceVersionIds.filter((x): x is string => typeof x === 'string')
       : [];
+    const ids = type === 'video' ? all.slice(0, 1) : all;
     if (ids.length === 0) return [];
 
     const pollIntervalMs = opts.pollIntervalMs ?? 5_000;
     const timeoutMs = opts.timeoutMs ?? 5 * 60_000; // 5 分钟
+    const role: AigcReference['role'] =
+      type === 'video' ? videoRefRole(channel ?? '') : 'reference';
 
-    const dir = mediaDataDir();
-    const refs: MediaRef[] = [];
-
+    const refs: AigcReference[] = [];
     for (const id of ids) {
       const v = await this.waitForRef(
         id,
@@ -258,13 +250,53 @@ export class MediaProcessor extends WorkerHost {
         timeoutMs,
         opts.signal,
       );
-      const data = await readFile(join(dir, v.filePath!)); // 文件不存在会抛 ENOENT → 本版本 failed
-      refs.push({
-        data: data.toString('base64'),
-        mimeType: mimeForExt(v.filePath!),
-      });
+      const url = await this.media.publicAssetUrl(id, v.filePath!);
+      if (!url) {
+        throw new Error(
+          '参考图无法提供给 aigc：没有公网地址。请先跑 `pnpm tunnel` 开隧道，或配置 PUBLIC_BASE_URL',
+        );
+      }
+      refs.push({ type: 'image', role, url });
     }
     return refs;
+  }
+
+  /**
+   * 回调兜底对账：查一次 aigc 任务详情，没到终态就再排一轮，轮满判超时失败。
+   *
+   * 单次失败（网络抖动等）不判死本版本——继续排下一轮，最坏由轮数封顶收敛。
+   */
+  private async reconcile(versionId: string, attempt: number): Promise<void> {
+    const version = await this.prisma.mediaVersion.findUnique({
+      where: { id: versionId },
+      include: { generation: true },
+    });
+    if (!version || !MEDIA_OPEN_STATUSES.includes(version.status)) return;
+    // 还没提交出去（generate job 尚未跑到 submit）：本轮什么都做不了，等下一轮
+    if (version.providerTaskId) {
+      try {
+        const task = await this.aigc.getTask(version.providerTaskId);
+        if ((await this.media.applyTaskResult(task)) !== 'pending') return;
+      } catch (e) {
+        this.logger.warn(
+          `对账查询失败（第 ${attempt} 轮）versionId=${versionId}：${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+    }
+
+    if (attempt >= RECONCILE_MAX_ATTEMPTS) {
+      await this.media.settleFailed(
+        versionId,
+        version.generationId,
+        version.generation.conversationId,
+        version.generation.type === 'video' ? 'video' : 'image',
+        '生成超时：aigc 长时间未回结果',
+      );
+      return;
+    }
+    await this.media.scheduleReconcile(versionId, attempt + 1);
   }
 
   /**

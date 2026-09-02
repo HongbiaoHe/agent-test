@@ -7,7 +7,7 @@ import { CHECKPOINTER } from '../agent/checkpointer.provider';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
 import { StreamService } from '../events/stream.service';
-import { MediaService } from '../media/media.service';
+import { MediaService, readParams } from '../media/media.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CANVAS_ABORTS } from './canvas.abort';
 import {
@@ -25,8 +25,10 @@ import {
   type CanvasTokenRun,
   asApprovalMode,
   canConnectNodeTypes,
+  collectGenerationInputs,
   collectVideoSources,
   isCanvasNodeType,
+  joinPromptParts,
   shortNodeId,
 } from './canvas.types';
 import { groupByModel, sumCalls } from './token-usage';
@@ -235,6 +237,63 @@ export class CanvasService {
       );
     }
     const { generationId } = await this.media.createConcat(id, userId, sources);
+    await this.applyOp(id, 'user', {
+      op: 'update_node',
+      nodeId,
+      mediaGenerationId: generationId,
+    });
+    return { generationId };
+  }
+
+  /**
+   * 用户手动触发某个 image_gen / video_gen 节点的生成（卡片上的 Generate）。
+   *
+   * 与 agent 的 generate_media_node 是同一件事的两个入口：素材同样全部取自入边
+   * （collectGenerationInputs），模型同样取节点上选定的那份（没选就回落默认模型），
+   * 同样落一个新的 MediaGeneration 并回填 generationId——之后的状态流转/资产/下游引用一模一样。
+   */
+  async generateMediaNode(
+    id: string,
+    tenantId: string,
+    userId: string,
+    nodeId: string,
+  ): Promise<{ generationId: string }> {
+    await this.assertOwner(id, tenantId);
+    const snap = await this.buildSnapshot(id);
+    const node = snap.nodes.find((n) => n.id === nodeId);
+    if (!node) {
+      throw new BusinessException(
+        ErrorCodes.CANVAS_NODE_NOT_FOUND,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    if (node.type !== 'image_gen' && node.type !== 'video_gen') {
+      throw new BusinessException(
+        ErrorCodes.CANVAS_EDGE_INVALID,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const inputs = collectGenerationInputs(snap.nodes, snap.edges, nodeId);
+    if (inputs.promptParts.length === 0) {
+      throw new BusinessException(
+        ErrorCodes.CANVAS_PROMPT_REQUIRED,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const { generationId } = await this.media.createGeneration(
+      id,
+      userId,
+      node.type === 'video_gen' ? 'video' : 'image',
+      joinPromptParts(inputs.promptParts),
+      inputs.referenceVersionIds.length
+        ? inputs.referenceVersionIds
+        : undefined,
+      {
+        channel: node.mediaChannel ?? undefined,
+        model: node.mediaModel ?? undefined,
+        params: node.mediaParams ?? undefined,
+      },
+    );
     await this.applyOp(id, 'user', {
       op: 'update_node',
       nodeId,
@@ -813,6 +872,15 @@ export class CanvasService {
             ...(op.mediaGenerationId !== undefined
               ? { mediaGenerationId: op.mediaGenerationId }
               : {}),
+            ...(op.mediaChannel !== undefined
+              ? { mediaChannel: op.mediaChannel }
+              : {}),
+            ...(op.mediaModel !== undefined
+              ? { mediaModel: op.mediaModel }
+              : {}),
+            ...(op.mediaParams !== undefined
+              ? { mediaParams: op.mediaParams }
+              : {}),
             ...(op.x !== undefined ? { x: op.x } : {}),
             ...(op.y !== undefined ? { y: op.y } : {}),
             version: { increment: 1 },
@@ -986,6 +1054,9 @@ export class CanvasService {
       prompt: string | null;
       assetPath: string | null;
       mediaGenerationId: string | null;
+      mediaChannel: string | null;
+      mediaModel: string | null;
+      mediaParams: unknown;
     },
     media?: { id: string; status: string },
   ): CanvasNodeDto {
@@ -1001,6 +1072,10 @@ export class CanvasService {
       prompt: n.prompt,
       assetPath: n.assetPath,
       mediaGenerationId: n.mediaGenerationId,
+      mediaChannel: n.mediaChannel,
+      mediaModel: n.mediaModel,
+      // Json 列读出来是 JsonValue，收窄成 Record<string,string>；没配过就是 null
+      mediaParams: n.mediaParams === null ? null : readParams(n.mediaParams),
       mediaVersionId: media?.id ?? null,
       mediaStatus: media?.status ?? null,
       outputs: deriveOutputs(type, n, media),

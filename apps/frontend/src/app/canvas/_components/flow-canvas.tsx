@@ -49,10 +49,14 @@ export interface ConnectMenuRequest {
 const NODE_WIDTH = 256;
 
 
-/** 节点内容可编辑字段（update_node op 的子集，位置/媒体不在此列）。 */
+/** 节点内容可编辑字段（update_node op 的子集，位置与 generationId 回填不在此列）。 */
 export interface NodeContentPatch {
   label?: string;
   text?: string;
+  /** 生成节点的模型选择（面板上的模型 / 档位下拉，见 NodeModelControls） */
+  mediaChannel?: string;
+  mediaModel?: string;
+  mediaParams?: Record<string, string>;
 }
 
 /**
@@ -78,6 +82,8 @@ export const CanvasEditorContext = createContext<{
   duplicateNode: (nodeId: string) => void;
   /** 重发一次失败的生成（节点卡片上的 Retry） */
   retryMedia: (generationId: string) => void;
+  /** 用选定的模型生成一次（生成节点面板上的 Generate） */
+  generateNode: (nodeId: string) => void;
   /** 触发视频拼接（video_concat 卡片上的 Merge） */
   mergeVideo: (nodeId: string) => void;
   /** 点端口上的「+」：在该处弹出「接一个什么节点」菜单（与拖到空白处同一个菜单） */
@@ -109,6 +115,7 @@ export const CanvasEditorContext = createContext<{
   deleteNode: () => {},
   duplicateNode: () => {},
   retryMedia: () => {},
+  generateNode: () => {},
   mergeVideo: () => {},
   openConnectMenu: () => {},
   focusNode: () => {},
@@ -247,6 +254,8 @@ interface FlowCanvasProps {
   onPaneClick?: () => void;
   /** 重发一次失败的生成（节点卡片上的 Retry） */
   onRetryMedia: (generationId: string) => void;
+  /** 用选定的模型生成一次（生成节点面板上的 Generate） */
+  onGenerateNode: (nodeId: string) => void;
   /** 触发视频拼接（video_concat 卡片上的 Merge） */
   onMergeVideo: (nodeId: string) => void;
   /** 快照还没落地：此时节点为空是"还没加载"，不是"这块画布是空的" */
@@ -290,6 +299,7 @@ function FlowCanvasInner({
   onCancelSaving,
   onPaneClick,
   onRetryMedia,
+  onGenerateNode,
   onMergeVideo,
   loading,
   focusNodeIds,
@@ -583,6 +593,7 @@ function FlowCanvasInner({
         onApplyOp({ op: "remove_node", nodeId }),
       duplicateNode: duplicateFromCanvas,
       retryMedia: onRetryMedia,
+      generateNode: onGenerateNode,
       mergeVideo: onMergeVideo,
       openConnectMenu: (r: ConnectMenuRequest) =>
         openDropAt(r.nodeId, r.direction, r.clientX, r.clientY),
@@ -615,6 +626,7 @@ function FlowCanvasInner({
       setNodes,
       duplicateFromCanvas,
       onRetryMedia,
+      onGenerateNode,
       onMergeVideo,
       openDropAt,
       focusNodeOnCanvas,

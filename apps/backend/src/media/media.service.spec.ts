@@ -9,6 +9,8 @@
 import { getQueueToken } from '@nestjs/bullmq';
 import { Test } from '@nestjs/testing';
 import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
+import { AigcService } from '../aigc/aigc.service';
+import { PublicUrlService } from '../aigc/public-url.service';
 import { MediaService } from './media.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
@@ -28,6 +30,15 @@ const mockPrisma = {
 };
 const mockQueue = { add: jest.fn() };
 const mockStream = { publish: jest.fn() };
+/** 模型选择在建版本时经 aigc 目录归一；单测里给一个固定的返回即可。 */
+const mockAigc = {
+  resolveConfig: jest.fn().mockResolvedValue({
+    channel: 'byteplus',
+    model: 'seedream-4.5',
+    params: { aspect_ratio: '16:9', resolution: '2K' },
+  }),
+};
+const mockPublicUrl = { baseUrl: jest.fn().mockResolvedValue(null) };
 
 describe('MediaService', () => {
   let service: MediaService;
@@ -40,6 +51,8 @@ describe('MediaService', () => {
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('media-gen'), useValue: mockQueue },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: AigcService, useValue: mockAigc },
+        { provide: PublicUrlService, useValue: mockPublicUrl },
       ],
     }).compile();
     service = module.get(MediaService);
@@ -410,6 +423,8 @@ describe('MediaService – cancelByConversation（停止功能）', () => {
           useValue: { add: jest.fn(), getJob },
         },
         { provide: MEDIA_ABORTS, useValue: aborts },
+        { provide: AigcService, useValue: mockAigc },
+        { provide: PublicUrlService, useValue: mockPublicUrl },
       ],
     }).compile();
     service = module.get(MediaService);

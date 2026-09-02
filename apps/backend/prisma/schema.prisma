@@ -98,7 +98,15 @@ model MediaVersion {
   generationId String
   generation   MediaGeneration @relation(fields: [generationId], references: [id])
   prompt       String          @db.Text
+  // 本次生成用的 aigc 模型别名（如 seedream-4.5）；拼接产物为 ffmpeg-concat。
   model        String
+  // aigc 渠道（byteplus | fal | google | kie）；本地拼接为 null。
+  channel      String?
+  // 本次提交给 aigc 的档位参数（aspect_ratio / resolution / duration / with_audio 等，
+  // 形状 Record<string,string>）。用 Json 存：维度随模型而变，只整体读写。
+  params       Json?
+  // aigc 侧的 task_id：回调按它反查本版本（回调 body 只带 task_id 与 metadata）。
+  providerTaskId String?
   status       String          @default("queued") // queued | generating | done | failed
   // 参考图：引用本会话此前生成的图片版本 id 数组（图生图多张 / 视频取首张作首帧）。
   // 用 Json 存数组：版本数 ≤4、只整体读写、不需要按元素查询，Json 比关联表更简单（YAGNI）。
@@ -109,6 +117,7 @@ model MediaVersion {
   completedAt  DateTime?
 
   @@index([generationId])
+  @@index([providerTaskId])
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -249,6 +258,13 @@ model CanvasNode {
   prompt            String? @db.Text // image_gen / video_gen 提示词
   assetPath         String? // image_upload 已上传资产（MVP 模拟占位）
   mediaGenerationId String? // 生成节点触发后回填；状态/资产靠 JOIN MediaVersion
+
+  // 生成节点（image_gen / video_gen）选定的 aigc 模型与档位参数。
+  // 空 = 用该类型的默认模型（aigc 目录里的第一个，见 aigc/aigc.catalog.ts）。
+  // 存在节点上而非会话上：同一块画布里不同卡片常要用不同模型对比效果。
+  mediaChannel      String?
+  mediaModel        String?
+  mediaParams       Json? // Record<string,string>
 
   version   Int      @default(0)
   createdAt DateTime @default(now())

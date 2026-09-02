@@ -28,6 +28,11 @@ export const canvasOpSchema: z.ZodType<CanvasOpInput> = z.discriminatedUnion(
       prompt: z.string().optional(),
       assetPath: z.string().optional(),
       mediaGenerationId: z.string().optional(),
+      // 生成节点的模型选择：值域由 aigc 目录决定（服务端在建生成时还会过一遍 resolveConfig），
+      // 这里只校验形状——目录随时会变，前端拿到的清单才是当时的权威。
+      mediaChannel: z.string().optional(),
+      mediaModel: z.string().optional(),
+      mediaParams: z.record(z.string(), z.string()).optional(),
       x: z.number().optional(),
       y: z.number().optional(),
     }),

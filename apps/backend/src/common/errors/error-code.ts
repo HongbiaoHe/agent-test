@@ -114,4 +114,9 @@ export const ErrorCodes = {
     message:
       'Invalid connection (target node does not accept this source output type)',
   },
+  CANVAS_PROMPT_REQUIRED: {
+    code: 70008,
+    message:
+      'This generation node has no prompt: connect an upstream text node first',
+  },
 } as const satisfies Record<string, ErrorDef>;

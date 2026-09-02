@@ -1,26 +1,19 @@
 /**
- * media.processor 单元测试：
- * - decideExt 纯函数（落盘后缀决策）
- * - waitForRef 等待逻辑（参考图就绪性轮询）
+ * media.processor 单元测试：waitForRef 等待逻辑（参考图就绪性轮询）。
  */
 import { Test } from '@nestjs/testing';
 import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
-import { decideExt, MediaProcessor } from './media.processor';
+import { MediaProcessor } from './media.processor';
+import { MediaService } from './media.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
-import { GoogleMediaClient } from './google-media.client';
-
-describe('decideExt', () => {
-  it('image/jpeg → jpg', () => expect(decideExt('image/jpeg')).toBe('jpg'));
-  it('image/png → png', () => expect(decideExt('image/png')).toBe('png'));
-  it('video/mp4 → mp4', () => expect(decideExt('video/mp4')).toBe('mp4'));
-  it('未知图像类型兜底 png', () => expect(decideExt('image/webp')).toBe('png'));
-});
+import { AigcService } from '../aigc/aigc.service';
 
 describe('MediaProcessor.waitForRef', () => {
   const mockPrisma = { mediaVersion: { findUnique: jest.fn() } };
   const mockStream = { publish: jest.fn() };
-  const mockClient = {};
+  const mockAigc = {};
+  const mockMedia = {};
   let processor: MediaProcessor;
 
   beforeEach(async () => {
@@ -29,7 +22,8 @@ describe('MediaProcessor.waitForRef', () => {
         MediaProcessor,
         { provide: PrismaService, useValue: mockPrisma },
         { provide: StreamService, useValue: mockStream },
-        { provide: GoogleMediaClient, useValue: mockClient },
+        { provide: AigcService, useValue: mockAigc },
+        { provide: MediaService, useValue: mockMedia },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
       ],
     }).compile();

@@ -46,6 +46,7 @@ import {
 } from "./node-composer";
 import { NodeTitleField } from "./node-inline-field";
 import { NodeMediaDialog } from "./node-media-dialog";
+import { NodeModelControls } from "./node-model-controls";
 import { NODE_META, NodeTypeIcon } from "./node-meta";
 import { VideoSequence } from "./video-sequence";
 
@@ -103,6 +104,7 @@ function NodeShell({
   body,
   promptSources,
   clips,
+  modelControls,
   composerMeta,
   hero,
   mediaOnly,
@@ -126,6 +128,8 @@ function NodeShell({
   promptSources?: PromptSource[];
   /** composer 里的待拼接视频序列（video_concat 专有） */
   clips?: ClipSource[];
+  /** composer 里的模型区（生成节点专有）：选模型 / 选档位 / Generate */
+  modelControls?: React.ReactNode;
   /** composer 参数条上的补充胶囊（上游来源摘要） */
   composerMeta?: React.ReactNode;
   /** 主视觉：出图/出片或生成中的骨架；没有产出时不传，卡片就不占那块高度 */
@@ -184,6 +188,7 @@ function NodeShell({
         body={body}
         promptSources={promptSources}
         clips={clips}
+        model={modelControls}
         meta={composerMeta}
         actions={<NodeActions nodeId={nodeId} extra={heroActions} plain />}
       />
@@ -787,7 +792,8 @@ function MediaGenNode({
     } else if (!prompt) {
       status = <StatusLine text="Needs a text node for its prompt" />;
     } else {
-      status = <StatusLine text="Ready — ask the agent to render it" />;
+      // 生成入口在面板里（选中节点即浮出）：既能选模型也能直接按 Generate
+      status = <StatusLine text="Ready — pick a model and generate" />;
     }
   }
 
@@ -800,6 +806,18 @@ function MediaGenNode({
       label={data.label ?? ""}
       // 生成节点自身不存 prompt：面板里列出各路上游文本（点一下可跳到那张卡）
       promptSources={promptSources}
+      // 模型区紧跟提示词：确认了"用什么料"，接着就是"用哪个模型出"和"出"
+      modelControls={
+        <NodeModelControls
+          nodeId={data.id}
+          mediaType={kind}
+          channel={data.mediaChannel}
+          model={data.mediaModel}
+          params={data.mediaParams}
+          hasGeneration={!!data.mediaGenerationId}
+          busy={busyNow}
+        />
+      }
       mediaOnly={mediaOnly}
       composerMeta={<InputsPill inputs={inputs} />}
       hero={hero}

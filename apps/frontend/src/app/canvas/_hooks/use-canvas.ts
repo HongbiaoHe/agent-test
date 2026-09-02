@@ -10,6 +10,7 @@ import {
   clearCanvasMessages,
   clearCanvasPlan,
   getCanvasMessages,
+  generateCanvasNode,
   getCanvasSnapshot,
   mergeCanvasVideoNode,
   moveCanvasNode,
@@ -444,6 +445,27 @@ export function useCanvas(sessionId: string | null) {
   }
 
   /**
+   * 用节点上选定的模型生成一次（生成节点面板上的 Generate）。
+   *
+   * 提示词与参考图由服务端按入边收集（与 agent 的 generate_media_node 同一段逻辑），
+   * 所以这里只需要给出节点 id。落一个新的 generation 并回填到节点上——
+   * 之后卡片的状态与资产跟 agent 触发的没有区别（queued → generating → done/failed）。
+   */
+  function generateNode(nodeId: string) {
+    if (!sessionId) return;
+    beginSave(nodeId);
+    void generateCanvasNode(sessionId, nodeId)
+      .then(() => {
+        settleSave(nodeId, "saved", SAVED_LINGER_MS);
+        void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
+      })
+      .catch((e: unknown) => {
+        settleSave(nodeId, "error", ERROR_LINGER_MS);
+        toast.error(e instanceof Error ? e.message : "Generation failed");
+      });
+  }
+
+  /**
    * 触发视频拼接。素材由服务端按入边顺序收集（与卡片预览顺序同源），
    * 落一个 MediaVersion 并回填 generationId——之后卡片的状态与资产就跟生成节点一样自动更新。
    */
@@ -525,6 +547,8 @@ export function useCanvas(sessionId: string | null) {
     addConnectedNode,
     /** 重发一次失败的生成（节点卡片上的 Retry） */
     retryMedia,
+    /** 用选定的模型生成一次（生成节点面板上的 Generate） */
+    generateNode,
     /** 触发视频拼接（video_concat 卡片上的 Merge） */
     mergeVideo,
     /** 敏感操作审批模式（会话级，后端已归一化） */

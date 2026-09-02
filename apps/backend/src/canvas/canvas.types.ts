@@ -142,6 +142,13 @@ export interface CanvasNodeDto {
   prompt: string | null;
   assetPath: string | null;
   mediaGenerationId: string | null;
+  /**
+   * 生成节点选定的 aigc 渠道 / 模型别名 / 档位参数（image_gen、video_gen 专有）。
+   * 三者都为空 = 用该类型的默认模型（aigc 目录里的第一个，见 aigc/aigc.catalog.ts）。
+   */
+  mediaChannel: string | null;
+  mediaModel: string | null;
+  mediaParams: Record<string, string> | null;
   /** 生成节点最新版本 id（JOIN 得出，供前端拉资产）。 */
   mediaVersionId: string | null;
   /** 生成节点最新状态：queued|generating|done|failed（JOIN 得出）。 */
@@ -274,6 +281,10 @@ export interface UpdateNodeOp {
   prompt?: string;
   assetPath?: string;
   mediaGenerationId?: string;
+  /** 生成节点的模型选择（面板上改模型/档位时走这三个字段）。 */
+  mediaChannel?: string;
+  mediaModel?: string;
+  mediaParams?: Record<string, string>;
   /** 位置（可选）：update_node 也可移动节点，与改 data 一样是结构变更（占 revision）。 */
   x?: number;
   y?: number;
@@ -353,6 +364,58 @@ export const SHORT_NODE_ID_LEN = 6;
 /** 完整节点 id → 注入给模型的短 id。 */
 export function shortNodeId(id: string): string {
   return id.slice(-SHORT_NODE_ID_LEN);
+}
+
+/**
+ * 生成节点的素材：提示词与参考图**全部来自入边**（生成节点自身不带 prompt，
+ * 见本文件 CANVAS_NODE_IO 的说明）。agent 工具与用户手动触发共用这一份，
+ * 避免两条路各算各的、"agent 生成的和自己点生成的不一样"。
+ */
+export interface CanvasGenerationInputs {
+  /** 上游 text 节点的正文，按入边顺序 */
+  promptParts: string[];
+  /** 上游 image_gen 的产物版本 id（参考图；视频只用第一张作首帧） */
+  referenceVersionIds: string[];
+  /** 被跳过的上游 image_upload 数（MVP 模拟上传，没有可引用的版本 id） */
+  skippedImageUpload: number;
+  /** 被跳过的上游视频数（生成管线不吃视频参考，video 入边只用于串联画布） */
+  skippedVideoInputs: number;
+}
+
+export function collectGenerationInputs(
+  nodes: readonly CanvasNodeDto[],
+  edges: readonly { source: string; target: string }[],
+  nodeId: string,
+): CanvasGenerationInputs {
+  const upstreamIds = edges
+    .filter((e) => e.target === nodeId)
+    .map((e) => e.source);
+  const upstream = nodes.filter((n) => upstreamIds.includes(n.id));
+  return {
+    promptParts: upstream.flatMap((n) =>
+      n.outputs.filter((o) => o.type === 'text').map((o) => o.content),
+    ),
+    // 只收 image_gen：image_upload 的 content 是 assetPath 不是 versionId（MVP 模拟上传），
+    // 传给 media 会被 validateReferences 拒。
+    referenceVersionIds: upstream
+      .filter((n) => n.type === 'image_gen')
+      .flatMap((n) =>
+        n.outputs.filter((o) => o.type === 'image').map((o) => o.content),
+      ),
+    skippedImageUpload: upstream.filter(
+      (n) => n.type === 'image_upload' && n.outputs.length > 0,
+    ).length,
+    skippedVideoInputs: upstream.filter((n) =>
+      n.outputs.some((o) => o.type === 'video'),
+    ).length,
+  };
+}
+
+/** 多路上游文本拼成一条提示词：单路原样，多路按边顺序编号。 */
+export function joinPromptParts(parts: readonly string[]): string {
+  return parts.length === 1
+    ? parts[0]
+    : parts.map((t, i) => `${i + 1}. ${t}`).join('\n');
 }
 
 /**

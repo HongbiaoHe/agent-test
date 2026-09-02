@@ -121,6 +121,24 @@ export class CanvasController {
     return this.canvas.setFocus(id, user.tenantId, dto.nodeIds);
   }
 
+  /**
+   * 手动触发 image_gen / video_gen 节点的生成（卡片上的 Generate；
+   * agent 那条路走 generate_media_node 工具，两者共用 service 里的同一段逻辑）。
+   */
+  @Post(':id/nodes/:nodeId/generate')
+  generateMediaNode(
+    @Param('id') id: string,
+    @Param('nodeId') nodeId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.canvas.generateMediaNode(
+      id,
+      user.tenantId,
+      user.userId,
+      nodeId,
+    );
+  }
+
   /** 手动触发 video_concat 节点的拼接（卡片上的 Merge；agent 那条路走 merge_video_node 工具）。 */
   @Post(':id/nodes/:nodeId/merge')
   mergeVideoNode(

@@ -271,6 +271,13 @@ export interface CanvasNodeDto {
   prompt: string | null;
   assetPath: string | null;
   mediaGenerationId: string | null;
+  /**
+   * 生成节点选定的 aigc 渠道 / 模型别名 / 档位参数（image_gen、video_gen 专有）。
+   * 三者都为空 = 用该类型的默认模型（GET /aigc/models 返回的 default）。
+   */
+  mediaChannel: string | null;
+  mediaModel: string | null;
+  mediaParams: Record<string, string> | null;
   mediaVersionId: string | null;
   mediaStatus: string | null;
   /** 可供下游消费的输出（服务端派生）。⚠️ patch 里生成节点的这项恒为空，见 canvas-state 的 upsertNode */
@@ -328,7 +335,17 @@ export type CanvasOpInput =
       prompt?: string;
       assetPath?: string;
     }
-  | { op: "update_node"; nodeId: string; label?: string; text?: string; prompt?: string }
+  | {
+      op: "update_node";
+      nodeId: string;
+      label?: string;
+      text?: string;
+      prompt?: string;
+      /** 生成节点的模型选择（面板上改模型/档位时走这三个字段） */
+      mediaChannel?: string;
+      mediaModel?: string;
+      mediaParams?: Record<string, string>;
+    }
   | { op: "remove_node"; nodeId: string }
   | { op: "add_edge"; source: string; target: string }
   | { op: "remove_edge"; edgeId: string };
@@ -488,6 +505,69 @@ export type CanvasPatch =
  * 手动触发 video_concat 节点的拼接。素材按入边顺序取（与卡片预览顺序同源），
  * 产出一个 MediaVersion——之后的状态/资产与生成节点走同一条路。
  */
+/**
+ * aigc 能力目录（镜像后端 aigc/aigc.types 的 AigcCatalog）。
+ * 模型清单与档位取值一律以本接口为准，前端不硬编码——后台随时会加减模型。
+ */
+export interface AigcParamOption {
+  label: string;
+  value: string;
+}
+
+export interface AigcModelParam {
+  param_type: string;
+  label?: string;
+  /** required 必传 / optional 可不传 / derived 服务端推导（不是入参，不渲染） */
+  input?: string;
+  /** select 或缺省 = 从 options 里选；range 是连续区间（当前只出现在音频维度） */
+  value_type?: string;
+  options: AigcParamOption[];
+}
+
+export interface AigcModel {
+  model_alias: string;
+  identifier?: string;
+  display_name?: string;
+  type: string;
+  image_input_number: number;
+  params: AigcModelParam[];
+}
+
+export interface AigcChannelModels {
+  channel: string;
+  models: AigcModel[];
+}
+
+/** 一次生成的模型选择：渠道 + 模型别名 + 档位（键是 param_type，值是 options[].value）。 */
+export interface AigcMediaConfig {
+  channel: string;
+  model: string;
+  params: Record<string, string>;
+}
+
+export interface AigcCatalog {
+  type: "image" | "video";
+  channels: AigcChannelModels[];
+  /** 默认模型（目录第一个 + 各必填维度第一个取值）；目录为空时为 null */
+  default: AigcMediaConfig | null;
+}
+
+/** 可选模型清单（经本服务转发 aigc 的 GET /channels，前端不直连 aigc）。 */
+export function listAigcModels(type: "image" | "video"): Promise<AigcCatalog> {
+  return request(`/aigc/models?type=${type}`);
+}
+
+/**
+ * 手动触发某个 image_gen / video_gen 节点的生成（卡片面板上的 Generate）。
+ * 用节点上选定的模型；提示词与参考图由服务端按入边收集。
+ */
+export function generateCanvasNode(
+  id: string,
+  nodeId: string,
+): Promise<{ generationId: string }> {
+  return request(`/canvas/${id}/nodes/${nodeId}/generate`, { method: "POST" });
+}
+
 export function mergeCanvasVideoNode(
   id: string,
   nodeId: string,

@@ -4,6 +4,8 @@ import { MediaService } from '../media/media.service';
 import { CanvasService } from './canvas.service';
 import {
   CANVAS_NODE_TYPES,
+  collectGenerationInputs,
+  joinPromptParts,
   type CanvasApprovalMode,
   collectVideoSources,
   type CanvasNodeType,
@@ -173,49 +175,31 @@ export function createCanvasTools(
           type: node.type,
         });
       }
-      // 素材全部来自入边：生成节点自身不带提示词（契约见 canvas.types 的 CANVAS_NODE_IO）
-      const upstreamIds = snap.edges
-        .filter((e) => e.target === node.id)
-        .map((e) => e.source);
-      const upstream = snap.nodes.filter((n) => upstreamIds.includes(n.id));
-
-      // text 输出 → 拼成本次生成的提示词（多个上游文本按边顺序编号拼接）
-      const promptParts = upstream.flatMap((n) =>
-        n.outputs.filter((o) => o.type === 'text').map((o) => o.content),
-      );
+      // 素材全部来自入边：生成节点自身不带提示词（契约见 canvas.types 的 CANVAS_NODE_IO）。
+      // 与用户手动触发（CanvasService.generateMediaNode）共用同一段收集逻辑。
+      const inputs = collectGenerationInputs(snap.nodes, snap.edges, node.id);
+      const { promptParts, referenceVersionIds } = inputs;
       if (promptParts.length === 0) {
         return JSON.stringify({
           error:
             '该节点没有可用的提示词：生成节点不自带 prompt，请先 add_node 建一个 text 节点写好提示词，再 connect_nodes 连到它',
         });
       }
-      // image 输出 → 参考图（视频取第一张作首帧）。只收 image_gen：image_upload 的 content
-      // 是 assetPath 不是 versionId（MVP 模拟上传），传给 media 会被 validateReferences 拒。
-      const referenceVersionIds = upstream
-        .filter((n) => n.type === 'image_gen')
-        .flatMap((n) =>
-          n.outputs.filter((o) => o.type === 'image').map((o) => o.content),
-        );
-      const skippedUploads = upstream.filter(
-        (n) => n.type === 'image_upload' && n.outputs.length > 0,
-      ).length;
-      // video 上游：连线合法（可串联画布）但不参与生成，理由见 canvas.types 的 CANVAS_NODE_IO 注释
-      const skippedVideoInputs = upstream.filter((n) =>
-        n.outputs.some((o) => o.type === 'video'),
-      ).length;
-
-      const prompt =
-        promptParts.length === 1
-          ? promptParts[0]
-          : promptParts.map((t, i) => `${i + 1}. ${t}`).join('\n');
 
       const type = node.type === 'video_gen' ? 'video' : 'image';
       const { generationId } = await media.createGeneration(
         ctx.sessionId,
         ctx.userId,
         type,
-        prompt,
+        joinPromptParts(promptParts),
         referenceVersionIds.length ? referenceVersionIds : undefined,
+        // 模型取节点上选定的那份（用户在卡片面板里选的）；没选就回落该类型默认模型。
+        // agent 不参与选模型——它只负责"什么时候生成"。
+        {
+          channel: node.mediaChannel ?? undefined,
+          model: node.mediaModel ?? undefined,
+          params: node.mediaParams ?? undefined,
+        },
       );
       // 回填 generationId：快照/前端据此显示生成状态与资产
       await canvas.applyOp(ctx.sessionId, 'agent', {
@@ -229,8 +213,8 @@ export function createCanvasTools(
         promptParts: promptParts.length,
         references: referenceVersionIds.length,
         // 明确回报被跳过的上游资源，模型不会误以为它们参与了生成
-        skippedImageUpload: skippedUploads, // MVP 模拟上传，无 versionId 可引用
-        skippedVideoInputs, // 管线吃不下视频参考，video 入边只用于串联画布
+        skippedImageUpload: inputs.skippedImageUpload, // MVP 模拟上传，无 versionId 可引用
+        skippedVideoInputs: inputs.skippedVideoInputs, // 管线吃不下视频参考，video 入边只用于串联画布
       });
     },
     {

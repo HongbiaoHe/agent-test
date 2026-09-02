@@ -1,18 +1,23 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
+import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Queue } from 'bullmq';
 import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
+import { AigcService } from '../aigc/aigc.service';
+import { PublicUrlService } from '../aigc/public-url.service';
+import type { AigcMediaConfig, AigcTask } from '../aigc/aigc.types';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
+import { signAssetToken } from './media-asset-token';
 
 export type MediaType = 'image' | 'video';
 
 /**
  * 资产根目录（懒读 env）：默认 <cwd>/data/media。
- * 为什么懒读而非模块加载期读：与 google client 一致，避免加载即依赖 env，且测试可临时覆盖。
+ * 为什么懒读而非模块加载期读：避免加载即依赖 env，且测试可临时覆盖。
  */
 /** 拼接产物的 model 标记：不是模型名，用来在历史里认出"这条是拼出来的"。 */
 export const CONCAT_MODEL = 'ffmpeg-concat';
@@ -21,9 +26,27 @@ export function mediaDataDir(): string {
   return process.env.MEDIA_DATA_DIR ?? join(process.cwd(), 'data', 'media');
 }
 
+/** 回调对账（poll）的间隔与最多轮数：30s × 60 ≈ 30 分钟，够 4k 视频跑完。 */
+export const RECONCILE_INTERVAL_MS = 30_000;
+export const RECONCILE_MAX_ATTEMPTS = 60;
+
+/** 未完成状态：只有它们能被回调/对账推向终态（幂等的判据）。 */
+export const MEDIA_OPEN_STATUSES = ['queued', 'generating'];
+
+/**
+ * 产物落盘用的扩展名：aigc 转存后的 GCS 链接自带后缀（.png / .mp4），取它最准；
+ * 认不出就按类型兜底。
+ */
+export function extFromUrl(url: string, type: MediaType): string {
+  const match = /\.([a-z0-9]{2,4})(?:$|[?#])/i.exec(url);
+  const ext = match?.[1]?.toLowerCase();
+  if (ext && ['png', 'jpg', 'jpeg', 'webp', 'mp4'].includes(ext)) return ext;
+  return type === 'video' ? 'mp4' : 'png';
+}
+
 /**
  * 媒体生成业务层：建生成位/版本、重新生成、列历史、取资产路径。
- * 不直接触碰 @google/genai（那是 processor 经 GoogleMediaClient 干的事）；本层只管 DB + 入队 + 推流。
+ * 不直接调 aigc（接单是 processor 经 AigcService 干的事）；本层只管 DB + 入队 + 推流 + 回调收尾。
  */
 @Injectable()
 export class MediaService {
@@ -34,6 +57,8 @@ export class MediaService {
     private readonly stream: StreamService,
     @InjectQueue('media-gen') private readonly queue: Queue,
     @Inject(MEDIA_ABORTS) private readonly aborts: AbortRegistry,
+    private readonly aigc: AigcService,
+    private readonly publicUrl: PublicUrlService,
   ) {}
 
   /**
@@ -47,11 +72,11 @@ export class MediaService {
     type: MediaType,
     prompt: string,
     referenceVersionIds?: string[],
+    config?: Partial<AigcMediaConfig> | null,
   ): Promise<{ generationId: string; versionId: string }> {
-    const model =
-      type === 'image'
-        ? (process.env.MEDIA_IMAGE_MODEL ?? 'gemini-3.1-flash-image-preview')
-        : (process.env.MEDIA_VIDEO_MODEL ?? 'veo-3.1-generate-preview');
+    // 模型在建版本时就定下来并落库：界面上显示的、真提交给 aigc 的、事后审计看到的是同一份。
+    // 节点没配 / 配的模型已下线 → 回落该类型默认模型（aigc 目录第一个）。
+    const resolved = await this.aigc.resolveConfig(type, config);
 
     // 入队前先校验参考图：不合法直接抛错，不建任何 DB 行（避免留下脏 generation）。
     await this.validateReferences(referenceVersionIds, userId);
@@ -64,7 +89,9 @@ export class MediaService {
         versions: {
           create: {
             prompt,
-            model,
+            model: resolved.model,
+            channel: resolved.channel,
+            params: resolved.params,
             status: 'queued',
             // 无参考时存 null（而非空数组）：list 接口再统一默认 []
             referenceVersionIds: referenceVersionIds ?? undefined,
@@ -212,12 +239,16 @@ export class MediaService {
         HttpStatus.NOT_FOUND,
       );
     }
-    // model 沿用上一版（同 generation 同类型，模型不变）；无上一版时回退 env
-    const model =
-      last?.model ??
-      (generation.type === 'image'
-        ? (process.env.MEDIA_IMAGE_MODEL ?? 'gemini-3.1-flash-image-preview')
-        : (process.env.MEDIA_VIDEO_MODEL ?? 'veo-3.1-generate-preview'));
+    // 模型与档位沿用上一版——「重试」要的就是照原样再来一次。
+    // 仍过一遍 resolveConfig：上一版用的模型可能已从 aigc 目录下线，那就回落默认模型。
+    const resolved = await this.aigc.resolveConfig(
+      generation.type === 'video' ? 'video' : 'image',
+      {
+        channel: last?.channel ?? undefined,
+        model: last?.model,
+        params: readParams(last?.params),
+      },
+    );
 
     // 参考图缺省继承上一版（last.referenceVersionIds 是 Json，按 string[] 取）；
     // 显式传入则覆盖。无论来源都要过校验（继承的旧引用也可能已被改名/删除，理论上 done 版本不会，但仍统一校验）。
@@ -232,7 +263,9 @@ export class MediaService {
       data: {
         generationId,
         prompt: finalPrompt,
-        model,
+        model: resolved.model,
+        channel: resolved.channel,
+        params: resolved.params,
         status: 'queued',
         referenceVersionIds: finalRefs ?? undefined,
       },
@@ -306,7 +339,187 @@ export class MediaService {
         }
       }
       this.aborts.abort(v.id);
+      // 已提交给 aigc 的版本（有 providerTaskId）此刻没有 worker 攥着它——生成在 aigc 那头跑、
+      // 结果靠回调回来，abort 信号没人收。所以本层直接判失败；之后到达的回调会因状态已终结被忽略。
+      // aigc 未提供取消接口，云端那次生成会跑完，只是我们不再采纳它的结果。
+      if (v.status === 'generating' && v.providerTaskId) {
+        await this.settleFailed(
+          v.id,
+          v.generationId,
+          conversationId,
+          v.generation.type as MediaType,
+          '用户已停止',
+        );
+      }
     }
+  }
+
+  /**
+   * 回调/对账的统一收尾：把 aigc 的任务终态落到对应的 MediaVersion 上。
+   *
+   * 幂等：回调可能重复投递（文档 §9.3），对账轮询也可能与回调抢跑——所有写入都带
+   * `status in (queued, generating)` 条件，只有真正改到行的那一次才推流。
+   * 返回值告诉调用方要不要继续等：pending = 任务还没到终态。
+   */
+  async applyTaskResult(
+    task: AigcTask,
+  ): Promise<'applied' | 'pending' | 'ignored'> {
+    const version = await this.prisma.mediaVersion.findFirst({
+      where: { providerTaskId: task.task_id },
+      include: { generation: true },
+      orderBy: { createdAt: 'desc' },
+    });
+    if (!version) {
+      this.logger.warn(`aigc 任务无对应版本 task=${task.task_id}`);
+      return 'ignored';
+    }
+    if (!MEDIA_OPEN_STATUSES.includes(version.status)) return 'ignored';
+
+    const type = version.generation.type === 'video' ? 'video' : 'image';
+    if (task.status === 'completed') {
+      const url = task.output_data?.image_url ?? task.output_data?.video_url;
+      if (!url) {
+        return this.settleFailed(
+          version.id,
+          version.generationId,
+          version.generation.conversationId,
+          type,
+          'aigc 报成功但没有产物地址',
+        );
+      }
+      // 转存到本地资产目录：aigc 的 GCS 链接虽是永久的，但资产读取/鉴权/下载都已围绕
+      // 本地文件建好（见 getVersionAsset），转存后前端与下游引用一行代码都不用改。
+      const bytes = await this.download(url);
+      const fileName = `${version.id}.${extFromUrl(url, type)}`;
+      const dir = mediaDataDir();
+      await mkdir(dir, { recursive: true });
+      await writeFile(join(dir, fileName), bytes);
+
+      const changed = await this.prisma.mediaVersion.updateMany({
+        where: { id: version.id, status: { in: MEDIA_OPEN_STATUSES } },
+        data: {
+          status: 'done',
+          filePath: fileName,
+          completedAt: new Date(),
+        },
+      });
+      if (changed.count === 0) return 'ignored';
+      await this.publishUpdate(
+        version.generation.conversationId,
+        version.generationId,
+        version.id,
+        type,
+        'done',
+      );
+      this.logger.log(
+        `media 生成完成 versionId=${version.id} task=${task.task_id} file=${fileName}`,
+      );
+      return 'applied';
+    }
+
+    if (task.status === 'failed' || task.status === 'cancelled') {
+      // error_data 是渠道原话（文档 §4.4：未脱敏、不给终端用户看），这里连码带话一起留库，
+      // 排查与建映射表都靠它；前端只把它当技术细节展示在失败态里。
+      const code = task.error_data?.code?.trim();
+      const message = task.error_data?.message?.trim();
+      const reason =
+        [code, message].filter(Boolean).join(': ') || `任务 ${task.status}`;
+      return this.settleFailed(
+        version.id,
+        version.generationId,
+        version.generation.conversationId,
+        type,
+        reason,
+      );
+    }
+    return 'pending';
+  }
+
+  /** 记下 aigc 的 task_id 与**实际生效**的档位（约束收窄后可能与用户选的不同）。 */
+  async markSubmitted(
+    versionId: string,
+    taskId: string,
+    config: AigcMediaConfig,
+  ): Promise<void> {
+    await this.prisma.mediaVersion.update({
+      where: { id: versionId },
+      data: {
+        providerTaskId: taskId,
+        channel: config.channel,
+        model: config.model,
+        params: config.params,
+      },
+    });
+  }
+
+  /**
+   * 排一次延迟对账（poll）。回调是 best-effort（文档 §9.3：不保证必达，隧道没开就一条都到不了），
+   * 所以每个提交出去的任务都配一条兜底轮询，直到终态或轮满。
+   */
+  async scheduleReconcile(versionId: string, attempt: number): Promise<void> {
+    await this.queue.add(
+      'poll',
+      { versionId, attempt },
+      {
+        jobId: `poll:${versionId}:${attempt}`,
+        delay: RECONCILE_INTERVAL_MS,
+        removeOnComplete: true,
+      },
+    );
+  }
+
+  /** 落 failed + 推流（带 open 状态条件，重复回调不会覆盖已终结的版本）。 */
+  async settleFailed(
+    versionId: string,
+    generationId: string,
+    conversationId: string,
+    type: MediaType,
+    error: string,
+  ): Promise<'applied' | 'ignored'> {
+    const changed = await this.prisma.mediaVersion.updateMany({
+      where: { id: versionId, status: { in: MEDIA_OPEN_STATUSES } },
+      data: { status: 'failed', error, completedAt: new Date() },
+    });
+    if (changed.count === 0) return 'ignored';
+    this.logger.error(`media 生成失败 versionId=${versionId} ${error}`);
+    await this.publishUpdate(
+      conversationId,
+      generationId,
+      versionId,
+      type,
+      'failed',
+      error,
+    );
+    return 'applied';
+  }
+
+  /**
+   * 参考图给 aigc 用的公网地址（带签名，无鉴权路由，见 media-asset-token.ts）。
+   * 没有公网基址（本机没开隧道且未配 PUBLIC_BASE_URL）时返回 null——调用方据此报清楚的错，
+   * 而不是把一条 localhost 发出去让 aigc 那头下载失败、绕一圈才失败。
+   */
+  async publicAssetUrl(
+    versionId: string,
+    filePath: string,
+  ): Promise<string | null> {
+    const base = await this.publicUrl.baseUrl();
+    if (!base) return null;
+    return `${base}/media/public/assets/${filePath}?token=${signAssetToken(versionId)}`;
+  }
+
+  /** aigc 回调地址；没有公网基址时返回 undefined（此时只靠对账轮询拿结果）。 */
+  async callbackUrl(): Promise<string | undefined> {
+    const base = await this.publicUrl.baseUrl();
+    return base ? `${base}/media/aigc/callback` : undefined;
+  }
+
+  /** 下载 aigc 产物。单次请求、失败即抛（外层会落 failed 并推流）。 */
+  private async download(url: string): Promise<Buffer> {
+    const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
+    if (!res.ok) {
+      throw new Error(`下载产物失败 HTTP ${res.status} ${url}`);
+    }
+    return Buffer.from(await res.arrayBuffer());
   }
 
   /**
@@ -420,8 +633,23 @@ export class MediaService {
   }
 }
 
+/**
+ * Prisma 的 Json 列读出来是 JsonValue，收窄成 Record<string,string>
+ * （非对象 / 含非字符串值的键一律丢掉）。不用断言：外部数据在边界上用守卫收窄（CLAUDE.md §8）。
+ */
+export function readParams(value: unknown): Record<string, string> {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+    return {};
+  }
+  const out: Record<string, string> = {};
+  for (const [k, v] of Object.entries(value)) {
+    if (typeof v === 'string') out[k] = v;
+  }
+  return out;
+}
+
 /** 由文件后缀推 Content-Type（资产文件名 = <versionId>.<ext>）。 */
-function mimeForFilePath(filePath: string): string {
+export function mimeForFilePath(filePath: string): string {
   if (filePath.endsWith('.mp4')) return 'video/mp4';
   if (filePath.endsWith('.jpg') || filePath.endsWith('.jpeg'))
     return 'image/jpeg';

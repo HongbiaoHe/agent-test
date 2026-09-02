@@ -59,3 +59,97 @@ describe('add_node 的 type 校验', () => {
     expect(applyOp).not.toHaveBeenCalled();
   });
 });
+
+/**
+ * generate_media_node 用**节点上选定的模型**。
+ *
+ * agent 不参与选模型（它只决定"什么时候生成"），所以这里锁住两件事：
+ * 节点配了模型就照配的传下去，没配就把三个字段都留空、由 MediaService 回落默认模型。
+ * 素材收集（上游 text 拼提示词、上游 image_gen 作参考图）与用户手动触发共用同一段逻辑，
+ * 这两个用例同时覆盖它。
+ */
+describe('generate_media_node 的模型来源', () => {
+  const textNode = {
+    id: 'n-text',
+    type: 'text',
+    outputs: [{ type: 'text', content: '一只柯基' }],
+  };
+  const refNode = {
+    id: 'n-ref',
+    type: 'image_gen',
+    outputs: [{ type: 'image', content: 'ver-ref' }],
+  };
+
+  function harness(genNode: Record<string, unknown>) {
+    const applyOp = jest.fn().mockResolvedValue({ revision: 1 });
+    const createGeneration = jest
+      .fn()
+      .mockResolvedValue({ generationId: 'gen-1', versionId: 'ver-1' });
+    const resolveNodeId = jest.fn().mockResolvedValue(genNode.id);
+    const agentSnapshot = jest.fn().mockResolvedValue({
+      nodes: [textNode, refNode, genNode],
+      edges: [
+        { source: 'n-text', target: genNode.id },
+        { source: 'n-ref', target: genNode.id },
+      ],
+    });
+    const tools = createCanvasTools(
+      // cast-at-injection：只用到这两个方法
+      { applyOp, agentSnapshot, resolveNodeId } as unknown as CanvasService,
+      { createGeneration } as unknown as MediaService,
+      { sessionId: 's1', userId: 'u1' },
+    );
+    return {
+      tool: tools.find((t) => t.name === 'generate_media_node')!,
+      createGeneration,
+    };
+  }
+
+  it('节点配了模型 → 原样传给 MediaService', async () => {
+    const { tool, createGeneration } = harness({
+      id: 'n-gen',
+      type: 'image_gen',
+      outputs: [],
+      mediaChannel: 'google',
+      mediaModel: 'nano-banana-2',
+      mediaParams: { aspect_ratio: '16:9', resolution: '1K' },
+    });
+
+    await tool.invoke({ nodeId: 'n-gen' });
+
+    expect(createGeneration).toHaveBeenCalledWith(
+      's1',
+      'u1',
+      'image',
+      '一只柯基',
+      ['ver-ref'],
+      {
+        channel: 'google',
+        model: 'nano-banana-2',
+        params: { aspect_ratio: '16:9', resolution: '1K' },
+      },
+    );
+  });
+
+  it('节点没配模型 → 三个字段都留空，由 MediaService 回落默认模型', async () => {
+    const { tool, createGeneration } = harness({
+      id: 'n-gen',
+      type: 'video_gen',
+      outputs: [],
+      mediaChannel: null,
+      mediaModel: null,
+      mediaParams: null,
+    });
+
+    await tool.invoke({ nodeId: 'n-gen' });
+
+    expect(createGeneration).toHaveBeenCalledWith(
+      's1',
+      'u1',
+      'video',
+      '一只柯基',
+      ['ver-ref'],
+      { channel: undefined, model: undefined, params: undefined },
+    );
+  });
+});

@@ -89,6 +89,7 @@ export function NodeComposer({
   body,
   promptSources,
   clips,
+  model,
   meta,
   actions,
 }: {
@@ -103,6 +104,8 @@ export function NodeComposer({
   promptSources?: PromptSource[];
   /** 待拼接的视频序列（video_concat 专有；它没有提示词这回事） */
   clips?: ClipSource[];
+  /** 模型区（生成节点专有）：选模型 / 选档位 / 触发生成，排在提示词之后 */
+  model?: React.ReactNode;
   /** 参数条上除类型外的补充信息（上游来源摘要等） */
   meta?: React.ReactNode;
   /** 节点操作（看大图 / 下载 / 复制 / 删除）。触屏没有 hover，只能挂在这里 */
@@ -190,6 +193,7 @@ export function NodeComposer({
           </DrawerHeader>
           <div className="nodrag nowheel min-h-0 flex-auto space-y-3 overflow-y-auto px-4 pt-2 pb-4">
             {prompt}
+            {model}
           </div>
           <div className="flex items-center gap-1.5 border-t border-border px-4 py-3">
             <Pill>
@@ -223,7 +227,10 @@ export function NodeComposer({
             <Minimize2 className="size-3.5" />
           </button>
         </div>
-        <div className="px-1 pb-3">{prompt}</div>
+        <div className="space-y-2.5 px-1 pb-3">
+          {prompt}
+          {model}
+        </div>
         {bar}
       </div>
     </NodeToolbar>
