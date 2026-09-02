@@ -32,6 +32,7 @@ import {
 import type { SaveState } from "../_hooks/use-canvas";
 import { edgeTypes, type FlowEdgeData } from "./canvas-edges";
 import { ConnectDropMenu, type ConnectDrop } from "./connect-drop-menu";
+import { applyMagnet, releaseMagnet } from "./handle-magnet";
 import { SelectionToolbar } from "./selection-toolbar";
 import { nodeTypes } from "./canvas-nodes";
 import { CanvasZoomControls } from "./canvas-zoom-controls";
@@ -46,6 +47,7 @@ export interface ConnectMenuRequest {
 
 /** 节点卡片宽度（canvas-nodes 的 w-64），拖线新建节点时用来算落位。 */
 const NODE_WIDTH = 256;
+
 
 /** 节点内容可编辑字段（update_node op 的子集，位置/媒体不在此列）。 */
 export interface NodeContentPatch {
@@ -76,6 +78,8 @@ export const CanvasEditorContext = createContext<{
   duplicateNode: (nodeId: string) => void;
   /** 重发一次失败的生成（节点卡片上的 Retry） */
   retryMedia: (generationId: string) => void;
+  /** 触发视频拼接（video_concat 卡片上的 Merge） */
+  mergeVideo: (nodeId: string) => void;
   /** 点端口上的「+」：在该处弹出「接一个什么节点」菜单（与拖到空白处同一个菜单） */
   openConnectMenu: (input: ConnectMenuRequest) => void;
   /** 选中并把视图移到某个节点上（面板里点上游提示词 → 跳到那张 text 卡） */
@@ -90,6 +94,10 @@ export const CanvasEditorContext = createContext<{
   focusedNodeIds: ReadonlySet<string>;
   /** 当前选中的节点数：>1 时单个节点的编辑面板让位给多选工具条 */
   selectedCount: number;
+  /** 多选手势进行中（框选拖拽中、或按住多选修饰键）：期间一律不弹单节点编辑面板 */
+  multiSelecting: boolean;
+  /** 当前选区是「按组选的」：即便只有一个节点，也走多选工具条而不是编辑面板 */
+  groupSelect: boolean;
 }>({
   readOnly: true,
   updateNode: () => {},
@@ -101,11 +109,14 @@ export const CanvasEditorContext = createContext<{
   deleteNode: () => {},
   duplicateNode: () => {},
   retryMedia: () => {},
+  mergeVideo: () => {},
   openConnectMenu: () => {},
   focusNode: () => {},
   addPromptNode: () => {},
   focusedNodeIds: new Set<string>(),
   selectedCount: 0,
+  multiSelecting: false,
+  groupSelect: false,
 });
 
 function toRfNodes(canvas: CanvasState): Node[] {
@@ -236,6 +247,8 @@ interface FlowCanvasProps {
   onPaneClick?: () => void;
   /** 重发一次失败的生成（节点卡片上的 Retry） */
   onRetryMedia: (generationId: string) => void;
+  /** 触发视频拼接（video_concat 卡片上的 Merge） */
+  onMergeVideo: (nodeId: string) => void;
   /** 快照还没落地：此时节点为空是"还没加载"，不是"这块画布是空的" */
   loading: boolean;
   /** 「加入对话」圈定的节点 id（空 = 关注整块画布） */
@@ -277,6 +290,7 @@ function FlowCanvasInner({
   onCancelSaving,
   onPaneClick,
   onRetryMedia,
+  onMergeVideo,
   loading,
   focusNodeIds,
   onSetFocus,
@@ -286,8 +300,63 @@ function FlowCanvasInner({
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
   // 拖线松手在空白处 → 记下落点，弹出「接一个什么节点」菜单（见 ConnectDropMenu）
   const [drop, setDrop] = useState<ConnectDrop | null>(null);
+
+  /**
+   * 多选手势是否进行中。
+   *
+   * 框选框扫过第一个节点的那一刻 selectedCount 恰好是 1，单节点编辑面板就会当场弹出来
+   * 挡住后面还要框的节点，框到第二个又消失——一次多选要闪一下。按住多选修饰键逐个点选同理。
+   * 手势期间一律压住面板，松手后若最终只选中一个，再照常浮出。
+   *
+   * 修饰键取 shift / meta / ctrl 三者：react-flow 的 selectionKeyCode（框选）默认 Shift，
+   * multiSelectionKeyCode（点选累加）默认 Meta(mac) / Control。
+   */
+  const [multiSelecting, setMultiSelecting] = useState(false);
+  useEffect(() => {
+    const sync = (e: KeyboardEvent) =>
+      setMultiSelecting(e.shiftKey || e.metaKey || e.ctrlKey);
+    // 切窗口时按键抬起收不到，回来会一直压着面板 —— 失焦即复位
+    const reset = () => setMultiSelecting(false);
+    window.addEventListener("keydown", sync);
+    window.addEventListener("keyup", sync);
+    window.addEventListener("blur", reset);
+    return () => {
+      window.removeEventListener("keydown", sync);
+      window.removeEventListener("keyup", sync);
+      window.removeEventListener("blur", reset);
+    };
+  }, []);
   const wrapRef = useRef<HTMLDivElement | null>(null);
-  const { screenToFlowPosition, setCenter, getZoom } = useReactFlow();
+  const { screenToFlowPosition, setCenter, getZoom, getNodes } = useReactFlow();
+
+  /**
+   * 松手位置压着哪个节点。
+   *
+   * 不能用 DOM 命中测试（elementFromPoint / event.target）：连线拖拽期间 react-flow 会让
+   * .react-flow__pane 接管指针，卡片在那一刻根本命不中——问出来永远是 pane。
+   * react-flow 自己判断端口也不走 DOM，而是拿存好的端口坐标算距离。
+   * 这里同理：把落点换算成画布坐标，再去比各节点的矩形（尺寸取 react-flow 实测的 measured）。
+   */
+  const nodeAtPointer = useCallback(
+    (clientX: number, clientY: number): string | null => {
+      const p = screenToFlowPosition({ x: clientX, y: clientY });
+      // 从后往前找：后渲染的画在上面，重叠时该取压在最上面那张
+      const hit = [...getNodes()]
+        .reverse()
+        .find((n) => {
+          const w = n.measured?.width ?? NODE_WIDTH;
+          const h = n.measured?.height ?? 0;
+          return (
+            p.x >= n.position.x &&
+            p.x <= n.position.x + w &&
+            p.y >= n.position.y &&
+            p.y <= n.position.y + h
+          );
+        });
+      return hit?.id ?? null;
+    },
+    [screenToFlowPosition, getNodes],
+  );
 
   // 外部画布状态（快照 / canvas_patch / media 刷新）变化时重建 RF 视图。
   // 本地拖拽不改 canvas，故不会在拖拽中被打断。
@@ -336,6 +405,23 @@ function FlowCanvasInner({
     });
   }, [edges, selectedKey]);
 
+  /**
+   * 这一份选区是「按组选的」还是「点开来编辑的」。
+   *
+   * 按住修饰键 / 框选出来的**哪怕只有一个节点**，用户要的也是把它加进对话、复制或删除
+   * （多选工具条），而不是编辑它——所以不能只按数量分。
+   *
+   * 判定发生在**选区变成现在这样的那一刻**：那一刻按着多选修饰键就算按组选的，并一直保持
+   * 到选区再次变化。于是松开 shift 不会把一组选择变回编辑态；改用普通点击另选一个则回到编辑态。
+   * 在渲染期收敛（不是 useEffect —— react-hooks/set-state-in-effect 在本项目是 error 级）。
+   */
+  const [groupPick, setGroupPick] = useState({ key: "", group: false });
+  if (groupPick.key !== selectedKey) {
+    setGroupPick({ key: selectedKey, group: !!selectedKey && multiSelecting });
+  }
+  const groupSelect = groupPick.group && selectedNodes.length > 0;
+
+
   // 记下一次「要在哪里接个新节点」：拖线松手在空白处、点端口上的「+」、或在空白处右键，
   // 都走这里。下游节点从落点向右铺开；上游节点要"结束"在落点上，故整卡左移一个卡宽。
   const openDropAt = useCallback(
@@ -368,6 +454,72 @@ function FlowCanvasInner({
       });
     },
     [canvas, screenToFlowPosition],
+  );
+
+  /**
+   * 端点磁吸（见 handle-magnet.ts）。挂在画布容器上而不是每张卡片上：触发范围有一半落在
+   * 卡片外面，挂在卡片上从外侧靠近永远不触发。被吸住的端点记在 ref 里，下一帧只清它们。
+   */
+  const magnetized = useRef<Set<HTMLElement>>(new Set());
+  const onCanvasPointerMove = useCallback(
+    (e: React.PointerEvent<HTMLDivElement>) => {
+      const root = wrapRef.current;
+      if (!root) return;
+      const pointer = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+      magnetized.current = applyMagnet(
+        root,
+        pointer,
+        getNodes().map((n) => ({
+          id: n.id,
+          x: n.position.x,
+          y: n.position.y,
+          width: n.measured?.width ?? NODE_WIDTH,
+          height: n.measured?.height ?? 0,
+        })),
+        magnetized.current,
+      );
+      // 进了范围就把指针换成十字（「这里能拉线」），出去还原
+      root.style.cursor = magnetized.current.size > 0 ? "crosshair" : "";
+    },
+    [screenToFlowPosition, getNodes],
+  );
+  const onCanvasPointerLeave = useCallback(() => {
+    releaseMagnet(magnetized.current);
+    magnetized.current = new Set();
+    if (wrapRef.current) wrapRef.current.style.cursor = "";
+  }, []);
+
+  /**
+   * 拖动落点入库。
+   *
+   * 必须遍历「本次被拖动的全部节点」而不是被按住的那一个：多选后拖动时 react-flow 会把整组
+   * 一起搬走，但 onNodeDragStop 的第二个参数只有被按住的那张卡——只落它一个的话，松手时画面
+   * 看着都挪了，刷新一看其余全弹回原位（位置是 LWW 落库，本地状态并不是事实来源）。
+   */
+  const persistDrag = useCallback(
+    (dragged: Node[]) => {
+      if (readOnly) return;
+      // d3-drag 对「按下即松开」的纯点击同样发 dragStop：位置没变的不算拖动，
+      // 不发无意义的 move_node op（也保持选中，让编辑面板照常浮出）。
+      const moved = dragged.filter((n) => {
+        const origin = canvas.nodes.find((x) => x.id === n.id);
+        return (
+          !!origin &&
+          (origin.x !== n.position.x || origin.y !== n.position.y)
+        );
+      });
+      if (moved.length === 0) return;
+      for (const n of moved) onMoveNode(n.id, n.position.x, n.position.y);
+      // 单张卡拖完取消选中，别让编辑面板跟着弹出来；整组拖动则保留选区——
+      // 多选工具条还要用，且"拖完还选着"是同类工具的通行行为。
+      if (moved.length === 1) {
+        const id = moved[0].id;
+        setNodes((prev) =>
+          prev.map((n) => (n.id === id ? { ...n, selected: false } : n)),
+        );
+      }
+    },
+    [readOnly, canvas, onMoveNode, setNodes],
   );
 
   /**
@@ -431,6 +583,7 @@ function FlowCanvasInner({
         onApplyOp({ op: "remove_node", nodeId }),
       duplicateNode: duplicateFromCanvas,
       retryMedia: onRetryMedia,
+      mergeVideo: onMergeVideo,
       openConnectMenu: (r: ConnectMenuRequest) =>
         openDropAt(r.nodeId, r.direction, r.clientX, r.clientY),
       focusNode: focusNodeOnCanvas,
@@ -449,6 +602,8 @@ function FlowCanvasInner({
       },
       focusedNodeIds: focusSet,
       selectedCount: selectedNodes.length,
+      multiSelecting,
+      groupSelect,
     }),
     [
       readOnly,
@@ -460,11 +615,14 @@ function FlowCanvasInner({
       setNodes,
       duplicateFromCanvas,
       onRetryMedia,
+      onMergeVideo,
       openDropAt,
       focusNodeOnCanvas,
       onAddConnectedNode,
       focusSet,
       selectedNodes.length,
+      multiSelecting,
+      groupSelect,
     ],
   );
 
@@ -513,7 +671,13 @@ function FlowCanvasInner({
   };
 
   return (
-    <div ref={wrapRef} className="relative h-full w-full" onDoubleClick={addNodeAt}>
+    <div
+      ref={wrapRef}
+      className="relative h-full w-full"
+      onDoubleClick={addNodeAt}
+      onPointerMove={onCanvasPointerMove}
+      onPointerLeave={onCanvasPointerLeave}
+    >
       <CanvasEditorContext.Provider value={editor}>
       <ReactFlow
         nodes={nodes}
@@ -530,23 +694,13 @@ function FlowCanvasInner({
           e.preventDefault();
           openDropAt(null, "downstream", e.clientX, e.clientY);
         }}
-        onNodeDragStop={(_e, node) => {
-          // d3-drag 对「按下即松开」的纯点击同样发 dragStop：位置没变就当点击处理，
-          // 保持选中让编辑浮窗浮出，也不发无意义的 move_node op。
-          const origin = canvas.nodes.find((n) => n.id === node.id);
-          if (
-            origin &&
-            origin.x === node.position.x &&
-            origin.y === node.position.y
-          ) {
-            return;
-          }
-          onMoveNode(node.id, node.position.x, node.position.y);
-          // 真拖动过：落点后取消选中，别让编辑浮窗跟着弹出来
-          setNodes((prev) =>
-            prev.map((n) => (n.id === node.id ? { ...n, selected: false } : n)),
-          );
-        }}
+        // 第三个参数才是本次真正被拖动的**全部**节点；第二个只是被按住的那一个
+        onNodeDragStop={(_e, _node, dragged) => persistDrag(dragged)}
+        // 拖选区框（而不是拖某个节点）移动整组时走这条
+        onSelectionDragStop={(_e, dragged) => persistDrag(dragged)}
+        /* 框选拖拽的起止：修饰键在拖框途中被松开时，键盘那一路就压不住了，这里兜底 */
+        onSelectionStart={() => setMultiSelecting(true)}
+        onSelectionEnd={() => setMultiSelecting(false)}
         onConnect={(c: Connection) => {
           if (readOnly || !c.source || !c.target) return;
           onApplyOp({ op: "add_edge", source: c.source, target: c.target });
@@ -555,11 +709,34 @@ function FlowCanvasInner({
            记下落点让 ConnectDropMenu 接管；候选按端口契约过滤，选完自动落位并接线。 */
         onConnectEnd={(event, state) => {
           if (readOnly || state.isValid || !state.fromNode) return;
+          const upstream = state.fromHandle?.type === "target";
+
+          // 松手时落在某个节点身上 → 就接它，不必精确命中那颗小圆点。
+          // 端口只有 12px 见方，而卡片有 256px 宽；对不准就前功尽弃、要重拖一次，
+          // 是这类画布最容易让人烦躁的一处。整张卡片都是落点，才谈得上"吸附"。
+          //
+          // 落点自己反查而不是用 state.toNode —— 后者只在指针**压在端口上**
+          // （或落在 connectionRadius 内）时才有值，停在卡面中间时是 null。
           const p = "changedTouches" in event ? event.changedTouches[0] : event;
           if (!p) return;
+          const toId = nodeAtPointer(p.clientX, p.clientY);
+          if (toId && toId !== state.fromNode.id) {
+            const source = upstream ? toId : state.fromNode.id;
+            const target = upstream ? state.fromNode.id : toId;
+            const src = canvas.nodes.find((n) => n.id === source);
+            const dst = canvas.nodes.find((n) => n.id === target);
+            // 接不了就什么都不做：这张卡在拖拽期已经被压暗标成"接不了"
+            // （见 canvas-nodes 的 useConnectFit），此时再弹新建菜单只会答非所问。
+            if (src && dst && canConnectNodeTypes(src.type, dst.type)) {
+              onApplyOp({ op: "add_edge", source, target });
+            }
+            return;
+          }
+
+          // 落在空白处 → 「想接个新节点」，交给 ConnectDropMenu
           openDropAt(
             state.fromNode.id,
-            state.fromHandle?.type === "target" ? "upstream" : "downstream",
+            upstream ? "upstream" : "downstream",
             p.clientX,
             p.clientY,
           );
@@ -597,6 +774,9 @@ function FlowCanvasInner({
           const dst = canvas.nodes.find((n) => n.id === c.target);
           return !!src && !!dst && canConnectNodeTypes(src.type, dst.type);
         }}
+        /* 端口捕捉半径（默认 20）：拖线走到端口附近就吸上去，不用压着那颗圆点松手。
+           没有放得更大是因为卡片左右两侧各有一个端口，半径过大会吸错边。 */
+        connectionRadius={40}
         panOnScroll
         zoomOnScroll={false}
         /* 双击留给「新建节点」（见 addNodeAt）。缩放还有：捏合 / Cmd+滚动 / 左下缩放键 */
@@ -608,8 +788,9 @@ function FlowCanvasInner({
         <CanvasZoomControls />
         {/* 首帧聚焦：快照落地后补一次 fitView（修"切画布空白"） */}
         <FitOnFirstLoad count={nodes.length} />
-        {/* 多选（≥2）时浮在整片选区上方的工具条 */}
-        {!readOnly && (
+        {/* 选区工具条：≥2 个，或「按组选中」的单个（shift 点选/框选出来的那一个，
+            用户要的是把它加进对话，不是编辑它） */}
+        {!readOnly && (selectedNodes.length >= 2 || groupSelect) && (
           <SelectionToolbar
             nodes={selectedNodes}
             focused={

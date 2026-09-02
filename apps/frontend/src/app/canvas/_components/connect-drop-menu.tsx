@@ -24,8 +24,17 @@ export interface ConnectDrop {
   screen: { x: number; y: number };
 }
 
-/** 菜单里节点类型的排列顺序：按「流水线上游 → 下游」排，不是字母序。 */
-const ORDER: CanvasNodeType[] = ["text", "image_upload", "image_gen", "video_gen"];
+/**
+ * 菜单里节点类型的排列顺序：按「流水线上游 → 下游」排，不是字母序。
+ * 新增类型必须加进来——候选是先按这张表列举、再按端口契约过滤的，漏了就永远不出现。
+ */
+const ORDER: CanvasNodeType[] = [
+  "text",
+  "image_upload",
+  "image_gen",
+  "video_gen",
+  "video_concat",
+];
 
 /**
  * 这次能落成哪些类型的新节点——接线时按端口契约过滤，不给不能接的选项；

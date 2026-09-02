@@ -47,10 +47,15 @@
   /* 画布节点「类型身份色」（业务扩展，非 shadcn；由 .canvas-node 经 --tone 消费）。
      四类节点=一条流水线，按角色分配色相、统一 chroma/明度求和谐：
      文本=琥珀金(创意) / 上传=青(输入) / 生图=紫罗兰(生成) / 生视频=玫红(动态)。 */
+  /* 选中的连线（功能语义，设计系统 §1 允许上色的那一类）：画布上其余连线都是中性灰，
+     选中的那条要一眼认出来，所以给一个高饱和的蓝——与四种节点身份色（70/210/292/12）
+     都拉开了色相距离，不会被误读成"某类节点的线"。 */
+  --edge-selected: oklch(0.58 0.21 255);
   --node-text: oklch(0.7 0.14 70);
   --node-upload: oklch(0.66 0.11 210);
   --node-image: oklch(0.62 0.17 292);
   --node-video: oklch(0.63 0.19 12);
+  --node-concat: oklch(0.6 0.13 165);
 
   /* 「思考中」指示器（见 canvas/_components/thinking-indicator.tsx）。琥珀色相与 --node-text 一致，
      但亮暗两套要分开调：亮底上「发光」不成立——底已接近最亮，半透明暖色压上去只会变暗发浑，
@@ -113,10 +118,12 @@
   --warning: oklch(0.78 0.14 80);
 
   /* 暗色下节点类型色：提亮以在深卡上醒目，chroma 保持一致（见 :root 说明）。 */
+  --edge-selected: oklch(0.74 0.18 255);
   --node-text: oklch(0.79 0.13 70);
   --node-upload: oklch(0.74 0.1 210);
   --node-image: oklch(0.72 0.15 292);
   --node-video: oklch(0.73 0.17 12);
+  --node-concat: oklch(0.72 0.12 165);
 
   /* 暗底上发光成立：提亮方格、加浓光晕，最暗处可以压得更低（底色深，弱格子仍可辨） */
   --thinking-cell: oklch(0.85 0.175 72);
@@ -381,7 +388,8 @@
 
 /* 画布节点。
    四类节点共用一套骨架：主视觉（有产出才占高）→ 类型行 → 标题 → 正文 → 状态条。
-   卡面保持中性（设计系统 §7：靠深浅不靠彩色），身份色 --tone 只出现在类型图标与连接点上。 */
+   卡面保持中性（设计系统 §7：靠深浅不靠彩色），身份色 --tone 只出现在类型图标上
+   ——连接点已改走中性灰阶（见 .react-flow__handle 的 --handle-ink）。 */
 .canvas-node {
   position: relative;
   /* 双层投影：一层贴边的细影勾出卡片轮廓，一层散开的软影把卡片托离点阵底纹。
@@ -438,6 +446,14 @@
   border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0;
   background: var(--muted);
 }
+/* 出片后卡面只剩画面（见 canvas-nodes 的 mediaOnly）。
+   四角都要圆（底下没有正文接着了）；半径比卡片小 1px，正好等于卡片描边内侧的半径，
+   画面因此严丝合缝地填满卡面、不会从圆角处探出来。底色也去掉：画面铺满，
+   留着 --muted 只会在素材加载的那一帧闪一块灰。 */
+.canvas-node__hero--full {
+  border-radius: calc(var(--radius) - 1px);
+  background: transparent;
+}
 
 /* 连接点：静止是 10px 的类型色圆点，**鼠标移到节点上就长成一枚 20px 的「+」按钮**。
    这一枚同时是两种手势：拖出去 = 连线，原地点一下 = 弹出新建菜单（拖拽零位移时
@@ -449,21 +465,56 @@
   background: transparent;
   border: 0;
   border-radius: 999px;
+  /* 抬一层：入口端点在 DOM 里排在主视觉之前，同为定位元素时后者会盖住它
+     （表现为左侧端点被出图/出片的画面吃掉半个）。 */
+  z-index: 5;
+  /* 端点走中性灰阶，不用类型身份色（设计系统 §1：靠深浅不靠彩色，彩色只留给功能语义）。
+     身份色因此只剩类型图标一处，画布上不再有四种颜色的圆点各自抢眼。
+     常态是 --muted-foreground（中灰），随接近度 --h-near 混向 --foreground：
+     指针一靠近，端点就"醒"到满对比。两个 token 在亮暗两套里各有取值，无需分别写。 */
+  --handle-ink: color-mix(
+    in oklch,
+    var(--foreground) calc(var(--h-near, 0) * 100%),
+    var(--muted-foreground)
+  );
+  /* 只用于「离开触发范围后弹回原位」；跟随指针时 JS 把时长压成 0s，要贴着手走 */
+  transition: transform 0.18s ease;
+}
+
+/* 磁吸位移加在**端点自身**上（--h-dx/--h-dy 由 useHandleMagnet 写入，--h-near 是
+   0→1 的接近度）：可点区域必须跟着看得见的那颗一起走，否则「+」贴在指针底下、
+   能按的却还留在卡片边上。
+   基础位移是 react-flow 用来把端点摆到边线上的（左 -50%、右 +50%），必须原样带上，
+   丢了端点就飞了。连线锚点仍在原处——react-flow 用的是测量时存下的端点坐标。 */
+.canvas-node .react-flow__handle-left {
+  transform: translate(
+    calc(-50% + var(--h-dx, 0px)),
+    calc(-50% + var(--h-dy, 0px))
+  );
+}
+.canvas-node .react-flow__handle-right {
+  transform: translate(
+    calc(50% + var(--h-dx, 0px)),
+    calc(-50% + var(--h-dy, 0px))
+  );
 }
 .canvas-node .react-flow__handle::before {
   content: "";
   position: absolute;
   top: 50%;
   left: 50%;
-  width: 10px;
-  height: 10px;
+  /* 常态 10px；进入触发范围按接近度长到 20px */
+  width: calc(10px + var(--h-near, 0) * 10px);
+  height: calc(10px + var(--h-near, 0) * 10px);
   transform: translate(-50%, -50%);
   border-radius: 999px;
-  background: var(--tone);
+  background: var(--handle-ink);
+  /* 一圈卡片色描边把点从底下的画面里"抠"出来——端点常常压在主视觉上 */
   border: 1.5px solid var(--card);
   transition:
-    width 0.12s ease,
-    height 0.12s ease,
+    width 0.14s ease,
+    height 0.14s ease,
+    background-color 0.14s ease,
     box-shadow 0.12s ease;
 }
 /* 「+」的两笔：用两条渐变画，避免依赖字体里的加号字形对不齐 */
@@ -474,22 +525,29 @@
   left: 50%;
   width: 9px;
   height: 9px;
-  transform: translate(-50%, -50%) scale(0);
+  transform: translate(-50%, -50%) scale(var(--h-near, 0));
   background:
     linear-gradient(var(--card), var(--card)) center / 100% 1.5px no-repeat,
     linear-gradient(var(--card), var(--card)) center / 1.5px 100% no-repeat;
-  transition: transform 0.12s ease;
+  transition: transform 0.14s ease;
   pointer-events: none;
 }
+/* 卡片 hover 只把点稍微提亮一档：让人看见"这里有端口"，
+   真正长成「+」要等指针走进端点的触发范围（--h-near）。 */
 .canvas-node:hover .react-flow__handle::before {
-  width: 20px;
-  height: 20px;
-}
-.canvas-node:hover .react-flow__handle::after {
-  transform: translate(-50%, -50%) scale(1);
+  width: calc(13px + var(--h-near, 0) * 7px);
+  height: calc(13px + var(--h-near, 0) * 7px);
 }
 .canvas-node .react-flow__handle:hover::before {
-  box-shadow: 0 0 0 4px color-mix(in oklch, var(--tone) 24%, transparent);
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--foreground) 16%, transparent);
+}
+/* 跟手位移属于装饰，减少动效时直接不跟 */
+@media (prefers-reduced-motion: reduce) {
+  .canvas-node .react-flow__handle-left,
+  .canvas-node .react-flow__handle-right {
+    --h-dx: 0px;
+    --h-dy: 0px;
+  }
 }
 
 /* 「加入对话」圈中的节点：主色描边 + 一圈很淡的外扩。
@@ -538,10 +596,12 @@
   display: flex;
   align-items: center;
   gap: 0.375rem;
-  height: 26px;
+  /* 高度要放得下操作药丸本身（38px = 内边距 8 + 按钮 28 + 描边 2），否则它会溢出这一行、
+     压在卡片顶边上。类型标签靠 align-items:center 在余下空间里居中，不受影响。 */
+  height: 46px;
   /* 下内边距 = 与卡片之间的缝。这段缝属于本元素，鼠标从卡片上移时不会脱离 :hover，
      操作药丸不会在够到它之前先消失。 */
-  padding-bottom: 5px;
+  padding-bottom: 8px;
   /* 静止不吃指针事件，免得每张卡上方都压着一条看不见的挡板；hover 起来才接管 */
   pointer-events: none;
 }
@@ -549,14 +609,10 @@
   pointer-events: auto;
 }
 
+/* 只管「什么时候露出来」；药丸与按钮的长相交给 CanvasToolbar
+   （与选区工具条同一套，见 _components/canvas-toolbar.tsx）。 */
 .canvas-node__actions {
   margin-left: auto;
-  padding: 0.125rem;
-  border-radius: 999px;
-  /* 反色实心：药丸可能落在任意明暗的内容之上，毛玻璃会被吃掉，实心反色不会 */
-  background: color-mix(in oklch, var(--foreground) 88%, transparent);
-  color: var(--background);
-  box-shadow: 0 2px 8px -3px oklch(0 0 0 / 0.35);
   opacity: 0;
   transform: translateY(2px);
   transition:
@@ -572,15 +628,6 @@
 .react-flow__node.selected .canvas-node__actions {
   display: none;
 }
-/* 组间分隔：看图类与改结构类之间划一道 */
-.canvas-node__actions-sep {
-  width: 1px;
-  height: 12px;
-  margin: 0 0.125rem;
-  background: currentColor;
-  opacity: 0.25;
-}
-
 /* 生成中 / 资产在途：主视觉骨架上满幅高光横扫（复用上方 media-card-shimmer keyframe）。 */
 .canvas-node__shimmer {
   position: absolute;
@@ -614,6 +661,12 @@
   stroke-width: 2;
   stroke-linecap: round;
   pointer-events: none;
+}
+
+/* 选中色由组件内联给（见 canvas-edges.tsx 里的说明：写在这里会被 react-flow 自带的
+   .selected 规则压掉）。这里只放宽命中区——连线才 1~2px 宽，照原样很难点中。 */
+.react-flow__edge .react-flow__edge-interaction {
+  stroke-width: 16;
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -1100,3 +1153,301 @@
     animation: none;
   }
 }
+
+
+/* ─────────────────────────────────────────────────────────────────────────────
+   画布骨架屏（见 canvas/_components/canvas-boot.tsx）。
+
+   整套动效围绕方阵编排：方阵是 agent 在画布上的固定化身（右侧入口、思考指示器
+   都是它），所以「进入画布」这件事就由它让开来完成——九格先微收蓄力，再各朝自己
+   的方向放大冲出画面、淡到透明，画布从它身后露出来。
+
+   等待期不用 shimmer 灰条：画布的内容布局是任意的（节点位置各画布不同），假造几张
+   卡片只会给出错误的预期；这里占位的是「真的会出现在原地」的那几座浮岛。
+   ───────────────────────────────────────────────────────────────────────────── */
+.canvas-boot {
+  position: absolute;
+  inset: 0;
+  z-index: 30; /* 盖住顶部浮岛(20)与面板层(20)：数据没齐之前不该露出可点的控件 */
+  overflow: hidden;
+  background: var(--background);
+}
+/* 点阵底纹：与画布内 react-flow <Background> 同一套暗号——20px 网格、1px 点
+   （实测它 zoom=1 时就是 20px 间距的点阵）。点色没有照抄 react-flow 那个固定的
+   #91919a：它在暖白底上偏冷偏重，而 --border 在暗色下只有 8% 白、几乎看不见。
+   这里用 muted-foreground 掺透明，亮暗两套底色上都读得出网格。 */
+.canvas-boot__grain {
+  position: absolute;
+  inset: 0;
+  background-image: radial-gradient(
+    circle at center,
+    color-mix(in oklch, var(--muted-foreground) 34%, transparent) 1px,
+    transparent 1px
+  );
+  background-size: 20px 20px;
+}
+
+/* 浮岛占位：只画轮廓（描边 + 卡面），不塞灰条。位置与真控件一致，见组件里的说明。 */
+.canvas-boot__chrome {
+  position: absolute;
+  inset: 0;
+}
+.canvas-boot__island,
+.canvas-boot__trigger {
+  position: absolute;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--card) 60%, transparent);
+}
+/* 岛高 46 = 按钮 36 + 容器 padding 8 + 边框 2（同 CANVAS_HEADER_INSET 的算法）；
+   小屏按钮放大到 44，岛高随之 54。 */
+.canvas-boot__island {
+  height: 46px;
+}
+.canvas-boot__island--title {
+  top: 12px;
+  left: 12px;
+  width: 208px;
+}
+.canvas-boot__island--theme {
+  top: 12px;
+  right: 12px;
+  width: 46px;
+}
+.canvas-boot__island--zoom {
+  bottom: 12px;
+  left: 50%;
+  width: 152px;
+  transform: translateX(-50%);
+}
+/* 右侧竖轨：两枚 44×44 的入口，间距 8，整体垂直居中（同 PanelTriggerRail） */
+.canvas-boot__rail {
+  position: absolute;
+  top: 50%;
+  right: 12px;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  transform: translateY(-50%);
+}
+.canvas-boot__trigger {
+  position: relative;
+  width: 44px;
+  height: 44px;
+}
+/* < md 与 useIsMobile（max-width: 767.98px）对齐：岛内按钮放大到 44，岛高随之 54；
+   右侧竖轨在手机上根本不渲染（面板改成底部抽屉，见 canvas-shell 的 isMobile 分支），
+   占位也就不能留——否则骨架屏承诺了两枚永远不会出现的入口。 */
+@media (max-width: 767.98px) {
+  .canvas-boot__island {
+    height: 54px;
+  }
+  .canvas-boot__island--title {
+    width: 168px;
+  }
+  .canvas-boot__island--theme {
+    width: 54px;
+  }
+  .canvas-boot__rail {
+    display: none;
+  }
+}
+
+/* 舞台：方阵 + 一行等宽小字，居中。gap/字距沿用节点类型行那套 mono 语言。 */
+.canvas-boot__stage {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 22px;
+}
+.canvas-boot__label {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 10.5px;
+  line-height: 1.4;
+  letter-spacing: 0.16em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+/* 入场：整台轻微放大浮现。CSS 动画在首帧绘制前就生效，不等 JS 水合，所以刷新时
+   不会先闪一下静态方阵。 */
+@keyframes canvas-boot-in {
+  from {
+    opacity: 0;
+    transform: scale(0.94);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+@media (prefers-reduced-motion: no-preference) {
+  .canvas-boot__stage {
+    animation: canvas-boot-in 0.34s cubic-bezier(0.16, 1, 0.3, 1) both;
+  }
+}
+
+/* ── 退场（data-phase="out"，总时长 560ms，须与组件里的 OUT_MS 一致） ── */
+
+/* 底色比方阵晚一步撤：九格先在纯净底上起跳，画布随后从它们身后浮出来。
+   撑到 26% —— 方格既然一放大就开始变透，底色再死守到后半程就会出现
+   "格子已经快没了、底还白着"的空档。 */
+@keyframes canvas-boot-out {
+  0%,
+  26% {
+    opacity: 1;
+  }
+  100% {
+    opacity: 0;
+  }
+}
+/* 点阵先走一步，免得与真画布的点阵短暂重影成双层网格 */
+@keyframes canvas-boot-grain-out {
+  to {
+    opacity: 0;
+  }
+}
+/* 浮岛占位快速隐去：真的岛就在下面同一位置，交接越短越像"实体化" */
+@keyframes canvas-boot-chrome-out {
+  to {
+    opacity: 0;
+  }
+}
+/* 方阵整体：先微收 7% 蓄力，再一口气冲到 3 倍。爆发段刻意压在前半程
+   （见下方的 --boot-burst 曲线：撒手就窜、末尾收力），这样"突然变大"发生在
+   还看得见的时候；末尾那点余量才交给淡出。 */
+@keyframes canvas-boot-grid-out {
+  0% {
+    transform: scale(1);
+  }
+  15% {
+    transform: scale(0.93);
+  }
+  100% {
+    transform: scale(3);
+  }
+}
+/* 单格：跟着整体放大，同时各朝自己那一侧平移（方向由 --bx/--by 按九宫格位置给），
+   于是九格是"散开"而不是"整块拉大"。中心那格只放大，当爆点。
+   透明度与体积同步：蓄力那一下（15%）就已经开始撤，此后越大越透，到最大时正好透明。
+   两者写在同一条动画里、共用同一根曲线，所以"变大"和"变透"必然同步——
+   分成两条动画就会各按各的曲线走，读起来是先变大再消失。 */
+@keyframes canvas-boot-cell-out {
+  0% {
+    opacity: 1;
+    transform: translate(0, 0) scale(1);
+  }
+  15% {
+    opacity: 0.88;
+    transform: translate(0, 0) scale(0.94);
+  }
+  40% {
+    opacity: 0.55;
+  }
+  70% {
+    opacity: 0.22;
+  }
+  100% {
+    opacity: 0;
+    transform: translate(var(--bx, 0px), var(--by, 0px)) scale(1.5);
+  }
+}
+/* 方形柔光晕：同样越散越透，且比方格更早淡尽，给爆开留一点余温 */
+@keyframes canvas-boot-glow-out {
+  0% {
+    opacity: 0.55;
+    transform: scale(1);
+  }
+  40% {
+    opacity: 0.2;
+  }
+  100% {
+    opacity: 0;
+    transform: scale(2.6);
+  }
+}
+@keyframes canvas-boot-label-out {
+  to {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+
+.canvas-boot[data-phase="out"] {
+  /* 蓄力那一下之后就撒手：前段陡、后段收力，读作"啪"地一下变大。
+     没有用更极端的头（如 .12,.82）——那条曲线 15% 就把六成体积涨完了，
+     剩下的时间体积几乎不动、只在淡出，看起来就成了"先变大、再消失"两拍。
+     这条把涨势摊到整段：全程都在变大，也就全程都在变透。 */
+  --boot-burst: cubic-bezier(0.25, 0.5, 0.4, 1);
+  pointer-events: none; /* 退场这几帧点击就该落到下面的真画布上 */
+  animation: canvas-boot-out 0.56s ease-out both;
+}
+.canvas-boot[data-phase="out"] .canvas-boot__grain {
+  animation: canvas-boot-grain-out 0.2s ease-out both;
+}
+.canvas-boot[data-phase="out"] .canvas-boot__chrome {
+  animation: canvas-boot-chrome-out 0.18s ease-out both;
+}
+.canvas-boot[data-phase="out"] .canvas-boot__label {
+  animation: canvas-boot-label-out 0.16s ease-out both;
+}
+.canvas-boot[data-phase="out"] .canvas-boot__grid {
+  animation: canvas-boot-grid-out 0.56s var(--boot-burst) both;
+}
+/* 选择器要压过 [data-thinking-anim="wave"] .canvas-thinking-cell:nth-child(n)
+   （同为 0,3,0，靠层叠顺序赢太脆），故多带一层 .canvas-thinking-grid 提到 0,4,0 */
+.canvas-boot[data-phase="out"] .canvas-thinking-grid .canvas-thinking-cell {
+  animation: canvas-boot-cell-out 0.56s var(--boot-burst) both;
+}
+.canvas-boot[data-phase="out"] .canvas-thinking-grid::before {
+  animation: canvas-boot-glow-out 0.44s ease-out both;
+}
+/* 九宫格的外扩方向：格边长 = --tt-size/3，位移取 0.42×--tt-size（约 1.2 格）。 */
+.canvas-boot[data-phase="out"] .canvas-thinking-cell:nth-child(1) {
+  --bx: calc(var(--tt-size) * -0.42);
+  --by: calc(var(--tt-size) * -0.42);
+}
+.canvas-boot[data-phase="out"] .canvas-thinking-cell:nth-child(2) {
+  --by: calc(var(--tt-size) * -0.42);
+}
+.canvas-boot[data-phase="out"] .canvas-thinking-cell:nth-child(3) {
+  --bx: calc(var(--tt-size) * 0.42);
+  --by: calc(var(--tt-size) * -0.42);
+}
+.canvas-boot[data-phase="out"] .canvas-thinking-cell:nth-child(4) {
+  --bx: calc(var(--tt-size) * -0.42);
+}
+.canvas-boot[data-phase="out"] .canvas-thinking-cell:nth-child(6) {
+  --bx: calc(var(--tt-size) * 0.42);
+}
+.canvas-boot[data-phase="out"] .canvas-thinking-cell:nth-child(7) {
+  --bx: calc(var(--tt-size) * -0.42);
+  --by: calc(var(--tt-size) * 0.42);
+}
+.canvas-boot[data-phase="out"] .canvas-thinking-cell:nth-child(8) {
+  --by: calc(var(--tt-size) * 0.42);
+}
+.canvas-boot[data-phase="out"] .canvas-thinking-cell:nth-child(9) {
+  --bx: calc(var(--tt-size) * 0.42);
+  --by: calc(var(--tt-size) * 0.42);
+}
+
+/* reduced-motion：不爆开、不浮现，骨架屏直接隐去（仍走完最短驻留，避免闪跳） */
+@media (prefers-reduced-motion: reduce) {
+  .canvas-boot[data-phase="out"],
+  .canvas-boot[data-phase="out"] .canvas-boot__grain,
+  .canvas-boot[data-phase="out"] .canvas-boot__chrome,
+  .canvas-boot[data-phase="out"] .canvas-boot__label,
+  .canvas-boot[data-phase="out"] .canvas-boot__grid,
+  .canvas-boot[data-phase="out"] .canvas-thinking-grid .canvas-thinking-cell,
+  .canvas-boot[data-phase="out"] .canvas-thinking-grid::before {
+    animation: none;
+  }
+  .canvas-boot[data-phase="out"] {
+    opacity: 0;
+  }
+}
+
