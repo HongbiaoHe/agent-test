@@ -14,6 +14,7 @@ import {
 import { z } from 'zod';
 import { GoogleGenAI } from '@google/genai';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
+import { keepsNativeBlocks, stripNonPortableBlocks } from './portable-content';
 import {
   type CanvasThinkingLevel,
   thinkingModelParams,
@@ -321,12 +322,31 @@ export async function buildCanvasAgent(
     opts.onExplicitCacheTokens,
   );
 
+  // 内容块净化：会话换过模型时，checkpoint 里留着上一家的原生内容块（thinking / functionCall …），
+  // OpenAI 兼容端会 400（详见 portable-content.ts）。只在收不下这些块的 provider 上挂，
+  // Gemini 一侧零改动——那些块本来就是它产的，thoughtSignature 还必须原样回传。
+  // 用 wrapModelCall 而不是 beforeModel：这是「发送前」的一次性变换，不该写回 state
+  // （思考过程还要留给 checkpoint 与前端展示）。每轮剥法一致，前缀逐字稳定，不伤 prompt cache。
+  const contentSanitizer = keepsNativeBlocks(resolvedModel)
+    ? null
+    : createMiddleware({
+        name: 'portableContentMiddleware',
+        wrapModelCall: (request, handler) =>
+          handler({
+            ...request,
+            messages: stripNonPortableBlocks(request.messages),
+          }),
+      });
+
   const middleware = [
     modelCallLimitMiddleware({ threadLimit: 500, exitBehavior: 'end' }),
     toolCallLimitMiddleware({ threadLimit: 2000, exitBehavior: 'continue' }),
     planContinuationMiddleware,
     canvasStateMiddleware,
     ...(explicitCache ? [explicitCache] : []),
+    // 排最内层：净化的是真正发出去的那一份，后面不再有人能把私有块加回来
+    // （与 explicitCache 互斥——那个只对 Gemini 生效，此处只对非 Gemini 生效）
+    ...(contentSanitizer ? [contentSanitizer] : []),
   ];
 
   return createDeepAgent({
