@@ -21,6 +21,8 @@ export const CANVAS_NODE_IO: Record<
   // video 输入只放开连线（可串联画布），不参与生成：底层管线吃不下视频参考
   // （详见后端 canvas.types 的 CANVAS_NODE_IO 注释）
   video_gen: { inputs: ["text", "image", "video"], outputs: ["video"] },
+  // 唯一只吃视频的节点：把多段上游视频按入边顺序接成一条（本地 ffmpeg，非生成模型）
+  video_concat: { inputs: ["video"], outputs: ["video"] },
 };
 
 /** 连线是否合法：source 的任一输出类型被 target 接受即可。target 无输入端口 → 一律非法。 */
@@ -47,6 +49,7 @@ export const NODE_TYPE_LABEL: Record<CanvasNodeType, string> = {
   image_upload: "Upload",
   image_gen: "Image",
   video_gen: "Video",
+  video_concat: "Merge",
 };
 
 /**

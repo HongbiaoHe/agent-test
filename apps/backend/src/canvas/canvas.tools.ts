@@ -4,6 +4,7 @@ import { MediaService } from '../media/media.service';
 import { CanvasService } from './canvas.service';
 import {
   CANVAS_NODE_TYPES,
+  collectVideoSources,
   type CanvasNodeType,
   shortNodeId,
 } from './canvas.types';
@@ -57,7 +58,7 @@ export function createCanvasTools(
     {
       name: 'add_node',
       description:
-        '在画布上新建一个节点。type：text(文本) | image_upload(上传图片占位) | image_gen(生图) | video_gen(生视频)。提示词写在 text 节点的 text 里，再连到生成节点——生成节点自身不接受提示词参数。x/y 为画布坐标（按工作流从左到右布局，纵向错开避免重叠）。返回 nodeId。',
+        '在画布上新建一个节点。type：text(文本) | image_upload(上传图片占位) | image_gen(生图) | video_gen(生视频) | video_concat(把多段上游视频按顺序拼成一条)。提示词写在 text 节点的 text 里，再连到生成节点——生成节点自身不接受提示词参数。x/y 为画布坐标（按工作流从左到右布局，纵向错开避免重叠）。返回 nodeId。',
       schema: z.object({
         type: nodeTypeEnum,
         label: z.string().optional().describe('节点标题（可选）'),
@@ -224,6 +225,58 @@ export function createCanvasTools(
     },
   );
 
+  /**
+   * 触发视频拼接。与 generate_media_node 同一套交互（异步、回填 generationId、卡片自己更新状态），
+   * 区别是素材全部是**上游视频**、且不调模型（本地 ffmpeg，见 media/video-concat.ts）。
+   */
+  const mergeVideoNode = tool(
+    async ({ nodeId }) => {
+      const full = await resolveId(nodeId);
+      const snap = await canvas.agentSnapshot(ctx.sessionId);
+      const node = full ? snap.nodes.find((n) => n.id === full) : undefined;
+      if (!node) {
+        return JSON.stringify({ error: '节点不存在', nodeId });
+      }
+      if (node.type !== 'video_concat') {
+        return JSON.stringify({
+          error: '只有 video_concat 节点可触发拼接',
+          type: node.type,
+        });
+      }
+      // 顺序 = 入边顺序，与用户在卡片上看到的预览顺序同源（见 collectVideoSources）
+      const sources = collectVideoSources(snap.nodes, snap.edges, node.id);
+      if (sources.length < 2) {
+        return JSON.stringify({
+          error:
+            '拼接至少需要两段已生成的视频：请把多个 video_gen（或另一个 video_concat）节点连到它，并确保它们都已生成完成',
+          ready: sources.length,
+        });
+      }
+
+      const { generationId } = await media.createConcat(
+        ctx.sessionId,
+        ctx.userId,
+        sources,
+      );
+      await canvas.applyOp(ctx.sessionId, 'agent', {
+        op: 'update_node',
+        nodeId: node.id,
+        mediaGenerationId: generationId,
+      });
+      return JSON.stringify({
+        generationId,
+        status: 'queued',
+        clips: sources.length,
+      });
+    },
+    {
+      name: 'merge_video_node',
+      description:
+        '触发某个 video_concat 节点的视频拼接（异步）。把它的**上游视频按入边顺序**接成一条新视频；至少要两段、且都已生成完成。拼接不调用生成模型（本地完成），但产物与生成节点一样是一段视频，可继续连给下游使用。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
+      schema: z.object({ nodeId: z.string() }),
+    },
+  );
+
   const clearCanvas = tool(
     async () => {
       const r = await canvas.applyOp(ctx.sessionId, 'agent', { op: 'clear' });
@@ -263,6 +316,7 @@ export function createCanvasTools(
     deleteNode,
     clearCanvas,
     generateMediaNode,
+    mergeVideoNode,
     askUser,
   ];
 }

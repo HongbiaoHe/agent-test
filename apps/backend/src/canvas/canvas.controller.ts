@@ -119,6 +119,16 @@ export class CanvasController {
     return this.canvas.setFocus(id, user.tenantId, dto.nodeIds);
   }
 
+  /** 手动触发 video_concat 节点的拼接（卡片上的 Merge；agent 那条路走 merge_video_node 工具）。 */
+  @Post(':id/nodes/:nodeId/merge')
+  mergeVideoNode(
+    @Param('id') id: string,
+    @Param('nodeId') nodeId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.canvas.mergeVideoNode(id, user.tenantId, user.userId, nodeId);
+  }
+
   @Post(':id/stop')
   stop(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.canvas.stop(id, user.tenantId);

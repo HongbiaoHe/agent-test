@@ -11,6 +11,7 @@ import {
   clearCanvasPlan,
   getCanvasMessages,
   getCanvasSnapshot,
+  mergeCanvasVideoNode,
   moveCanvasNode,
   regenerateMedia,
   setCanvasFocus,
@@ -432,6 +433,24 @@ export function useCanvas(sessionId: string | null) {
   }
 
   /**
+   * 触发视频拼接。素材由服务端按入边顺序收集（与卡片预览顺序同源），
+   * 落一个 MediaVersion 并回填 generationId——之后卡片的状态与资产就跟生成节点一样自动更新。
+   */
+  function mergeVideo(nodeId: string) {
+    if (!sessionId) return;
+    beginSave(nodeId);
+    void mergeCanvasVideoNode(sessionId, nodeId)
+      .then(() => {
+        settleSave(nodeId, "saved", SAVED_LINGER_MS);
+        void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
+      })
+      .catch((e: unknown) => {
+        settleSave(nodeId, "error", ERROR_LINGER_MS);
+        toast.error(e instanceof Error ? e.message : "Merge failed");
+      });
+  }
+
+  /**
    * 「加入对话」：把选中的节点圈给 agent（传空数组 = 取消圈定）。
    * 会话级持续生效，服务端存在 CanvasSession.focusNodeIds 上，注入上下文时据此裁剪。
    * 成功后重拉快照，画布上的圈定标记与输入框上的提示都跟着刷新。
@@ -495,6 +514,8 @@ export function useCanvas(sessionId: string | null) {
     addConnectedNode,
     /** 重发一次失败的生成（节点卡片上的 Retry） */
     retryMedia,
+    /** 触发视频拼接（video_concat 卡片上的 Merge） */
+    mergeVideo,
     /** 「加入对话」圈定的节点 id（空 = 关注整块画布） */
     focusNodeIds: snapQ.data?.focusNodeIds ?? EMPTY_FOCUS,
     setFocus,

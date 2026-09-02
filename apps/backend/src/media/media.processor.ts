@@ -7,6 +7,7 @@ import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { GoogleMediaClient, MediaRef } from './google-media.client';
+import { concatVideos } from './video-concat';
 import { mediaDataDir, MediaType } from './media.service';
 
 interface MediaJobData {
@@ -87,6 +88,29 @@ export class MediaProcessor extends WorkerHost {
         'generating',
       );
 
+      // 视频拼接（job 名 'concat'，见 MediaService.createConcat）：不调模型，跑本地 ffmpeg。
+      // 与生成共用外层的状态流转 / 推流 / 失败收尾，只把"产物从哪来"这一段换掉。
+      if (job.name === 'concat') {
+        const fileName = await this.runConcat(
+          version.referenceVersionIds,
+          versionId,
+          signal,
+        );
+        await this.prisma.mediaVersion.update({
+          where: { id: versionId },
+          data: { status: 'done', filePath: fileName, completedAt: new Date() },
+        });
+        await this.publish(
+          generation.conversationId,
+          generation.id,
+          versionId,
+          type,
+          'done',
+        );
+        this.logger.log(`视频拼接完成 versionId=${versionId} file=${fileName}`);
+        return;
+      }
+
       // 参考图：从 DB 取引用版本的 filePath → 读盘转 base64。资产缺失则抛错使本版本 failed（不静默忽略）。
       const refs = await this.loadRefs(version.referenceVersionIds, { signal });
 
@@ -165,6 +189,49 @@ export class MediaProcessor extends WorkerHost {
    * filePath 缺失或磁盘文件读不到 → 同样抛错（不静默忽略）。
    * 顺序与传入 id 一致（视频首帧依赖第一张）。
    */
+  /**
+   * 按 referenceVersionIds 的**顺序**把源视频接成一条，返回落盘的文件名。
+   *
+   * 顺序就是画布上的入边顺序（服务端 createdAt 升序），用户看到的预览顺序也是它——
+   * 三处必须一致，否则"预览是这样、合出来是那样"。
+   */
+  private async runConcat(
+    sourceIds: unknown,
+    versionId: string,
+    signal: AbortSignal,
+  ): Promise<string> {
+    const ids = Array.isArray(sourceIds)
+      ? sourceIds.filter((x): x is string => typeof x === 'string')
+      : [];
+    if (ids.length < 2) throw new Error('拼接至少需要两段视频');
+
+    const rows = await this.prisma.mediaVersion.findMany({
+      where: { id: { in: ids } },
+      select: { id: true, filePath: true },
+    });
+    const byId = new Map(rows.map((r) => [r.id, r.filePath]));
+    const dir = mediaDataDir();
+    // 按 ids 的顺序取，不用 findMany 的返回顺序（那是数据库给的，不保证）
+    const absPaths = ids.map((id) => {
+      const f = byId.get(id);
+      if (!f) throw new Error(`拼接源资产缺失：${id}`);
+      return join(dir, f);
+    });
+
+    await mkdir(dir, { recursive: true });
+    const fileName = `${versionId}.mp4`;
+    const mode = await concatVideos(
+      absPaths,
+      join(dir, fileName),
+      join(dir, `${versionId}.concat.txt`),
+      signal,
+    );
+    this.logger.log(
+      `ffmpeg 拼接 ${ids.length} 段（${mode}）versionId=${versionId}`,
+    );
+    return fileName;
+  }
+
   private async loadRefs(
     referenceVersionIds: unknown,
     opts: {

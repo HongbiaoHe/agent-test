@@ -14,6 +14,9 @@ export type MediaType = 'image' | 'video';
  * 资产根目录（懒读 env）：默认 <cwd>/data/media。
  * 为什么懒读而非模块加载期读：与 google client 一致，避免加载即依赖 env，且测试可临时覆盖。
  */
+/** 拼接产物的 model 标记：不是模型名，用来在历史里认出"这条是拼出来的"。 */
+export const CONCAT_MODEL = 'ffmpeg-concat';
+
 export function mediaDataDir(): string {
   return process.env.MEDIA_DATA_DIR ?? join(process.cwd(), 'data', 'media');
 }
@@ -88,6 +91,94 @@ export class MediaService {
     );
 
     return { generationId: generation.id, versionId: version.id };
+  }
+
+  /**
+   * 视频拼接：把若干段已生成的视频按给定顺序接成一条新视频。
+   *
+   * 复用生成那一整套（MediaGeneration + MediaVersion + media-gen 队列 + 推流），
+   * 只是 worker 那头不调模型而是跑本地 ffmpeg（job 名 'concat'，见 MediaProcessor）。
+   * 于是状态流转、资产接口、下游引用与生成节点完全一致，前端也不必为它另写一套。
+   *
+   * 源视频存进 referenceVersionIds：这个字段原本是"参考图"，这里是"被拼接的素材"——
+   * 语义相近（都是本次产出所引用的既有版本），且顺序有意义，不另加列。
+   */
+  async createConcat(
+    conversationId: string,
+    userId: string,
+    sourceVersionIds: string[],
+  ): Promise<{ generationId: string; versionId: string }> {
+    if (sourceVersionIds.length < 2) {
+      throw new BusinessException(
+        ErrorCodes.MEDIA_REF_INVALID,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    await this.validateConcatSources(sourceVersionIds, userId);
+
+    const generation = await this.prisma.mediaGeneration.create({
+      data: {
+        conversationId,
+        userId,
+        type: 'video',
+        versions: {
+          create: {
+            // prompt 是必填列；拼接没有提示词，写一句人能看懂的说明，历史列表里也好认
+            prompt: `Concatenate ${sourceVersionIds.length} clips`,
+            model: CONCAT_MODEL,
+            status: 'queued',
+            referenceVersionIds: sourceVersionIds,
+          },
+        },
+      },
+      include: { versions: true },
+    });
+    const version = generation.versions[0];
+
+    // jobId=versionId：与生成一致，stop 时可按版本号定位并移除排队中的 job
+    await this.queue.add(
+      'concat',
+      { versionId: version.id },
+      { jobId: version.id },
+    );
+    await this.publishUpdate(
+      conversationId,
+      generation.id,
+      version.id,
+      'video',
+      'queued',
+    );
+    return { generationId: generation.id, versionId: version.id };
+  }
+
+  /**
+   * 拼接源校验：必须都是**本人**的、**已完成**的、**视频**版本。
+   * 与 validateReferences 分开写：那边只放行 image，且不要求 done（参考图允许边等边生成）。
+   */
+  private async validateConcatSources(
+    versionIds: string[],
+    userId: string,
+  ): Promise<void> {
+    const versions = await this.prisma.mediaVersion.findMany({
+      where: { id: { in: versionIds } },
+      include: { generation: true },
+    });
+    const byId = new Map(versions.map((v) => [v.id, v]));
+    for (const id of versionIds) {
+      const v = byId.get(id);
+      if (
+        !v ||
+        v.generation.userId !== userId ||
+        v.generation.type !== 'video' ||
+        v.status !== 'done' ||
+        !v.filePath
+      ) {
+        throw new BusinessException(
+          ErrorCodes.MEDIA_REF_INVALID,
+          HttpStatus.BAD_REQUEST,
+        );
+      }
+    }
   }
 
   /**

@@ -29,18 +29,20 @@ export const CANVAS_MODELS = [
 
 export type CanvasModel = (typeof CANVAS_MODELS)[number];
 
-/** 画布节点类型：上传图片 / 生图 / 文本 / 生视频。 */
+/** 画布节点类型：上传图片 / 生图 / 文本 / 生视频 / 视频拼接。 */
 export type CanvasNodeType =
   | 'image_upload'
   | 'image_gen'
   | 'text'
-  | 'video_gen';
+  | 'video_gen'
+  | 'video_concat';
 
 export const CANVAS_NODE_TYPES: readonly CanvasNodeType[] = [
   'image_upload',
   'image_gen',
   'text',
   'video_gen',
+  'video_concat',
 ] as const;
 
 export function isCanvasNodeType(v: unknown): v is CanvasNodeType {
@@ -77,6 +79,10 @@ export interface CanvasNodeOutput {
  * 的 validateReferences 只放行 generation.type=image，且 Google SDK 的 GenerateVideosParameters
  * 里 image（首帧）与 video（延展源）互斥。故 video 上游可连、可用于串联画布流程，但
  * generate_media_node 会跳过它并在返回值的 skippedVideoInputs 里报出。
+ *
+ * video_concat 是唯一**只吃视频**的节点：把多段上游视频按入边顺序接成一条。
+ * 它不调生成模型，走本地 ffmpeg（见 media/video-concat.ts），但产出同样是一个
+ * MediaVersion——于是状态流转、资产接口、下游引用与生成节点完全一致。
  */
 export const CANVAS_NODE_IO: Record<
   CanvasNodeType,
@@ -86,6 +92,7 @@ export const CANVAS_NODE_IO: Record<
   image_upload: { inputs: [], outputs: ['image'] },
   image_gen: { inputs: ['text', 'image'], outputs: ['image'] },
   video_gen: { inputs: ['text', 'image', 'video'], outputs: ['video'] },
+  video_concat: { inputs: ['video'], outputs: ['video'] },
 };
 
 /**
@@ -325,4 +332,24 @@ export const SHORT_NODE_ID_LEN = 6;
 /** 完整节点 id → 注入给模型的短 id。 */
 export function shortNodeId(id: string): string {
   return id.slice(-SHORT_NODE_ID_LEN);
+}
+
+/**
+ * 按入边顺序收集某个 video_concat 节点的拼接源（上游视频的 MediaVersion.id）。
+ *
+ * 顺序即 edges 的顺序（服务端 createdAt 升序）——它同时决定了用户在卡片上看到的预览顺序
+ * 与最终合成的先后，三处必须同源，否则"预览是这样、合出来是那样"。
+ * agent 工具与用户手动触发的接口共用这一份，避免两条路各算各的。
+ */
+export function collectVideoSources(
+  nodes: readonly { id: string; outputs: readonly CanvasNodeOutput[] }[],
+  edges: readonly { source: string; target: string }[],
+  nodeId: string,
+): string[] {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  return edges
+    .filter((e) => e.target === nodeId)
+    .flatMap((e) => byId.get(e.source)?.outputs ?? [])
+    .filter((o) => o.type === 'video')
+    .map((o) => o.content);
 }

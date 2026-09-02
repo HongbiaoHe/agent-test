@@ -24,6 +24,7 @@ import {
   type CanvasTokenReport,
   type CanvasTokenRun,
   canConnectNodeTypes,
+  collectVideoSources,
   isCanvasNodeType,
   shortNodeId,
 } from './canvas.types';
@@ -70,10 +71,17 @@ function deriveOutputs(
       return n.assetPath ? [{ type: 'image', content: n.assetPath }] : [];
     case 'image_gen':
     case 'video_gen':
+    // eslint-disable-next-line no-fallthrough -- 三者产出形状一致，共用下面这一段
+    case 'video_concat':
       return media?.status === 'done'
         ? [
             {
-              type: type === 'video_gen' ? 'video' : 'image',
+              // 出视频的有两种：生成与拼接。漏掉后者会让它对外声称自己产出图片，
+              // 下游连线（video_gen 收 image 当首帧）与再一次拼接都会接错。
+              type:
+                type === 'video_gen' || type === 'video_concat'
+                  ? 'video'
+                  : 'image',
               content: media.id,
             },
           ]
@@ -187,6 +195,51 @@ export class CanvasService {
   }
 
   /** 画布完整快照（REST）：先校验租户归属，再构建。 */
+  /**
+   * 用户手动触发某个 video_concat 节点的拼接（卡片上的 Merge）。
+   *
+   * 与 agent 的 merge_video_node 是同一件事的两个入口：素材同样按入边顺序取
+   * （collectVideoSources，与卡片预览顺序同源），同样落一个 MediaVersion 并回填
+   * generationId，之后的状态流转/资产/下游引用与生成节点没有区别。
+   */
+  async mergeVideoNode(
+    id: string,
+    tenantId: string,
+    userId: string,
+    nodeId: string,
+  ): Promise<{ generationId: string }> {
+    await this.assertOwner(id, tenantId);
+    const snap = await this.buildSnapshot(id);
+    const node = snap.nodes.find((n) => n.id === nodeId);
+    if (!node) {
+      throw new BusinessException(
+        ErrorCodes.CANVAS_NODE_NOT_FOUND,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    if (node.type !== 'video_concat') {
+      throw new BusinessException(
+        ErrorCodes.CANVAS_EDGE_INVALID,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const sources = collectVideoSources(snap.nodes, snap.edges, nodeId);
+    // 少于两段没什么可拼的；media 层也会再拦一次（那是权威校验）
+    if (sources.length < 2) {
+      throw new BusinessException(
+        ErrorCodes.MEDIA_REF_INVALID,
+        HttpStatus.BAD_REQUEST,
+      );
+    }
+    const { generationId } = await this.media.createConcat(id, userId, sources);
+    await this.applyOp(id, 'user', {
+      op: 'update_node',
+      nodeId,
+      mediaGenerationId: generationId,
+    });
+    return { generationId };
+  }
+
   async snapshot(id: string, tenantId: string): Promise<CanvasSnapshot> {
     await this.assertOwner(id, tenantId);
     return this.buildSnapshot(id);

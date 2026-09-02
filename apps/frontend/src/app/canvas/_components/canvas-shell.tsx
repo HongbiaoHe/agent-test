@@ -108,6 +108,7 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
             onCancelSaving={c.cancelSaving}
             onPaneClick={isMobile ? undefined : panels.dismissUnpinned}
             onRetryMedia={c.retryMedia}
+            onMergeVideo={c.mergeVideo}
             loading={c.isLoading}
             focusNodeIds={c.focusNodeIds}
             onSetFocus={c.setFocus}

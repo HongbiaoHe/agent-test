@@ -1,4 +1,4 @@
-import { Film, Image as ImageIcon, Type, Upload } from "lucide-react";
+import { Film, Image as ImageIcon, Layers, Type, Upload } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import type { CanvasNodeType } from "@/lib/api";
@@ -31,6 +31,11 @@ export const NODE_META: Record<
     label: NODE_TYPE_LABEL.video_gen,
     Icon: Film,
     tone: "var(--node-video)",
+  },
+  video_concat: {
+    label: NODE_TYPE_LABEL.video_concat,
+    Icon: Layers,
+    tone: "var(--node-concat)",
   },
 };
 

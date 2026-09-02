@@ -235,7 +235,12 @@ export async function fetchMediaAssetBlob(versionId: string): Promise<Blob> {
 
 // ——— 画布工作流 ———
 
-export type CanvasNodeType = "image_upload" | "image_gen" | "text" | "video_gen";
+export type CanvasNodeType =
+  | "image_upload"
+  | "image_gen"
+  | "text"
+  | "video_gen"
+  | "video_concat";
 
 /** 节点端口上流动的资源类型（镜像后端 canvas.types）。 */
 export type CanvasIoType = "text" | "image" | "video";
@@ -469,6 +474,17 @@ export type CanvasPatch =
   | { op: "add_edge"; edge: CanvasEdgeDto; revision: number }
   | { op: "remove_edge"; edgeId: string; revision: number }
   | { op: "clear"; revision: number };
+
+/**
+ * 手动触发 video_concat 节点的拼接。素材按入边顺序取（与卡片预览顺序同源），
+ * 产出一个 MediaVersion——之后的状态/资产与生成节点走同一条路。
+ */
+export function mergeCanvasVideoNode(
+  id: string,
+  nodeId: string,
+): Promise<{ generationId: string }> {
+  return request(`/canvas/${id}/nodes/${nodeId}/merge`, { method: "POST" });
+}
 
 /** 用户结构编辑：带 baseRevision 做乐观并发；运行期后端拒绝（CANVAS_BUSY）。 */
 export function applyCanvasOp(
