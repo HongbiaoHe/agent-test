@@ -3,6 +3,7 @@
 import {
   Background,
   ReactFlow,
+  ReactFlowProvider,
   useEdgesState,
   useNodesState,
   useReactFlow,
@@ -11,9 +12,16 @@ import {
   type Node,
 } from "@xyflow/react";
 import "@xyflow/react/dist/style.css";
-import { createContext, useEffect, useMemo, useRef } from "react";
+import {
+  createContext,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+} from "react";
 
-import type { CanvasOpInput } from "@/lib/api";
+import type { CanvasNodeType, CanvasOpInput } from "@/lib/api";
 
 import type { CanvasState } from "../_lib/canvas-state";
 import {
@@ -23,8 +31,21 @@ import {
 } from "../_lib/node-io";
 import type { SaveState } from "../_hooks/use-canvas";
 import { edgeTypes, type FlowEdgeData } from "./canvas-edges";
+import { ConnectDropMenu, type ConnectDrop } from "./connect-drop-menu";
+import { SelectionToolbar } from "./selection-toolbar";
 import { nodeTypes } from "./canvas-nodes";
 import { CanvasZoomControls } from "./canvas-zoom-controls";
+
+/** 点端口「+」时告诉画布：从哪个节点、往哪个方向、在屏幕的哪个点接新节点。 */
+export interface ConnectMenuRequest {
+  nodeId: string;
+  direction: "downstream" | "upstream";
+  clientX: number;
+  clientY: number;
+}
+
+/** 节点卡片宽度（canvas-nodes 的 w-64），拖线新建节点时用来算落位。 */
+const NODE_WIDTH = 256;
 
 /** 节点内容可编辑字段（update_node op 的子集，位置/媒体不在此列）。 */
 export interface NodeContentPatch {
@@ -51,6 +72,24 @@ export const CanvasEditorContext = createContext<{
   clearSelection: () => void;
   /** 删除节点（落 remove_node op，服务端级联删相关边） */
   deleteNode: (nodeId: string) => void;
+  /** 就地复制一个节点（落 add_node op，偏移 40px 放在原节点右下） */
+  duplicateNode: (nodeId: string) => void;
+  /** 重发一次失败的生成（节点卡片上的 Retry） */
+  retryMedia: (generationId: string) => void;
+  /** 点端口上的「+」：在该处弹出「接一个什么节点」菜单（与拖到空白处同一个菜单） */
+  openConnectMenu: (input: ConnectMenuRequest) => void;
+  /** 选中并把视图移到某个节点上（面板里点上游提示词 → 跳到那张 text 卡） */
+  focusNode: (nodeId: string) => void;
+  /**
+   * 给生成节点补一个上游 text 节点当提示词。
+   * 生成节点自身不存 prompt（后端 CANVAS_NODE_IO），所以在它的面板里写提示词
+   * 只能落成一个真的 text 节点并接上线——写完画布上会多出那张卡。
+   */
+  addPromptNode: (mediaNodeId: string, text: string) => void;
+  /** 「加入对话」圈定的节点 id：节点据此画圈定标记 */
+  focusedNodeIds: ReadonlySet<string>;
+  /** 当前选中的节点数：>1 时单个节点的编辑面板让位给多选工具条 */
+  selectedCount: number;
 }>({
   readOnly: true,
   updateNode: () => {},
@@ -60,6 +99,13 @@ export const CanvasEditorContext = createContext<{
   resolveInputs: () => [],
   clearSelection: () => {},
   deleteNode: () => {},
+  duplicateNode: () => {},
+  retryMedia: () => {},
+  openConnectMenu: () => {},
+  focusNode: () => {},
+  addPromptNode: () => {},
+  focusedNodeIds: new Set<string>(),
+  selectedCount: 0,
 });
 
 function toRfNodes(canvas: CanvasState): Node[] {
@@ -175,16 +221,7 @@ function FitOnChange({
   return null;
 }
 
-export function FlowCanvas({
-  canvas,
-  readOnly,
-  onMoveNode,
-  onApplyOp,
-  saveStates,
-  onMarkSaving,
-  onCancelSaving,
-  onPaneClick,
-}: {
+interface FlowCanvasProps {
   canvas: CanvasState;
   readOnly: boolean;
   onMoveNode: (nodeId: string, x: number, y: number) => void;
@@ -197,9 +234,60 @@ export function FlowCanvas({
   onCancelSaving: (nodeId: string) => void;
   /** 点画布空白处（不含节点/连线）：桌面端据此收起未钉住的悬浮面板 */
   onPaneClick?: () => void;
-}) {
+  /** 重发一次失败的生成（节点卡片上的 Retry） */
+  onRetryMedia: (generationId: string) => void;
+  /** 快照还没落地：此时节点为空是"还没加载"，不是"这块画布是空的" */
+  loading: boolean;
+  /** 「加入对话」圈定的节点 id（空 = 关注整块画布） */
+  focusNodeIds: string[];
+  /** 设置 / 清空圈定（传空数组即取消） */
+  onSetFocus: (nodeIds: string[]) => void;
+  /** 新建节点：fromId 有值就顺带接好线，为 null 则是空白处右键的孤立新建 */
+  onAddConnectedNode: (input: {
+    fromId: string | null;
+    direction: "downstream" | "upstream";
+    type: CanvasNodeType;
+    x: number;
+    y: number;
+    /** 新节点的初始正文（生成节点面板里直接写提示词时用） */
+    text?: string;
+  }) => void;
+}
+
+/**
+ * 外层只负责挂 ReactFlowProvider：内层要用 useReactFlow 做「屏幕坐标 → 画布坐标」的换算
+ * （拖线到空白处新建节点时用），而那个 hook 必须在 provider 之内、且不能与 <ReactFlow>
+ * 在同一个组件里调用。
+ */
+export function FlowCanvas(props: FlowCanvasProps) {
+  return (
+    <ReactFlowProvider>
+      <FlowCanvasInner {...props} />
+    </ReactFlowProvider>
+  );
+}
+
+function FlowCanvasInner({
+  canvas,
+  readOnly,
+  onMoveNode,
+  onApplyOp,
+  saveStates,
+  onMarkSaving,
+  onCancelSaving,
+  onPaneClick,
+  onRetryMedia,
+  loading,
+  focusNodeIds,
+  onSetFocus,
+  onAddConnectedNode,
+}: FlowCanvasProps) {
   const [nodes, setNodes, onNodesChange] = useNodesState<Node>([]);
   const [edges, setEdges, onEdgesChange] = useEdgesState<Edge>([]);
+  // 拖线松手在空白处 → 记下落点，弹出「接一个什么节点」菜单（见 ConnectDropMenu）
+  const [drop, setDrop] = useState<ConnectDrop | null>(null);
+  const wrapRef = useRef<HTMLDivElement | null>(null);
+  const { screenToFlowPosition, setCenter, getZoom } = useReactFlow();
 
   // 外部画布状态（快照 / canvas_patch / media 刷新）变化时重建 RF 视图。
   // 本地拖拽不改 canvas，故不会在拖拽中被打断。
@@ -217,10 +305,21 @@ export function FlowCanvas({
     setEdges(toRfEdges(canvas));
   }, [canvas, setEdges]);
 
-  // 选中节点的全部关联连线（进+出）也跑流光。选中态只存在于 RF 本地 state，故在这里派生而不进
+  // 用 join 出的字符串做依赖：父级每次渲染都会给一个新数组，直接依赖数组会让 memo 永远失效
+  const focusKey = focusNodeIds.join("|");
+  const focusSet = useMemo(
+    () => new Set(focusKey ? focusKey.split("|") : []),
+    [focusKey],
+  );
+
+  const selectedNodes = useMemo(
+    () => nodes.filter((n) => n.selected),
+    [nodes],
+  );
+
+  // 选中节点的全部关联连线（进+出）也做强调。选中态只存在于 RF 本地 state，故在这里派生而不进
   // toRfEdges；用 id 串成 key 而不是直接依赖 nodes——nodes 每个拖拽帧都变，否则每帧重算。
-  const selectedKey = nodes
-    .filter((n) => n.selected)
+  const selectedKey = selectedNodes
     .map((n) => n.id)
     .sort()
     .join("|");
@@ -236,6 +335,80 @@ export function FlowCanvas({
         : { ...e, data: { ...data, active } };
     });
   }, [edges, selectedKey]);
+
+  // 记下一次「要在哪里接个新节点」：拖线松手在空白处、点端口上的「+」、或在空白处右键，
+  // 都走这里。下游节点从落点向右铺开；上游节点要"结束"在落点上，故整卡左移一个卡宽。
+  const openDropAt = useCallback(
+    (
+      /** null = 空白处右键：不接线，就地建一个孤立节点 */
+      fromId: string | null,
+      direction: "downstream" | "upstream",
+      clientX: number,
+      clientY: number,
+    ) => {
+      const from = fromId ? canvas.nodes.find((n) => n.id === fromId) : null;
+      if (fromId && !from) return;
+      const box = wrapRef.current?.getBoundingClientRect();
+      const flow = screenToFlowPosition({ x: clientX, y: clientY });
+      setDrop({
+        fromId,
+        fromType: from?.type ?? null,
+        direction,
+        flow: from
+          ? {
+              x:
+                direction === "downstream"
+                  ? flow.x + 24
+                  : flow.x - NODE_WIDTH - 24,
+              y: flow.y - 16,
+            }
+          : // 右键新建：卡片以指针为中心落下，指到哪儿建到哪儿
+            { x: flow.x - NODE_WIDTH / 2, y: flow.y - 16 },
+        screen: { x: clientX - (box?.left ?? 0), y: clientY - (box?.top ?? 0) },
+      });
+    },
+    [canvas, screenToFlowPosition],
+  );
+
+  /**
+   * 选中某个节点并把视图挪过去（生成节点面板里点提示词 → 跳到提供它的那张 text 卡）。
+   * 保持当前缩放：跳转是「看一眼上游」，把人的缩放层级换掉会让人丢失方位感。
+   */
+  const focusNodeOnCanvas = useCallback(
+    (nodeId: string) => {
+      const n = canvas.nodes.find((x) => x.id === nodeId);
+      if (!n) return;
+      setNodes((prev) =>
+        prev.map((x) => ({ ...x, selected: x.id === nodeId })),
+      );
+      setCenter(n.x + NODE_WIDTH / 2, n.y + 80, {
+        zoom: getZoom(),
+        duration: 400,
+      });
+    },
+    [canvas, setNodes, setCenter, getZoom],
+  );
+
+  // 复制节点：落一条 add_node op，位置右下偏移 40px。
+  // 只带可编辑内容（label/text/assetPath），生成态与媒资**不**随副本走——
+  // 副本是一份新素材，指向同一份 generation 会让两张卡的状态互相打架。
+  // 快捷键（Cmd/Ctrl+D）与卡片上的复制键共用它，行为保持一致。
+  const duplicateFromCanvas = useCallback(
+    (nodeId: string) => {
+      const n = canvas.nodes.find((x) => x.id === nodeId);
+      if (!n) return;
+      onApplyOp({
+        op: "add_node",
+        type: n.type,
+        label: n.label ?? undefined,
+        text: n.text ?? undefined,
+        assetPath: n.assetPath ?? undefined,
+        x: n.x + 40,
+        y: n.y + 40,
+      });
+    },
+    [canvas, onApplyOp],
+  );
 
   // 节点编辑上下文（canvas-nodes / node-editor-toolbar 消费）：
   // 内容变更 → update_node op 自动保存；saveStates 供浮窗与节点角标显示进度
@@ -256,6 +429,26 @@ export function FlowCanvas({
         ),
       deleteNode: (nodeId: string) =>
         onApplyOp({ op: "remove_node", nodeId }),
+      duplicateNode: duplicateFromCanvas,
+      retryMedia: onRetryMedia,
+      openConnectMenu: (r: ConnectMenuRequest) =>
+        openDropAt(r.nodeId, r.direction, r.clientX, r.clientY),
+      focusNode: focusNodeOnCanvas,
+      addPromptNode: (mediaNodeId: string, text: string) => {
+        const m = canvas.nodes.find((n) => n.id === mediaNodeId);
+        if (!m) return;
+        // 落在生成节点左侧一个卡宽 + 一段间距：与画布上「上游在左」的读法一致
+        onAddConnectedNode({
+          fromId: mediaNodeId,
+          direction: "upstream",
+          type: "text",
+          x: m.x - NODE_WIDTH - 80,
+          y: m.y,
+          text,
+        });
+      },
+      focusedNodeIds: focusSet,
+      selectedCount: selectedNodes.length,
     }),
     [
       readOnly,
@@ -265,10 +458,17 @@ export function FlowCanvas({
       onCancelSaving,
       canvas,
       setNodes,
+      duplicateFromCanvas,
+      onRetryMedia,
+      openDropAt,
+      focusNodeOnCanvas,
+      onAddConnectedNode,
+      focusSet,
+      selectedNodes.length,
     ],
   );
 
-  // Cmd/Ctrl+D 快捷复制选中节点（+40,+40 偏移；生成态/媒资不随副本）。
+  // Cmd/Ctrl+D 快捷复制选中节点（与卡片上的复制键同一套 duplicateFromCanvas）。
   // window 级监听 + 输入场景守卫：react-flow 面板焦点不稳定，元素级 onKeyDown 会漏事件。
   const nodesRef = useRef(nodes);
   useEffect(() => {
@@ -290,30 +490,30 @@ export function FlowCanvas({
       const selected = nodesRef.current.filter((n) => n.selected);
       if (selected.length === 0) return; // 无选中：保留浏览器默认行为
       e.preventDefault();
-      for (const n of selected) {
-        const d = n.data as {
-          type?: string;
-          label?: string | null;
-          text?: string | null;
-          assetPath?: string | null;
-        };
-        onApplyOp({
-          op: "add_node",
-          type: (n.type ?? "text") as "text",
-          label: d.label ?? undefined,
-          text: d.text ?? undefined,
-          assetPath: d.assetPath ?? undefined,
-          x: n.position.x + 40,
-          y: n.position.y + 40,
-        });
-      }
+      for (const n of selected) duplicateFromCanvas(n.id);
     };
     window.addEventListener("keydown", onKey);
     return () => window.removeEventListener("keydown", onKey);
-  }, [readOnly, onApplyOp]);
+  }, [readOnly, duplicateFromCanvas]);
+
+  // 空白处双击 = 就地新建一个文本节点。空画布上原本一个入口都没有，只能去右边求 agent；
+  // 同类产品（Flora 等）也是双击建节点，故顺手把 react-flow 的双击缩放关掉（见 zoomOnDoubleClick）。
+  const addNodeAt = (e: React.MouseEvent) => {
+    if (readOnly) return;
+    // 只认画布空白：双击卡片里的文字不该冒出新节点
+    if (!(e.target instanceof Element)) return;
+    if (!e.target.classList.contains("react-flow__pane")) return;
+    const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
+    onApplyOp({
+      op: "add_node",
+      type: "text",
+      x: pos.x - NODE_WIDTH / 2,
+      y: pos.y - 24,
+    });
+  };
 
   return (
-    <div className="relative h-full w-full">
+    <div ref={wrapRef} className="relative h-full w-full" onDoubleClick={addNodeAt}>
       <CanvasEditorContext.Provider value={editor}>
       <ReactFlow
         nodes={nodes}
@@ -323,6 +523,13 @@ export function FlowCanvas({
         onNodesChange={onNodesChange}
         onEdgesChange={onEdgesChange}
         onPaneClick={onPaneClick}
+        /* 空白处右键 = 就地建节点。原本只有双击建 text 一条路，建生图/生视频节点无从下手。
+           preventDefault 挡掉浏览器原生右键菜单，否则两张菜单会叠在一起。 */
+        onPaneContextMenu={(e) => {
+          if (readOnly) return;
+          e.preventDefault();
+          openDropAt(null, "downstream", e.clientX, e.clientY);
+        }}
         onNodeDragStop={(_e, node) => {
           // d3-drag 对「按下即松开」的纯点击同样发 dragStop：位置没变就当点击处理，
           // 保持选中让编辑浮窗浮出，也不发无意义的 move_node op。
@@ -343,6 +550,19 @@ export function FlowCanvas({
         onConnect={(c: Connection) => {
           if (readOnly || !c.source || !c.target) return;
           onApplyOp({ op: "add_edge", source: c.source, target: c.target });
+        }}
+        /* 拖线没落在合法端口上（isValid 为假，含"松手在空白处"）→ 不是失败，是"想接个新节点"。
+           记下落点让 ConnectDropMenu 接管；候选按端口契约过滤，选完自动落位并接线。 */
+        onConnectEnd={(event, state) => {
+          if (readOnly || state.isValid || !state.fromNode) return;
+          const p = "changedTouches" in event ? event.changedTouches[0] : event;
+          if (!p) return;
+          openDropAt(
+            state.fromNode.id,
+            state.fromHandle?.type === "target" ? "upstream" : "downstream",
+            p.clientX,
+            p.clientY,
+          );
         }}
         nodesDraggable={!readOnly}
         nodesConnectable={!readOnly}
@@ -379,6 +599,8 @@ export function FlowCanvas({
         }}
         panOnScroll
         zoomOnScroll={false}
+        /* 双击留给「新建节点」（见 addNodeAt）。缩放还有：捏合 / Cmd+滚动 / 左下缩放键 */
+        zoomOnDoubleClick={false}
         fitView
         proOptions={{ hideAttribution: true }}
       >
@@ -386,6 +608,29 @@ export function FlowCanvas({
         <CanvasZoomControls />
         {/* 首帧聚焦：快照落地后补一次 fitView（修"切画布空白"） */}
         <FitOnFirstLoad count={nodes.length} />
+        {/* 多选（≥2）时浮在整片选区上方的工具条 */}
+        {!readOnly && (
+          <SelectionToolbar
+            nodes={selectedNodes}
+            focused={
+              selectedNodes.length > 0 &&
+              selectedNodes.every((n) => focusNodeIds.includes(n.id))
+            }
+            onAddToChat={() => {
+              const ids = selectedNodes.map((n) => n.id);
+              const already = ids.every((id) => focusNodeIds.includes(id));
+              onSetFocus(already ? [] : ids);
+            }}
+            onDuplicate={() => {
+              for (const n of selectedNodes) duplicateFromCanvas(n.id);
+            }}
+            onDelete={() => {
+              for (const n of selectedNodes) {
+                onApplyOp({ op: "remove_node", nodeId: n.id });
+              }
+            }}
+          />
+        )}
         {/* agent 操控期：把刚新增的节点聚焦到画布中央 */}
         <FitOnChange
           nodeIdsKey={nodes.map((n) => n.id).join("|")}
@@ -393,6 +638,36 @@ export function FlowCanvas({
         />
       </ReactFlow>
       </CanvasEditorContext.Provider>
+      {/* 空画布：给一句话说清怎么开始。不画插画、不放大图标——画布本身才是主角 */}
+      {!loading && nodes.length === 0 && (
+        <div className="pointer-events-none absolute inset-0 flex flex-col items-center justify-center gap-1 text-center">
+          <p className="text-sm text-muted-foreground">
+            {readOnly ? "The agent is setting things up…" : "This canvas is empty"}
+          </p>
+          {!readOnly && (
+            <p className="text-xs text-muted-foreground/70">
+              Double-click anywhere to add a text node, or ask the agent to build
+              the board for you.
+            </p>
+          )}
+        </div>
+      )}
+      {drop && (
+        <ConnectDropMenu
+          drop={drop}
+          onDismiss={() => setDrop(null)}
+          onPick={(type) => {
+            setDrop(null);
+            onAddConnectedNode({
+              fromId: drop.fromId,
+              direction: drop.direction,
+              type,
+              x: drop.flow.x,
+              y: drop.flow.y,
+            });
+          }}
+        />
+      )}
       {/* 四周呼吸式光晕：表现 AI 正在奋力操控画布（动效见 globals.css .canvas-working-overlay）。
           「Agent working / 只读」的文字状态在顶部 header 里，不在画布内 */}
       {readOnly && <div className="canvas-working-overlay" aria-hidden />}

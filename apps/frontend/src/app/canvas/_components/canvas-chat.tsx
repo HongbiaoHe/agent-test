@@ -7,11 +7,13 @@ import {
   ChevronDown,
   CircleDot,
   Loader2,
+  MessagesSquare,
   Pause,
   Send,
   Sparkles,
   Square,
   Wrench,
+  X,
 } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
 
@@ -270,14 +272,21 @@ function renderItems(items: ChatItem[]): React.ReactNode[] {
   return out;
 }
 
-/** 固定在输入框上方的任务计划面板：可折叠，标题显示完成进度。 */
+/**
+ * 贴在输入框正上方的任务计划面板：可折叠，标题显示完成进度，可手动作废。
+ * 排在 agent 状态条之下——状态条是「此刻在做什么」，跟着消息流走；
+ * 计划是「这一轮要做哪几件」，是这一轮的框架，压在输入框上方更稳。
+ */
 function TaskPlanPanel({
   todos,
   active,
+  onClear,
 }: {
   todos: { content: string; status: string }[];
   /** 是否正在运行；否则计划里未完成的步骤视为「已暂停」（用户停止或运行中断的残留）。 */
   active: boolean;
+  /** 作废这份计划：面板消失，后续对话不再受它影响。运行期不提供（agent 正照着做）。 */
+  onClear: () => void;
 }) {
   const [open, setOpen] = useState(true);
   const done = todos.filter((t) => t.status === "completed").length;
@@ -287,35 +296,48 @@ function TaskPlanPanel({
   const paused = !active && hasIncomplete;
   return (
     <div className="shrink-0 border-t border-border bg-card">
-      <button
-        type="button"
-        onClick={() => setOpen((v) => !v)}
-        aria-expanded={open}
-        className="flex w-full items-center gap-2 px-4 py-2 text-left text-xs font-medium transition-colors hover:bg-accent"
-      >
-        {running ? (
-          <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />
-        ) : paused ? (
-          <Pause className="size-3.5 shrink-0 text-muted-foreground" />
-        ) : (
-          <CircleDot className="size-3.5 shrink-0 text-muted-foreground" />
-        )}
-        <span className="flex-1">Task plan</span>
-        {paused && (
-          <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
-            Paused
-          </span>
-        )}
-        <span className="text-[10px] text-muted-foreground">
-          {done}/{todos.length}
-        </span>
-        <ChevronDown
-          className={cn(
-            "size-4 shrink-0 text-muted-foreground transition-transform",
-            open ? "" : "-rotate-90",
+      {/* 折叠开关与「作废计划」是两个独立按钮，不能嵌套：外层用 div 承载，避免 button 套 button */}
+      <div className="flex items-center transition-colors hover:bg-accent">
+        <button
+          type="button"
+          onClick={() => setOpen((v) => !v)}
+          aria-expanded={open}
+          className="flex flex-1 items-center gap-2 py-2 pl-4 text-left text-xs font-medium"
+        >
+          {running ? (
+            <Loader2 className="size-3.5 shrink-0 animate-spin text-primary" />
+          ) : paused ? (
+            <Pause className="size-3.5 shrink-0 text-muted-foreground" />
+          ) : (
+            <CircleDot className="size-3.5 shrink-0 text-muted-foreground" />
           )}
-        />
-      </button>
+          <span className="flex-1">Task plan</span>
+          {paused && (
+            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
+              Paused
+            </span>
+          )}
+          <span className="text-[10px] text-muted-foreground">
+            {done}/{todos.length}
+          </span>
+          <ChevronDown
+            className={cn(
+              "size-4 shrink-0 text-muted-foreground transition-transform",
+              open ? "" : "-rotate-90",
+            )}
+          />
+        </button>
+        <Button
+          variant="ghost"
+          size="icon"
+          className="mr-2 ml-1 size-6 shrink-0 text-muted-foreground hover:text-foreground"
+          title="Discard this plan"
+          aria-label="Discard this plan"
+          onClick={onClear}
+        >
+          <X className="size-3.5" />
+        </Button>
+      </div>
       {open && (
         <ul className="max-h-40 space-y-1 overflow-y-auto px-4 pb-2.5 text-xs">
           {todos.map((t, i) => (
@@ -359,12 +381,14 @@ function AskPanel({
 
   // 确认型（破坏性/消耗性操作）：只给「确认 / 取消」两个按钮，不填答案。
   // clear_canvas 走 destructive 红色语义；generate_media_node 是普通消耗确认走 primary。
+  // 模型可一轮并行发多个（实测 6 个 generate_media_node）——整批列出、一次表态。
   if (CONFIRM_TOOLS.has(ask.tool)) {
     const destructive = ask.tool === "clear_canvas";
-    const text =
-      ask.tool === "clear_canvas"
+    const batch = ask.actions.length > 1;
+    const label = (tool: string, text: string) =>
+      tool === "clear_canvas"
         ? "This clears the whole canvas (every node and edge). It cannot be undone. Proceed?"
-        : ask.question;
+        : text;
     return (
       <div
         className={cn(
@@ -382,18 +406,40 @@ function AskPanel({
             )}
           />
           Agent needs approval
+          {batch && (
+            <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
+              {ask.actions.length} actions
+            </span>
+          )}
         </div>
-        <p className="text-sm text-muted-foreground">{text}</p>
+        {batch ? (
+          <ul className="max-h-32 space-y-1 overflow-y-auto text-sm text-muted-foreground">
+            {ask.actions.map((a, i) => (
+              <li key={i} className="flex items-start gap-2">
+                <CircleDot className="mt-1 size-3 shrink-0" />
+                <span>{label(a.tool, a.label)}</span>
+              </li>
+            ))}
+          </ul>
+        ) : (
+          <p className="text-sm text-muted-foreground">
+            {label(ask.tool, ask.question)}
+          </p>
+        )}
         <div className="flex gap-2">
           <Button
             size="sm"
             variant={destructive ? "destructive" : "default"}
             onClick={() => onResolve(true)}
           >
-            {destructive ? "Clear canvas" : "Approve"}
+            {destructive
+              ? "Clear canvas"
+              : batch
+                ? `Approve all (${ask.actions.length})`
+                : "Approve"}
           </Button>
           <Button size="sm" variant="outline" onClick={() => onResolve(false)}>
-            Cancel
+            {batch ? "Cancel all" : "Cancel"}
           </Button>
         </div>
       </div>
@@ -447,6 +493,9 @@ export function CanvasChat({
   onStop,
   onAnswer,
   onResolve,
+  onClearPlan,
+  focusCount,
+  onClearFocus,
 }: {
   chat: ChatState;
   busy: boolean;
@@ -458,6 +507,12 @@ export function CanvasChat({
   onStop: () => void;
   onAnswer: (msg: string) => void;
   onResolve: (approve: boolean) => void;
+  /** 作废当前任务计划（计划面板上的 ×）。 */
+  onClearPlan: () => void;
+  /** 「加入对话」圈定的节点数；>0 时输入框上方提示 agent 只看这些节点 */
+  focusCount: number;
+  /** 取消圈定，恢复关注整块画布 */
+  onClearFocus: () => void;
 }) {
   const [text, setText] = useState("");
   // agent 当前阶段：决定流末尾指示器显不显示、以哪种形态显示
@@ -524,11 +579,9 @@ export function CanvasChat({
         </div>
       </ScrollArea>
 
-      {planTodos && planTodos.length > 0 && !planAllDone && (
-        <TaskPlanPanel todos={planTodos} active={busy} />
-      )}
-
-      {/* agent 状态条：固定在输入框正上方，不随消息流滚走——执行期间要始终看得见。
+      {/* agent 状态条：紧贴消息流下沿，不随消息滚走——执行期间要始终看得见。
+          排在任务计划之上：它讲的是「此刻在做什么」，是最后一条消息的延续；
+          任务计划讲的是「整轮要做哪几件」，属于这一轮的框架，贴着输入框更稳。
           不给底色也不描边——它是消息区的延续，不是独立面板，多一道分隔线只会把聊天区切碎。
           刻意不带 key={phase}：执行中阶段切得很勤，重挂载会让文案每次都从头淡入，
           反而比阶段本身更抢眼。保持挂载，只换 animation / phrases。
@@ -543,7 +596,30 @@ export function CanvasChat({
         </div>
       )}
 
+      {planTodos && planTodos.length > 0 && !planAllDone && (
+        <TaskPlanPanel todos={planTodos} active={busy} onClear={onClearPlan} />
+      )}
+
       <div className="shrink-0 border-t border-border p-3">
+        {/* 圈定提示：画布上圈了节点，这一轮 agent 的画布上下文就只有它们。
+            放在输入框正上方而不是画布角落——它改变的是"这条消息会被怎么理解"，
+            属于输入的一部分（同 IM 里的引用条）。 */}
+        {focusCount > 0 && (
+          <div className="mb-2 flex items-center gap-1.5 rounded-lg bg-primary/10 px-2.5 py-1.5 text-[11px] text-primary">
+            <MessagesSquare className="size-3 shrink-0" aria-hidden />
+            <span className="min-w-0 flex-1">
+              Agent sees only the {focusCount} node
+              {focusCount > 1 ? "s" : ""} you added
+            </span>
+            <button
+              type="button"
+              onClick={onClearFocus}
+              className="shrink-0 rounded-sm px-1 font-medium underline-offset-2 hover:underline"
+            >
+              Clear
+            </button>
+          </div>
+        )}
         {/* 一体化 composer：容器承接焦点态（primary 描边 + 焦点环 + 轻抬升），
             textarea 去边框内嵌、随输入自动增高（field-sizing-content），发送键内嵌右下 */}
         <div

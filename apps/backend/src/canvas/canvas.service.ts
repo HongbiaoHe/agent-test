@@ -21,10 +21,8 @@ import {
   type CanvasPatch,
   type CanvasSnapshot,
   type CanvasTokenCall,
-  type CanvasTokenModelUsage,
   type CanvasTokenReport,
   type CanvasTokenRun,
-  type CanvasTokenTotals,
   canConnectNodeTypes,
   isCanvasNodeType,
   shortNodeId,
@@ -213,17 +211,29 @@ export class CanvasService {
     const H = 220;
     const GAP = 40;
 
+    // 用户圈定了节点（「加入对话」）→ 本段只列这些节点。大画布上用户往往只想让 agent 动其中几张卡，
+    // 全量列出既淹没重点、又每次变化都要重付一份长快照。
+    const focus = new Set(snap.focusNodeIds);
+    const listed =
+      focus.size > 0 ? snap.nodes.filter((n) => focus.has(n.id)) : snap.nodes;
+    // 连线取「至少一端被圈中」的：只列两端都在圈内的话，模型看不到这些节点的上游从哪来
+    const listedEdges =
+      focus.size > 0
+        ? snap.edges.filter((e) => focus.has(e.source) || focus.has(e.target))
+        : snap.edges;
+
     // id 一律用短 id（完整 cuid 的后 6 位）：完整 id 会让本段膨胀近 3 倍，而这段每次画布变化都要
     // 追加一份进上下文。工具侧用 resolveNodeId 反解，短 id / 完整 id 都吃。
-    const nodeLines = snap.nodes.map((n) => {
+    const nodeLines = listed.map((n) => {
       const desc = (n.label ?? n.text ?? n.prompt ?? '').slice(0, 30);
       const media = n.mediaStatus ? ` <生成:${n.mediaStatus}>` : '';
       return `- ${shortNodeId(n.id)} [${n.type}] "${desc}" @(${Math.round(n.x)},${Math.round(n.y)})${media}`;
     });
-    const edgeLines = snap.edges.map(
+    const edgeLines = listedEdges.map(
       (e) => `- ${shortNodeId(e.source)} → ${shortNodeId(e.target)}`,
     );
 
+    // 安全区始终按**全部**节点算：只按圈中的算会让新节点压在圈外的节点上
     let safe: string;
     if (snap.nodes.length === 0) {
       safe = `画布为空。从 (40, 40) 开始布局：向右每列 +${W + GAP}px、向下每行 +${H + GAP}px。`;
@@ -241,12 +251,40 @@ export class CanvasService {
         `建议：接着现有节点向右新开一列，从 (${rightX}, ${topY}) 起向下依次排列。`;
     }
 
+    const scope =
+      focus.size > 0
+        ? `\n\n### 关注范围\n用户已圈定 ${listed.length} 个节点加入本次对话，上面只列了这些节点` +
+          `（画布上另有 ${snap.nodes.length - listed.length} 个节点未圈定，未列出）。\n` +
+          `**请只对上面列出的节点动手**；确需改动其它节点时，先说明理由并请用户取消圈定。`
+        : '';
+
     return (
       `## 当前画布实时状态（画布一有变化就自动追加最新一份，直接使用，无需调用任何工具查询画布）\n` +
-      `节点（${snap.nodes.length}）：\n${nodeLines.join('\n') || '（无）'}\n\n` +
-      `连线（${snap.edges.length}）：\n${edgeLines.join('\n') || '（无）'}\n\n` +
-      `### 放置安全区（避免节点重叠）\n${safe}`
+      `节点（${listed.length}）：\n${nodeLines.join('\n') || '（无）'}\n\n` +
+      `连线（${listedEdges.length}）：\n${edgeLines.join('\n') || '（无）'}\n\n` +
+      `### 放置安全区（避免节点重叠）\n${safe}${scope}`
     );
+  }
+
+  /**
+   * 设置 / 清空「加入对话」的节点圈选。
+   *
+   * 存在会话上而不是随单条消息传：这是一份**持续生效的关注范围**（像给对话别上几张卡），
+   * 用户不主动取消就一直生效，注入中间件每次调用都按它裁剪。传空数组 = 恢复关注整块画布。
+   * 传进来的 id 先与实际节点求交，避免存下已删除的节点。
+   */
+  async setFocus(id: string, tenantId: string, nodeIds: string[]) {
+    await this.assertOwner(id, tenantId);
+    const existing = await this.prisma.canvasNode.findMany({
+      where: { sessionId: id, id: { in: nodeIds } },
+      select: { id: true },
+    });
+    const valid = existing.map((n) => n.id);
+    await this.prisma.canvasSession.update({
+      where: { id },
+      data: { focusNodeIds: valid },
+    });
+    return { focusNodeIds: valid };
   }
 
   /**
@@ -300,6 +338,10 @@ export class CanvasService {
       thinkingLevel: session.thinkingLevel,
       revision: session.revision,
       totalTokens: tokenAgg._sum.totalTokens ?? 0,
+      // 圈定的节点里可能有已被删掉的，过滤掉再回给前端，免得画布上标不出来又清不掉
+      focusNodeIds: readFocusIds(session.focusNodeIds).filter((fid) =>
+        session.nodes.some((n) => n.id === fid),
+      ),
       nodes: session.nodes.map((n) =>
         this.toNodeDto(n, latestByGen.get(n.mediaGenerationId ?? '')),
       ),
@@ -350,6 +392,35 @@ export class CanvasService {
     });
     // 广播：多端/同页其他订阅者据此清空本地对话投影
     await this.stream.publish(id, { type: 'messages_cleared', payload: {} });
+    return { cleared: true };
+  }
+
+  /**
+   * 手动清空当前任务计划：追加一条空 plan_update（todos: []）作为「计划已作废」标记。
+   *
+   * 之后这份计划就不再影响 agent——buildActivePlan 见到空列表即不注入系统提示，
+   * loadHistory 也会跳过该标记之前的 write_todos 工具消息（两处均在 canvas.processor）。
+   * 用追加而非删除：历史消息是回放源，删掉会让已发生的对话出现空洞。
+   */
+  async clearPlan(id: string, tenantId: string): Promise<{ cleared: true }> {
+    await this.assertOwner(id, tenantId);
+    const seq = await this.prisma.canvasMessage.count({
+      where: { sessionId: id },
+    });
+    await this.prisma.canvasMessage.create({
+      data: {
+        sessionId: id,
+        role: 'assistant',
+        type: 'plan_update',
+        content: { todos: [] },
+        seq,
+      },
+    });
+    // 广播：多端/同页其他订阅者据此隐藏计划面板
+    await this.stream.publish(id, {
+      type: 'plan_update',
+      payload: { todos: [] },
+    });
     return { cleared: true };
   }
 
@@ -688,7 +759,19 @@ export class CanvasService {
             version: { increment: 1 },
           },
         });
-        return { op: 'update_node', node: this.toNodeDto(node), revision };
+        // 带上 media JOIN 状态：生成刚入队时（generate_media_node 回填 mediaGenerationId）
+        // 这条 patch 是前端最早能拿到的信号，不带状态节点就一直显示「未生成」，
+        // 直到 worker 真正开跑才变 —— 排队中的节点看起来像没被触发。
+        const media = node.mediaGenerationId
+          ? (await this.resolveMedia([node.mediaGenerationId])).get(
+              node.mediaGenerationId,
+            )
+          : undefined;
+        return {
+          op: 'update_node',
+          node: this.toNodeDto(node, media),
+          revision,
+        };
       }
       case 'remove_node': {
         const existing = await tx.canvasNode.findFirst({
@@ -872,4 +955,13 @@ export class CanvasService {
   }): CanvasEdgeDto {
     return { id: e.id, source: e.source, target: e.target };
   }
+}
+
+/**
+ * Prisma 的 Json 列读出来是 JsonValue，收窄成 string[]（非数组 / 混类型一律当没圈定）。
+ * 不用断言：外部数据的形状要在边界上用守卫收窄（CLAUDE.md §8）。
+ */
+function readFocusIds(value: unknown): string[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((v): v is string => typeof v === 'string');
 }

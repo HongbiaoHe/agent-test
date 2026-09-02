@@ -2,16 +2,22 @@
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useMemo, useRef, useState } from "react";
+import { toast } from "sonner";
 
 import {
   appendCanvasMessage,
   applyCanvasOp,
   clearCanvasMessages,
+  clearCanvasPlan,
   getCanvasMessages,
   getCanvasSnapshot,
   moveCanvasNode,
+  regenerateMedia,
+  setCanvasFocus,
   stopCanvas,
+  type CanvasNodeType,
   type CanvasOpInput,
+  type CanvasPatch,
 } from "@/lib/api";
 import {
   respondCanvasControl,
@@ -19,7 +25,8 @@ import {
   type CanvasEvent,
 } from "@/lib/socket";
 
-import { applyPatch, type CanvasPatch, type CanvasState } from "../_lib/canvas-state";
+import { buildDecisions } from "../_lib/ask-decisions";
+import { applyPatch, type CanvasState } from "../_lib/canvas-state";
 import {
   buildBaseChat,
   emptyChat,
@@ -28,6 +35,8 @@ import {
 } from "../_lib/chat";
 
 const EMPTY_CANVAS: CanvasState = { nodes: [], edges: [], revision: 0 };
+/** 稳定的空数组：每次渲染新建 [] 会让下游 memo/effect 白白失效 */
+const EMPTY_FOCUS: string[] = [];
 const BUSY = new Set(["queued", "running", "waiting_approval"]);
 
 /** update_node 保存状态（按 nodeId）：saving 在途 / saved 刚成功 / error 失败已重拉快照 */
@@ -224,32 +233,45 @@ export function useCanvas(sessionId: string | null) {
     }
   }
 
+  /**
+   * 作废当前任务计划：后端追加一条空 plan_update 标记，之后提示词注入与历史重放都跳过它，
+   * 用户继续对话就不再被这份计划牵着走。本地同步隐藏面板（不等 refetch）。
+   */
+  async function clearPlan() {
+    if (!sessionId) return;
+    setLiveChat((prev) => [
+      ...prev,
+      { type: "plan_update", payload: { todos: [] } },
+    ]);
+    await clearCanvasPlan(sessionId);
+    await refetchMsg();
+  }
+
   function answerAsk(message: string) {
     if (!sessionId || !chat.ask) return;
     // langchain HITL 仅 approve/edit/reject：用 edit 把答案写进 ask_user 的 args，
     // 工具随即以答案为返回值执行，模型据此续跑（详见 canvas.agent.factory）。
-    respondCanvasControl(sessionId, [
-      { type: "edit", editedAction: { name: "ask_user", args: { question: message } } },
-    ]);
+    respondCanvasControl(
+      sessionId,
+      buildDecisions(chat.ask.actions, { kind: "answer", text: message }),
+    );
     setLiveChat((prev) => [...prev, { type: "control_resolved", payload: {} }]);
     setPending(true);
   }
 
-  /** approve/reject 型确认（clear_canvas / generate_media_node）：approve 执行该工具，reject 跳过。 */
+  /**
+   * approve/reject 型确认（clear_canvas / generate_media_node）：approve 执行该工具，reject 跳过。
+   * 一次中断可能挂着多个调用（模型并行发了 N 个 generate_media_node），这里整批表态、
+   * 逐项展开成等长的 decisions —— 数量不等会被 langchain HITL 直接抛错。
+   */
   function resolveControl(approve: boolean) {
     if (!sessionId || !chat.ask) return;
-    // reject 必须带明确 message 回灌模型：否则默认拒绝语义模糊，模型会误以为操作已完成
-    // （出现"我拒绝删除、agent 却说已删空"的幻觉）。文案按被拒工具定制，避免跨工具误导。
-    const rejectMessage =
-      chat.ask.tool === "generate_media_node"
-        ? "用户拒绝了本次生成，即放弃了该节点这次的生成意图。禁止重试同一节点或改用其他方式触发生成；" +
-          "不要声称已生成任何内容。节点保持未生成状态；继续其他任务，或仅在需要时就下一步方向征询用户。"
-        : "用户拒绝了此操作，即取消了该操作意图（例如：拒绝清空画布 = 不要删除节点）。" +
-          "禁止改用其他工具去达成同一目的（不要再逐个 delete_node，也不要再次 clear_canvas）。" +
-          "画布保持现状不变，不要声称已完成或已删除任何内容；停止该动作，转而询问用户或继续其他任务。";
-    respondCanvasControl(sessionId, [
-      approve ? { type: "approve" } : { type: "reject", message: rejectMessage },
-    ]);
+    respondCanvasControl(
+      sessionId,
+      buildDecisions(chat.ask.actions, {
+        kind: approve ? "approve" : "reject",
+      }),
+    );
     setLiveChat((prev) => [...prev, { type: "control_resolved", payload: {} }]);
     setPending(true);
   }
@@ -298,7 +320,12 @@ export function useCanvas(sessionId: string | null) {
    * 按 saveKeyOf 记账保存状态（saving→saved/error），供画布左上角的保存徽标显示 loading。
    */
   async function applyUserOp(op: CanvasOpInput) {
-    if (!sessionId) return;
+    await runUserOp(op);
+  }
+
+  /** applyUserOp 的内核：多回传一个 patch，供「新建节点后立刻接线」取服务端分配的 id。 */
+  async function runUserOp(op: CanvasOpInput): Promise<CanvasPatch | null> {
+    if (!sessionId) return null;
     const nodeId = saveKeyOf(op);
     // 键入时已 markSaving 点亮；这里补在途计数（beginSave 内含 markSaving，幂等）
     if (nodeId) beginSave(nodeId);
@@ -308,13 +335,50 @@ export function useCanvas(sessionId: string | null) {
         const res = await applyCanvasOp(sessionId, op, revisionRef.current);
         revisionRef.current = res.revision; // 立即推进基线，无需等 socket patch
         if (nodeId) settleSave(nodeId, "saved", SAVED_LINGER_MS);
+        return res.patch;
       } catch {
         void refetchSnap();
         if (nodeId) settleSave(nodeId, "error", ERROR_LINGER_MS);
+        return null;
       }
     });
     opChain.current = run;
-    await run;
+    return run;
+  }
+
+  /**
+   * 从某个节点的端口拖到空白处后，新建一个**已经接好线**的节点。
+   *
+   * 分两步走而不是一个 op：add_node 的 id 由服务端分配，只有拿到返回的 patch 才知道
+   * 该给谁接线。第一步失败（并发 409 等）就直接放弃，不留一个孤立的空节点。
+   */
+  async function addConnectedNode(input: {
+    /** 拖拽起点节点。null = 不接线，就地建一个孤立节点（画布右键菜单） */
+    fromId: string | null;
+    /** 从出口拉出来 → 新节点在下游；从入口拉出来 → 新节点在上游 */
+    direction: "downstream" | "upstream";
+    type: CanvasNodeType;
+    x: number;
+    y: number;
+    /** 新节点的初始正文（在生成节点面板里直接写提示词时用） */
+    text?: string;
+  }): Promise<string | null> {
+    const patch = await runUserOp({
+      op: "add_node",
+      type: input.type,
+      text: input.text,
+      x: input.x,
+      y: input.y,
+    });
+    if (!patch || patch.op !== "add_node") return null;
+    const created = patch.node.id;
+    if (!input.fromId) return created;
+    await runUserOp({
+      op: "add_edge",
+      source: input.direction === "downstream" ? input.fromId : created,
+      target: input.direction === "downstream" ? created : input.fromId,
+    });
+    return created;
   }
 
   /**
@@ -347,6 +411,40 @@ export function useCanvas(sessionId: string | null) {
       delete next[nodeId];
       return next;
     });
+  }
+
+  /**
+   * 重发一次生成（节点上「Retry」用）：同一个 generation 叠一个新版本，
+   * 提示词与参考图沿用上一版（后端 MediaService.regenerate 的缺省行为）——
+   * 失败重试要的就是"照原样再来一次"，不夹带上游此刻可能已经变了的内容。
+   *
+   * 状态不必手动改：新版本落库即推 media_update，socket 收到后重拉快照，
+   * 节点的 mediaStatus 会自己走到 queued → generating → done/failed。
+   */
+  function retryMedia(generationId: string) {
+    void regenerateMedia(generationId)
+      .then(() => {
+        void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
+      })
+      .catch((e: unknown) => {
+        toast.error(e instanceof Error ? e.message : "Retry failed");
+      });
+  }
+
+  /**
+   * 「加入对话」：把选中的节点圈给 agent（传空数组 = 取消圈定）。
+   * 会话级持续生效，服务端存在 CanvasSession.focusNodeIds 上，注入上下文时据此裁剪。
+   * 成功后重拉快照，画布上的圈定标记与输入框上的提示都跟着刷新。
+   */
+  function setFocus(nodeIds: string[]) {
+    if (!sessionId) return;
+    void setCanvasFocus(sessionId, nodeIds)
+      .then(() => {
+        void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
+      })
+      .catch((e: unknown) => {
+        toast.error(e instanceof Error ? e.message : "Could not update focus");
+      });
   }
 
   /** 保存结账：仅当该节点无其他在途请求时落终态，并在 linger 后自动清除状态。 */
@@ -387,9 +485,18 @@ export function useCanvas(sessionId: string | null) {
     /** 清空会话记录与 agent 上下文（节点/连线与 token 统计保留） */
     clearMessages,
     clearing,
+    /** 作废当前任务计划（计划面板上的 ×） */
+    clearPlan,
     answerAsk,
     resolveControl,
     moveNode,
     applyUserOp,
+    /** 从端口拖到空白处新建一个已接好线的节点 */
+    addConnectedNode,
+    /** 重发一次失败的生成（节点卡片上的 Retry） */
+    retryMedia,
+    /** 「加入对话」圈定的节点 id（空 = 关注整块画布） */
+    focusNodeIds: snapQ.data?.focusNodeIds ?? EMPTY_FOCUS,
+    setFocus,
   };
 }

@@ -1,17 +1,12 @@
 import type { CanvasEdgeDto, CanvasNodeDto } from "@/lib/api";
 
 /**
- * canvas_patch 事件 payload（镜像后端 CanvasPatch）。前端据此把服务端的原子结构变更
- * 增量应用到本地 react-flow 投影，无需每次重拉整块快照。
+ * canvas_patch 事件 payload。前端据此把服务端的原子结构变更增量应用到本地 react-flow
+ * 投影，无需每次重拉整块快照。类型定义在 lib/api（与其它服务端 DTO 放一起，
+ * applyCanvasOp 的返回值也是它），这里只做转出。
  */
-export type CanvasPatch =
-  | { op: "add_node"; node: CanvasNodeDto; revision: number }
-  | { op: "update_node"; node: CanvasNodeDto; revision: number }
-  | { op: "move_node"; nodeId: string; x: number; y: number }
-  | { op: "remove_node"; nodeId: string; revision: number }
-  | { op: "add_edge"; edge: CanvasEdgeDto; revision: number }
-  | { op: "remove_edge"; edgeId: string; revision: number }
-  | { op: "clear"; revision: number };
+export type { CanvasPatch } from "@/lib/api";
+import type { CanvasPatch } from "@/lib/api";
 
 export interface CanvasState {
   nodes: CanvasNodeDto[];

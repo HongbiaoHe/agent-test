@@ -18,8 +18,9 @@ export const CANVAS_NODE_IO: Record<
   text: { inputs: [], outputs: ["text"] },
   image_upload: { inputs: [], outputs: ["image"] },
   image_gen: { inputs: ["text", "image"], outputs: ["image"] },
-  // video 输入暂不支持：底层生成管线吃不下视频参考（详见后端 canvas.types 的注释）
-  video_gen: { inputs: ["text", "image"], outputs: ["video"] },
+  // video 输入只放开连线（可串联画布），不参与生成：底层管线吃不下视频参考
+  // （详见后端 canvas.types 的 CANVAS_NODE_IO 注释）
+  video_gen: { inputs: ["text", "image", "video"], outputs: ["video"] },
 };
 
 /** 连线是否合法：source 的任一输出类型被 target 接受即可。target 无输入端口 → 一律非法。 */
@@ -40,7 +41,8 @@ export interface NodeInputSource {
   outputs: CanvasNodeOutput[];
 }
 
-const FALLBACK_TITLE: Record<CanvasNodeType, string> = {
+/** 节点类型的缺省名：label 为空时顶上，同时也是各处「这是哪类节点」的措辞来源。 */
+export const NODE_TYPE_LABEL: Record<CanvasNodeType, string> = {
   text: "Text",
   image_upload: "Upload",
   image_gen: "Image",
@@ -80,7 +82,7 @@ export function resolveNodeInputs(
     .map((n) => ({
       nodeId: n.id,
       nodeType: n.type,
-      title: n.label?.trim() || FALLBACK_TITLE[n.type],
+      title: n.label?.trim() || NODE_TYPE_LABEL[n.type],
       outputs: n.outputs,
     }));
 }

@@ -42,7 +42,10 @@ export function mimeForExt(filePath: string): string {
  */
 // lockDuration 提高到 1320_000（22 分钟）：参考图等待最长 5 分钟 + 视频生成最长 10 分钟，
 // 两者串联最坏情况约 15 分钟，1320s 留足余量，避免 BullMQ 判 stalled 重跑（重复付费）。
-@Processor('media-gen', { lockDuration: 1_320_000 })
+// concurrency=3：BullMQ 默认 1，会把互不相干的任务排成一条队——一次批准 6 个视频要串行跑
+// 六轮（实测每条约 1 分钟），且一条在等上游参考图时后面全被堵住。3 条并行既缩短总时长，
+// 又给 Google 侧的并发配额留余量。
+@Processor('media-gen', { concurrency: 3, lockDuration: 1_320_000 })
 export class MediaProcessor extends WorkerHost {
   private readonly logger = new Logger(MediaProcessor.name);
 

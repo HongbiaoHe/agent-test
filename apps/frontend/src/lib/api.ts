@@ -282,6 +282,8 @@ export interface CanvasSnapshot {
   revision: number;
   /** 会话累计 token（后端 run 聚合的持久化口径；实时增量由 token_usage 事件覆盖） */
   totalTokens: number;
+  /** 「加入对话」圈定的节点 id；非空时 agent 只看这些节点，空数组 = 整块画布 */
+  focusNodeIds: string[];
   nodes: CanvasNodeDto[];
   edges: CanvasEdgeDto[];
 }
@@ -417,6 +419,14 @@ export function clearCanvasMessages(id: string): Promise<{ cleared: true }> {
   return request(`/canvas/${id}/messages`, { method: "DELETE" });
 }
 
+/**
+ * 手动作废当前任务计划（DELETE /canvas/:id/plan）。
+ * 计划面板随之消失，后续对话不再受这份计划影响（提示词注入与历史重放都会跳过它）。
+ */
+export function clearCanvasPlan(id: string): Promise<{ cleared: true }> {
+  return request(`/canvas/${id}/plan`, { method: "DELETE" });
+}
+
 export function appendCanvasMessage(
   id: string,
   content: string,
@@ -429,16 +439,43 @@ export function appendCanvasMessage(
   });
 }
 
+/**
+ * 设置 /（传空数组）清空「加入对话」的节点圈选。会话级持续生效，不随单条消息。
+ * 之后注入给 agent 的画布状态只列这些节点，直到用户取消。
+ */
+export function setCanvasFocus(
+  id: string,
+  nodeIds: string[],
+): Promise<{ focusNodeIds: string[] }> {
+  return request(`/canvas/${id}/focus`, {
+    method: "POST",
+    body: JSON.stringify({ nodeIds }),
+  });
+}
+
 export function stopCanvas(id: string): Promise<{ stopped: boolean }> {
   return request(`/canvas/${id}/stop`, { method: "POST" });
 }
+
+/**
+ * 一次原子结构变更（镜像后端 CanvasPatch）：既是 canvas_patch 事件的 payload，
+ * 也是 applyCanvasOp 的返回内容——新建节点时要从这里取服务端分配的 id 来接线。
+ */
+export type CanvasPatch =
+  | { op: "add_node"; node: CanvasNodeDto; revision: number }
+  | { op: "update_node"; node: CanvasNodeDto; revision: number }
+  | { op: "move_node"; nodeId: string; x: number; y: number }
+  | { op: "remove_node"; nodeId: string; revision: number }
+  | { op: "add_edge"; edge: CanvasEdgeDto; revision: number }
+  | { op: "remove_edge"; edgeId: string; revision: number }
+  | { op: "clear"; revision: number };
 
 /** 用户结构编辑：带 baseRevision 做乐观并发；运行期后端拒绝（CANVAS_BUSY）。 */
 export function applyCanvasOp(
   id: string,
   op: CanvasOpInput,
   baseRevision: number,
-): Promise<{ revision: number; patch: unknown }> {
+): Promise<{ revision: number; patch: CanvasPatch }> {
   return request(`/canvas/${id}/ops`, {
     method: "POST",
     body: JSON.stringify({ op, baseRevision }),

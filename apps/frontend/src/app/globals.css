@@ -379,87 +379,209 @@
 }
 
 
-/* 画布节点「内容优先」视觉：媒体预览满宽置顶 + 类型 chip 浮在预览左上角，标题与提示词退到下方。
-   卡片主体全中性（守 manus「靠深浅不靠彩色」），类型色 --tone 只留在连接点上标示端口类型。
-   生成中另给整卡一圈旋转高光环 + 封面满幅高光横扫，范围大、缩放后也能看出哪个节点在跑。 */
+/* 画布节点。
+   四类节点共用一套骨架：主视觉（有产出才占高）→ 类型行 → 标题 → 正文 → 状态条。
+   卡面保持中性（设计系统 §7：靠深浅不靠彩色），身份色 --tone 只出现在类型图标与连接点上。 */
 .canvas-node {
   position: relative;
+  /* 双层投影：一层贴边的细影勾出卡片轮廓，一层散开的软影把卡片托离点阵底纹。
+     单用 shadow-sm 时，缩小视图后一片卡片会糊成同一层灰。 */
+  box-shadow:
+    0 1px 2px oklch(0 0 0 / 0.05),
+    0 4px 12px -6px oklch(0 0 0 / 0.1);
   transition:
     border-color 0.15s ease,
-    box-shadow 0.15s ease;
-}
-/* 封面：满宽置顶、零内边距，只收上方两角——不能给整卡 overflow:hidden，
-   否则半悬在边缘的 handle 会被裁掉。 */
-.canvas-node__cover {
-  position: relative;
-  overflow: hidden;
-  border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0;
-  background: var(--muted);
-}
-/* 类型 chip：浮在封面左上，深底浅字 + 轻模糊，压得住任意明暗的图片 */
-.canvas-node__chip {
-  position: absolute;
-  left: 0.5rem;
-  top: 0.5rem;
-  z-index: 1;
-  display: inline-flex;
-  align-items: center;
-  gap: 0.3rem;
-  padding: 0.15rem 0.45rem;
-  border-radius: 999px;
-  font-size: 10.5px;
-  line-height: 1.6;
-  color: oklch(0.98 0 0);
-  background: oklch(0.18 0.005 60 / 0.6);
-  backdrop-filter: blur(6px);
-}
-/* 连接点染成类型色：卡面已全中性，端口是唯一保留类型身份的地方 */
-.canvas-node .react-flow__handle {
-  width: 9px;
-  height: 9px;
-  background: var(--tone);
-  border: 1.5px solid var(--card);
+    box-shadow 0.15s ease,
+    opacity 0.15s ease;
 }
 .canvas-node:hover {
   border-color: color-mix(in oklch, var(--foreground) 18%, var(--border));
+  box-shadow:
+    0 1px 2px oklch(0 0 0 / 0.06),
+    0 8px 20px -8px oklch(0 0 0 / 0.16);
 }
 /* 选中：中性焦点环（类型色不参与状态表达，避免和「在跑 / 失败」抢注意） */
 .react-flow__node.selected .canvas-node {
   border-color: var(--ring);
   box-shadow:
     0 0 0 1px var(--ring),
-    0 6px 18px oklch(0 0 0 / 0.1);
+    0 8px 22px -8px oklch(0 0 0 / 0.18);
 }
 
-/* 生成中·效果一：整卡旋转高光环。复用 .glow-border 的 conic + 异或 mask 手法，但做成独立
-   absolute 元素而不是 ::before——::before 会被静态子元素盖住，得靠 `> *` 强制 position:relative，
-   那会打坏 react-flow handle 的 absolute 定位。ring 只占边缘 2px 且 pointer-events:none。 */
-.canvas-node__glow {
-  position: absolute;
-  inset: -1px;
-  z-index: 2;
-  border-radius: calc(var(--radius) + 1px);
-  padding: 2px;
-  background: conic-gradient(
-    from var(--glow-angle),
-    var(--glow-color) 0deg,
-    var(--glow-color) 25deg,
-    var(--border) 90deg,
-    var(--border) 150deg,
-    var(--glow-color) 180deg,
-    var(--glow-color) 205deg,
-    var(--border) 270deg,
-    var(--border) 330deg,
-    var(--glow-color) 360deg
-  );
-  mask:
-    linear-gradient(#000 0 0) content-box,
-    linear-gradient(#000 0 0);
-  mask-composite: exclude;
-  pointer-events: none;
-  animation: glow-border-spin 2.4s linear infinite;
+/* 类型行的类型名：等宽大写小字，与画布索引页的 mono 序号同一套语言。 */
+.canvas-node__type {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 9.5px;
+  line-height: 1.4;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
 }
-/* 生成中·效果二：封面满幅高光横扫（复用上方 media-card-shimmer keyframe）。 */
+
+/* 底部的上游摘要：与正文之间留一条极细的分隔，读起来是注脚而不是正文的一行。 */
+.canvas-node__inputs {
+  display: flex;
+  align-items: center;
+  margin-top: 0.125rem;
+  padding-top: 0.375rem;
+  border-top: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+/* 主视觉：满宽置顶、零内边距，只收上方两角——不能给整卡 overflow:hidden，
+   否则半悬在边缘的 handle 会被裁掉。 */
+.canvas-node__hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0;
+  background: var(--muted);
+}
+
+/* 连接点：静止是 10px 的类型色圆点，**鼠标移到节点上就长成一枚 20px 的「+」按钮**。
+   这一枚同时是两种手势：拖出去 = 连线，原地点一下 = 弹出新建菜单（拖拽零位移时
+   react-flow 判定连接无效，正好走到 onConnectEnd → ConnectDropMenu，见 flow-canvas）。
+   点击区始终是 22px 的透明方块——9px 的点在缩小视图下几乎抓不住。 */
+.canvas-node .react-flow__handle {
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+}
+.canvas-node .react-flow__handle::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 10px;
+  height: 10px;
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: var(--tone);
+  border: 1.5px solid var(--card);
+  transition:
+    width 0.12s ease,
+    height 0.12s ease,
+    box-shadow 0.12s ease;
+}
+/* 「+」的两笔：用两条渐变画，避免依赖字体里的加号字形对不齐 */
+.canvas-node .react-flow__handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 9px;
+  height: 9px;
+  transform: translate(-50%, -50%) scale(0);
+  background:
+    linear-gradient(var(--card), var(--card)) center / 100% 1.5px no-repeat,
+    linear-gradient(var(--card), var(--card)) center / 1.5px 100% no-repeat;
+  transition: transform 0.12s ease;
+  pointer-events: none;
+}
+.canvas-node:hover .react-flow__handle::before {
+  width: 20px;
+  height: 20px;
+}
+.canvas-node:hover .react-flow__handle::after {
+  transform: translate(-50%, -50%) scale(1);
+}
+.canvas-node .react-flow__handle:hover::before {
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--tone) 24%, transparent);
+}
+
+/* 「加入对话」圈中的节点：主色描边 + 一圈很淡的外扩。
+   与「选中」（--ring 中性）刻意不同色——选中是此刻在操作它，圈定是这一轮 agent 只看它们，
+   两者会同时成立。 */
+.canvas-node--focused {
+  border-color: color-mix(in oklch, var(--primary) 55%, transparent);
+  box-shadow:
+    0 0 0 3px color-mix(in oklch, var(--primary) 14%, transparent),
+    0 4px 12px -6px oklch(0 0 0 / 0.1);
+}
+.canvas-node__focus-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.05rem 0.3rem;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--primary) 14%, transparent);
+  color: var(--primary);
+  font-size: 9.5px;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* 拖线中的取舍提示（判定见 canvas-nodes.tsx 的 useConnectFit）：
+   接不了的节点整体压暗、并挡掉指针（省得白拖一趟），能接的描一圈自己的端口色。
+   松手之前就能看出这根线该往哪儿落。 */
+.canvas-node--muted {
+  opacity: 0.35;
+}
+/* 能接的只把边框换成自己的端口色，不加光环——同类产品一致的做法是「压暗不兼容」
+   这种减法，全场发光反而吵。 */
+.canvas-node--eligible {
+  border-color: color-mix(in oklch, var(--tone) 60%, transparent);
+}
+
+/* 卡片**外**的上方一行：左边常驻类型标签，右边 hover 才浮出操作药丸。
+   把这些挪出卡面，是因为卡片右上角正好压着媒体主视觉——操作条一出来就遮画面。
+   同类画布（Flora / 即梦）都是这么分的：标签与工具在卡外，卡面只留作品本身。 */
+.canvas-node__above {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  height: 26px;
+  /* 下内边距 = 与卡片之间的缝。这段缝属于本元素，鼠标从卡片上移时不会脱离 :hover，
+     操作药丸不会在够到它之前先消失。 */
+  padding-bottom: 5px;
+  /* 静止不吃指针事件，免得每张卡上方都压着一条看不见的挡板；hover 起来才接管 */
+  pointer-events: none;
+}
+.canvas-node:hover .canvas-node__above {
+  pointer-events: auto;
+}
+
+.canvas-node__actions {
+  margin-left: auto;
+  padding: 0.125rem;
+  border-radius: 999px;
+  /* 反色实心：药丸可能落在任意明暗的内容之上，毛玻璃会被吃掉，实心反色不会 */
+  background: color-mix(in oklch, var(--foreground) 88%, transparent);
+  color: var(--background);
+  box-shadow: 0 2px 8px -3px oklch(0 0 0 / 0.35);
+  opacity: 0;
+  transform: translateY(2px);
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease;
+}
+.canvas-node:hover .canvas-node__actions,
+.canvas-node__actions:focus-within {
+  opacity: 1;
+  transform: none;
+}
+/* 选中时这块位置让给编辑面板（NodeToolbar 也停在卡片上方），两者不叠 */
+.react-flow__node.selected .canvas-node__actions {
+  display: none;
+}
+/* 组间分隔：看图类与改结构类之间划一道 */
+.canvas-node__actions-sep {
+  width: 1px;
+  height: 12px;
+  margin: 0 0.125rem;
+  background: currentColor;
+  opacity: 0.25;
+}
+
+/* 生成中 / 资产在途：主视觉骨架上满幅高光横扫（复用上方 media-card-shimmer keyframe）。 */
 .canvas-node__shimmer {
   position: absolute;
   inset: 0;
@@ -482,30 +604,20 @@
   );
   animation: media-card-shimmer 1.5s ease-in-out infinite;
 }
-/* 连线流光：在原贝塞尔路径上叠一段高亮虚线，dashoffset 递减 → 光段沿 source→target 方向跑。
-   触发时机见 canvas-edges.tsx（目标节点在生成 / 两端有节点被选中）。
-   高亮色同样用 --glow-color：dark 是近白亮光，light 是暖中灰（比默认连线深，在浅底上才看得见）。
-   dasharray 取「一段长光带 + 大段留白」而不是密集短划，否则会读成行军蚁虚线；
-   位移终值必须等于 dasharray 之和，循环才无缝。drop-shadow 给光带一点柔边，才像光而不像线。 */
-@keyframes canvas-edge-flow {
-  to {
-    stroke-dashoffset: -82;
-  }
-}
-.canvas-edge__flow {
-  stroke: var(--glow-color);
-  stroke-width: 2.5;
+
+/* 连线强调（目标节点在生成 / 两端有节点被选中）：在原贝塞尔路径上叠一条更粗更实的线。
+   **刻意不做流光**——同类产品（ComfyUI / n8n / Figma Weave）无一给连线做流动动效，
+   它抢注意力且是最典型的"AI 装饰"。「在跑」由节点自己表达（骨架 + 状态条），
+   线只负责把"谁接谁"说清楚。 */
+.canvas-edge__active {
+  stroke: color-mix(in oklch, var(--foreground) 55%, transparent);
+  stroke-width: 2;
   stroke-linecap: round;
-  stroke-dasharray: 22 60;
-  filter: drop-shadow(0 0 3px var(--glow-color));
   pointer-events: none;
-  animation: canvas-edge-flow 1.2s linear infinite;
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .canvas-node__glow,
-  .canvas-node__shimmer::after,
-  .canvas-edge__flow {
+  .canvas-node__shimmer::after {
     animation: none;
   }
 }

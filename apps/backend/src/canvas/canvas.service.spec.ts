@@ -61,7 +61,12 @@ describe('CanvasService', () => {
     },
     canvasRun: { aggregate: jest.fn(), deleteMany: jest.fn() },
     canvasTokenUsage: { deleteMany: jest.fn() },
-    canvasMessage: { deleteMany: jest.fn(), count: jest.fn() },
+    canvasMessage: {
+      deleteMany: jest.fn(),
+      count: jest.fn(),
+      create: jest.fn(),
+    },
+    mediaVersion: { findMany: jest.fn() },
   };
   // checkpointer：清空会话时需删掉该 thread 的 agent 上下文（RedisSaver.deleteThread）
   const mockCheckpointer = { deleteThread: jest.fn() };
@@ -90,6 +95,93 @@ describe('CanvasService', () => {
   });
 
   afterEach(() => jest.clearAllMocks());
+
+  describe('agentCanvasContext 的关注范围裁剪', () => {
+    /** buildSnapshot 走 canvasSession.findUnique（include nodes/edges）+ canvasRun.aggregate */
+    function seedCanvas(focusNodeIds: unknown) {
+      mockPrisma.canvasSession.findUnique.mockResolvedValue({
+        id: 's1',
+        title: 't',
+        status: 'idle',
+        model: null,
+        thinkingLevel: null,
+        revision: 1,
+        focusNodeIds,
+        nodes: [
+          {
+            id: 'aaaaaa1',
+            type: 'text',
+            x: 0,
+            y: 0,
+            version: 1,
+            label: 'A',
+            text: null,
+            prompt: null,
+            assetPath: null,
+            mediaGenerationId: null,
+          },
+          {
+            id: 'bbbbbb2',
+            type: 'image_gen',
+            x: 400,
+            y: 0,
+            version: 1,
+            label: 'B',
+            text: null,
+            prompt: null,
+            assetPath: null,
+            mediaGenerationId: null,
+          },
+          {
+            id: 'cccccc3',
+            type: 'video_gen',
+            x: 800,
+            y: 0,
+            version: 1,
+            label: 'C',
+            text: null,
+            prompt: null,
+            assetPath: null,
+            mediaGenerationId: null,
+          },
+        ],
+        edges: [
+          { id: 'e1', source: 'aaaaaa1', target: 'bbbbbb2' },
+          { id: 'e2', source: 'bbbbbb2', target: 'cccccc3' },
+        ],
+      });
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([]);
+      mockPrisma.canvasRun.aggregate.mockResolvedValue({
+        _sum: { totalTokens: 0 },
+      });
+    }
+
+    it('未圈定时列出全部节点与连线', async () => {
+      seedCanvas(null);
+      const text = await service.agentCanvasContext('s1');
+      expect(text).toContain('节点（3）');
+      expect(text).toContain('连线（2）');
+      expect(text).not.toContain('### 关注范围');
+    });
+
+    it('圈定后只列圈中的节点，连线取至少一端在圈内的', async () => {
+      seedCanvas(['bbbbbb2']);
+      const text = await service.agentCanvasContext('s1');
+      expect(text).toContain('节点（1）');
+      // 只剩 B 自己；两条边都碰到 B，故都保留（模型才知道 B 的上游从哪来）
+      expect(text).toContain('连线（2）');
+      expect(text).not.toMatch(/- aaaaaa1 \[text\]/);
+      expect(text).toContain('用户已圈定 1 个节点加入本次对话');
+      expect(text).toContain('画布上另有 2 个节点未圈定');
+    });
+
+    it('安全区仍按全部节点计算（否则新节点会压在圈外的节点上）', async () => {
+      seedCanvas(['aaaaaa1']);
+      const text = await service.agentCanvasContext('s1');
+      // 最右的 C 在 x=800，加卡宽 280 与间距 40 → 右侧安全线 1120
+      expect(text).toContain('右侧 x ≥ 1120');
+    });
+  });
 
   it('运行期 user 结构变更被拒（CANVAS_BUSY）', async () => {
     tx.canvasSession.findUnique.mockResolvedValue({
@@ -258,7 +350,7 @@ describe('CanvasService', () => {
     expect(tx.canvasEdge.upsert).not.toHaveBeenCalled();
   });
 
-  it('add_edge：video_gen → video_gen 非法（video 输入暂不支持）', async () => {
+  it('add_edge：video_gen → video_gen 合法（video 入边只串联画布，不参与生成）', async () => {
     tx.canvasSession.findUnique.mockResolvedValue({
       id: 's1',
       status: 'running',
@@ -269,15 +361,18 @@ describe('CanvasService', () => {
       { id: 'a', type: 'video_gen' },
       { id: 'b', type: 'video_gen' },
     ]);
+    tx.canvasEdge.upsert.mockResolvedValue({
+      id: 'e3',
+      source: 'a',
+      target: 'b',
+    });
 
-    await expect(
-      service.applyOp('s1', 'agent', {
-        op: 'add_edge',
-        source: 'a',
-        target: 'b',
-      }),
-    ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_EDGE_INVALID.code });
-    expect(tx.canvasEdge.upsert).not.toHaveBeenCalled();
+    const r = await service.applyOp('s1', 'agent', {
+      op: 'add_edge',
+      source: 'a',
+      target: 'b',
+    });
+    expect(r.patch).toMatchObject({ op: 'add_edge', edge: { id: 'e3' } });
   });
 
   it('add_edge：image_gen → video_gen 合法（图作首帧）', async () => {
@@ -326,6 +421,44 @@ describe('CanvasService', () => {
       }),
     ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_EDGE_INVALID.code });
     expect(tx.canvasEdge.upsert).not.toHaveBeenCalled();
+  });
+
+  it('update_node 回填 mediaGenerationId：patch 带上生成状态（排队中也看得见）', async () => {
+    tx.canvasSession.findUnique.mockResolvedValue({
+      id: 's1',
+      status: 'running',
+      revision: 5,
+    });
+    tx.canvasNode.findFirst.mockResolvedValue({ id: 'n1' });
+    tx.canvasNode.update.mockResolvedValue({
+      id: 'n1',
+      type: 'video_gen',
+      x: 0,
+      y: 0,
+      version: 1,
+      label: null,
+      text: null,
+      prompt: null,
+      assetPath: null,
+      mediaGenerationId: 'g1',
+    });
+    tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
+    mockPrisma.mediaVersion.findMany.mockResolvedValue([
+      { id: 'v1', generationId: 'g1', status: 'queued' },
+    ]);
+
+    const op: UpdateNodeOp = {
+      op: 'update_node',
+      nodeId: 'n1',
+      mediaGenerationId: 'g1',
+    };
+    const r = await service.applyOp('s1', 'agent', op);
+
+    // 不带状态的话前端只能等 worker 真正开跑才知道这个节点在生成队列里
+    expect(r.patch).toMatchObject({
+      op: 'update_node',
+      node: { id: 'n1', mediaVersionId: 'v1', mediaStatus: 'queued' },
+    });
   });
 
   it('moveNode：LWW updateMany + 广播 move_node（不占 revision）', async () => {
@@ -450,6 +583,58 @@ describe('CanvasService', () => {
         cleared: true,
       });
       expect(mockPrisma.canvasMessage.deleteMany).toHaveBeenCalled();
+    });
+  });
+
+  describe('clearPlan（手动作废任务计划）', () => {
+    beforeEach(() => {
+      mockPrisma.canvasSession.findFirst.mockResolvedValue({
+        id: 's1',
+        userId: 'u1',
+        status: 'idle',
+        revision: 3,
+      });
+      mockPrisma.canvasMessage.count.mockResolvedValue(7);
+    });
+
+    it('追加一条空 plan_update 作废标记（不删历史）+ 广播', async () => {
+      const r = await service.clearPlan('s1', 't1');
+
+      expect(mockPrisma.canvasMessage.create).toHaveBeenCalledWith({
+        data: {
+          sessionId: 's1',
+          role: 'assistant',
+          type: 'plan_update',
+          content: { todos: [] },
+          seq: 7,
+        },
+      });
+      expect(mockPrisma.canvasMessage.deleteMany).not.toHaveBeenCalled();
+      expect(mockStream.publish).toHaveBeenCalledWith('s1', {
+        type: 'plan_update',
+        payload: { todos: [] },
+      });
+      expect(r).toEqual({ cleared: true });
+    });
+
+    it('运行期也允许作废（计划归用户掌控，不看 status）', async () => {
+      mockPrisma.canvasSession.findFirst.mockResolvedValue({
+        id: 's1',
+        userId: 'u1',
+        status: 'running',
+        revision: 3,
+      });
+      await expect(service.clearPlan('s1', 't1')).resolves.toEqual({
+        cleared: true,
+      });
+    });
+
+    it('非本租户 → CANVAS_NOT_FOUND，不写任何标记', async () => {
+      mockPrisma.canvasSession.findFirst.mockResolvedValue(null);
+      await expect(service.clearPlan('s1', 't-other')).rejects.toMatchObject({
+        errCode: ErrorCodes.CANVAS_NOT_FOUND.code,
+      });
+      expect(mockPrisma.canvasMessage.create).not.toHaveBeenCalled();
     });
   });
 

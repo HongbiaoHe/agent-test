@@ -52,3 +52,33 @@ function dropUntilUser<T extends HistoryRow>(rows: T[]): T[] {
   while (i < rows.length && rows[i].role !== 'user') i += 1;
   return rows.slice(i);
 }
+
+/** 重放候选行：过滤已作废计划时还需要类型与内容（内容里带工具名）。 */
+export interface ReplayRow extends HistoryRow {
+  type: string;
+  content: unknown;
+}
+
+/**
+ * 剔除「已作废计划」的 write_todos 工具消息。
+ *
+ * 用户手动清空计划后（CanvasService.clearPlan 写下空 plan_update 标记），提示词那一路已经不再
+ * 注入该计划；但 write_todos 的工具返回值本身就是整份 todo 列表（"Updated todo list to [...]"），
+ * 它在历史里照样会把作废的计划喂回模型。清空点之前的这类消息一并跳过，用户续聊才真的不受影响。
+ *
+ * clearedSeq 为 null（从未清空）时原样返回。
+ */
+export function stripClearedPlan<T extends ReplayRow>(
+  rows: T[],
+  clearedSeq: number | null,
+): T[] {
+  if (clearedSeq === null) return rows;
+  return rows.filter(
+    (m) =>
+      !(
+        m.seq < clearedSeq &&
+        m.type === 'tool_end' &&
+        (m.content as { name?: string } | null)?.name === 'write_todos'
+      ),
+  );
+}

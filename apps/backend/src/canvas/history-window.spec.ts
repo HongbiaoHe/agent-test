@@ -1,4 +1,4 @@
-import { planHistoryWindow } from './history-window';
+import { planHistoryWindow, stripClearedPlan } from './history-window';
 
 /**
  * 造 n 条消息，贴近真实 run 的形状：每 10 条起一轮新对话（user 开头，其余 assistant/tool 交替）。
@@ -65,5 +65,39 @@ describe('planHistoryWindow', () => {
       else expect(slice[0].seq).toBe(head); // 头部纹丝不动
     }
     expect(baseSeq).toBe(head); // 只在第一轮重整过一次，之后基点再没动
+  });
+});
+
+describe('stripClearedPlan（作废计划不再回灌模型）', () => {
+  const replay = [
+    { seq: 1, role: 'user', type: 'message', content: { text: '做个分镜' } },
+    {
+      seq: 2,
+      role: 'tool',
+      type: 'tool_end',
+      content: { name: 'write_todos', content: '[5 个步骤]' },
+    },
+    {
+      seq: 3,
+      role: 'tool',
+      type: 'tool_end',
+      content: { name: 'add_node', content: 'ok' },
+    },
+    // seq 4 = 用户点了「作废计划」（plan_update 本身不在重放范围内）
+    {
+      seq: 5,
+      role: 'tool',
+      type: 'tool_end',
+      content: { name: 'write_todos', content: '[新计划]' },
+    },
+  ];
+
+  it('清空点之前的 write_todos 被剔除，其余消息与之后的计划都保留', () => {
+    const kept = stripClearedPlan(replay, 4);
+    expect(kept.map((m) => m.seq)).toEqual([1, 3, 5]);
+  });
+
+  it('从未清空过（null）→ 原样返回', () => {
+    expect(stripClearedPlan(replay, null)).toHaveLength(4);
   });
 });

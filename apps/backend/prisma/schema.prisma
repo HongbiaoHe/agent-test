@@ -132,6 +132,11 @@ model CanvasSession {
   // 事务里自增；用户空闲期提交编辑时带上它做 CAS 冲突检测。位置(x/y) LWW 不占此版本。
   revision Int @default(0)
 
+  // 用户「加入对话」圈定的节点 id 数组（JSON string[]）。非空时，注入给 agent 的画布状态
+  // 只列这些节点及其相邻连线——大画布上用户往往只想让 agent 动其中几张卡。
+  // 空 / null = 关注整块画布（默认）。
+  focusNodeIds Json?
+
   // 重放给 agent 的历史起点（CanvasMessage.seq）。**钉住**而非每轮按窗口末尾倒数，
   // 否则消息一涨裁剪点就平移，整段前缀跟着变、prompt cache 全废（见 processor.loadHistory）。
   historyBaseSeq Int @default(0)

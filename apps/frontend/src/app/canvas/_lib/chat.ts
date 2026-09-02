@@ -10,11 +10,25 @@ export interface ChatEvent {
   payload: Record<string, unknown>;
 }
 
+/** 一次中断里挂起的单个工具调用。 */
+export interface AskAction {
+  /** 工具名：ask_user（提问）| clear_canvas（清空确认）| generate_media_node（生成确认）等。 */
+  tool: string;
+  /** 面板上该项的说明文案（ask_user 是问题本身，确认型是操作摘要）。 */
+  label: string;
+}
+
 export interface AskRequest {
-  /** 触发中断的工具名：ask_user（提问）| clear_canvas（清空确认）等，前端据此选交互形态。 */
+  /** 首个挂起调用的工具名，前端据此选交互形态（提问框 / 确认按钮）。 */
   tool: string;
   question: string;
   options: string[];
+  /**
+   * 本次中断挂起的**全部**工具调用（模型可一轮并行发多个，如 6 个 generate_media_node）。
+   * resume 的 decisions 必须与它一一对应、数量相等，否则 langchain HITL 会抛
+   * 「Number of human decisions (n) does not match number of hanging tool calls (m)」。
+   */
+  actions: AskAction[];
 }
 
 export type ChatItem =
@@ -48,24 +62,38 @@ export const emptyChat: ChatState = {
 };
 
 function extractAsk(payload: Record<string, unknown>): AskRequest | null {
-  // control_request 值：{ actionRequests: [{ name:'ask_user', args:{question, options} }], ... }
+  // control_request 值：{ actionRequests: [{ name:'ask_user', args:{question, options} }, ...], ... }
+  // 数组长度 = 本轮挂起的工具调用数，必须整批保留（决策要一一对应）。
   const reqs = (payload as { actionRequests?: unknown[] }).actionRequests;
-  const first = Array.isArray(reqs) ? reqs[0] : undefined;
-  const tool =
-    typeof (first as { name?: string } | undefined)?.name === "string"
-      ? (first as { name: string }).name
-      : "ask_user";
-  const args = (first as { args?: Record<string, unknown> } | undefined)?.args;
-  // generate_media_node 无 question 参数：给确认面板生成友好文案（带目标节点 id）
-  const fallback =
-    tool === "generate_media_node"
-      ? `Run generation for this node?${typeof args?.nodeId === "string" ? ` (node ${args.nodeId})` : ""}`
-      : "Needs your approval to continue";
-  const question = typeof args?.question === "string" ? args.question : fallback;
-  const options = Array.isArray(args?.options)
-    ? (args?.options as unknown[]).filter((o): o is string => typeof o === "string")
+  const list = Array.isArray(reqs) && reqs.length > 0 ? reqs : [undefined];
+  const actions = list.map((r) => {
+    const tool =
+      typeof (r as { name?: string } | undefined)?.name === "string"
+        ? (r as { name: string }).name
+        : "ask_user";
+    const args = (r as { args?: Record<string, unknown> } | undefined)?.args;
+    // generate_media_node 无 question 参数：给确认面板生成友好文案（带目标节点 id）
+    const fallback =
+      tool === "generate_media_node"
+        ? `Run generation for this node?${typeof args?.nodeId === "string" ? ` (node ${args.nodeId})` : ""}`
+        : "Needs your approval to continue";
+    const label =
+      typeof args?.question === "string" ? args.question : fallback;
+    return { tool, label };
+  });
+  const firstArgs = (list[0] as { args?: Record<string, unknown> } | undefined)
+    ?.args;
+  const options = Array.isArray(firstArgs?.options)
+    ? (firstArgs?.options as unknown[]).filter(
+        (o): o is string => typeof o === "string",
+      )
     : [];
-  return { tool, question, options };
+  return {
+    tool: actions[0].tool,
+    question: actions[0].label,
+    options,
+    actions,
+  };
 }
 
 /** 把仍在流的思考块收口（后端在思考之后的第一个事件处同样收口落库，两边语义一致）。 */
@@ -198,6 +226,12 @@ export function reduce(input: ChatState, ev: ChatEvent): ChatState {
       const todos =
         (ev.payload.todos as { content: string; status: string }[]) ?? [];
       const idx = state.items.findIndex((it) => it.kind === "plan");
+      // 空列表 = 用户手动清空了计划（CanvasService.clearPlan 写的作废标记）：移除面板，
+      // 不要留一张 0/0 的空计划卡。
+      if (todos.length === 0) {
+        if (idx === -1) return state;
+        return { ...state, items: state.items.filter((_, i) => i !== idx) };
+      }
       if (idx === -1) {
         return bump([...state.items, { id: id(), kind: "plan", todos }]);
       }

@@ -21,8 +21,12 @@ export interface FlowEdgeData extends Record<string, unknown> {
 export type FlowEdge = Edge<FlowEdgeData, "flow">;
 
 /**
- * 画布连线：常态就是普通贝塞尔线；active 时在同一条路径上叠一段高亮虚线跑流光，
- * 方向 source → target（表现数据正流入目标节点）。动效见 globals.css .canvas-edge__flow。
+ * 画布连线：常态是普通贝塞尔线；active（目标在生成 / 两端有节点被选中）时把同一条路径
+ * 加粗提亮，**静态**强调。
+ *
+ * 早先这里跑的是一段沿线流动的高光虚线。查了一圈同类产品（ComfyUI / n8n / Figma Weave）
+ * 没有一家给连线做流光——它既抢注意力，又是"AI 感"最典型的装饰性动效。「在跑」这件事
+ * 表达在节点上（骨架 + 状态条）就够了，线只负责说清"谁接谁"。
  */
 function FlowEdgeComponent({
   sourceX,
@@ -47,7 +51,7 @@ function FlowEdgeComponent({
     <>
       <BaseEdge path={path} markerEnd={markerEnd} style={style} />
       {data?.active && (
-        <path className="canvas-edge__flow" d={path} fill="none" />
+        <path className="canvas-edge__active" d={path} fill="none" />
       )}
     </>
   );

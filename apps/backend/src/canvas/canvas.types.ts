@@ -72,8 +72,11 @@ export interface CanvasNodeOutput {
  * 生成节点自身不带提示词：prompt 与参考图**全部来自入边**（上游 text 输出拼成提示词，
  * 上游 image 输出作参考图），见 canvas.tools 的 generate_media_node。
  *
- * ⚠️ video_gen 暂不接受 video 输入：底层管线吃不下视频参考——media.processor 的 loadRefs
- * 把参考版本按图片读盘，视频生成只用 refs[0] 当首帧。等管线支持了再往 inputs 里加 'video'。
+ * ⚠️ video_gen 的 video 输入只放开**连线**，不参与生成：底层管线吃不下视频参考——
+ * media.processor 的 loadRefs 把参考版本按图片读盘（mimeForExt 不认 .mp4），media.service
+ * 的 validateReferences 只放行 generation.type=image，且 Google SDK 的 GenerateVideosParameters
+ * 里 image（首帧）与 video（延展源）互斥。故 video 上游可连、可用于串联画布流程，但
+ * generate_media_node 会跳过它并在返回值的 skippedVideoInputs 里报出。
  */
 export const CANVAS_NODE_IO: Record<
   CanvasNodeType,
@@ -82,7 +85,7 @@ export const CANVAS_NODE_IO: Record<
   text: { inputs: [], outputs: ['text'] },
   image_upload: { inputs: [], outputs: ['image'] },
   image_gen: { inputs: ['text', 'image'], outputs: ['image'] },
-  video_gen: { inputs: ['text', 'image'], outputs: ['video'] },
+  video_gen: { inputs: ['text', 'image', 'video'], outputs: ['video'] },
 };
 
 /**
@@ -144,6 +147,11 @@ export interface CanvasSnapshot {
   revision: number;
   /** 会话累计 token（全部 run 的 totalTokens 聚合，持久化口径；实时增量走 token_usage 事件） */
   totalTokens: number;
+  /**
+   * 用户「加入对话」圈定的节点 id。非空时 agent 的画布上下文只列这些节点及其相邻连线，
+   * 空数组 = 关注整块画布。
+   */
+  focusNodeIds: string[];
   nodes: CanvasNodeDto[];
   edges: CanvasEdgeDto[];
 }

@@ -73,6 +73,9 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
       onStop={c.stop}
       onAnswer={c.answerAsk}
       onResolve={c.resolveControl}
+      onClearPlan={c.clearPlan}
+      focusCount={c.focusNodeIds.length}
+      onClearFocus={() => c.setFocus([])}
     />
   );
   const chatActions = (
@@ -103,6 +106,11 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
             onMarkSaving={c.markSaving}
             onCancelSaving={c.cancelSaving}
             onPaneClick={isMobile ? undefined : panels.dismissUnpinned}
+            onRetryMedia={c.retryMedia}
+            loading={c.isLoading}
+            focusNodeIds={c.focusNodeIds}
+            onSetFocus={c.setFocus}
+            onAddConnectedNode={(input) => void c.addConnectedNode(input)}
           />
           {/* 顶部悬浮控件：返回 + 画布名（可改名）+ 保存状态 / 运行状态 / 主题切换。
               桌面与手机都展示，只有小屏的紧凑样式不同；空态页不渲染——

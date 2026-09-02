@@ -18,6 +18,7 @@ import { ApplyOpDto } from './dto/apply-op.dto';
 import { CreateCanvasDto } from './dto/create-canvas.dto';
 import { MoveNodeDto } from './dto/move-node.dto';
 import { RenameCanvasDto } from './dto/rename-canvas.dto';
+import { SetFocusDto } from './dto/set-focus.dto';
 
 @Controller('canvas')
 @UseGuards(JwtAuthGuard)
@@ -73,6 +74,12 @@ export class CanvasController {
     return this.canvas.clearMessages(id, user.tenantId);
   }
 
+  /** 手动作废当前任务计划（后续对话不再受它影响）。 */
+  @Delete(':id/plan')
+  clearPlan(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.canvas.clearPlan(id, user.tenantId);
+  }
+
   @Post(':id/messages')
   append(
     @Param('id') id: string,
@@ -97,6 +104,19 @@ export class CanvasController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.canvas.rename(id, dto.title, user.tenantId);
+  }
+
+  /**
+   * 设置 / 清空「加入对话」的节点圈选。生效范围是整个会话（不随单条消息），
+   * 之后注入给 agent 的画布状态只列这些节点，直到用户取消。
+   */
+  @Post(':id/focus')
+  setFocus(
+    @Param('id') id: string,
+    @Body() dto: SetFocusDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.canvas.setFocus(id, user.tenantId, dto.nodeIds);
   }
 
   @Post(':id/stop')

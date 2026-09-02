@@ -1,238 +1,559 @@
 "use client";
 
-import { Handle, Position, type NodeProps, type NodeTypes } from "@xyflow/react";
 import {
-  AlertCircle,
+  Handle,
+  Position,
+  useConnection,
+  type NodeProps,
+  type NodeTypes,
+} from "@xyflow/react";
+import {
+  AlertTriangle,
+  Check,
   Clock,
-  Image as ImageIcon,
-  Film,
+  Copy,
+  Download,
   Link2,
   Loader2,
+  Maximize2,
+  MessagesSquare,
+  RotateCcw,
   Trash2,
-  Type,
-  Upload,
 } from "lucide-react";
-import { useContext } from "react";
+import { useContext, useRef, useState } from "react";
 
-import type { CanvasNodeDto } from "@/lib/api";
+import type { CanvasNodeDto, CanvasNodeType } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
-import { useMediaAssetUrl } from "../_hooks/use-media-asset";
-import { resolvePrompt, type NodeInputSource } from "../_lib/node-io";
+import { useMediaAsset } from "../_hooks/use-media-asset";
+import {
+  canConnectNodeTypes,
+  resolvePrompt,
+  type NodeInputSource,
+} from "../_lib/node-io";
 import { CanvasEditorContext } from "./flow-canvas";
-import { NodeEditorToolbar, type NodeBodyField } from "./node-editor-toolbar";
+import {
+  NodeComposer,
+  type NodeBodyField,
+  type PromptSource,
+} from "./node-composer";
+import { NodeTitleField } from "./node-inline-field";
+import { NodeMediaDialog } from "./node-media-dialog";
+import { NODE_META, NodeTypeIcon } from "./node-meta";
 
 /** react-flow 节点 data 即后端 CanvasNodeDto。 */
 type NodeData = CanvasNodeDto & Record<string, unknown>;
 
 /**
- * 节点外壳：纯展示（内容编辑走选中后浮出的 NodeEditorToolbar）。
+ * 拖线过程中，本节点相对于「线从哪儿出发」的关系：
+ * 起点自己 / 能接 / 接不了。用来在拖拽期直接把接不了的节点压暗——
+ * 光靠 isValidConnection 拦截，用户要拖到才知道不行。
+ */
+type ConnectFit = "idle" | "self" | "valid" | "invalid";
+
+/**
+ * 订阅「当前是否在拖线、从哪个节点的哪种端口出发」。
  *
- * 「内容优先」形态，两种排布共用一套壳（视觉见 globals.css .canvas-node）：
- * - 媒体型（传 cover）：预览满宽置顶 + 类型 chip 浮在预览左上角，标题与正文退到下方；
- * - 文本型（不传 cover）：类型与标题降为 11px caption，正文升为卡片主体。
+ * 只取一个字符串而不是整个 connection 对象：connection 里带鼠标坐标，每一帧都变，
+ * 直接订阅会让画布上每个节点都按帧重渲染。
+ */
+function useConnectFit(nodeId: string, nodeType: CanvasNodeType): ConnectFit {
+  const from = useConnection((c) =>
+    c.inProgress && c.fromNode
+      ? `${c.fromNode.id}|${c.fromNode.type}|${c.fromHandle?.type ?? "source"}`
+      : null,
+  );
+  if (!from) return "idle";
+  const [id, type, handle] = from.split("|");
+  if (id === nodeId) return "self";
+  const source = handle === "source" ? (type as CanvasNodeType) : nodeType;
+  const target = handle === "source" ? nodeType : (type as CanvasNodeType);
+  return canConnectNodeTypes(source, target) ? "valid" : "invalid";
+}
+
+/**
+ * 节点外壳：所有类型共用同一套骨架，只有「有没有主视觉」这一处差别。
+ *
+ * 结构自上而下固定为
+ *   [主视觉]（媒体节点出图/出片时才有）
+ *   [类型行] 身份色类型图标 + 类型名 + 保存指示
+ *   [标题]
+ *   [正文] 文本节点是正文，媒体节点是这次会用的提示词
+ *   [状态条] 未就绪 / 排队 / 生成中 / 失败 —— 一行说清，不再用整块灰色占位撑高卡片
+ *   [关联输入]
+ *
+ * 之所以要统一：早先文本节点把类型压成 11px 灰字放最上面，媒体节点却把类型做成浮在封面上的
+ * 深色胶囊，同一张画布上两套语言；而「还没生成」时那块 128px 的纯灰占位块信息量为零，
+ * 几十个节点铺开就是几十个空洞。现在没有产出就不占那块高度。
  */
 function NodeShell({
-  icon,
   nodeId,
+  nodeType,
   selected,
   dragging,
   label,
-  fallbackTitle,
-  tone,
   body,
-  cover,
-  busy,
+  promptSources,
+  composerMeta,
+  hero,
+  heroActions,
+  status,
+  footer,
   children,
   hasTarget,
   hasSource,
 }: {
-  icon: React.ReactNode;
   nodeId: string;
+  nodeType: CanvasNodeType;
   /** react-flow 选中态：决定编辑浮窗是否浮出 */
   selected: boolean;
   /** 正在拖拽：拖动期间隐藏浮窗 */
   dragging: boolean;
   label: string;
-  /** label 为空时的类型缺省标题（文本/生图/生视频/上传图片），同时是封面 chip 的文字 */
-  fallbackTitle: string;
-  /** 类型身份色 CSS 变量，如 "var(--node-text)"；卡面全中性，仅连接点取此色（见 globals.css .canvas-node）。 */
-  tone: string;
-  /** 浮窗里除 label 外的正文字段（image_upload 无正文可编辑，故可选） */
+  /** composer 里的可编辑提示词（只有 text 节点有） */
   body?: NodeBodyField;
-  /** 满宽封面（媒体型节点传入；不传即文本型排布） */
-  cover?: React.ReactNode;
-  /** 生成中：整卡加一圈旋转高光环 */
-  busy?: boolean;
-  children: React.ReactNode;
+  /** composer 里的提示词来源（生成节点：每段来自一张上游 text 卡） */
+  promptSources?: PromptSource[];
+  /** composer 参数条上的补充胶囊（上游来源摘要） */
+  composerMeta?: React.ReactNode;
+  /** 主视觉：出图/出片或生成中的骨架；没有产出时不传，卡片就不占那块高度 */
+  hero?: React.ReactNode;
+  /** 主视觉专属的悬浮操作（看大图 / 下载），排在通用操作左边 */
+  heroActions?: React.ReactNode;
+  /** 状态条：未就绪 / 排队 / 生成中 / 失败 */
+  status?: React.ReactNode;
+  /** 卡片最后一行的注脚（上游摘要）——永远排在状态条之后 */
+  footer?: React.ReactNode;
+  children?: React.ReactNode;
   hasTarget?: boolean;
   hasSource?: boolean;
 }) {
+  const meta = NODE_META[nodeType];
+  const fit = useConnectFit(nodeId, nodeType);
+  // 被「加入对话」圈中的节点：卡片描一圈主色，标签行左侧多一枚对话角标——
+  // agent 这一轮只看得到这些节点，得让人一眼认出是哪几张
+  const { focusedNodeIds, selectedCount, readOnly } =
+    useContext(CanvasEditorContext);
+  const focused = focusedNodeIds.has(nodeId);
+  // 单选中的节点才进入可编辑态：标题就地可改，提示词面板浮出
+  const single = selected && selectedCount <= 1;
+
   return (
     <div
-      className="canvas-node group/node w-64 rounded-lg border border-border bg-card text-card-foreground shadow-sm"
-      // 内联设置 CSS 自定义属性 --tone；CSSProperties 不含自定义属性键，故就近断言（安全：仅注入颜色变量）
-      style={{ "--tone": tone } as React.CSSProperties}
-    >
-      <DeleteNodeButton nodeId={nodeId} />
-      {/* 选中时浮出的编辑面板（运行期不显示，见 NodeEditorToolbar） */}
-      <NodeEditorToolbar
-        nodeId={nodeId}
-        selected={selected}
-        dragging={dragging}
-        label={label}
-        labelPlaceholder={fallbackTitle}
-        body={body}
-      />
-      {busy && <span className="canvas-node__glow" aria-hidden />}
-      {hasTarget && <Handle type="target" position={Position.Left} />}
-      {cover ? (
-        <>
-          <div className="canvas-node__cover">
-            {cover}
-            <span className="canvas-node__chip">
-              {icon}
-              {fallbackTitle}
-            </span>
-          </div>
-          <div className="flex flex-col gap-1 px-3 pb-3 pt-2.5">
-            <span className="truncate text-[13px] font-medium">
-              {label || fallbackTitle}
-            </span>
-            <div className="text-xs leading-relaxed text-muted-foreground">
-              {children}
-            </div>
-          </div>
-        </>
-      ) : (
-        <div className="flex flex-col gap-2 px-3.5 py-3">
-          <span className="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-            {icon}
-            <span className="min-w-0 flex-1 truncate">
-              {label || fallbackTitle}
-            </span>
-          </span>
-          <div className="text-[13px] leading-relaxed">{children}</div>
-        </div>
+      className={cn(
+        "canvas-node group/node w-64 rounded-lg border border-border bg-card text-card-foreground",
+        // 拖线中：接不了的节点整体压暗、能接的描一圈自己的端口色，
+        // 于是「这根线能落在哪」在松手之前就看得见
+        fit === "invalid" && "canvas-node--muted",
+        fit === "valid" && "canvas-node--eligible",
+        focused && "canvas-node--focused",
       )}
-      {hasSource && <Handle type="source" position={Position.Right} />}
+      // 内联设置 CSS 自定义属性 --tone；CSSProperties 不含自定义属性键，故就近断言（安全：仅注入颜色变量）
+      style={{ "--tone": meta.tone } as React.CSSProperties}
+    >
+      {/* 选中时浮出的提示词面板（运行期不显示，见 NodeComposer）。
+          触屏没有 hover，操作组改由面板（底部抽屉）承载，故一并传进去 */}
+      <NodeComposer
+        nodeId={nodeId}
+        nodeType={nodeType}
+        // 多选时不弹单节点面板：每个选中的节点都弹一个会糊满画布，
+        // 这时该出现的是那条多选工具条（见 SelectionToolbar）
+        selected={single}
+        dragging={dragging}
+        body={body}
+        promptSources={promptSources}
+        meta={composerMeta}
+        actions={<NodeActions nodeId={nodeId} extra={heroActions} plain />}
+      />
+
+      {/* 卡片外的上方一行：类型标签常驻在左，操作组 hover 才浮出在右。
+          卡面因此只留内容本身——这是同类画布（Flora、即梦）的共同做法。 */}
+      <div className="canvas-node__above">
+        <NodeTypeIcon type={nodeType} />
+        <span className="canvas-node__type">{meta.label}</span>
+        {focused && (
+          <span className="canvas-node__focus-tag" title="In chat context">
+            <MessagesSquare className="size-2.5" aria-hidden />
+            In chat
+          </span>
+        )}
+        <NodeActions nodeId={nodeId} extra={heroActions} />
+      </div>
+
+      {hasTarget && (
+        <PlusHandle nodeId={nodeId} kind="target" />
+      )}
+
+      {hero}
+
+      <div className="flex flex-col gap-1.5 px-3 py-2.5">
+        <div className="flex items-center gap-2">
+          {/* 标题就地改：显示在哪儿就在哪儿编辑，不进面板找字段 */}
+          <NodeTitleField
+            nodeId={nodeId}
+            value={label}
+            editable={single && !readOnly}
+          />
+          <SaveIndicator nodeId={nodeId} />
+        </div>
+        {children}
+        {status}
+        {footer}
+      </div>
+
+      {hasSource && <PlusHandle nodeId={nodeId} kind="source" />}
     </div>
   );
 }
 
 /**
- * 节点右上角的删除按钮：桌面 hover 才出现（常显会让画布很吵），触屏常显（没有 hover 可用）。
- * 显隐纯 CSS，不用 JS 判断断点——避免水合首帧的显隐跳变。
- * 运行期（readOnly）不渲染，与其它结构编辑一致。
+ * 端口。一枚控件两种手势：
+ *  - 拖出去   = 连线（react-flow 原生行为）
+ *  - 原地点击 = 在这一侧接一个新节点（弹出按类型过滤的菜单，同拖到空白处那一个）
+ *
+ * 点击必须显式处理：零位移的按下-抬起不会走 react-flow 的连接流程，事件会冒泡成
+ * 「点了节点」→ 只是把节点选中。用按下点与抬起点的位移判断是不是「点」，
+ * 超过 4px 就认定用户在拖线，交回 react-flow，不弹菜单。
  */
-function DeleteNodeButton({ nodeId }: { nodeId: string }) {
-  const { readOnly, deleteNode } = useContext(CanvasEditorContext);
-  if (readOnly) return null;
+function PlusHandle({
+  nodeId,
+  kind,
+}: {
+  nodeId: string;
+  kind: "source" | "target";
+}) {
+  const { readOnly, openConnectMenu } = useContext(CanvasEditorContext);
+  const down = useRef<{ x: number; y: number } | null>(null);
+  return (
+    <Handle
+      type={kind}
+      position={kind === "source" ? Position.Right : Position.Left}
+      onPointerDown={(e) => {
+        down.current = { x: e.clientX, y: e.clientY };
+      }}
+      onClick={(e) => {
+        const from = down.current;
+        down.current = null;
+        if (readOnly || !from) return;
+        if (Math.hypot(e.clientX - from.x, e.clientY - from.y) > 4) return;
+        e.stopPropagation(); // 别让这一下连带把节点选中、弹出编辑面板
+        openConnectMenu({
+          nodeId,
+          direction: kind === "source" ? "downstream" : "upstream",
+          clientX: e.clientX,
+          clientY: e.clientY,
+        });
+      }}
+    />
+  );
+}
+
+/**
+ * 节点的操作组（看大图 / 下载 | 复制 / 删除）。
+ *
+ * 位置在**卡片外的上方**而不是压在卡面右上角：卡片右上角正好是媒体主视觉的位置，
+ * 一浮出来就遮住画面；同类产品（n8n / Flora / 即梦）都把它做成脱离卡片的一条浮动药丸。
+ * 显隐纯 CSS（见 globals.css .canvas-node__actions），不用 JS 判断断点——避免水合首帧的跳变。
+ *
+ * 触屏没有 hover，改由编辑面板（底部抽屉）用 plain 形态承载。
+ * 运行期（readOnly）只保留看图/下载这类只读操作，改结构的一律不渲染。
+ */
+function NodeActions({
+  nodeId,
+  extra,
+  plain,
+}: {
+  nodeId: string;
+  extra?: React.ReactNode;
+  /** 平铺形态：不套反色药丸、不做 hover 显隐，供抽屉里直接摆一排 */
+  plain?: boolean;
+}) {
+  const { readOnly, deleteNode, duplicateNode } =
+    useContext(CanvasEditorContext);
+  if (readOnly && !extra) return null;
+  const structure = !readOnly && (
+    <>
+      <NodeActionButton
+        label="Duplicate"
+        icon={<Copy className="size-3.5" />}
+        onClick={() => duplicateNode(nodeId)}
+      />
+      <NodeActionButton
+        label="Delete"
+        icon={<Trash2 className="size-3.5" />}
+        danger
+        onClick={() => deleteNode(nodeId)}
+      />
+    </>
+  );
+  return (
+    // nodrag：按在按钮上不拖动节点
+    <div
+      className={cn(
+        "nodrag flex items-center gap-0.5",
+        plain ? "text-muted-foreground" : "canvas-node__actions",
+      )}
+    >
+      {extra}
+      {/* 看图类与改结构类之间划一道：误点删除的代价比误点下载大得多 */}
+      {extra && structure && <span className="canvas-node__actions-sep" />}
+      {structure}
+    </div>
+  );
+}
+
+export function NodeActionButton({
+  label,
+  icon,
+  danger,
+  onClick,
+}: {
+  label: string;
+  icon: React.ReactNode;
+  danger?: boolean;
+  onClick: () => void;
+}) {
   return (
     <button
       type="button"
-      // nodrag：按在按钮上不拖动节点；stopPropagation：不连带选中节点
-      className="nodrag absolute right-2 top-2 z-10 flex size-6 items-center justify-center rounded-md border border-border bg-card/85 text-muted-foreground opacity-0 shadow-sm backdrop-blur-sm transition-opacity hover:text-destructive focus-visible:opacity-100 group-hover/node:opacity-100 [@media(pointer:coarse)]:opacity-100"
-      title="Delete node"
-      aria-label="Delete node"
+      title={label}
+      aria-label={label}
+      // 颜色继承外层反色药丸（见 globals.css .canvas-node__actions）：
+      // 常态压到 75% 不喧宾夺主，hover 才实心
+      className={cn(
+        "flex size-6 items-center justify-center rounded-full opacity-75 transition-opacity hover:opacity-100",
+        danger && "hover:text-destructive hover:opacity-100",
+      )}
       onClick={(e) => {
+        // stopPropagation：按操作键不连带选中节点（否则每点一下都会弹出编辑浮窗）
         e.stopPropagation();
-        deleteNode(nodeId);
+        onClick();
       }}
     >
-      <Trash2 className="size-3.5" />
+      {icon}
     </button>
   );
 }
 
 /**
- * 封面占位：整块 muted 区域承载状态文案（未生成 / 排队中 / 生成中 / 失败 / 拉取预览中）。
- * 生成中额外叠一层满幅高光横扫（.canvas-node__shimmer），配合整卡高光环放大「在跑」的可见度。
+ * 这个节点自己的保存进度。画布左上角那枚是全局聚合的，看不出「刚才改的是哪张卡」，
+ * 所以在类型行末尾补一枚——只在保存中/失败时出现，成功后短暂显示一个勾再消失。
  */
-function CoverPlaceholder({
-  icon,
-  text,
-  shimmer,
-  failed,
-}: {
-  icon: React.ReactNode;
-  text: string;
-  shimmer?: boolean;
-  failed?: boolean;
-}) {
-  return (
-    <div
-      className={
-        "flex h-32 flex-col items-center justify-center gap-1.5 " +
-        (failed ? "text-destructive" : "text-muted-foreground")
-      }
-    >
-      {shimmer && <span className="canvas-node__shimmer" aria-hidden />}
-      {icon}
-      <span className="text-[11px]">{text}</span>
-    </div>
-  );
-}
-
-/** 生成节点资产预览：generationId JOIN 出的 versionId 就绪后拉带鉴权 blob，满宽铺在封面区。 */
-function MediaPreview({
-  versionId,
-  kind,
-}: {
-  versionId: string;
-  kind: "image" | "video";
-}) {
-  const url = useMediaAssetUrl(versionId);
-  if (!url) {
+function SaveIndicator({ nodeId }: { nodeId: string }) {
+  const { saveStates } = useContext(CanvasEditorContext);
+  const state = saveStates[nodeId];
+  if (!state) return null;
+  if (state === "saving") {
     return (
-      <CoverPlaceholder
-        icon={<Loader2 className="size-5 animate-spin" />}
-        text="Loading preview…"
-        shimmer
-      />
+      <span className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground">
+        <Loader2 className="size-3 animate-spin" aria-hidden />
+        Saving
+      </span>
     );
   }
-  return kind === "image" ? (
-    // 用原生 img：blob 源 next/image 无法优化
-    // eslint-disable-next-line @next/next/no-img-element
-    <img src={url} alt="Generated result" className="block h-32 w-full object-cover" />
-  ) : (
-    <video src={url} controls className="block h-32 w-full object-cover" />
+  if (state === "saved") {
+    return (
+      <span className="ml-auto flex items-center gap-1 text-[10px] text-muted-foreground">
+        <Check className="size-3" aria-hidden />
+        Saved
+      </span>
+    );
+  }
+  return (
+    <span className="ml-auto flex items-center gap-1 text-[10px] text-destructive">
+      <AlertTriangle className="size-3" aria-hidden />
+      Not saved
+    </span>
   );
 }
 
 /**
- * 生成节点卡片正文：显示本次生成会用的提示词——它来自上游 text 节点，节点自身不存 prompt。
- * 没有上游文本就直接说清楚该怎么办（此时触发生成后端也会报错）。
+ * 状态条：一行说清这个节点此刻处在什么状态，必要时带一个能立刻按的按钮。
+ * 只在「有话要说」时渲染——已经出图的节点不需要状态条，图本身就是状态。
  */
-function UpstreamPrompt({ nodeId }: { nodeId: string }) {
-  const { resolveInputs } = useContext(CanvasEditorContext);
-  const inputs = resolveInputs(nodeId);
-  const prompt = resolvePrompt(inputs);
+function StatusLine({
+  icon,
+  text,
+  tone = "muted",
+  action,
+}: {
+  icon?: React.ReactNode;
+  text: string;
+  tone?: "muted" | "danger";
+  action?: { label: string; icon: React.ReactNode; onClick: () => void };
+}) {
   return (
-    <>
-      {prompt ? (
-        <p className="line-clamp-4 whitespace-pre-wrap">{prompt}</p>
-      ) : (
-        <p className="italic">Connect a text node for the prompt</p>
+    <span
+      className={cn(
+        "flex items-center gap-1.5 text-[11px]",
+        tone === "danger" ? "text-destructive" : "text-muted-foreground",
       )}
-      <InputSummary inputs={inputs} />
-    </>
+    >
+      {icon}
+      <span className="min-w-0 flex-1 truncate">{text}</span>
+      {action && (
+        <button
+          type="button"
+          className="nodrag flex shrink-0 items-center gap-1 rounded-sm px-1 py-0.5 font-medium underline-offset-2 hover:underline"
+          onClick={(e) => {
+            e.stopPropagation();
+            action.onClick();
+          }}
+        >
+          {action.icon}
+          {action.label}
+        </button>
+      )}
+    </span>
+  );
+}
+
+/** 主视觉外框：只收上面两角（下面接卡片正文），加载中/生成中叠一层高光横扫。 */
+function HeroFrame({
+  busy,
+  children,
+}: {
+  busy?: boolean;
+  children?: React.ReactNode;
+}) {
+  return (
+    <div className="canvas-node__hero">
+      {busy && <span className="canvas-node__shimmer" aria-hidden />}
+      {children}
+    </div>
+  );
+}
+
+/**
+ * 生成中 / 资产在途的主视觉骨架：一块会扫光的占位，让「这张卡在跑」缩得很小时也看得出来。
+ * 视频比图更宽，按各自常见比例占位，出片时高度跳变小一些。
+ */
+function HeroSkeleton({ kind }: { kind: "image" | "video" }) {
+  return (
+    <HeroFrame busy>
+      <div className={kind === "video" ? "aspect-video" : "aspect-[4/3]"} />
+    </HeroFrame>
+  );
+}
+
+/** 资产拉不到（文件被清、鉴权过期）：说清楚并给重试，别停在永远转的圈上。 */
+function HeroLoadError({ onRetry }: { onRetry: () => void }) {
+  return (
+    <HeroFrame>
+      <div className="flex h-20 flex-col items-center justify-center gap-1.5 text-[11px] text-muted-foreground">
+        <AlertTriangle className="size-4" aria-hidden />
+        <button
+          type="button"
+          className="nodrag flex items-center gap-1 font-medium underline-offset-2 hover:underline"
+          onClick={(e) => {
+            e.stopPropagation();
+            onRetry();
+          }}
+        >
+          <RotateCcw className="size-3" aria-hidden />
+          Preview failed — retry
+        </button>
+      </div>
+    </HeroFrame>
+  );
+}
+
+/**
+ * 已出图/出片的主视觉：满宽、按素材自己的比例铺开，**不裁切**——用户判断"这张行不行"
+ * 靠的就是构图，`object-cover` 会把竖图裁成一条带。超过 224px 高的素材缩进框里留白
+ * （框底色是 --muted，留白读起来像相纸边，不像缺角）。
+ *
+ * 视频在卡上只当静帧看（不给 controls）——小卡上的进度条既难点、又会跟拖拽抢手势，
+ * 要播放点开灯箱。
+ */
+function HeroMedia({
+  url,
+  kind,
+  title,
+  onZoom,
+}: {
+  url: string;
+  kind: "image" | "video";
+  title: string;
+  onZoom: () => void;
+}) {
+  return (
+    <HeroFrame>
+      <button
+        type="button"
+        className="nodrag block w-full cursor-zoom-in"
+        onClick={(e) => {
+          e.stopPropagation();
+          onZoom();
+        }}
+      >
+        {kind === "image" ? (
+          // 用原生 img：blob 源 next/image 无法优化
+          // eslint-disable-next-line @next/next/no-img-element
+          <img
+            src={url}
+            alt={title || "Generated image"}
+            className="mx-auto block h-auto max-h-56 w-full object-contain"
+          />
+        ) : (
+          <video
+            src={url}
+            muted
+            playsInline
+            preload="metadata"
+            className="pointer-events-none mx-auto block h-auto max-h-56 w-full object-contain"
+          />
+        )}
+      </button>
+    </HeroFrame>
+  );
+}
+
+/** blob mime → 下载文件名后缀。拿不到 mime 时按类型给个合理缺省。 */
+function extFor(mime: string, kind: "image" | "video"): string {
+  if (mime.includes("jpeg")) return "jpg";
+  if (mime.includes("png")) return "png";
+  if (mime.includes("webp")) return "webp";
+  if (mime.includes("mp4")) return "mp4";
+  return kind === "video" ? "mp4" : "png";
+}
+
+/**
+ * 生成节点的正文 = 本次生成会用的提示词。它来自上游 text 节点，节点自身不存 prompt，
+ * 所以没有上游文本时直接说清楚缺什么（此时触发生成后端也会报错）。
+ */
+function UpstreamPrompt({
+  nodeId,
+  inputs,
+}: {
+  nodeId: string;
+  inputs: NodeInputSource[];
+}) {
+  const prompt = resolvePrompt(inputs);
+  if (!prompt) return null;
+  return (
+    <p
+      key={nodeId}
+      className="line-clamp-3 text-xs leading-relaxed whitespace-pre-wrap text-muted-foreground"
+    >
+      {prompt}
+    </p>
   );
 }
 
 /**
  * 卡片底部的关联输入摘要：这个节点由哪几路上游喂进来。
- * 按 output 类型计数；上游还没就绪的（正文为空 / 尚未生成）单独记为 pending，
+ * 按 output 类型计数；上游还没就绪的（正文为空 / 尚未生成）单独记为 waiting，
  * 因为触发生成时它们不会被引用——这一点光看连线是看不出来的。
  */
-function InputSummary({ inputs }: { inputs: NodeInputSource[] }) {
+function summarizeInputs(inputs: NodeInputSource[]): string | null {
   if (inputs.length === 0) return null;
 
   const counts = new Map<string, number>();
-  let pending = 0;
+  let waiting = 0;
   for (const s of inputs) {
     if (s.outputs.length === 0) {
-      pending++;
+      waiting++;
       continue;
     }
     for (const o of s.outputs) {
@@ -241,75 +562,40 @@ function InputSummary({ inputs }: { inputs: NodeInputSource[] }) {
   }
 
   const parts = [...counts].map(([type, n]) => `${n} ${type}`);
-  if (pending > 0) parts.push(`${pending} pending`);
-
-  return (
-    <span className="mt-1.5 flex items-center gap-1 text-[11px] text-muted-foreground">
-      <Link2 className="size-3 shrink-0" />
-      <span className="truncate">{parts.join(" · ")}</span>
-    </span>
-  );
+  if (waiting > 0) parts.push(`${waiting} waiting`);
+  return `From ${parts.join(", ")}`;
 }
 
-/** 生成节点封面：done 且资产就绪→放预览，否则按 mediaStatus 出对应占位。 */
-function MediaCover({
-  data,
-  kind,
-  typeIcon,
-}: {
-  data: NodeData;
-  kind: "image" | "video";
-  typeIcon: React.ReactNode;
-}) {
-  if (data.mediaStatus === "done" && data.mediaVersionId) {
-    return <MediaPreview versionId={data.mediaVersionId} kind={kind} />;
-  }
-  switch (data.mediaStatus) {
-    case "generating":
-      return (
-        <CoverPlaceholder
-          icon={<Loader2 className="size-5 animate-spin" />}
-          text="Generating…"
-          shimmer
-        />
-      );
-    case "queued":
-      return <CoverPlaceholder icon={<Clock className="size-5" />} text="Queued" />;
-    case "failed":
-      return (
-        <CoverPlaceholder
-          icon={<AlertCircle className="size-5" />}
-          text="Generation failed"
-          failed
-        />
-      );
-    // done 但资产还没 JOIN 出来，与「从未生成」一样只能出类型占位
-    default:
-      return <CoverPlaceholder icon={typeIcon} text="Not generated" />;
-  }
+function InputSummary({ inputs }: { inputs: NodeInputSource[] }) {
+  const summary = summarizeInputs(inputs);
+  if (!summary) return null;
+  return (
+    <span className="canvas-node__inputs">
+      <span className="truncate">{summary}</span>
+    </span>
+  );
 }
 
 function TextNode({ data, selected, dragging }: NodeProps) {
   const d = data as NodeData;
   return (
     <NodeShell
-      icon={<Type className="size-3.5 shrink-0" />}
       nodeId={d.id}
+      nodeType="text"
       selected={!!selected}
       dragging={!!dragging}
       label={d.label ?? ""}
-      fallbackTitle="Text"
-      tone="var(--node-text)"
-      body={{
-        field: "text",
-        value: d.text ?? "",
-        placeholder: "Node text…",
-      }}
+      body={{ field: "text", value: d.text ?? "", placeholder: "Node text…" }}
+      status={
+        d.text ? undefined : <StatusLine text="Empty — click to write it" />
+      }
       hasSource
     >
-      <p className="line-clamp-4 whitespace-pre-wrap">
-        {d.text || <span className="text-muted-foreground">(empty)</span>}
-      </p>
+      {d.text && (
+        <p className="line-clamp-5 text-[13px] leading-relaxed whitespace-pre-wrap">
+          {d.text}
+        </p>
+      )}
     </NodeShell>
   );
 }
@@ -318,73 +604,208 @@ function ImageUploadNode({ data, selected, dragging }: NodeProps) {
   const d = data as NodeData;
   return (
     <NodeShell
-      icon={<Upload className="size-3 shrink-0" />}
       nodeId={d.id}
+      nodeType="image_upload"
       selected={!!selected}
       dragging={!!dragging}
       label={d.label ?? ""}
-      fallbackTitle="Upload"
-      tone="var(--node-upload)"
-      cover={
-        <CoverPlaceholder
-          icon={<Upload className="size-5" />}
-          text={d.assetPath ? "Uploaded (mock)" : "No image"}
-        />
+      status={
+        d.assetPath ? undefined : <StatusLine text="No image attached yet" />
       }
       hasSource
     >
-      <p className="truncate">{d.assetPath ?? "Drop or pick an image"}</p>
+      {d.assetPath && (
+        <p className="truncate font-mono text-[11px] text-muted-foreground">
+          {d.assetPath}
+        </p>
+      )}
+    </NodeShell>
+  );
+}
+
+/**
+ * 生图 / 生视频节点共用一套实现——两者的差别只有类型、素材种类与占位比例。
+ *
+ * 状态语言（按 mediaStatus）：出片即以片为主，没出片就一行状态条说清卡在哪一步，
+ * 失败时给「Retry」直接重发同一版（沿用上一版的提示词与参考图，见后端 regenerate）。
+ */
+function MediaGenNode({
+  data,
+  selected,
+  dragging,
+  nodeType,
+  kind,
+}: {
+  data: NodeData;
+  selected: boolean;
+  dragging: boolean;
+  nodeType: "image_gen" | "video_gen";
+  kind: "image" | "video";
+}) {
+  const { resolveInputs, retryMedia, readOnly } =
+    useContext(CanvasEditorContext);
+  const inputs = resolveInputs(data.id);
+  const prompt = resolvePrompt(inputs);
+  // 面板里按来源分段列出（而不是像卡面那样拼成一段）：每段都要能点回它的那张 text 卡
+  const promptSources: PromptSource[] = inputs.flatMap((s) =>
+    s.outputs
+      .filter((o) => o.type === "text")
+      .map((o) => ({ nodeId: s.nodeId, title: s.title, text: o.content })),
+  );
+  const title = data.label?.trim() || NODE_META[nodeType].label;
+  const [zoom, setZoom] = useState(false);
+
+  // 资产在本层取：主视觉与右上角的「看大图 / 下载」都要用同一份 blob URL，
+  // 分头各取会拉两遍。未 done 时传 null，hook 不发请求。
+  const done = data.mediaStatus === "done" && !!data.mediaVersionId;
+  const asset = useMediaAsset(done ? data.mediaVersionId : null);
+
+  const download = () => {
+    if (asset.status !== "ready") return;
+    const a = document.createElement("a");
+    a.href = asset.url;
+    a.download = `${title}.${extFor(asset.mime, kind)}`;
+    a.click();
+  };
+
+  let hero: React.ReactNode = null;
+  if (done) {
+    hero =
+      asset.status === "ready" ? (
+        <HeroMedia
+          url={asset.url}
+          kind={kind}
+          title={title}
+          onZoom={() => setZoom(true)}
+        />
+      ) : asset.status === "error" ? (
+        <HeroLoadError onRetry={asset.retry} />
+      ) : (
+        <HeroSkeleton kind={kind} />
+      );
+  } else if (
+    data.mediaStatus === "generating" ||
+    data.mediaStatus === "queued"
+  ) {
+    // 排队中同样出骨架：队列并发有限，后面的任务要等前面跑完，
+    // 不给占位的话这些节点看起来像根本没被触发。
+    hero = <HeroSkeleton kind={kind} />;
+  }
+
+  const heroActions =
+    asset.status === "ready" ? (
+      <>
+        <NodeActionButton
+          label={kind === "video" ? "Play full size" : "View full size"}
+          icon={<Maximize2 className="size-3.5" />}
+          onClick={() => setZoom(true)}
+        />
+        <NodeActionButton
+          label="Download"
+          icon={<Download className="size-3.5" />}
+          onClick={download}
+        />
+      </>
+    ) : null;
+
+  let status: React.ReactNode = null;
+  if (!done) {
+    if (data.mediaStatus === "generating") {
+      status = (
+        <StatusLine
+          icon={<Loader2 className="size-3 animate-spin" aria-hidden />}
+          text={kind === "video" ? "Rendering video…" : "Rendering image…"}
+        />
+      );
+    } else if (data.mediaStatus === "queued") {
+      status = (
+        <StatusLine
+          icon={<Clock className="size-3" aria-hidden />}
+          text={
+            kind === "video"
+              ? "Queued — video render starts when a slot frees up"
+              : "Queued — render starts when a slot frees up"
+          }
+        />
+      );
+    } else if (data.mediaStatus === "failed") {
+      status = (
+        <StatusLine
+          icon={<AlertTriangle className="size-3" aria-hidden />}
+          tone="danger"
+          text="Render failed"
+          action={
+            readOnly || !data.mediaGenerationId
+              ? undefined
+              : {
+                  label: "Retry",
+                  icon: <RotateCcw className="size-3" aria-hidden />,
+                  onClick: () =>
+                    retryMedia(data.mediaGenerationId as string),
+                }
+          }
+        />
+      );
+    } else if (!prompt) {
+      status = <StatusLine text="Needs a text node for its prompt" />;
+    } else {
+      status = <StatusLine text="Ready — ask the agent to render it" />;
+    }
+  }
+
+  return (
+    <NodeShell
+      nodeId={data.id}
+      nodeType={nodeType}
+      selected={selected}
+      dragging={dragging}
+      label={data.label ?? ""}
+      // 生成节点自身不存 prompt：面板里列出各路上游文本（点一下可跳到那张卡）
+      promptSources={promptSources}
+      composerMeta={<InputsPill inputs={inputs} />}
+      hero={hero}
+      heroActions={heroActions}
+      status={status}
+      footer={<InputSummary inputs={inputs} />}
+      hasTarget
+      hasSource
+    >
+      <UpstreamPrompt nodeId={data.id} inputs={inputs} />
+      {asset.status === "ready" && (
+        <NodeMediaDialog
+          open={zoom}
+          onOpenChange={setZoom}
+          url={asset.url}
+          kind={kind}
+          title={title}
+          onDownload={download}
+        />
+      )}
     </NodeShell>
   );
 }
 
 function ImageGenNode({ data, selected, dragging }: NodeProps) {
-  const d = data as NodeData;
   return (
-    <NodeShell
-      icon={<ImageIcon className="size-3 shrink-0" />}
-      nodeId={d.id}
+    <MediaGenNode
+      data={data as NodeData}
       selected={!!selected}
       dragging={!!dragging}
-      label={d.label ?? ""}
-      fallbackTitle="Image"
-      tone="var(--node-image)"
-      cover={
-        <MediaCover
-          data={d}
-          kind="image"
-          typeIcon={<ImageIcon className="size-5" />}
-        />
-      }
-      busy={d.mediaStatus === "generating"}
-      hasTarget
-      hasSource
-    >
-      <UpstreamPrompt nodeId={d.id} />
-    </NodeShell>
+      nodeType="image_gen"
+      kind="image"
+    />
   );
 }
 
 function VideoGenNode({ data, selected, dragging }: NodeProps) {
-  const d = data as NodeData;
   return (
-    <NodeShell
-      icon={<Film className="size-3 shrink-0" />}
-      nodeId={d.id}
+    <MediaGenNode
+      data={data as NodeData}
       selected={!!selected}
       dragging={!!dragging}
-      label={d.label ?? ""}
-      fallbackTitle="Video"
-      tone="var(--node-video)"
-      cover={
-        <MediaCover data={d} kind="video" typeIcon={<Film className="size-5" />} />
-      }
-      busy={d.mediaStatus === "generating"}
-      hasTarget
-      hasSource
-    >
-      <UpstreamPrompt nodeId={d.id} />
-    </NodeShell>
+      nodeType="video_gen"
+      kind="video"
+    />
   );
 }
 
@@ -394,3 +815,15 @@ export const nodeTypes: NodeTypes = {
   image_gen: ImageGenNode,
   video_gen: VideoGenNode,
 };
+
+/** composer 参数条上的上游来源胶囊：与卡片注脚同一句话，样式随参数条。 */
+function InputsPill({ inputs }: { inputs: NodeInputSource[] }) {
+  const summary = summarizeInputs(inputs);
+  if (!summary) return null;
+  return (
+    <span className="flex shrink-0 items-center gap-1.5 rounded-md bg-muted/70 px-2 py-1 text-[11px] text-muted-foreground">
+      <Link2 className="size-3" aria-hidden />
+      {summary}
+    </span>
+  );
+}

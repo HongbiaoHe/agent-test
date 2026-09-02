@@ -21,7 +21,7 @@ import {
 import { CanvasService } from './canvas.service';
 import { createCanvasTools } from './canvas.tools';
 import { type CallUsage, extractUsages } from './token-usage';
-import { planHistoryWindow } from './history-window';
+import { planHistoryWindow, stripClearedPlan } from './history-window';
 import {
   CANVAS_THINKING_LEVELS,
   type CanvasThinkingLevel,
@@ -488,7 +488,14 @@ export class CanvasProcessor extends WorkerHost {
       select: { role: true, content: true, type: true, seq: true },
     });
 
-    const { slice, nextBaseSeq } = planHistoryWindow(rows);
+    // 用户手动清空过计划 → 该点之前的 write_todos 工具消息（内容是整份 todo 列表）不再重放，
+    // 否则模型仍能从历史里读到那份已作废的计划、继续照着做（clearPlan 只挡住提示词注入那一路）。
+    const visible = stripClearedPlan(
+      rows,
+      await this.planClearedSeq(sessionId),
+    );
+
+    const { slice, nextBaseSeq } = planHistoryWindow(visible);
     if (nextBaseSeq !== null) {
       await this.prisma.canvasSession.update({
         where: { id: sessionId },
@@ -514,6 +521,21 @@ export class CanvasProcessor extends WorkerHost {
         content: (m.content as { text?: string })?.text ?? '',
       };
     });
+  }
+
+  /**
+   * 最近一次「手动清空计划」的 seq（CanvasService.clearPlan 写入的空 plan_update）；
+   * 从未清空过则返回 null。历史重放据此跳过已作废计划的 write_todos 工具消息。
+   */
+  private async planClearedSeq(sessionId: string): Promise<number | null> {
+    const row = await this.prisma.canvasMessage.findFirst({
+      where: { sessionId, type: 'plan_update' },
+      orderBy: { seq: 'desc' },
+      select: { seq: true, content: true },
+    });
+    const todos = (row?.content as { todos?: unknown[] } | null)?.todos;
+    const emptied = Array.isArray(todos) && todos.length === 0;
+    return row && emptied ? row.seq : null;
   }
 
   private async buildActivePlan(sessionId: string): Promise<string> {
@@ -555,11 +577,31 @@ export class CanvasProcessor extends WorkerHost {
     await this.queue.add('resume', {
       sessionId,
       kind: 'resume',
-      // reject.message 会回传给模型（langchain HITL 无 respond）；语义=跳过提问、按最佳判断继续
-      decisions: [
-        { type: 'reject', message: '用户未回答，请按你的最佳判断继续。' },
-      ],
+      // reject.message 会回传给模型（langchain HITL 无 respond）；语义=跳过提问、按最佳判断继续。
+      // 数量必须等于本次挂起的工具调用数（模型可一轮并行发多个），否则 HITL 直接抛错。
+      decisions: Array.from(
+        { length: await this.pendingDecisionCount(sessionId) },
+        () => ({
+          type: 'reject',
+          message: '用户未回答，请按你的最佳判断继续。',
+        }),
+      ),
     });
+  }
+
+  /**
+   * 本次中断挂起的工具调用数 = 最近一条 control_request 的 actionRequests 长度
+   * （见 langchain hitl 中间件：decisions 与 interruptToolCalls 必须一一对应）。
+   */
+  private async pendingDecisionCount(sessionId: string): Promise<number> {
+    const row = await this.prisma.canvasMessage.findFirst({
+      where: { sessionId, type: 'control_request' },
+      orderBy: { seq: 'desc' },
+      select: { content: true },
+    });
+    const reqs = (row?.content as { actionRequests?: unknown[] } | null)
+      ?.actionRequests;
+    return Array.isArray(reqs) && reqs.length > 0 ? reqs.length : 1;
   }
 
   private async persist(
