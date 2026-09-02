@@ -1,7 +1,7 @@
 "use client";
 
 import { NodeToolbar, Position, useStore } from "@xyflow/react";
-import { CornerUpLeft, Minimize2 } from "lucide-react";
+import { CornerUpLeft, Film, Minimize2 } from "lucide-react";
 import { useContext, useEffect, useRef, useState } from "react";
 
 import type { CanvasNodeType } from "@/lib/api";
@@ -35,6 +35,12 @@ export interface PromptSource {
   nodeId: string;
   title: string;
   text: string;
+}
+
+/** 拼接节点的一段素材：上游那个视频节点的身份 + 它在序列里的位置。 */
+export interface ClipSource {
+  nodeId: string;
+  title: string;
 }
 
 /** 面板与节点之间的间距（同时作为「空间是否够放」的余量） */
@@ -82,6 +88,7 @@ export function NodeComposer({
   dragging,
   body,
   promptSources,
+  clips,
   meta,
   actions,
 }: {
@@ -94,6 +101,8 @@ export function NodeComposer({
   body?: NodeBodyField;
   /** 提示词来源（生成节点：每段来自一张上游 text 卡） */
   promptSources?: PromptSource[];
+  /** 待拼接的视频序列（video_concat 专有；它没有提示词这回事） */
+  clips?: ClipSource[];
   /** 参数条上除类型外的补充信息（上游来源摘要等） */
   meta?: React.ReactNode;
   /** 节点操作（看大图 / 下载 / 复制 / 删除）。触屏没有 hover，只能挂在这里 */
@@ -134,6 +143,7 @@ export function NodeComposer({
     return () => window.removeEventListener("keydown", onKey);
   }, [visible, clearSelection]);
 
+  // 三种形态，按节点「内容是什么」分：可写的提示词 / 待拼接的视频序列 / 来自上游的只读提示词
   const prompt = body ? (
     <PromptInput
       nodeId={nodeId}
@@ -141,6 +151,8 @@ export function NodeComposer({
       value={body.value}
       placeholder={body.placeholder}
     />
+  ) : clips ? (
+    <ClipList clips={clips} />
   ) : (
     <UpstreamPromptView nodeId={nodeId} sources={promptSources ?? []} />
   );
@@ -269,6 +281,46 @@ function PromptInput({
       }}
       className="w-full resize-none bg-transparent text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
     />
+  );
+}
+
+/**
+ * 拼接节点的素材区：按**合成顺序**列出已连的视频，点一条跳到那个节点。
+ *
+ * 这里不该出现提示词——拼接节点没有这回事，它的「内容」就是这几段视频和它们的先后。
+ * 序号是重点：合成结果只取决于顺序，而画布上连线一交叉，光看线是数不出顺序的。
+ */
+function ClipList({ clips }: { clips: ClipSource[] }) {
+  const { focusNode } = useContext(CanvasEditorContext);
+  if (clips.length === 0) {
+    return (
+      <p className="text-sm leading-relaxed text-muted-foreground">
+        Connect video nodes to line them up here.
+      </p>
+    );
+  }
+  return (
+    <ol className="space-y-0.5">
+      {clips.map((c, i) => (
+        <li key={`${c.nodeId}-${i}`}>
+          <button
+            type="button"
+            title="Open this video node"
+            onClick={() => focusNode(c.nodeId)}
+            className="-mx-1.5 flex w-[calc(100%+0.75rem)] items-center gap-2 rounded-md px-1.5 py-1 text-left transition-colors hover:bg-muted/60"
+          >
+            <span className="w-4 shrink-0 text-right font-mono text-[11px] text-muted-foreground">
+              {i + 1}
+            </span>
+            <Film
+              className="size-3.5 shrink-0 text-muted-foreground"
+              aria-hidden
+            />
+            <span className="min-w-0 flex-1 truncate text-sm">{c.title}</span>
+          </button>
+        </li>
+      ))}
+    </ol>
   );
 }
 

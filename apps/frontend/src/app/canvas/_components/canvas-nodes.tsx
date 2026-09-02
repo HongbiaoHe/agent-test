@@ -13,6 +13,7 @@ import {
   Clock,
   Copy,
   Download,
+  Layers,
   Link2,
   Loader2,
   Maximize2,
@@ -31,15 +32,22 @@ import {
   resolvePrompt,
   type NodeInputSource,
 } from "../_lib/node-io";
+import {
+  CanvasToolbar,
+  CanvasToolbarButton,
+  CanvasToolbarSeparator,
+} from "./canvas-toolbar";
 import { CanvasEditorContext } from "./flow-canvas";
 import {
   NodeComposer,
+  type ClipSource,
   type NodeBodyField,
   type PromptSource,
 } from "./node-composer";
 import { NodeTitleField } from "./node-inline-field";
 import { NodeMediaDialog } from "./node-media-dialog";
 import { NODE_META, NodeTypeIcon } from "./node-meta";
+import { VideoSequence } from "./video-sequence";
 
 /** react-flow 节点 data 即后端 CanvasNodeDto。 */
 type NodeData = CanvasNodeDto & Record<string, unknown>;
@@ -94,8 +102,10 @@ function NodeShell({
   label,
   body,
   promptSources,
+  clips,
   composerMeta,
   hero,
+  mediaOnly,
   heroActions,
   status,
   footer,
@@ -114,10 +124,18 @@ function NodeShell({
   body?: NodeBodyField;
   /** composer 里的提示词来源（生成节点：每段来自一张上游 text 卡） */
   promptSources?: PromptSource[];
+  /** composer 里的待拼接视频序列（video_concat 专有） */
+  clips?: ClipSource[];
   /** composer 参数条上的补充胶囊（上游来源摘要） */
   composerMeta?: React.ReactNode;
   /** 主视觉：出图/出片或生成中的骨架；没有产出时不传，卡片就不占那块高度 */
   hero?: React.ReactNode;
+  /**
+   * 出片之后卡面只留画面：标题、提示词、来源摘要一概不上卡。
+   * 画面本身已经把"这是什么"说清楚了，再压三行字只会让一屏铺开的卡片糊成一片；
+   * 那些信息点开编辑面板就有（同类画布一致的做法）。
+   */
+  mediaOnly?: boolean;
   /** 主视觉专属的悬浮操作（看大图 / 下载），排在通用操作左边 */
   heroActions?: React.ReactNode;
   /** 状态条：未就绪 / 排队 / 生成中 / 失败 */
@@ -132,11 +150,14 @@ function NodeShell({
   const fit = useConnectFit(nodeId, nodeType);
   // 被「加入对话」圈中的节点：卡片描一圈主色，标签行左侧多一枚对话角标——
   // agent 这一轮只看得到这些节点，得让人一眼认出是哪几张
-  const { focusedNodeIds, selectedCount, readOnly } =
+  const { focusedNodeIds, selectedCount, readOnly, multiSelecting, groupSelect } =
     useContext(CanvasEditorContext);
   const focused = focusedNodeIds.has(nodeId);
-  // 单选中的节点才进入可编辑态：标题就地可改，提示词面板浮出
-  const single = selected && selectedCount <= 1;
+  // 单选中的节点才进入可编辑态：标题就地可改，提示词面板浮出。
+  // 两种情况不进：多选手势进行中（框到第一个节点时面板就弹出来挡路），
+  // 以及选区是「按组选的」（那一个是被挑进组里的，该出多选工具条）。
+  const single =
+    selected && selectedCount <= 1 && !multiSelecting && !groupSelect;
 
   return (
     <div
@@ -162,6 +183,7 @@ function NodeShell({
         dragging={dragging}
         body={body}
         promptSources={promptSources}
+        clips={clips}
         meta={composerMeta}
         actions={<NodeActions nodeId={nodeId} extra={heroActions} plain />}
       />
@@ -186,20 +208,22 @@ function NodeShell({
 
       {hero}
 
-      <div className="flex flex-col gap-1.5 px-3 py-2.5">
-        <div className="flex items-center gap-2">
-          {/* 标题就地改：显示在哪儿就在哪儿编辑，不进面板找字段 */}
-          <NodeTitleField
-            nodeId={nodeId}
-            value={label}
-            editable={single && !readOnly}
-          />
-          <SaveIndicator nodeId={nodeId} />
+      {!mediaOnly && (
+        <div className="flex flex-col gap-1.5 px-3 py-2.5">
+          <div className="flex items-center gap-2">
+            {/* 标题就地改：显示在哪儿就在哪儿编辑，不进面板找字段 */}
+            <NodeTitleField
+              nodeId={nodeId}
+              value={label}
+              editable={single && !readOnly}
+            />
+            <SaveIndicator nodeId={nodeId} />
+          </div>
+          {children}
+          {status}
+          {footer}
         </div>
-        {children}
-        {status}
-        {footer}
-      </div>
+      )}
 
       {hasSource && <PlusHandle nodeId={nodeId} kind="source" />}
     </div>
@@ -255,6 +279,9 @@ function PlusHandle({
  * 一浮出来就遮住画面；同类产品（n8n / Flora / 即梦）都把它做成脱离卡片的一条浮动药丸。
  * 显隐纯 CSS（见 globals.css .canvas-node__actions），不用 JS 判断断点——避免水合首帧的跳变。
  *
+ * 药丸与按钮的样式/交互走 CanvasToolbar，与选区工具条（Add to chat 那条）同一套：
+ * 两者停在同一个位置、做同一类事，长成两副样子只会让人以为它们不是一回事。
+ *
  * 触屏没有 hover，改由编辑面板（底部抽屉）用 plain 形态承载。
  * 运行期（readOnly）只保留看图/下载这类只读操作，改结构的一律不渲染。
  */
@@ -265,7 +292,7 @@ function NodeActions({
 }: {
   nodeId: string;
   extra?: React.ReactNode;
-  /** 平铺形态：不套反色药丸、不做 hover 显隐，供抽屉里直接摆一排 */
+  /** 平铺形态：不套药丸、不做 hover 显隐，供抽屉里直接摆一排 */
   plain?: boolean;
 }) {
   const { readOnly, deleteNode, duplicateNode } =
@@ -273,12 +300,12 @@ function NodeActions({
   if (readOnly && !extra) return null;
   const structure = !readOnly && (
     <>
-      <NodeActionButton
+      <CanvasToolbarButton
         label="Duplicate"
         icon={<Copy className="size-3.5" />}
         onClick={() => duplicateNode(nodeId)}
       />
-      <NodeActionButton
+      <CanvasToolbarButton
         label="Delete"
         icon={<Trash2 className="size-3.5" />}
         danger
@@ -286,53 +313,18 @@ function NodeActions({
       />
     </>
   );
-  return (
-    // nodrag：按在按钮上不拖动节点
-    <div
-      className={cn(
-        "nodrag flex items-center gap-0.5",
-        plain ? "text-muted-foreground" : "canvas-node__actions",
-      )}
-    >
+  const items = (
+    <>
       {extra}
       {/* 看图类与改结构类之间划一道：误点删除的代价比误点下载大得多 */}
-      {extra && structure && <span className="canvas-node__actions-sep" />}
+      {extra && structure && <CanvasToolbarSeparator />}
       {structure}
-    </div>
+    </>
   );
-}
-
-export function NodeActionButton({
-  label,
-  icon,
-  danger,
-  onClick,
-}: {
-  label: string;
-  icon: React.ReactNode;
-  danger?: boolean;
-  onClick: () => void;
-}) {
-  return (
-    <button
-      type="button"
-      title={label}
-      aria-label={label}
-      // 颜色继承外层反色药丸（见 globals.css .canvas-node__actions）：
-      // 常态压到 75% 不喧宾夺主，hover 才实心
-      className={cn(
-        "flex size-6 items-center justify-center rounded-full opacity-75 transition-opacity hover:opacity-100",
-        danger && "hover:text-destructive hover:opacity-100",
-      )}
-      onClick={(e) => {
-        // stopPropagation：按操作键不连带选中节点（否则每点一下都会弹出编辑浮窗）
-        e.stopPropagation();
-        onClick();
-      }}
-    >
-      {icon}
-    </button>
-  );
+  if (plain) {
+    return <div className="nodrag flex items-center gap-0.5">{items}</div>;
+  }
+  return <CanvasToolbar className="canvas-node__actions">{items}</CanvasToolbar>;
 }
 
 /**
@@ -411,13 +403,28 @@ function StatusLine({
 /** 主视觉外框：只收上面两角（下面接卡片正文），加载中/生成中叠一层高光横扫。 */
 function HeroFrame({
   busy,
+  full,
+  onZoom,
   children,
 }: {
   busy?: boolean;
+  /** 媒体独占整张卡：四角都圆 */
+  full?: boolean;
+  /** 双击看大图（单击留给「选中 → 出编辑面板」） */
+  onZoom?: () => void;
   children?: React.ReactNode;
 }) {
   return (
-    <div className="canvas-node__hero">
+    <div
+      className={cn("canvas-node__hero", full && "canvas-node__hero--full")}
+      onDoubleClick={
+        onZoom &&
+        ((e) => {
+          e.stopPropagation(); // 别冒泡到画布的「空白处双击建节点」
+          onZoom();
+        })
+      }
+    >
       {busy && <span className="canvas-node__shimmer" aria-hidden />}
       {children}
     </div>
@@ -477,34 +484,34 @@ function HeroMedia({
   title: string;
   onZoom: () => void;
 }) {
+  // 满宽 + 高度按比例自适应：卡片高度因此**就是**素材的高度，既不留信箱黑边
+  // （object-contain 撞上固定 max-height 时竖图两侧会空出灰带），也不裁掉构图
+  // （object-cover 会把竖图切成一条）。卡面只剩画面之后，画面自己定卡片的形状。
+  const fill = "pointer-events-none block h-auto w-full";
   return (
-    <HeroFrame>
-      <button
-        type="button"
-        className="nodrag block w-full cursor-zoom-in"
-        onClick={(e) => {
-          e.stopPropagation();
-          onZoom();
-        }}
-      >
-        {kind === "image" ? (
-          // 用原生 img：blob 源 next/image 无法优化
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={url}
-            alt={title || "Generated image"}
-            className="mx-auto block h-auto max-h-56 w-full object-contain"
-          />
-        ) : (
-          <video
-            src={url}
-            muted
-            playsInline
-            preload="metadata"
-            className="pointer-events-none mx-auto block h-auto max-h-56 w-full object-contain"
-          />
-        )}
-      </button>
+    <HeroFrame full onZoom={onZoom}>
+      {kind === "image" ? (
+        // 用原生 img：blob 源 next/image 无法优化
+        // eslint-disable-next-line @next/next/no-img-element
+        <img src={url} alt={title || "Generated image"} className={fill} />
+      ) : (
+        <video
+          src={url}
+          muted
+          playsInline
+          preload="metadata"
+          // 元数据到手前 <video> 用的是默认的 300×150（2:1），按它算出来的高度配上
+          // object-fit:contain，画面上下会先留一截黑边——正是「视频没填满」。
+          // 拿到真实尺寸后把比例钉死，盒子与画面从此完全同形。
+          onLoadedMetadata={(e) => {
+            const v = e.currentTarget;
+            if (v.videoWidth && v.videoHeight) {
+              v.style.aspectRatio = `${v.videoWidth} / ${v.videoHeight}`;
+            }
+          }}
+          className={fill}
+        />
+      )}
     </HeroFrame>
   );
 }
@@ -668,6 +675,9 @@ function MediaGenNode({
     a.click();
   };
 
+  // 出片且资产就绪 → 卡面只留画面（标题/提示词/来源摘要移到编辑面板里去看）
+  const mediaOnly = done && asset.status === "ready";
+
   let hero: React.ReactNode = null;
   if (done) {
     hero =
@@ -695,12 +705,12 @@ function MediaGenNode({
   const heroActions =
     asset.status === "ready" ? (
       <>
-        <NodeActionButton
+        <CanvasToolbarButton
           label={kind === "video" ? "Play full size" : "View full size"}
           icon={<Maximize2 className="size-3.5" />}
           onClick={() => setZoom(true)}
         />
-        <NodeActionButton
+        <CanvasToolbarButton
           label="Download"
           icon={<Download className="size-3.5" />}
           onClick={download}
@@ -753,7 +763,7 @@ function MediaGenNode({
     }
   }
 
-  return (
+  const shell = (
     <NodeShell
       nodeId={data.id}
       nodeType={nodeType}
@@ -762,6 +772,7 @@ function MediaGenNode({
       label={data.label ?? ""}
       // 生成节点自身不存 prompt：面板里列出各路上游文本（点一下可跳到那张卡）
       promptSources={promptSources}
+      mediaOnly={mediaOnly}
       composerMeta={<InputsPill inputs={inputs} />}
       hero={hero}
       heroActions={heroActions}
@@ -771,6 +782,15 @@ function MediaGenNode({
       hasSource
     >
       <UpstreamPrompt nodeId={data.id} inputs={inputs} />
+    </NodeShell>
+  );
+
+  return (
+    <>
+      {shell}
+      {/* 灯箱挂在 NodeShell **外面**：卡面只剩画面时（mediaOnly）壳内的正文整段不渲染，
+          放在里面会连它一起被跳过——表现为双击与「看大图」都没反应。
+          它本身走 Portal 渲染到 body，挂在哪一层都不影响显示。 */}
       {asset.status === "ready" && (
         <NodeMediaDialog
           open={zoom}
@@ -781,7 +801,7 @@ function MediaGenNode({
           onDownload={download}
         />
       )}
-    </NodeShell>
+    </>
   );
 }
 
@@ -809,11 +829,180 @@ function VideoGenNode({ data, selected, dragging }: NodeProps) {
   );
 }
 
+/**
+ * 视频拼接节点：把多段上游视频按入边顺序接成一条。
+ *
+ * 与生成节点的差别只有两处——素材来自上游视频而不是提示词，触发的是本地 ffmpeg 而不是模型；
+ * 因此产物同样是一个 MediaVersion，出片后的形态（只剩画面、双击看大图、可作下游输入）
+ * 与 video_gen 完全一致，这里复用同一套壳。
+ *
+ * 合成**不自动发生**：连上视频先给连续预览（悬停即按顺序播完），确认顺序对了再按 Merge。
+ * 合成是要花时间的异步任务，和生成一样不该在连线的瞬间就替用户决定。
+ */
+function VideoConcatNode({ data, selected, dragging }: NodeProps) {
+  const d = data as NodeData;
+  const { resolveInputs, mergeVideo, readOnly } =
+    useContext(CanvasEditorContext);
+  const inputs = resolveInputs(d.id);
+  const [zoom, setZoom] = useState(false);
+
+  // 上游视频（按入边顺序）——顺序与后端 collectVideoSources 同源，预览与合成结果一致
+  const clips = inputs.flatMap((s) =>
+    s.outputs.filter((o) => o.type === "video").map((o) => o.content),
+  );
+  const title = d.label?.trim() || NODE_META.video_concat.label;
+  const done = d.mediaStatus === "done" && !!d.mediaVersionId;
+  const asset = useMediaAsset(done ? d.mediaVersionId : null);
+  const merged = done && asset.status === "ready";
+
+  const download = () => {
+    if (asset.status !== "ready") return;
+    const a = document.createElement("a");
+    a.href = asset.url;
+    a.download = `${title}.${extFor(asset.mime, "video")}`;
+    a.click();
+  };
+
+  // 合成后放成片；没合成但有上游就放连续预览；都没有就不占那块高度
+  let hero: React.ReactNode = null;
+  if (merged) {
+    hero = (
+      <HeroMedia
+        url={asset.url}
+        kind="video"
+        title={title}
+        onZoom={() => setZoom(true)}
+      />
+    );
+  } else if (done) {
+    hero =
+      asset.status === "error" ? (
+        <HeroLoadError onRetry={asset.retry} />
+      ) : (
+        <HeroSkeleton kind="video" />
+      );
+  } else if (d.mediaStatus === "generating" || d.mediaStatus === "queued") {
+    hero = <HeroSkeleton kind="video" />;
+  } else if (clips.length > 0) {
+    hero = (
+      <HeroFrame>
+        <VideoSequence clips={clips} />
+      </HeroFrame>
+    );
+  }
+
+  let status: React.ReactNode = null;
+  if (!done) {
+    if (d.mediaStatus === "generating") {
+      status = (
+        <StatusLine
+          icon={<Loader2 className="size-3 animate-spin" aria-hidden />}
+          text="Merging clips…"
+        />
+      );
+    } else if (d.mediaStatus === "queued") {
+      status = (
+        <StatusLine
+          icon={<Clock className="size-3" aria-hidden />}
+          text="Queued — merge starts when a slot frees up"
+        />
+      );
+    } else if (d.mediaStatus === "failed") {
+      status = (
+        <StatusLine
+          icon={<AlertTriangle className="size-3" aria-hidden />}
+          tone="danger"
+          text="Merge failed"
+          action={
+            readOnly
+              ? undefined
+              : {
+                  label: "Retry",
+                  icon: <RotateCcw className="size-3" aria-hidden />,
+                  onClick: () => mergeVideo(d.id),
+                }
+          }
+        />
+      );
+    } else if (clips.length < 2) {
+      status = (
+        <StatusLine text={`Connect at least two videos (${clips.length})`} />
+      );
+    } else {
+      // 素材齐了才给 Merge：合成要花时间，不在连线的瞬间替用户决定
+      status = (
+        <StatusLine
+          text={`${clips.length} clips — hover to preview`}
+          action={
+            readOnly
+              ? undefined
+              : {
+                  label: "Merge",
+                  icon: <Layers className="size-3" aria-hidden />,
+                  onClick: () => mergeVideo(d.id),
+                }
+          }
+        />
+      );
+    }
+  }
+
+  return (
+    <>
+      <NodeShell
+        nodeId={d.id}
+        nodeType="video_concat"
+        selected={selected}
+        dragging={dragging}
+        label={d.label ?? ""}
+        composerMeta={<InputsPill inputs={inputs} />}
+        // 拼接节点没有提示词：面板里列的是待合成的视频序列（点一条跳到那个节点）
+        clips={inputs
+          .filter((s) => s.outputs.some((o) => o.type === "video"))
+          .map((s) => ({ nodeId: s.nodeId, title: s.title }))}
+        hero={hero}
+        heroActions={
+          asset.status === "ready" ? (
+            <>
+              <CanvasToolbarButton
+                label="Play full size"
+                icon={<Maximize2 className="size-3.5" />}
+                onClick={() => setZoom(true)}
+              />
+              <CanvasToolbarButton
+                label="Download"
+                icon={<Download className="size-3.5" />}
+                onClick={download}
+              />
+            </>
+          ) : null
+        }
+        status={status}
+        footer={<InputSummary inputs={inputs} />}
+        mediaOnly={merged}
+        hasTarget
+        hasSource
+      />
+      {asset.status === "ready" && (
+        <NodeMediaDialog
+          open={zoom}
+          onOpenChange={setZoom}
+          url={asset.url}
+          kind="video"
+          title={title}
+          onDownload={download}
+        />
+      )}
+    </>
+  );
+}
+
 export const nodeTypes: NodeTypes = {
   text: TextNode,
   image_upload: ImageUploadNode,
   image_gen: ImageGenNode,
   video_gen: VideoGenNode,
+  video_concat: VideoConcatNode,
 };
 
 /** composer 参数条上的上游来源胶囊：与卡片注脚同一句话，样式随参数条。 */
