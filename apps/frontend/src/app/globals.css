@@ -387,7 +387,7 @@
 
 
 /* 画布节点。
-   四类节点共用一套骨架：主视觉（有产出才占高）→ 类型行 → 标题 → 正文 → 状态条。
+   四类节点共用一套骨架：标题行（在卡外上方）→ 主视觉（有产出才占高）→ 正文 → 状态条。
    卡面保持中性（设计系统 §7：靠深浅不靠彩色），身份色 --tone 只出现在类型图标上
    ——连接点已改走中性灰阶（见 .react-flow__handle 的 --handle-ink）。 */
 .canvas-node {
@@ -416,7 +416,8 @@
     0 8px 22px -8px oklch(0 0 0 / 0.18);
 }
 
-/* 类型行的类型名：等宽大写小字，与画布索引页的 mono 序号同一套语言。 */
+/* 没起过名的节点，标题位显示类型名：等宽大写小字，与画布索引页的 mono 序号同一套语言
+   （起过名就换常规字体，见 node-inline-field 的 NodeTitleField）。 */
 .canvas-node__type {
   font-family: var(--font-mono), ui-monospace, monospace;
   font-size: 9.5px;
@@ -585,7 +586,7 @@
   border-color: color-mix(in oklch, var(--tone) 60%, transparent);
 }
 
-/* 卡片**外**的上方一行：左边常驻类型标签，右边 hover 才浮出操作药丸。
+/* 卡片**外**的上方一行：左边常驻类型图标 + 标题（点一下就地改），右边 hover 才浮出操作药丸。
    把这些挪出卡面，是因为卡片右上角正好压着媒体主视觉——操作条一出来就遮画面。
    同类画布（Flora / 即梦）都是这么分的：标签与工具在卡外，卡面只留作品本身。 */
 .canvas-node__above {
@@ -608,11 +609,19 @@
 .canvas-node:hover .canvas-node__above {
   pointer-events: auto;
 }
+/* 正在改标题时也要接管指针：鼠标移出卡片（hover 断掉）后还得点得回输入框 */
+.canvas-node__above:focus-within {
+  pointer-events: auto;
+}
 
 /* 只管「什么时候露出来」；药丸与按钮的长相交给 CanvasToolbar
-   （与选区工具条同一套，见 _components/canvas-toolbar.tsx）。 */
+   （与选区工具条同一套，见 _components/canvas-toolbar.tsx）。
+   绝对定位**盖在**标题上，不占这一行的宽度：标题因此恒定占满整行（超出省略），
+   不会一悬停就被挤短、跟着重排。药丸自带不透明底，盖住的那截标题不会透出来。 */
 .canvas-node__actions {
-  margin-left: auto;
+  position: absolute;
+  right: 0;
+  bottom: 8px; /* = 本行的 padding-bottom，使药丸与标题同底对齐 */
   opacity: 0;
   transform: translateY(2px);
   transition:
@@ -627,6 +636,13 @@
 /* 选中时这块位置让给编辑面板（NodeToolbar 也停在卡片上方），两者不叠 */
 .react-flow__node.selected .canvas-node__actions {
   display: none;
+}
+/* 正在改标题时把药丸让开：它是不透明的，压着输入框末尾会看不见自己打的字。
+   用 :has(input:focus) 而不是本行的 :focus-within——后者在焦点落在药丸按钮上时同样成立，
+   会把药丸自己藏掉。 */
+.canvas-node__above:has(input:focus) .canvas-node__actions {
+  opacity: 0;
+  pointer-events: none;
 }
 /* 生成中 / 资产在途：主视觉骨架上满幅高光横扫（复用上方 media-card-shimmer keyframe）。 */
 .canvas-node__shimmer {

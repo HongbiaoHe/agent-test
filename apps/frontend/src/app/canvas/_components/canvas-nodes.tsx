@@ -84,12 +84,15 @@ function useConnectFit(nodeId: string, nodeType: CanvasNodeType): ConnectFit {
  * 节点外壳：所有类型共用同一套骨架，只有「有没有主视觉」这一处差别。
  *
  * 结构自上而下固定为
+ *   [标题行]（在卡片**外**的上方）身份色类型图标 + 标题（点一下就地改）+ 保存指示，
+ *            hover 时操作药丸绝对定位盖在标题上
  *   [主视觉]（媒体节点出图/出片时才有）
- *   [类型行] 身份色类型图标 + 类型名 + 保存指示
- *   [标题]
  *   [正文] 文本节点是正文，媒体节点是这次会用的提示词
  *   [状态条] 未就绪 / 排队 / 生成中 / 失败 —— 一行说清，不再用整块灰色占位撑高卡片
  *   [关联输入]
+ *
+ * 标题为什么在卡外：出片后的媒体卡卡面只剩画面（mediaOnly），卡里没有标题的位置——
+ * 而每个节点都该有名字。放到上方那行，四类节点的标题就在同一个地方、同一套改法。
  *
  * 之所以要统一：早先文本节点把类型压成 11px 灰字放最上面，媒体节点却把类型做成浮在封面上的
  * 深色胶囊，同一张画布上两套语言；而「还没生成」时那块 128px 的纯灰占位块信息量为零，
@@ -193,17 +196,24 @@ function NodeShell({
         actions={<NodeActions nodeId={nodeId} extra={heroActions} plain />}
       />
 
-      {/* 卡片外的上方一行：类型标签常驻在左，操作组 hover 才浮出在右。
-          卡面因此只留内容本身——这是同类画布（Flora、即梦）的共同做法。 */}
+      {/* 卡片外的上方一行：类型图标 + **标题**（点一下就地改），操作组 hover 才浮出、
+          绝对定位盖在标题上。卡面因此只留内容本身——这是同类画布（Flora、即梦）的共同做法。
+          标题放这儿而不是卡里：出片后的媒体卡卡面只剩画面，卡里没有它的位置。 */}
       <div className="canvas-node__above">
         <NodeTypeIcon type={nodeType} />
-        <span className="canvas-node__type">{meta.label}</span>
+        <NodeTitleField
+          nodeId={nodeId}
+          value={label}
+          placeholder={meta.label}
+          editable={!readOnly}
+        />
         {focused && (
           <span className="canvas-node__focus-tag" title="In chat context">
             <MessagesSquare className="size-2.5" aria-hidden />
             In chat
           </span>
         )}
+        <SaveIndicator nodeId={nodeId} />
         <NodeActions nodeId={nodeId} extra={heroActions} />
       </div>
 
@@ -215,15 +225,6 @@ function NodeShell({
 
       {!mediaOnly && (
         <div className="flex flex-col gap-1.5 px-3 py-2.5">
-          <div className="flex items-center gap-2">
-            {/* 标题就地改：显示在哪儿就在哪儿编辑，不进面板找字段 */}
-            <NodeTitleField
-              nodeId={nodeId}
-              value={label}
-              editable={single && !readOnly}
-            />
-            <SaveIndicator nodeId={nodeId} />
-          </div>
           {children}
           {status}
           {footer}
