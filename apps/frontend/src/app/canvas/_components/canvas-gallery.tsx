@@ -152,15 +152,32 @@ export function CanvasGallery() {
       <div className="relative mx-auto w-full max-w-4xl px-6 pb-24 pt-14 md:px-8 md:pt-20">
         <header className="flex items-start justify-between gap-6">
           <div className="min-w-0">
-            {/* 回上一层。用 <Link> 而不是 router.push：它是真正的站内导航，
-                该能中键新开、能被读屏当链接播报（项目其它导航也都是 Link） */}
-            <Link
-              href="/"
-              className="group/home -ml-1 mb-3 inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 font-mono text-xs text-muted-foreground transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 motion-reduce:transition-none"
+            {/* 面包屑而不是单个「返回」：画布现在是三层（AgentSpark → Canvas 介绍页 →
+                这一页 → 某块画布），一个箭头说不清它到底回哪一层。祖先全摆出来，
+                当前页由下面的 h1 表示，不重复成一节。
+                用 <Link> 而不是 router.push：它们是真正的站内导航，该能中键新开、
+                能被读屏当链接播报（项目其它导航也都是 Link）。 */}
+            <nav
+              aria-label="Breadcrumb"
+              className="-ml-1 mb-3 flex items-center gap-1 font-mono text-xs text-muted-foreground"
             >
-              <ArrowLeft className="size-3.5 transition-transform duration-200 group-hover/home:-translate-x-0.5 motion-reduce:transition-none" />
-              AgentSpark
-            </Link>
+              <Link
+                href="/"
+                className="group/home inline-flex items-center gap-1.5 rounded-md px-1 py-0.5 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 motion-reduce:transition-none"
+              >
+                <ArrowLeft className="size-3.5 transition-transform duration-200 group-hover/home:-translate-x-0.5 motion-reduce:transition-none" />
+                AgentSpark
+              </Link>
+              <span aria-hidden className="text-muted-foreground/50">
+                /
+              </span>
+              <Link
+                href="/canvas"
+                className="rounded-md px-1 py-0.5 transition-colors hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50 motion-reduce:transition-none"
+              >
+                Canvas
+              </Link>
+            </nav>
             <h1 className="text-3xl font-semibold tracking-tight text-foreground">
               Canvases
             </h1>
@@ -240,12 +257,23 @@ export function CanvasGallery() {
                   agent wires up the nodes for you.
                 </p>
               </div>
-              <Button
-                onClick={() => createMut.mutate()}
-                disabled={createMut.isPending}
-              >
-                <Plus /> New canvas
-              </Button>
+              {/* 空状态是新用户唯一会停留的一屏，所以介绍页在这里升级成并列的次级按钮
+                  （标题下那个注脚链接太轻，还没有画布的人正需要先弄明白这是什么） */}
+              <div className="flex flex-wrap items-center justify-center gap-2">
+                <Button
+                  onClick={() => createMut.mutate()}
+                  disabled={createMut.isPending}
+                >
+                  <Plus /> New canvas
+                </Button>
+                <Button
+                  variant="outline"
+                  nativeButton={false}
+                  render={<Link href="/canvas" />}
+                >
+                  Canvas tour
+                </Button>
+              </div>
             </div>
           )}
 

@@ -1,10 +1,12 @@
-import { Activity, ArrowDown, ArrowRight, Bot, Box, FileCheck, Film, GitBranch, Image as ImageIcon, Layers, Link2, MessageSquare, Network, Play, Repeat, Sparkles, Type, Wifi, Workflow, Zap } from "lucide-react";
+import { Activity, ArrowDown, ArrowRight, Bot, Box, FileCheck, Film, GitBranch, Grid3x3, Image as ImageIcon, Layers, Link2, MessageSquare, Network, Play, Repeat, Sparkles, Type, Wifi, Workflow, Zap } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
 
 import { auth } from "@/auth";
 import { Button } from "@/components/ui/button";
 import { GlowBorder } from "@/components/ui/glow-border";
+
+import { ThinkingGrid } from "./canvas/_components/thinking-indicator";
 
 import DotField from "./_components/dot-field";
 import { LandingFeatures } from "./_components/landing-features";
@@ -59,13 +61,19 @@ const canvasPoints = [
     description:
       "Describe the pipeline in a sentence. The agent places the nodes, connects them, triggers generation, and you watch the cards fill in over the same live stream.",
   },
+  {
+    icon: Grid3x3,
+    title: "It has a face, and it tells you things",
+    description:
+      "The agent shows up as a 3×3 grid of squares — the same nine squares a generated frame is made of. Thinking, working, orienting, idle: each state has its own rhythm, so a glance tells you whether it is stuck or still going.",
+  },
 ];
 
 /** 画布区右栏的流程示意（不是产品截图，是三类节点如何串起来的图示）。 */
 const canvasFlow = [
   { icon: Type, label: "Text", detail: "The prompt" },
   { icon: ImageIcon, label: "Image", detail: "Generated, or uploaded" },
-  { icon: Film, label: "Video", detail: "Takes the image as first frame" },
+  { icon: Film, label: "Video", detail: "Upstream images go in as reference" },
 ];
 
 const stack = [
@@ -183,15 +191,52 @@ export default async function HomePage() {
                 ))}
               </ul>
 
-              <div data-reveal className="mt-10">
-                <Button
-                  size="lg"
-                  nativeButton={false}
-                  render={<Link href={isLoggedIn ? "/canvas" : "/login"} />}
-                >
-                  {isLoggedIn ? "Open the canvas" : "Sign in to try it"}
-                  <ArrowRight className="size-4" />
-                </Button>
+              {/* 两个入口，按登录态换主次：
+                  已登录的人要的是自己的画布（/canvas-list），介绍页退成次级；
+                  没登录的人先看介绍页（它是公开的，不用先注册），登录才是次级。 */}
+              <div
+                data-reveal
+                className="mt-10 flex flex-col gap-3 sm:flex-row"
+              >
+                {isLoggedIn ? (
+                  <>
+                    <Button
+                      size="lg"
+                      nativeButton={false}
+                      render={<Link href="/canvas-list" />}
+                    >
+                      Open your canvases
+                      <ArrowRight className="size-4" />
+                    </Button>
+                    <Button
+                      size="lg"
+                      variant="outline"
+                      nativeButton={false}
+                      render={<Link href="/canvas" />}
+                    >
+                      Canvas tour
+                    </Button>
+                  </>
+                ) : (
+                  <>
+                    <Button
+                      size="lg"
+                      nativeButton={false}
+                      render={<Link href="/canvas" />}
+                    >
+                      Canvas tour
+                      <ArrowRight className="size-4" />
+                    </Button>
+                    <Button
+                      size="lg"
+                      variant="outline"
+                      nativeButton={false}
+                      render={<Link href="/login?next=/canvas-list" />}
+                    >
+                      Sign in to try it
+                    </Button>
+                  </>
+                )}
               </div>
             </div>
 
@@ -230,6 +275,25 @@ export default async function HomePage() {
                 Nodes stay editable while the agent works, and every change
                 broadcasts to anyone else watching the same board.
               </p>
+
+              {/* Agent 本尊在首页露一次脸：待机灯（这里没有 agent 在跑，只有它在等）。
+                  真组件而不是截图——它现在就在动，一句话都不用解释「活着」是什么意思。 */}
+              <div className="mt-5 flex items-center gap-3 border-t border-border pt-4">
+                {/* gap-px：18–20px 下九格靠明暗差本来就分得清，但这句话点名了「nine squares」，
+                    加一道 1px 缝，静止看也数得出九格（画布里的方阵不加缝，那里有动画带着读） */}
+                <ThinkingGrid size={20} animation="standby" className="gap-px" />
+                <p className="min-w-0 text-xs text-muted-foreground">
+                  Standing by. The rhythm of those nine squares is the agent&apos;s
+                  status —{" "}
+                  <Link
+                    href="/canvas#states"
+                    className="font-medium text-foreground underline decoration-border underline-offset-4 transition-colors hover:decoration-foreground motion-reduce:transition-none"
+                  >
+                    see all four
+                  </Link>
+                  .
+                </p>
+              </div>
             </div>
           </div>
         </div>
@@ -540,11 +604,12 @@ export default async function HomePage() {
               </h3>
               <ul className="space-y-2 text-sm">
                 <li>
+                  {/* 介绍页是公开的（middleware 只放行精确 /canvas），页脚照直链就行 */}
                   <Link
-                    href={isLoggedIn ? "/canvas" : "/login"}
+                    href="/canvas"
                     className="text-muted-foreground transition-colors hover:text-foreground"
                   >
-                    Canvas workflow
+                    Canvas tour
                   </Link>
                 </li>
                 <li>

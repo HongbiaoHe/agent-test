@@ -210,7 +210,7 @@ export function CanvasHeader({
           <CanvasIslandButton
             icon={<ArrowLeft className="size-4" />}
             label="Back to canvases"
-            onClick={() => router.push("/canvas")}
+            onClick={() => router.push("/canvas-list")}
           />
           <CanvasIslandDivider />
           <CanvasTitle sessionId={sessionId} title={title} />

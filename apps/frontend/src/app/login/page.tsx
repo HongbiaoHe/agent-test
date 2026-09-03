@@ -17,6 +17,7 @@ import {
   passkeyLoginVerify,
   sendOtpCode,
 } from "@/lib/api";
+import { safeNextPath } from "@/lib/safe-next";
 
 import DotField from "../_components/dot-field";
 
@@ -107,6 +108,18 @@ export default function LoginPage() {
     }
   }
 
+  /**
+   * 登录成功后去哪：middleware 把「本来要去的页面」放在 ?next=（见 middleware.ts），
+   * 没有则回缺省的 /agent。
+   *
+   * 在点击时读 window.location 而不是用 useSearchParams：后者在静态渲染的客户端页面里
+   * 要求外层有 Suspense 边界，为一个跳转目的地包一层不值得，况且这个值只在提交那一刻要用。
+   */
+  function afterLoginPath(): string {
+    const raw = new URLSearchParams(window.location.search).get("next");
+    return safeNextPath(raw) ?? "/agent";
+  }
+
   // passkey 仪式被用户取消时浏览器抛 NotAllowedError，统一成友好提示
   function friendly(e: unknown): string {
     const name = (e as { name?: string })?.name;
@@ -121,7 +134,7 @@ export default function LoginPage() {
       setBusy(null);
     } else {
       rememberEmail(value);
-      router.push("/agent");
+      router.push(afterLoginPath());
     }
   }
 
@@ -203,7 +216,7 @@ export default function LoginPage() {
         setBusy(null);
       } else {
         rememberEmail(value);
-        router.push("/agent");
+        router.push(afterLoginPath());
       }
     }
   }
