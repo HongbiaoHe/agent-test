@@ -161,16 +161,26 @@ export function sanitizeParams(
 }
 
 /**
- * 视频参考图挂什么 role：
- *  - byteplus / fal 消费首尾帧，用 `first_frame`（图生视频，全部 seedance 与 minimax-h3 都支持，
- *    而 `reference` 只有 seedance-2 家族支持，1.5-pro 会被接单期拒）；
- *  - 其余渠道（google / kie）不消费 `asset://` 之外的首尾帧语义，用缺省的 `reference`。
+ * 上游**只**消费首尾帧、不接受 `role:"reference"` 的视频模型。
+ *
+ * role 的模型能力不在 `GET /channels` 里（文档 §5.5 明说该维度未透出），只能按文档 + 实测列。
+ * 2026-09-02 实测同一份入参：`seedance-1.5-pro` + `role=reference` → `400
+ * param_invalid_value`（`reason: reference_role_unsupported_by_model`，
+ * `allowed_roles: [first_frame, last_frame]`）；`seedance-2-fast` 同参数接单成功。
+ * 它恰好是目录里的第一个视频模型（= 默认模型），所以这条例外必须有，否则默认路径直接挂。
+ *
+ * 名单外的模型一律按 `reference` 走——新模型进目录时默认就是「参考图」而不是「首帧」，
+ * 真不支持也会在接单期被拒并把 `allowed_roles` 带回 error_data，据此往这里加一行即可。
+ */
+const I2V_ONLY_VIDEO_MODELS = new Set(['seedance-1.5-pro']);
+
+/**
+ * 视频参考图挂什么 role：**默认 `reference`**（多模态参考生视频，保主体一致），
+ * 只有上面那份 i2v-only 名单里的模型退回 `first_frame`（把图当第一帧）。
  * 见对接文档 §5.5「role 的模型能力限制」。
  */
-export function videoRefRole(channel: string): AigcReference['role'] {
-  return channel === 'byteplus' || channel === 'fal'
-    ? 'first_frame'
-    : 'reference';
+export function videoRefRole(model: string): AigcReference['role'] {
+  return I2V_ONLY_VIDEO_MODELS.has(model) ? 'first_frame' : 'reference';
 }
 
 /** param_type → 接单请求里的字段名与取值形状（§5.1 / §5.2）。 */

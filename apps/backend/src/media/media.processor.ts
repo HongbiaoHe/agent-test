@@ -115,7 +115,7 @@ export class MediaProcessor extends WorkerHost {
       const references = await this.loadRefUrls(
         version.referenceVersionIds,
         type,
-        version.channel,
+        version.model,
         { signal },
       );
       // 等参考图期间被停止：不再往 aigc 发单（发了就要付费），走 catch 的「用户已停止」收尾
@@ -216,15 +216,16 @@ export class MediaProcessor extends WorkerHost {
    *
    * 若参考版本尚未 done（queued/generating），轮询 DB 等待（默认每 5s，上限 5 分钟）——
    * 画布上常是「上游图还在生成，下游已被批准」。变 failed 或超时 → 抛错，让本版本 failed。
-   * 顺序与传入 id 一致（视频首帧依赖第一张）。
+   * 顺序与传入 id 一致（提示词里按 `Image 1` / `Image 2` 引用素材时靠的就是这个顺序）。
    *
-   * 视频只取**第一张**：byteplus/fal 的首尾帧一次只认一个 first_frame，
-   * 其余渠道也没有「多张参考图」的一致语义——与改造前「视频取第一张作首帧」保持一致。
+   * role 默认 `reference`（参考图），只有 i2v-only 的模型退回 `first_frame`——见 videoRefRole。
+   * 挂 first_frame 时**只取第一张**：上游一次只认一个首帧；挂 reference 时全传，
+   * 超出该模型 image_input_number 的部分由 AigcService.submit 截掉。
    */
   private async loadRefUrls(
     referenceVersionIds: unknown,
     type: MediaType,
-    channel: string | null,
+    model: string,
     opts: {
       pollIntervalMs?: number;
       timeoutMs?: number;
@@ -234,13 +235,13 @@ export class MediaProcessor extends WorkerHost {
     const all = Array.isArray(referenceVersionIds)
       ? referenceVersionIds.filter((x): x is string => typeof x === 'string')
       : [];
-    const ids = type === 'video' ? all.slice(0, 1) : all;
+    const role: AigcReference['role'] =
+      type === 'video' ? videoRefRole(model) : 'reference';
+    const ids = role === 'first_frame' ? all.slice(0, 1) : all;
     if (ids.length === 0) return [];
 
     const pollIntervalMs = opts.pollIntervalMs ?? 5_000;
     const timeoutMs = opts.timeoutMs ?? 5 * 60_000; // 5 分钟
-    const role: AigcReference['role'] =
-      type === 'video' ? videoRefRole(channel ?? '') : 'reference';
 
     const refs: AigcReference[] = [];
     for (const id of ids) {

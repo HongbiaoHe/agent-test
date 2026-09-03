@@ -139,7 +139,7 @@ export function createCanvasTools(
     {
       name: 'connect_nodes',
       description:
-        '用有向连线连接两个节点（sourceId → targetId，表示 source 是 target 的上游输入）。生成节点的提示词与参考图全靠这些入边提供：text 节点连过去就是提示词，image_gen 连过去就是参考图（video_gen 取第一张当首帧）。类型契约：text 输出 text；image_upload 输出 image；image_gen 接受 text/image 输出 image；video_gen 接受 text/image/video 输出 video（video 输入仅用于串联画布，不参与生成）。text 与 image_upload 没有输入端口，任何指向它们的连线都会被拒绝。',
+        '用有向连线连接两个节点（sourceId → targetId，表示 source 是 target 的上游输入）。生成节点的提示词与参考图全靠这些入边提供：text 节点连过去就是提示词，image_gen 连过去就是参考图。类型契约：text 输出 text；image_upload 输出 image；image_gen 接受 text/image 输出 image；video_gen 接受 text/image/video 输出 video（video 输入仅用于串联画布，不参与生成）。text 与 image_upload 没有输入端口，任何指向它们的连线都会被拒绝。',
       schema: z.object({ sourceId: z.string(), targetId: z.string() }),
     },
   );
@@ -220,7 +220,7 @@ export function createCanvasTools(
     {
       name: 'generate_media_node',
       description:
-        '触发某个 image_gen / video_gen 节点的实际生成（异步）。素材全部取自入边：上游 text 节点的正文拼成提示词，上游 image_gen 的图片作参考图（视频取第一张当首帧）。生成节点自身不带 prompt——没有上游 text 就会报错，此时应先建 text 节点再连线。上游 image_upload 与上游视频均不参与生成（前者模拟上传无资产可引用，后者底层管线吃不下视频参考），都会在返回值里报出。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
+        '触发某个 image_gen / video_gen 节点的实际生成（异步）。素材全部取自入边：上游 text 节点的正文拼成提示词，上游 image_gen 的图片作参考图。生成节点自身不带 prompt——没有上游 text 就会报错，此时应先建 text 节点再连线。上游 image_upload 与上游视频均不参与生成（前者模拟上传无资产可引用，后者底层管线吃不下视频参考），都会在返回值里报出。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
       schema: z.object({ nodeId: z.string() }),
     },
   );

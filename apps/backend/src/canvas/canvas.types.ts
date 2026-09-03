@@ -374,7 +374,7 @@ export function shortNodeId(id: string): string {
 export interface CanvasGenerationInputs {
   /** 上游 text 节点的正文，按入边顺序 */
   promptParts: string[];
-  /** 上游 image_gen 的产物版本 id（参考图；视频只用第一张作首帧） */
+  /** 上游 image_gen 的产物版本 id（作参考图；只有 i2v-only 的视频模型才当首帧用，见 aigc.catalog 的 videoRefRole） */
   referenceVersionIds: string[];
   /** 被跳过的上游 image_upload 数（MVP 模拟上传，没有可引用的版本 id） */
   skippedImageUpload: number;

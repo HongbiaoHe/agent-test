@@ -128,10 +128,15 @@ export class AigcService {
       body,
       input.traceId,
     );
+    // 带上参考资源的 role：它不由用户选、而是按模型能力推出来的（见 videoRefRole），
+    // 出问题时第一个要看的就是「这单到底按参考图还是首帧提交的」。
+    const refInfo = references.length
+      ? `${references.length}(${references[0].role})`
+      : '0';
     this.logger.log(
       `aigc 接单 task=${taskId} ${config.channel}/${config.model} params=${JSON.stringify(
         config.params,
-      )} refs=${references.length}`,
+      )} refs=${refInfo}`,
     );
     return { taskId, config };
   }

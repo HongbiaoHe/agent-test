@@ -321,11 +321,17 @@ describe('buildTaskBody', () => {
 });
 
 describe('videoRefRole / taskPath', () => {
-  it('byteplus / fal 用首帧，其余用 reference', () => {
-    expect(videoRefRole('byteplus')).toBe('first_frame');
-    expect(videoRefRole('fal')).toBe('first_frame');
-    expect(videoRefRole('google')).toBe('reference');
-    expect(videoRefRole('kie')).toBe('reference');
+  it('默认参考图；只有 i2v-only 的模型退回首帧', () => {
+    // 2026-09-02 实测：1.5-pro 传 role=reference 会被接单期拒
+    // （reference_role_unsupported_by_model，allowed_roles=[first_frame,last_frame]）
+    expect(videoRefRole('seedance-1.5-pro')).toBe('first_frame');
+    // 其余一律参考图（同参数实测 seedance-2-fast 接单成功）
+    expect(videoRefRole('seedance-2-fast')).toBe('reference');
+    expect(videoRefRole('seedance-2.5')).toBe('reference');
+    expect(videoRefRole('minimax-h3')).toBe('reference');
+    expect(videoRefRole('veo-3.1')).toBe('reference');
+    // 目录里新出现的模型默认也是参考图，不是首帧
+    expect(videoRefRole('brand-new-model')).toBe('reference');
   });
 
   it('接单路径按类型', () => {
