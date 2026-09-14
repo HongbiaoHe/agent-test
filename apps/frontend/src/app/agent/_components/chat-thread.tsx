@@ -10,8 +10,10 @@ import {
   Sparkles,
   Square,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useRef, useState } from "react";
 
+import { JumpToLatest } from "@/components/chat/jump-to-latest";
+import { useChatScroll } from "@/components/chat/use-chat-scroll";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
@@ -81,8 +83,11 @@ export function ChatThread({
 }) {
   const [draft, setDraft] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
-  const bottomRef = useRef<HTMLDivElement>(null);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  // 滚动编排：发送后把这条消息顶到视口顶部，回复在其下方生长而视图不动；
+  // 底部留白只缩不涨；跟随底部默认关，只由「回到最新」按钮开启。
+  const { contentRef, spacerRef, atLatest, armAnchor, jumpToLatest } =
+    useChatScroll(items, conversationId);
 
   // 可用命令（/ 自动补全）
   const { data: commands = [] } = useQuery({
@@ -116,21 +121,10 @@ export function ChatThread({
     setActiveIndex(0);
   }
 
-  // 新消息 / 审批出现时滚动到底。只滚 ScrollArea 自己的 viewport（直接置 scrollTop），
-  // 不用 bottomRef.scrollIntoView：后者会向上遍历、把每一个可滚祖先都滚动以露出锚点，
-  // 在 busy 重渲染、内层 viewport 尚未 clamp 到最终高度的那一帧触发时，会误把外层
-  // overflow:hidden 的 .h-screen/外壳一起滚动 → 整个 section 连同顶栏被顶上去、且因父级
-  // 是 hidden 无法滚回（间歇性复现）。直接操作 viewport 物理上不可能移动任何祖先。
-  useEffect(() => {
-    const vp = bottomRef.current?.closest<HTMLElement>(
-      '[data-slot="scroll-area-viewport"]',
-    );
-    if (vp) vp.scrollTop = vp.scrollHeight;
-  }, [items, approval]);
-
   function submit() {
     const text = draft.trim();
     if (!text || busy) return;
+    armAnchor();
     onSend(text);
     setDraft("");
   }
@@ -215,69 +209,80 @@ export function ChatThread({
         </div>
       </header>
 
-      {/* 消息流 */}
-      <ScrollArea className="min-h-0 flex-1">
-        <div className="mx-auto max-w-3xl space-y-6 px-5 py-8">
-          {isLoading ? (
-            <ThreadSkeleton />
-          ) : isNewChat ? (
-            // 引导页：没有输入框，先创建会话再进入（/agent 空路由）
-            <div className="flex flex-col items-center gap-3 py-24 text-center">
-              <div className="flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
-                <Sparkles className="size-6" />
+      {/* 消息流。外层 relative 只为给「回到最新」按钮定位——它必须在滚动视口之外，
+          否则会跟着内容一起滚走。 */}
+      <div className="relative min-h-0 flex-1">
+        {/* --chat-top-gap：发送后这条用户消息距视口顶的留白。数字只在这里出现，
+            JS 侧只读不写死；要改成「距窗口顶 68px」就减去顶栏的 h-14（56px）。 */}
+        <ScrollArea className="h-full [--chat-top-gap:68px]">
+          <div
+            ref={contentRef}
+            className="mx-auto max-w-3xl space-y-6 px-5 py-8"
+          >
+            {isLoading ? (
+              <ThreadSkeleton />
+            ) : isNewChat ? (
+              // 引导页：没有输入框，先创建会话再进入（/agent 空路由）
+              <div className="flex flex-col items-center gap-3 py-24 text-center">
+                <div className="flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
+                  <Sparkles className="size-6" />
+                </div>
+                <p className="text-base font-medium">Start a new conversation</p>
+                <p className="max-w-sm text-sm text-muted-foreground">
+                  Create a conversation to start chatting — the agent breaks
+                  your goal down and works through it step by step, asking for
+                  your sign-off before sensitive actions.
+                </p>
+                <Button onClick={onNewChat} disabled={creating} className="mt-1">
+                  {creating ? <Loader className="animate-spin" /> : <Plus />}
+                  New conversation
+                </Button>
               </div>
-              <p className="text-base font-medium">Start a new conversation</p>
-              <p className="max-w-sm text-sm text-muted-foreground">
-                Create a conversation to start chatting — the agent breaks
-                your goal down and works through it step by step, asking for
-                your sign-off before sensitive actions.
-              </p>
-              <Button onClick={onNewChat} disabled={creating} className="mt-1">
-                {creating ? <Loader className="animate-spin" /> : <Plus />}
-                New conversation
-              </Button>
-            </div>
-          ) : showEmpty ? (
-            <div className="flex flex-col items-center gap-3 py-24 text-center">
-              <div className="flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
-                <Sparkles className="size-6" />
+            ) : showEmpty ? (
+              <div className="flex flex-col items-center gap-3 py-24 text-center">
+                <div className="flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
+                  <Sparkles className="size-6" />
+                </div>
+                <p className="text-base font-medium">Start chatting</p>
+                <p className="max-w-sm text-sm text-muted-foreground">
+                  Tell the agent your goal in the box below — it will break it
+                  down and work through it step by step, asking for your
+                  sign-off before sensitive actions like sending email.
+                </p>
               </div>
-              <p className="text-base font-medium">Start chatting</p>
-              <p className="max-w-sm text-sm text-muted-foreground">
-                Tell the agent your goal in the box below — it will break it
-                down and work through it step by step, asking for your
-                sign-off before sensitive actions like sending email.
-              </p>
-            </div>
-          ) : (
-            <>
-              {rows.map((r) =>
-                r.row === "tools" ? (
-                  <ToolGroup
-                    key={r.id}
-                    tools={r.tools}
-                    activeDetailId={activeDetailId}
-                    onOpenDetail={onOpenDetail}
-                  />
-                ) : r.item.kind === "media" ? (
-                  // 媒体卡片与助手内容同列左对齐，conversationId 必有（卡片只在已有会话里出现）。
-                  <div key={r.item.id}>
-                    <MediaCard
-                      conversationId={conversationId as string}
-                      generationId={r.item.generationId}
-                      mediaType={r.item.mediaType}
+            ) : (
+              <>
+                {rows.map((r) =>
+                  r.row === "tools" ? (
+                    <ToolGroup
+                      key={r.id}
+                      tools={r.tools}
+                      activeDetailId={activeDetailId}
+                      onOpenDetail={onOpenDetail}
                     />
-                  </div>
-                ) : (
-                  <ChatMessage key={r.item.id} item={r.item} />
-                ),
-              )}
-              {busy && <ThinkingIndicator visible={thinkingVisible} />}
-            </>
-          )}
-          <div ref={bottomRef} />
-        </div>
-      </ScrollArea>
+                  ) : r.item.kind === "media" ? (
+                    // 媒体卡片与助手内容同列左对齐，conversationId 必有（卡片只在已有会话里出现）。
+                    <div key={r.item.id}>
+                      <MediaCard
+                        conversationId={conversationId as string}
+                        generationId={r.item.generationId}
+                        mediaType={r.item.mediaType}
+                      />
+                    </div>
+                  ) : (
+                    <ChatMessage key={r.item.id} item={r.item} />
+                  ),
+                )}
+                {busy && <ThinkingIndicator visible={thinkingVisible} />}
+              </>
+            )}
+          </div>
+          {/* 底部动态留白：撑出「把刚发的消息顶到视口顶部」所需的滚动余量。
+              回复每长一截就等量收窄，填满一屏归零；同一轮内只缩不涨。 */}
+          <div ref={spacerRef} aria-hidden />
+        </ScrollArea>
+        {!atLatest && <JumpToLatest onClick={jumpToLatest} />}
+      </div>
 
       {/* 输入区（新会话引导页没有输入框，先创建会话再聊天） */}
       {!isNewChat && (

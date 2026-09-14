@@ -15,8 +15,10 @@ import {
   Wrench,
   X,
 } from "lucide-react";
-import { useEffect, useRef, useState } from "react";
+import { useState } from "react";
 
+import { JumpToLatest } from "@/components/chat/jump-to-latest";
+import { useChatScroll } from "@/components/chat/use-chat-scroll";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
@@ -219,7 +221,8 @@ function Item({ item }: { item: ChatItem }) {
   switch (item.kind) {
     case "user":
       return (
-        <div className="flex justify-end">
+        // data-chat-anchor：发送后 useChatScroll 靠它把这条消息顶到视口顶部（取最后一个）
+        <div data-chat-anchor className="flex justify-end">
           <div className="max-w-[85%] whitespace-pre-wrap rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground">
             {item.text}
           </div>
@@ -488,6 +491,7 @@ function AskPanel({
 }
 
 export function CanvasChat({
+  sessionId,
   chat,
   busy,
   sessionModel,
@@ -501,6 +505,8 @@ export function CanvasChat({
   focusCount,
   onClearFocus,
 }: {
+  /** 当前会话；换会话时重置滚动状态（留白、跟随、首次定位）。 */
+  sessionId: string | null;
   chat: ChatState;
   busy: boolean;
   /** 会话当前模型（初始化切换器）；null 时用默认。 */
@@ -563,14 +569,17 @@ export function CanvasChat({
     setModel(next);
     if (!supportsThinkingLevel(next, thinking)) setThinking("auto");
   }
-  const bottomRef = useRef<HTMLDivElement>(null);
-  useEffect(() => {
-    bottomRef.current?.scrollIntoView({ block: "end" });
-  }, [chat.items, chat.ask]);
+  // 滚动编排：发送后把这条消息顶到视口顶部，回复在其下方生长而视图不动；
+  // 底部留白只缩不涨；跟随底部默认关，只由「回到最新」按钮开启。
+  // 旧实现是 bottomRef.scrollIntoView——它会顺带滚动每一个可滚祖先，是「整页被顶上去」
+  // 那一类问题的根源；新实现只动 ScrollArea 自己的 viewport。
+  const { contentRef, spacerRef, atLatest, armAnchor, jumpToLatest } =
+    useChatScroll(chat.items, sessionId);
 
   function submit() {
     const t = text.trim();
     if (!t || busy) return;
+    armAnchor();
     onSend(t, model, thinking, approval);
     setText("");
   }
@@ -585,20 +594,28 @@ export function CanvasChat({
 
   return (
     <div className="flex h-full min-h-0 flex-col">
-      {/* min-h-0 关键：让 ScrollArea 在 flex 列里可收缩并内部滚动，而不是撑高整列溢出屏幕 */}
-      <ScrollArea className="min-h-0 flex-1 px-4">
-        <div className="flex flex-col gap-2.5 py-4">
-          {renderItems(chat.items)}
-          {chat.ask && (
-            <AskPanel
-              ask={chat.ask}
-              onAnswer={onAnswer}
-              onResolve={onResolve}
-            />
-          )}
-          <div ref={bottomRef} />
-        </div>
-      </ScrollArea>
+      {/* min-h-0 关键：让滚动区在 flex 列里可收缩并内部滚动，而不是撑高整列溢出屏幕。
+          relative 给「回到最新」按钮定位——它必须在滚动视口之外，否则会跟着内容滚走。 */}
+      <div className="relative min-h-0 flex-1">
+        {/* --chat-top-gap：发送后这条用户消息距视口顶的留白，数字只在这里出现。
+            面板矮的时候 hook 会按视口高度自动封顶，不会吃掉小半屏。 */}
+        <ScrollArea className="h-full px-4 [--chat-top-gap:68px]">
+          <div ref={contentRef} className="flex flex-col gap-2.5 py-4">
+            {renderItems(chat.items)}
+            {chat.ask && (
+              <AskPanel
+                ask={chat.ask}
+                onAnswer={onAnswer}
+                onResolve={onResolve}
+              />
+            )}
+          </div>
+          {/* 底部动态留白：撑出「把刚发的消息顶到视口顶部」所需的滚动余量。
+              回复每长一截就等量收窄，填满一屏归零；同一轮内只缩不涨。 */}
+          <div ref={spacerRef} aria-hidden />
+        </ScrollArea>
+        {!atLatest && <JumpToLatest onClick={jumpToLatest} />}
+      </div>
 
       {/* agent 状态条：紧贴消息流下沿，不随消息滚走——执行期间要始终看得见。
           排在任务计划之上：它讲的是「此刻在做什么」，是最后一条消息的延续；
