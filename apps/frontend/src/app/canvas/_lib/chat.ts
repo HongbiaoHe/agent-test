@@ -34,8 +34,18 @@ export interface AskRequest {
 export type ChatItem =
   | { id: string; kind: "user"; text: string }
   | { id: string; kind: "assistant"; text: string; streaming: boolean }
-  /** 模型思考过程（推理型模型才有）：流式累加，其后第一个其它事件到来即收口。 */
-  | { id: string; kind: "reasoning"; text: string; streaming: boolean }
+  /**
+   * 模型思考过程（推理型模型才有）：流式累加，其后第一个其它事件到来即收口。
+   * sourceId = 产生这段思考的那条 AIMessage id —— 思考是那条消息的一部分，不是独立事件，
+   * 同一 id 的增量都并进同一块。改造前落库的历史行没有这个字段，为空串，走末尾合并的旧规则。
+   */
+  | {
+      id: string;
+      kind: "reasoning";
+      sourceId: string;
+      text: string;
+      streaming: boolean;
+    }
   | {
       id: string;
       kind: "tool";
@@ -96,13 +106,29 @@ function extractAsk(payload: Record<string, unknown>): AskRequest | null {
   };
 }
 
-/** 把仍在流的思考块收口（后端在思考之后的第一个事件处同样收口落库，两边语义一致）。 */
+/**
+ * 把仍在流的思考块收口（后端在思考之后的第一个事件处同样收口落库，两边语义一致）。
+ * 收**全部**而不只是末尾那条：按 sourceId 归集后，正在流的思考不一定还在队尾。
+ */
 function sealReasoning(state: ChatState): ChatState {
-  const last = state.items[state.items.length - 1];
-  if (last?.kind !== "reasoning" || !last.streaming) return state;
-  const items = state.items.slice();
-  items[items.length - 1] = { ...last, streaming: false };
-  return { ...state, items };
+  if (!state.items.some((it) => it.kind === "reasoning" && it.streaming)) {
+    return state;
+  }
+  return {
+    ...state,
+    items: state.items.map((it) =>
+      it.kind === "reasoning" && it.streaming
+        ? { ...it, streaming: false }
+        : it,
+    ),
+  };
+}
+
+/** 末尾那条正在流的思考的下标；没有则 -1。只用于没带 sourceId 的历史行。 */
+function tailStreamingReasoning(items: ChatItem[]): number {
+  const i = items.length - 1;
+  const last = items[i];
+  return last?.kind === "reasoning" && last.streaming ? i : -1;
 }
 
 export function reduce(input: ChatState, ev: ChatEvent): ChatState {
@@ -119,15 +145,23 @@ export function reduce(input: ChatState, ev: ChatEvent): ChatState {
     case "reasoning": {
       const text = String(ev.payload.text ?? "");
       if (!text) return state;
-      const last = state.items[state.items.length - 1];
-      if (last?.kind === "reasoning" && last.streaming) {
+      // 按源消息归集：同一条 AIMessage 的多次增量并进同一块。重复送达的同一条思考因此
+      // 落回原来那块，而不是像以前那样每来一次就新起一条。
+      const sourceId = String(ev.payload.sourceId ?? "");
+      const at = sourceId
+        ? state.items.findIndex(
+            (it) => it.kind === "reasoning" && it.sourceId === sourceId,
+          )
+        : tailStreamingReasoning(state.items);
+      const prev = at >= 0 ? state.items[at] : undefined;
+      if (prev?.kind === "reasoning") {
         const items = state.items.slice();
-        items[items.length - 1] = { ...last, text: last.text + text };
+        items[at] = { ...prev, text: prev.text + text };
         return { ...state, items };
       }
       return bump([
         ...state.items,
-        { id: id(), kind: "reasoning", text, streaming: true },
+        { id: id(), kind: "reasoning", sourceId, text, streaming: true },
       ]);
     }
     case "token": {

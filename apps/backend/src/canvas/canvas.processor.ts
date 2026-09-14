@@ -22,6 +22,7 @@ import { CanvasService } from './canvas.service';
 import { createCanvasTools } from './canvas.tools';
 import { type CallUsage, extractUsages } from './token-usage';
 import { planHistoryWindow, stripClearedPlan } from './history-window';
+import { ReasoningCollector } from './reasoning-parts';
 import {
   CANVAS_THINKING_LEVELS,
   type CanvasThinkingLevel,
@@ -184,26 +185,41 @@ export class CanvasProcessor extends WorkerHost {
       // tool_start echo 去重：updates 会跨节点回显同一带 tool_calls 的 AIMessage（同 id），
       // 不去重会导致一次工具调用显示成多张卡片（用户观察到的"添加节点 ×3"）。
       const seenToolStartIds = new Set<string>();
-      // Gemini 思考块的去重集合（updates 会跨节点回显同一条 AIMessage）
-      const seenThinkingIds = new Set<string>();
+
+      // 思考按「源消息」归集：一条 AIMessage 一块、一块落一行，前端也按这个 id 渲染。
+      // priorIds = run 开始前 checkpoint 里就有的消息 —— 它们会被 updates 流整批回放，
+      // 其思考属于上几轮（甚至上一个模型），必须整条排掉。规则见 reasoning-parts.ts。
+      const reasoning = new ReasoningCollector(
+        await this.priorMessageIds(agent, config),
+      );
 
       // 去重：deepagents 的 updates 流会在同一轮把同一个 AIMessage 跨多个节点回显多次，
       // 每次都会触发 flush → 同一段助手文本被重复 publish+persist（实测一段被落 4 次）。
       // 记录上一段已刷文本，相同则跳过。
       let lastFlushed = '';
-      // 思考流缓冲：增量已随事件实时推给前端，这里只负责攒完整段落落库一条 reasoning 消息。
-      // 收口时机 = 思考之后的第一个其它事件（正文 token / 完整消息 / 工具调用）或本轮结束。
-      let reasoningBuf = '';
+      /**
+       * 收口：把本轮新产生的思考按源消息各落一行（带 sourceId，前端据此渲染、重复事件据此归并）。
+       * 时机 = 思考之后的第一个其它事件（正文 token / 完整消息 / 工具调用）或本轮结束。
+       */
       const flushReasoning = async () => {
-        const text = reasoningBuf;
-        reasoningBuf = '';
-        if (!text) return;
-        await this.persist(
-          sessionId,
-          runId,
-          { type: 'reasoning', payload: { text } },
-          seq++,
-        );
+        for (const part of reasoning.drain()) {
+          await this.persist(
+            sessionId,
+            runId,
+            { type: 'reasoning', payload: part },
+            seq++,
+          );
+        }
+      };
+      /** 收下一块思考并推流（null = collector 判定该丢：历史重放 / 同轮回显 / 空文本）。 */
+      const pushReasoning = async (
+        part: { sourceId: string; text: string } | null,
+      ) => {
+        if (!part) return;
+        await this.stream.publish(sessionId, {
+          type: 'reasoning',
+          payload: part,
+        });
       };
       const flush = async (override?: string) => {
         const text = override ?? buf;
@@ -231,20 +247,21 @@ export class CanvasProcessor extends WorkerHost {
           }
           // Gemini 的思考正文只能从 updates 拿（messages 流会把它丢掉，见
           // extractThinkingBlocks 注释）。整段一次给出，非流式。
-          for (const text of extractThinkingBlocks(data, seenThinkingIds)) {
-            reasoningBuf += text;
-            await this.stream.publish(sessionId, {
-              type: 'reasoning',
-              payload: { text },
-            });
+          for (const part of extractThinkingBlocks(data)) {
+            await pushReasoning(reasoning.takeBlock(part.id, part.text));
           }
         }
 
         const raw = normalize(ns, mode, data);
         if (!raw) continue;
         if (raw.type === 'reasoning') {
-          reasoningBuf += String((raw.payload as { text?: string }).text ?? '');
-          await this.stream.publish(sessionId, raw);
+          const p = raw.payload as { text?: string; sourceId?: string };
+          await pushReasoning(
+            reasoning.appendDelta(
+              String(p.sourceId ?? ''),
+              String(p.text ?? ''),
+            ),
+          );
           continue;
         }
         // 思考之后的第一个事件即代表这段思考已结束 → 先把它收口落库，保证 seq 顺序在前
@@ -410,6 +427,37 @@ export class CanvasProcessor extends WorkerHost {
       select: { messageId: true },
     });
     return new Set(rows.map((r) => r.messageId as string));
+  }
+
+  /**
+   * run 开始前 checkpoint 里已有的消息 id。
+   *
+   * 用途：识别 updates 流里被**重放**的历史消息——它们的思考属于上几轮（甚至上一个模型），
+   * 不该再推流也不该再落库。之前只有 run 内的去重集合，拦得住同轮跨节点回显，拦不住跨轮重放。
+   *
+   * 读不到就返回空集（首轮无 checkpoint、或上游 state 形状变了）：功能降级为不排除，
+   * 最差退回改造前的行为，绝不因此让整轮跑挂掉。
+   */
+  private async priorMessageIds(
+    agent: { getState(config: unknown): Promise<unknown> },
+    config: unknown,
+  ): Promise<Set<string>> {
+    const ids = new Set<string>();
+    try {
+      const state = (await agent.getState(config)) as {
+        values?: { messages?: unknown[] };
+      };
+      const msgs = state?.values?.messages;
+      if (!Array.isArray(msgs)) return ids;
+      for (const m of msgs) {
+        if (isBaseMessage(m) && m.id) ids.add(m.id);
+      }
+    } catch {
+      this.logger.warn(
+        'priorMessageIds 读取 checkpoint 失败，本轮不排除历史思考',
+      );
+    }
+    return ids;
   }
 
   /** 记一次 token 用量（含缓存明细）：明细行 + Run 累加 + 推流。 */

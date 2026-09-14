@@ -47,7 +47,14 @@ function normalizeMessage(data: unknown): RawEvent | null {
     // 思考与正文不在同一个 chunk 里（实测：deepseek 推理阶段 content 为空、正文阶段不再带
     // reasoning_content；Gemini 的 thinking 块与 text 块也是分开的 chunk）。
     const reasoning = reasoningText(msg);
-    if (reasoning) return { type: 'reasoning', payload: { text: reasoning } };
+    // 带上源消息 id：思考是**那条 AIMessage 的一部分**，不是一个独立发生的事件。
+    // 下游据此把同一条消息的多次增量归并成一块，也据此识别 checkpoint 重放的旧思考。
+    if (reasoning) {
+      return {
+        type: 'reasoning',
+        payload: { text: reasoning, sourceId: msg.id ?? '' },
+      };
+    }
     return msg.text ? { type: 'token', payload: { text: msg.text } } : null;
   }
   return null;
@@ -88,8 +95,14 @@ function reasoningText(msg: {
   return out;
 }
 
+/** 一块思考及其归属的源消息 id（id 可能为空：provider 没给时退化成按正文去重）。 */
+export interface ThinkingPart {
+  id: string;
+  text: string;
+}
+
 /**
- * 从 updates 节点更新里抽取 **Gemini 的思考正文**，按 message id 去重。
+ * 从 updates 节点更新里抽取 **Gemini 的思考正文**，连同它归属的 AIMessage id 一起给出。
  *
  * 为什么非得走 updates：langgraph 的 `messages` 流会把 AIMessageChunk 的 content 压成 string，
  * thinking 块在到达 normalize 之前就没了（实测一整轮 canvas run，全部 chunk 都是
@@ -98,12 +111,14 @@ function reasoningText(msg: {
  *
  * 刻意**只取 thinking 块**、不碰 `reasoning_content`：DeepSeek 那条已由 messages 流逐块推送，
  * 这里再取一遍会把同一段思考落两份。
+ *
+ * **不在这里去重**：本函数只认「这次更新里有哪些思考」。哪些该丢，取决于调用方才知道的上下文
+ * ——同一轮内跨节点的回显要合并，而 checkpoint 重放的**上几轮**消息要整条丢掉。把两种判断混进
+ * 一个 `seen` 集合正是之前那个 bug：集合每轮新建，拦得住同轮回显，拦不住跨轮重放，于是旧思考
+ * 每轮被当成新事件重发一遍（换了模型也照发，因为它来自 checkpoint 而不是本次调用）。
  */
-export function extractThinkingBlocks(
-  data: unknown,
-  seen: Set<string>,
-): string[] {
-  const out: string[] = [];
+export function extractThinkingBlocks(data: unknown): ThinkingPart[] {
+  const out: ThinkingPart[] = [];
   if (!data || typeof data !== 'object') return out;
   for (const value of Object.values(data as Record<string, unknown>)) {
     if (!value || typeof value !== 'object') continue;
@@ -117,12 +132,7 @@ export function extractThinkingBlocks(
         if (isThinkingBlock(block)) text += block.thinking;
       }
       if (!text) continue;
-      const id = m.id ?? '';
-      if (id) {
-        if (seen.has(id)) continue;
-        seen.add(id);
-      }
-      out.push(text);
+      out.push({ id: m.id ?? '', text });
     }
   }
   return out;

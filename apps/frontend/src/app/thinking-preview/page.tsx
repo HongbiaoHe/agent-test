@@ -125,12 +125,16 @@ const PHASE_CASES: { label: string; items: ChatItem[]; busy: boolean }[] = [
   },
   {
     label: "reasoning streaming",
-    items: [{ id: "1", kind: "reasoning", text: "…", streaming: true }],
+    items: [
+      { id: "1", kind: "reasoning", sourceId: "", text: "…", streaming: true },
+    ],
     busy: true,
   },
   {
     label: "reasoning 已收口",
-    items: [{ id: "1", kind: "reasoning", text: "…", streaming: false }],
+    items: [
+      { id: "1", kind: "reasoning", sourceId: "", text: "…", streaming: false },
+    ],
     busy: true,
   },
   {

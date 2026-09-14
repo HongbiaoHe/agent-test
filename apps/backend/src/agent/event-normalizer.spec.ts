@@ -39,7 +39,7 @@ describe('normalize', () => {
     ]);
     expect(ev).toEqual({
       type: 'reasoning',
-      payload: { text: '先比较小数位…' },
+      payload: { text: '先比较小数位…', sourceId: '' },
     });
   });
 
@@ -47,7 +47,10 @@ describe('normalize', () => {
     const ev = normalize(['model_request:x'], 'messages', [
       reasoningMsg('思考', '正文'),
     ]);
-    expect(ev).toEqual({ type: 'reasoning', payload: { text: '思考' } });
+    expect(ev).toEqual({
+      type: 'reasoning',
+      payload: { text: '思考', sourceId: '' },
+    });
   });
 
   it('Gemini 的 thinking 块 → reasoning（不能用 msg.text 取，那会丢掉思考）', () => {
@@ -58,7 +61,7 @@ describe('normalize', () => {
     ]);
     expect(ev).toEqual({
       type: 'reasoning',
-      payload: { text: '**先看清题目**\n分母是 12…' },
+      payload: { text: '**先看清题目**\n分母是 12…', sourceId: '' },
     });
   });
 
@@ -71,7 +74,10 @@ describe('normalize', () => {
         ],
       }),
     ]);
-    expect(ev).toEqual({ type: 'reasoning', payload: { text: '前半后半' } });
+    expect(ev).toEqual({
+      type: 'reasoning',
+      payload: { text: '前半后半', sourceId: '' },
+    });
   });
 
   it('Gemini 的 text 块仍走 token，不被误判成思考', () => {
@@ -159,19 +165,26 @@ describe('extractThinkingBlocks', () => {
     model_request: { messages: msgs },
   });
 
-  it('抽取 updates 里的 thinking 正文', () => {
+  it('抽取 updates 里的 thinking 正文，并带上归属的源消息 id', () => {
     const out = extractThinkingBlocks(
       update(aiWithThinking('m1', '先看安全区再放节点')),
-      new Set(),
     );
-    expect(out).toEqual(['先看安全区再放节点']);
+    expect(out).toEqual([{ id: 'm1', text: '先看安全区再放节点' }]);
   });
 
-  it('同一条消息跨节点回显只取一次', () => {
-    const seen = new Set<string>();
+  it('照实返回、**不在这里去重**——哪些该丢由调用方按上下文判定（见 ReasoningCollector）', () => {
     const data = update(aiWithThinking('m1', '思考'));
-    expect(extractThinkingBlocks(data, seen)).toHaveLength(1);
-    expect(extractThinkingBlocks(data, seen)).toHaveLength(0);
+    expect(extractThinkingBlocks(data)).toHaveLength(1);
+    expect(extractThinkingBlocks(data)).toHaveLength(1);
+  });
+
+  it('消息没有 id 时 id 为空串（调用方退化成按正文归一）', () => {
+    const noId = new AIMessageChunk({
+      content: [{ type: 'thinking', thinking: '无 id 的思考' }],
+    });
+    expect(extractThinkingBlocks(update(noId))).toEqual([
+      { id: '', text: '无 id 的思考' },
+    ]);
   });
 
   it('不碰 DeepSeek 的 reasoning_content——那条已由 messages 流推送，重复取会落两份', () => {
@@ -180,13 +193,13 @@ describe('extractThinkingBlocks', () => {
       content: '',
       additional_kwargs: { reasoning_content: 'deepseek 的思考' },
     });
-    expect(extractThinkingBlocks(update(ds), new Set())).toEqual([]);
+    expect(extractThinkingBlocks(update(ds))).toEqual([]);
   });
 
   it('纯文本消息 / 空更新 → 空数组', () => {
     const plain = new AIMessageChunk({ id: 't1', content: '答案' });
-    expect(extractThinkingBlocks(update(plain), new Set())).toEqual([]);
-    expect(extractThinkingBlocks(null, new Set())).toEqual([]);
-    expect(extractThinkingBlocks({ tools: {} }, new Set())).toEqual([]);
+    expect(extractThinkingBlocks(update(plain))).toEqual([]);
+    expect(extractThinkingBlocks(null)).toEqual([]);
+    expect(extractThinkingBlocks({ tools: {} })).toEqual([]);
   });
 });
