@@ -15,12 +15,12 @@ export const CANVAS_NODE_IO: Record<
   CanvasNodeType,
   { inputs: readonly CanvasIoType[]; outputs: readonly CanvasIoType[] }
 > = {
-  text: { inputs: [], outputs: ["text"] },
   image_upload: { inputs: [], outputs: ["image"] },
-  image_gen: { inputs: ["text", "image"], outputs: ["image"] },
+  // 入边只提供参考图：提示词是生成节点自己的 prompt 字段，不走连线
+  image_gen: { inputs: ["image"], outputs: ["image"] },
   // video 输入只放开连线（可串联画布），不参与生成：底层管线吃不下视频参考
   // （详见后端 canvas.types 的 CANVAS_NODE_IO 注释）
-  video_gen: { inputs: ["text", "image", "video"], outputs: ["video"] },
+  video_gen: { inputs: ["image", "video"], outputs: ["video"] },
   // 唯一只吃视频的节点：把多段上游视频按入边顺序接成一条（本地 ffmpeg，非生成模型）
   video_concat: { inputs: ["video"], outputs: ["video"] },
 };
@@ -45,26 +45,11 @@ export interface NodeInputSource {
 
 /** 节点类型的缺省名：label 为空时顶上，同时也是各处「这是哪类节点」的措辞来源。 */
 export const NODE_TYPE_LABEL: Record<CanvasNodeType, string> = {
-  text: "Text",
   image_upload: "Upload",
   image_gen: "Image",
   video_gen: "Video",
   video_concat: "Merge",
 };
-
-/**
- * 把关联输入里的 text 输出拼成该节点本次生成会用的提示词。
- * 必须与后端 canvas.tools 的 generate_media_node 拼法一致（单条直接用，多条按边顺序编号）。
- */
-export function resolvePrompt(inputs: NodeInputSource[]): string {
-  const parts = inputs.flatMap((s) =>
-    s.outputs.filter((o) => o.type === "text").map((o) => o.content),
-  );
-  if (parts.length === 0) return "";
-  return parts.length === 1
-    ? parts[0]
-    : parts.map((t, i) => `${i + 1}. ${t}`).join("\n");
-}
 
 /**
  * 解析某节点的关联输入：沿入边找到上游节点，带出它们此刻的 outputs（可能为空=尚未就绪）。

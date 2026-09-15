@@ -1,4 +1,4 @@
-import { Film, Image as ImageIcon, Layers, Type, Upload } from "lucide-react";
+import { Film, Image as ImageIcon, Layers, Upload } from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import type { CanvasNodeType } from "@/lib/api";
@@ -16,7 +16,6 @@ export const NODE_META: Record<
   CanvasNodeType,
   { label: string; Icon: LucideIcon; tone: string }
 > = {
-  text: { label: NODE_TYPE_LABEL.text, Icon: Type, tone: "var(--node-text)" },
   image_upload: {
     label: NODE_TYPE_LABEL.image_upload,
     Icon: Upload,

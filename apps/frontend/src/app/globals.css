@@ -48,16 +48,15 @@
      四类节点=一条流水线，按角色分配色相、统一 chroma/明度求和谐：
      文本=琥珀金(创意) / 上传=青(输入) / 生图=紫罗兰(生成) / 生视频=玫红(动态)。 */
   /* 选中的连线（功能语义，设计系统 §1 允许上色的那一类）：画布上其余连线都是中性灰，
-     选中的那条要一眼认出来，所以给一个高饱和的蓝——与四种节点身份色（70/210/292/12）
+     选中的那条要一眼认出来，所以给一个高饱和的蓝——与四种节点身份色（210/292/12/165）
      都拉开了色相距离，不会被误读成"某类节点的线"。 */
   --edge-selected: oklch(0.58 0.21 255);
-  --node-text: oklch(0.7 0.14 70);
   --node-upload: oklch(0.66 0.11 210);
   --node-image: oklch(0.62 0.17 292);
   --node-video: oklch(0.63 0.19 12);
   --node-concat: oklch(0.6 0.13 165);
 
-  /* 「思考中」指示器（见 canvas/_components/thinking-indicator.tsx）。琥珀色相与 --node-text 一致，
+  /* 「思考中」指示器（见 canvas/_components/thinking-indicator.tsx）。取琥珀色相（68），
      但亮暗两套要分开调：亮底上「发光」不成立——底已接近最亮，半透明暖色压上去只会变暗发浑，
      读作污渍而非光。所以 light 保持鲜亮金橙的方格，但把晕的浓度压到 dark 的一半以下；
      dark 底色深，方格再提亮、晕再加浓也只会读作发光。 */
@@ -119,7 +118,6 @@
 
   /* 暗色下节点类型色：提亮以在深卡上醒目，chroma 保持一致（见 :root 说明）。 */
   --edge-selected: oklch(0.74 0.18 255);
-  --node-text: oklch(0.79 0.13 70);
   --node-upload: oklch(0.74 0.1 210);
   --node-image: oklch(0.72 0.15 292);
   --node-video: oklch(0.73 0.17 12);
@@ -1105,38 +1103,70 @@
    1) 几何属性（left/top/width/height）曾一并挂过渡——面板是整屏高的大容器，每帧都要
       重新布局 + 重绘整棵子树。现在一律不过渡：拖动期间它们由 JS 每帧直接写内联样式，
       挂过渡只会拖影；吸附落位本就有虚线预览框先告知落点，瞬时到位反而干脆。
+      唯一需要"平滑挪位"的场景——另一块面板在同侧展开、把这块挤开——不走 left，而是把
+      挤开位移拆成 transform: translateX()（见 use-floating-panel 的 geometry），
+      复用下面的 transform 过渡，合成层上完成。
    2) 面板底色曾是半透明 + backdrop-filter。淡入淡出时每帧都要按新的透明度重新采样
       底下那整块画布（还带运行光晕动画），代价极高。改成不透明 --card 后这项归零。
 
    visibility 用「0s + 收起延迟」显式驱动，不进过渡列表：浏览器对 visibility 有插值特例
    （端点含 visible 时整段都显示），依赖它不如把意图写明——展开立刻可见，收起等淡出走完再藏。 */
+.floating-panel,
+.floating-panel-rail {
+  /* 面板与竖轨共用一套节奏：进场减速曲线，退场加速曲线，退场略快（ux: exit-faster-than-enter）。
+     两者必须同一组数，否则收起时按钮会"拖在面板后面"，看起来像掉帧。 */
+  --panel-enter: 240ms cubic-bezier(0.2, 0, 0, 1);
+  --panel-exit: 200ms cubic-bezier(0.4, 0, 1, 1);
+}
+
 .floating-panel {
   visibility: visible;
   opacity: 1;
   /* 提前提升成合成层，淡入淡出时不必每帧重绘整棵面板内容（对话流 DOM 很大）。
      只写 opacity，不写 transform——will-change 里出现 transform 会让面板成为内部
      position:fixed 元素的包含块，模型/思考档位切换器那层 `fixed inset-0` 点击遮罩
-     就只能盖住面板而不是整屏。展开态 transform 本就是 none，不影响收起时的缩放淡出。 */
+     就只能盖住面板而不是整屏。展开态 transform 本就是 none，不影响收起时的滑出。 */
   will-change: opacity;
+  /* ⚠️ 必须列出 translate 与 scale：Tailwind v4 的 translate-* / scale-* 写的是独立的
+     `translate` / `scale` 属性，不是 `transform`。之前的过渡列表只有 transform，于是收起时的
+     位移与缩放从来没被过渡过——是**瞬跳**，只有透明度在渐变，这正是被感知为"卡一下"的来源。 */
   transition:
-    opacity 200ms ease-out,
-    transform 200ms ease-out,
+    opacity var(--panel-enter),
+    translate var(--panel-enter),
+    scale var(--panel-enter),
+    transform var(--panel-enter),
     visibility 0s;
 }
 
 .floating-panel[data-open="false"] {
   visibility: hidden;
   opacity: 0;
-  /* 退场比进场快（ux: exit-faster-than-enter），收起才跟手 */
   transition:
-    opacity 140ms ease-in,
-    transform 140ms ease-in,
-    visibility 0s linear 140ms;
+    opacity var(--panel-exit),
+    translate var(--panel-exit),
+    scale var(--panel-exit),
+    transform var(--panel-exit),
+    visibility 0s linear 200ms;
+}
+
+/* 竖轨随面板开合挪位：只动 transform（见 panel-trigger.tsx），节奏与面板同源 */
+.floating-panel-rail {
+  transition: transform var(--panel-enter);
+}
+.floating-panel-rail__trigger {
+  transition:
+    opacity var(--panel-enter),
+    translate var(--panel-enter),
+    transform var(--panel-enter),
+    background-color 150ms ease-out,
+    color 150ms ease-out;
 }
 
 @media (prefers-reduced-motion: reduce) {
   .floating-panel,
-  .floating-panel[data-open="false"] {
+  .floating-panel[data-open="false"],
+  .floating-panel-rail,
+  .floating-panel-rail__trigger {
     transition-duration: 0s;
     transition-delay: 0s;
   }

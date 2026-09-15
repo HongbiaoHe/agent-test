@@ -46,9 +46,17 @@ function parsePlacement(raw: unknown): Placement | null {
   const width = num(o.width);
   if (width === null) return null;
   if (o.mode === "dock") {
-    return o.side === "left" || o.side === "right"
-      ? { mode: "dock", side: o.side, width }
-      : null;
+    if (o.side !== "left" && o.side !== "right") return null;
+    // y / height 是后来加的：旧数据没有这两个键 → 顶到 header、延伸到底，与升级前行为一致
+    const y = num(o.y);
+    const height = num(o.height);
+    return {
+      mode: "dock",
+      side: o.side,
+      width,
+      ...(y === null ? {} : { y }),
+      ...(height === null ? {} : { height }),
+    };
   }
   if (o.mode === "float") {
     const x = num(o.x);
@@ -66,7 +74,7 @@ export interface FloatingPanelOptions {
   storageKey: string;
   /** 未持久化过时的初始位置。必须是稳定引用（模块常量）。 */
   defaultPlacement: Placement;
-  /** 允许拖出来自由浮动；false = 只能贴边停靠、只能改宽度。 */
+  /** 允许拖出来自由浮动；false = 只能贴边停靠（宽度与高度仍可从边上拖）。 */
   allowFloat?: boolean;
   minWidth: number;
   maxWidth: number;
@@ -100,7 +108,7 @@ export interface FloatingPanelApi {
   setPanelEl: (el: HTMLDivElement | null) => void;
   /** 挂到标题栏；allowFloat=false 时为空对象（标题栏不可拖）。 */
   dragHandleProps: { onPointerDown?: (e: ReactPointerEvent) => void };
-  /** 当前该渲染哪些缩放把手：停靠态只有贴向画布内侧的那一条边。 */
+  /** 当前该渲染哪些缩放把手：停靠态是贴向画布内侧的那条边 + 上下两边 + 两个夹角。 */
   resizeDirs: ResizeDir[];
   getResizeHandleProps: (dir: ResizeDir) => {
     onPointerDown: (e: ReactPointerEvent) => void;
@@ -190,35 +198,72 @@ export function useFloatingPanel({
     };
   }, [boundsEl]);
 
-  /** 当前该渲染的像素矩形；容器还没量出来时为 null（面板此时藏着，不会闪一帧错位）。 */
-  const rect = useMemo<PanelRect | null>(() => {
+  /**
+   * 当前该渲染的像素矩形 + 被同侧面板挤开的位移；容器还没量出来时为 null（面板此时藏着，不会闪一帧错位）。
+   *
+   * 停靠态把 dockOffset **拆出来**：`rect.x` 是贴边基准位（不含 dockOffset），`push` 是被同侧
+   * 面板挤开的那段，落到 DOM 时走 `transform: translateX(push)` 而不是加进 left。
+   * 这样「另一块面板在同侧展开/收起」引起的挤开就能沿用 .floating-panel 的 transform 过渡
+   * （合成层动画），而 left/top/width/height 依旧不过渡——几何属性过渡会让整屏高的面板每帧重排。
+   * 两者相加的视觉位置与原先一模一样，包括「放不下时宁可重叠也不推出画布」的钳制。
+   */
+  const geometry = useMemo<{ rect: PanelRect; push: number } | null>(() => {
     if (!bounds) return null;
     const maxW = Math.max(minWidth, bounds.w - PANEL_INSET * 2);
     if (placement.mode === "dock") {
       // 同侧已有面板时把可用宽度和起点都往里推 dockOffset
       const room = Math.max(minWidth, bounds.w - PANEL_INSET * 2 - dockOffset);
       const width = clamp(placement.width, minWidth, Math.min(maxWidth, room));
-      const x =
-        placement.side === "left"
-          ? PANEL_INSET + dockOffset
-          : bounds.w - PANEL_INSET - dockOffset - width;
-      return {
+      const clampX = (x: number) =>
         // 两块面板加起来放不下时宁可挨着重叠一点，也不让面板被推出画布
-        x: clamp(x, PANEL_INSET, Math.max(PANEL_INSET, bounds.w - PANEL_INSET - width)),
-        y: topInset,
-        width,
-        height: Math.max(minHeight, bounds.h - topInset - PANEL_INSET),
+        clamp(x, PANEL_INSET, Math.max(PANEL_INSET, bounds.w - PANEL_INSET - width));
+      const edge =
+        placement.side === "left" ? PANEL_INSET : bounds.w - PANEL_INSET - width;
+      const base = clampX(edge);
+      const pushed = clampX(
+        placement.side === "left" ? edge + dockOffset : edge - dockOffset,
+      );
+      // 顶边缺省顶到 header 底边；记过就在「header 底边 ～ 底部还放得下 minHeight」之间钳一下
+      const y =
+        placement.y === undefined
+          ? topInset
+          : clamp(
+              placement.y,
+              topInset,
+              Math.max(topInset, bounds.h - PANEL_INSET - minHeight),
+            );
+      // 高度缺省从 y 一直延伸到画布底部再留一个间距；记过就在这个范围内钳一下
+      const fullHeight = Math.max(minHeight, bounds.h - y - PANEL_INSET);
+      return {
+        rect: {
+          x: base,
+          y,
+          width,
+          height:
+            placement.height === undefined
+              ? fullHeight
+              : clamp(placement.height, minHeight, fullHeight),
+        },
+        push: pushed - base,
       };
     }
     const width = clamp(placement.width, minWidth, Math.min(maxWidth, maxW));
     const height = clamp(placement.height, minHeight, Math.max(minHeight, bounds.h));
     return {
-      x: clamp(placement.x, 0, Math.max(0, bounds.w - width)),
-      y: clamp(placement.y, topInset, Math.max(topInset, bounds.h - height)),
-      width,
-      height,
+      rect: {
+        x: clamp(placement.x, 0, Math.max(0, bounds.w - width)),
+        y: clamp(placement.y, topInset, Math.max(topInset, bounds.h - height)),
+        width,
+        height,
+      },
+      push: 0,
     };
   }, [bounds, placement, minWidth, maxWidth, minHeight, dockOffset, topInset]);
+  const rect = geometry?.rect ?? null;
+  const push = geometry?.push ?? 0;
+  // 手势起点要扣掉它：getBoundingClientRect 量到的是含 transform 的视觉位置，而 left 写的是基准位。
+  // 在下方 layout effect 里同步（渲染期改 ref 是 react-hooks/refs 明令禁止的；手势总在渲染之后开始）
+  const pushRef = useRef(0);
 
   // React 只负责「量出来之前先藏着」；定位四键一概不交给它，理由见下方 layout effect
   const style = useMemo<CSSProperties>(
@@ -255,6 +300,12 @@ export function useFloatingPanel({
   useLayoutEffect(() => {
     if (gestureRef.current) applyLive();
     else if (rect) applyRect(rect);
+    // 被同侧面板挤开的位移单独走 transform（见 geometry 注释）。没有位移时**清空**而不是写
+    // translateX(0)：transform 只要不是 none，面板就成了内部 position:fixed 元素的包含块
+    // ——对话面板里模型/思考档位切换器的 `fixed inset-0` 遮罩会被困在面板内。
+    pushRef.current = push;
+    const el = panelElRef.current;
+    if (el) el.style.transform = push ? `translateX(${push}px)` : "";
   });
 
   const begin = useCallback(
@@ -266,7 +317,9 @@ export function useFloatingPanel({
       const b = boundsEl.getBoundingClientRect();
       const r = el.getBoundingClientRect();
       const start: PanelRect = {
-        x: r.left - b.left,
+        // 量到的是含 transform 的视觉位置，减掉挤开位移才是 left 的基准位；
+        // 否则缩放被挤开的面板时，起点已含位移、transform 又叠一次，面板会跳开一个位移
+        x: r.left - b.left - pushRef.current,
         y: r.top - b.top,
         width: r.width,
         height: r.height,
@@ -343,7 +396,12 @@ export function useFloatingPanel({
           r.x = g.rect.x + (g.rect.width - r.width);
         }
         if (g.kind.includes("s")) {
-          r.height = clamp(g.rect.height + dy, minHeight, g.boundsH - g.rect.y);
+          // 停靠态底边到画布底部留 PANEL_INSET（与全高时一致），浮动态可以贴到底
+          const bottomRoom =
+            placement.mode === "dock"
+              ? g.boundsH - g.rect.y - PANEL_INSET
+              : g.boundsH - g.rect.y;
+          r.height = clamp(g.rect.height + dy, minHeight, Math.max(minHeight, bottomRoom));
         }
         if (g.kind.includes("n")) {
           // 上界是「下边缘到 topInset 的距离」：再往上就钻到 header 底下了
@@ -373,7 +431,19 @@ export function useFloatingPanel({
       const width = Math.round(r.width);
       let next: Placement;
       if (g.kind !== "move" && placement.mode === "dock") {
-        next = { ...placement, width };
+        // 顶边回到 header 底边就不记 y、底边到底了就不记 height：缺省值跟着窗口尺寸走，
+        // 记成具体像素就钉死了
+        const y = Math.round(r.y);
+        const height = Math.round(r.height);
+        const atTop = y <= topInset + 1;
+        const atBottom = y + height >= g.boundsH - PANEL_INSET - 1;
+        next = {
+          mode: "dock",
+          side: placement.side,
+          width,
+          ...(atTop ? {} : { y }),
+          ...(atBottom ? {} : { height }),
+        };
       } else if (g.kind === "move" && hint) {
         next = { mode: "dock", side: hint, width };
       } else if (allowFloat) {
@@ -442,7 +512,10 @@ export function useFloatingPanel({
   const resizeDirs = useMemo<ResizeDir[]>(
     () =>
       placement.mode === "dock"
-        ? [placement.side === "left" ? "e" : "w"]
+        ? // 内侧边改宽，上下两边改高（顶边同时挪 y），两个夹角同调；贴画布边缘那侧不给
+          placement.side === "left"
+          ? ["e", "n", "s", "ne", "se"]
+          : ["w", "n", "s", "nw", "sw"]
         : ["n", "s", "e", "w", "ne", "nw", "se", "sw"],
     [placement],
   );

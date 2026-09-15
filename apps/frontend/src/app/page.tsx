@@ -53,7 +53,7 @@ const canvasPoints = [
     icon: Link2,
     title: "Inputs are the prompt",
     description:
-      "A generation node carries no prompt field of its own. It reads the prompt and the reference frames from whatever you connect upstream, so editing one text node re-aims everything downstream.",
+      "Each generation node carries its own prompt; edges only carry reference frames. One node is one shot — nothing to wire up before you can describe it.",
   },
   {
     icon: Bot,

@@ -116,7 +116,6 @@ export const ErrorCodes = {
   },
   CANVAS_PROMPT_REQUIRED: {
     code: 70008,
-    message:
-      'This generation node has no prompt: connect an upstream text node first',
+    message: 'This generation node has no prompt: write one on the node first',
   },
 } as const satisfies Record<string, ErrorDef>;

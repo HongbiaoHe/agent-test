@@ -110,7 +110,7 @@ describe('CanvasService', () => {
         nodes: [
           {
             id: 'aaaaaa1',
-            type: 'text',
+            type: 'image_upload',
             x: 0,
             y: 0,
             version: 1,
@@ -164,13 +164,64 @@ describe('CanvasService', () => {
       expect(text).not.toContain('### 关注范围');
     });
 
+    /**
+     * text 节点下线时没做数据迁移，库里仍有 type='text' 的历史行。快照层按
+     * isCanvasNodeType 把它们连同相关连线一起滤掉——否则老画布一打开，前端要为一个
+     * 已不存在的类型写分支，agent 也会看到一种它没有工具可操作的节点。
+     */
+    it('库里遗留的已下线类型节点连同相关连线一并滤掉', async () => {
+      seedCanvas(null);
+      mockPrisma.canvasSession.findUnique.mockResolvedValue({
+        id: 's1',
+        title: 't',
+        status: 'idle',
+        model: null,
+        thinkingLevel: null,
+        revision: 1,
+        focusNodeIds: null,
+        nodes: [
+          {
+            id: 'legacy1',
+            type: 'text',
+            x: 0,
+            y: 0,
+            version: 1,
+            label: '旧提示词',
+            prompt: null,
+            assetPath: null,
+            mediaGenerationId: null,
+          },
+          {
+            id: 'bbbbbb2',
+            type: 'image_gen',
+            x: 400,
+            y: 0,
+            version: 1,
+            label: 'B',
+            prompt: '出图',
+            assetPath: null,
+            mediaGenerationId: null,
+          },
+        ],
+        edges: [{ id: 'e1', source: 'legacy1', target: 'bbbbbb2' }],
+      });
+
+      const text = await service.agentCanvasContext('s1');
+
+      expect(text).toContain('节点（1）');
+      expect(text).not.toContain('legacy1');
+      expect(text).not.toContain('旧提示词');
+      // 那条边的一端已不存在，也不能留
+      expect(text).toContain('连线（0）');
+    });
+
     it('圈定后只列圈中的节点，连线取至少一端在圈内的', async () => {
       seedCanvas(['bbbbbb2']);
       const text = await service.agentCanvasContext('s1');
       expect(text).toContain('节点（1）');
       // 只剩 B 自己；两条边都碰到 B，故都保留（模型才知道 B 的上游从哪来）
       expect(text).toContain('连线（2）');
-      expect(text).not.toMatch(/- aaaaaa1 \[text\]/);
+      expect(text).not.toMatch(/- aaaaaa1 \[image_upload\]/);
       expect(text).toContain('用户已圈定 1 个节点加入本次对话');
       expect(text).toContain('画布上另有 2 个节点未圈定');
     });
@@ -189,7 +240,7 @@ describe('CanvasService', () => {
       status: 'running',
       revision: 3,
     });
-    const op: UpdateNodeOp = { op: 'update_node', nodeId: 'n1', text: 'x' };
+    const op: UpdateNodeOp = { op: 'update_node', nodeId: 'n1', prompt: 'x' };
     await expect(service.applyOp('s1', 'user', op, 3)).rejects.toMatchObject({
       errCode: ErrorCodes.CANVAS_BUSY.code,
     });
@@ -203,7 +254,7 @@ describe('CanvasService', () => {
       status: 'idle',
       revision: 5,
     });
-    const op: UpdateNodeOp = { op: 'update_node', nodeId: 'n1', text: 'x' };
+    const op: UpdateNodeOp = { op: 'update_node', nodeId: 'n1', prompt: 'x' };
     await expect(service.applyOp('s1', 'user', op, 4)).rejects.toMatchObject({
       errCode: ErrorCodes.CANVAS_CONFLICT.code,
     });
@@ -218,13 +269,12 @@ describe('CanvasService', () => {
     });
     tx.canvasNode.create.mockResolvedValue({
       id: 'n-new',
-      type: 'text',
+      type: 'image_gen',
       x: 10,
       y: 20,
       version: 0,
       label: null,
-      text: 'hi',
-      prompt: null,
+      prompt: 'hi',
       assetPath: null,
       mediaGenerationId: null,
     });
@@ -232,10 +282,10 @@ describe('CanvasService', () => {
 
     const op: AddNodeOp = {
       op: 'add_node',
-      type: 'text',
+      type: 'image_gen',
       x: 10,
       y: 20,
-      text: 'hi',
+      prompt: 'hi',
     };
     const r = await service.applyOp('s1', 'agent', op);
 
@@ -259,7 +309,7 @@ describe('CanvasService', () => {
     );
   });
 
-  it('add_node：text 节点的 outputs 由正文派生（正文为空则为空数组）', async () => {
+  it('add_node：image_upload 的 outputs 由 assetPath 派生（没上传则为空数组）', async () => {
     tx.canvasSession.findUnique.mockResolvedValue({
       id: 's1',
       status: 'running',
@@ -268,7 +318,7 @@ describe('CanvasService', () => {
     tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
     const base = {
       id: 'n-new',
-      type: 'text',
+      type: 'image_upload',
       x: 0,
       y: 0,
       version: 0,
@@ -278,15 +328,15 @@ describe('CanvasService', () => {
       mediaGenerationId: null,
     };
 
-    tx.canvasNode.create.mockResolvedValue({ ...base, text: 'hi' });
-    const withText = await service.applyOp('s1', 'agent', {
+    tx.canvasNode.create.mockResolvedValue({ ...base, assetPath: '/a.png' });
+    const uploaded = await service.applyOp('s1', 'agent', {
       op: 'add_node',
-      type: 'text',
-      text: 'hi',
+      type: 'image_upload',
+      assetPath: '/a.png',
     });
-    expect(withText.patch).toMatchObject({
+    expect(uploaded.patch).toMatchObject({
       op: 'add_node',
-      node: { outputs: [{ type: 'text', content: 'hi' }] },
+      node: { outputs: [{ type: 'image', content: '/a.png' }] },
     });
 
     tx.canvasSession.findUnique.mockResolvedValue({
@@ -294,15 +344,15 @@ describe('CanvasService', () => {
       status: 'running',
       revision: 2,
     });
-    tx.canvasNode.create.mockResolvedValue({ ...base, text: '   ' });
+    tx.canvasNode.create.mockResolvedValue({ ...base, assetPath: null });
     const blank = await service.applyOp('s1', 'agent', {
       op: 'add_node',
-      type: 'text',
+      type: 'image_upload',
     });
     expect(blank.patch).toMatchObject({ node: { outputs: [] } });
   });
 
-  it('add_edge：text → image_gen 合法，落库并广播', async () => {
+  it('add_edge：image_upload → image_gen 合法（参考图），落库并广播', async () => {
     tx.canvasSession.findUnique.mockResolvedValue({
       id: 's1',
       status: 'running',
@@ -310,7 +360,7 @@ describe('CanvasService', () => {
     });
     tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
     tx.canvasNode.findMany.mockResolvedValue([
-      { id: 'a', type: 'text' },
+      { id: 'a', type: 'image_upload' },
       { id: 'b', type: 'image_gen' },
     ]);
     tx.canvasEdge.upsert.mockResolvedValue({
@@ -328,7 +378,7 @@ describe('CanvasService', () => {
     expect(tx.canvasEdge.upsert).toHaveBeenCalled();
   });
 
-  it('add_edge：video_gen → image_gen 非法（image_gen 只收 text/image）', async () => {
+  it('add_edge：video_gen → image_gen 非法（image_gen 只收 image）', async () => {
     tx.canvasSession.findUnique.mockResolvedValue({
       id: 's1',
       status: 'running',
@@ -400,7 +450,7 @@ describe('CanvasService', () => {
     expect(r.patch).toMatchObject({ op: 'add_edge', edge: { id: 'e2' } });
   });
 
-  it('add_edge：指向无输入端口的 text 节点 → CANVAS_EDGE_INVALID，不落库', async () => {
+  it('add_edge：指向无输入端口的 image_upload 节点 → CANVAS_EDGE_INVALID，不落库', async () => {
     tx.canvasSession.findUnique.mockResolvedValue({
       id: 's1',
       status: 'running',
@@ -410,7 +460,7 @@ describe('CanvasService', () => {
     tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
     tx.canvasNode.findMany.mockResolvedValue([
       { id: 'a', type: 'image_gen' },
-      { id: 'b', type: 'text' },
+      { id: 'b', type: 'image_upload' },
     ]);
 
     await expect(
@@ -689,7 +739,7 @@ describe('CanvasService', () => {
         nodes: [
           {
             id: idA,
-            type: 'text',
+            type: 'image_upload',
             x: 40,
             y: 40,
             label: '创意',
@@ -718,7 +768,7 @@ describe('CanvasService', () => {
 
       const text = await service.agentCanvasContext('s1');
 
-      expect(text).toContain('- ugi7qu [text] "创意" @(40,40)');
+      expect(text).toContain('- ugi7qu [image_upload] "创意" @(40,40)');
       expect(text).toContain('- si073c [image_gen] "出图" @(360,40)');
       expect(text).toContain('- ugi7qu → si073c'); // 连线两端也用短 id
       expect(text).not.toContain(idA);

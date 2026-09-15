@@ -87,13 +87,6 @@ function InputPreview({
     output.type === "image" && !isAssetPath ? output.content : null,
   );
 
-  if (output.type === "text") {
-    return (
-      <p className="line-clamp-2 text-[11px] leading-relaxed text-muted-foreground">
-        {output.content}
-      </p>
-    );
-  }
   if (output.type === "video") {
     return <StatusPill muted>Not used in generation</StatusPill>;
   }

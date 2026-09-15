@@ -6,7 +6,7 @@ import {
 
 describe('thinkingLevelsFor', () => {
   it('DeepSeek 只给开/关：实测 reasoningEffort 无效，不能暴露假的分级选项', () => {
-    expect(thinkingLevelsFor('deepseek:deepseek-v4-flash')).toEqual([
+    expect(thinkingLevelsFor('deepseek:deepseek-flash')).toEqual([
       'auto',
       'off',
       'on',
@@ -54,7 +54,7 @@ describe('thinkingLevelsFor', () => {
 });
 
 describe('thinkingModelParams', () => {
-  const DS = 'deepseek:deepseek-v4-flash';
+  const DS = 'deepseek:deepseek-flash';
   const GM = 'gemini-3.1-pro-preview'; // 支持分级、不支持关闭
 
   it('DeepSeek off → thinking.disabled（唯一实测稳定生效的开关）', () => {

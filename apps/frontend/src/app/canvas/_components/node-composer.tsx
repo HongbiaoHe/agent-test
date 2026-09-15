@@ -1,7 +1,7 @@
 "use client";
 
 import { NodeToolbar, Position, useStore } from "@xyflow/react";
-import { CornerUpLeft, Film, Minimize2 } from "lucide-react";
+import { Film, Minimize2 } from "lucide-react";
 import { useContext, useEffect, useRef, useState } from "react";
 
 import type { CanvasNodeType } from "@/lib/api";
@@ -17,24 +17,11 @@ import { useIsMobile } from "../_hooks/use-is-mobile";
 import { CanvasEditorContext, type NodeContentPatch } from "./flow-canvas";
 import { NodeTypeIcon, NODE_META } from "./node-meta";
 
-/**
- * 可编辑正文。只有 text 节点有——生成节点的提示词来自上游 text 节点，
- * 自身不存 prompt（见 canvas.types 的 CANVAS_NODE_IO）。
- */
+/** 可编辑正文：生成节点的提示词，就地写在这个节点自己的 prompt 字段上。 */
 export interface NodeBodyField {
-  field: Extract<keyof NodeContentPatch, "text">;
+  field: Extract<keyof NodeContentPatch, "prompt">;
   value: string;
   placeholder: string;
-}
-
-/**
- * 生成节点的一路提示词来源：一个上游 text 节点，及它此刻提供的正文。
- * 生成节点自身不存 prompt，面板里显示的每一段都属于某张 text 卡（点它可以跳过去）。
- */
-export interface PromptSource {
-  nodeId: string;
-  title: string;
-  text: string;
 }
 
 /** 拼接节点的一段素材：上游那个视频节点的身份 + 它在序列里的位置。 */
@@ -87,7 +74,6 @@ export function NodeComposer({
   selected,
   dragging,
   body,
-  promptSources,
   clips,
   model,
   meta,
@@ -98,10 +84,8 @@ export function NodeComposer({
   selected: boolean;
   /** 正在拖拽：拖动期间不显示（跟手时挡视线、也易误触输入框） */
   dragging: boolean;
-  /** 可编辑正文（text 节点） */
+  /** 可编辑正文（生成节点的提示词） */
   body?: NodeBodyField;
-  /** 提示词来源（生成节点：每段来自一张上游 text 卡） */
-  promptSources?: PromptSource[];
   /** 待拼接的视频序列（video_concat 专有；它没有提示词这回事） */
   clips?: ClipSource[];
   /** 模型区（生成节点专有）：选模型 / 选档位 / 触发生成，排在提示词之后 */
@@ -146,7 +130,7 @@ export function NodeComposer({
     return () => window.removeEventListener("keydown", onKey);
   }, [visible, clearSelection]);
 
-  // 三种形态，按节点「内容是什么」分：可写的提示词 / 待拼接的视频序列 / 来自上游的只读提示词
+  // 两种形态，按节点「内容是什么」分：可写的提示词（生成节点）/ 待拼接的视频序列
   const prompt = body ? (
     <PromptInput
       nodeId={nodeId}
@@ -156,9 +140,7 @@ export function NodeComposer({
     />
   ) : clips ? (
     <ClipList clips={clips} />
-  ) : (
-    <UpstreamPromptView nodeId={nodeId} sources={promptSources ?? []} />
-  );
+  ) : null;
 
   // 参数条：交代「这是什么节点、料从哪来」。
   // 桌面端不放复制/删除——它们已经常驻在卡片上方那条 hover 操作条上（见 NodeActions），
@@ -328,104 +310,5 @@ function ClipList({ clips }: { clips: ClipSource[] }) {
         </li>
       ))}
     </ol>
-  );
-}
-
-/**
- * 生成节点的提示词区。两种状态，都对应「提示词只能住在 text 节点里」这条后端契约：
- *
- *  - 已接上游：显示每张上游 text 卡的正文，**点一下跳到那张卡**。此前这里是一段死文字，
- *    想改提示词得自己在画布上找出是哪张卡喂的——连线多了就找不着。
- *  - 没接上游：直接在这儿写。写完落成一张真的 text 卡并自动接线（见 addPromptNode）——
- *    不这么做的话，写进生成节点自己的 text 字段是句空话，后端生成时根本不看它。
- */
-function UpstreamPromptView({
-  nodeId,
-  sources,
-}: {
-  nodeId: string;
-  sources: PromptSource[];
-}) {
-  const { focusNode } = useContext(CanvasEditorContext);
-  if (sources.length === 0) return <PromptDraft nodeId={nodeId} />;
-  return (
-    <div className="space-y-2">
-      {sources.map((src) => (
-        <button
-          key={src.nodeId}
-          type="button"
-          title="Open the text node that provides this"
-          onClick={() => focusNode(src.nodeId)}
-          className="group/src -mx-1.5 block w-[calc(100%+0.75rem)] rounded-md px-1.5 py-1 text-left transition-colors hover:bg-muted/60"
-        >
-          {/* 多路上游才标出各段出处：只有一路时标题是噪音 */}
-          {sources.length > 1 && (
-            <span className="mb-0.5 flex items-center gap-1 text-[10px] text-muted-foreground">
-              <CornerUpLeft className="size-2.5" aria-hidden />
-              {src.title}
-            </span>
-          )}
-          <span className="block text-sm leading-relaxed whitespace-pre-wrap text-muted-foreground">
-            {src.text}
-          </span>
-        </button>
-      ))}
-    </div>
-  );
-}
-
-/**
- * 没有上游 text 时的就地起草：写完（失焦或面板收起）落成一张上游 text 卡并接好线。
- * 不用 useDraftField——那是改已有节点的，这里目标节点还不存在。
- */
-function PromptDraft({ nodeId }: { nodeId: string }) {
-  const { addPromptNode } = useContext(CanvasEditorContext);
-  const [draft, setDraft] = useState("");
-  const ref = useRef<HTMLTextAreaElement | null>(null);
-
-  useEffect(() => {
-    const el = ref.current;
-    if (!el) return;
-    el.style.height = "0px";
-    el.style.height = `${Math.min(el.scrollHeight, MAX_BODY_H)}px`;
-  }, [draft]);
-
-  // 收口只做一次：失焦提交后组件常常紧接着卸载（面板收起），卸载再提交会建出第二张卡。
-  // 但**空内容不算收口**——StrictMode 开发期会先挂载再卸载一次，那次卸载带着空草稿，
-  // 若也置上标记，后面真正写完的那次提交就被自己吞掉了（表现为写完什么都没发生）。
-  // commit 挂 ref 上取最新闭包，卸载 effect 因此只需跑一次（渲染期不能改 ref，故放 effect 里）。
-  const done = useRef(false);
-  const commit = (text: string) => {
-    if (done.current || !text.trim()) return;
-    done.current = true;
-    addPromptNode(nodeId, text);
-  };
-  const pending = useRef<() => void>(() => {});
-  useEffect(() => {
-    pending.current = () => commit(draft);
-  });
-  useEffect(() => () => pending.current(), []);
-
-  return (
-    <div className="space-y-1.5">
-      <textarea
-        ref={ref}
-        value={draft}
-        aria-label="Prompt"
-        placeholder="Write the prompt…"
-        rows={1}
-        onChange={(e) => setDraft(e.target.value)}
-        onBlur={() => commit(draft)}
-        onKeyDown={(e) => {
-          if (e.key === "Escape") e.currentTarget.blur();
-          e.stopPropagation();
-        }}
-        className="w-full resize-none bg-transparent text-sm leading-relaxed text-foreground outline-none placeholder:text-muted-foreground"
-      />
-      {/* 说清代价：这一段会变成画布上一张新的 text 卡，不是藏在这个节点里 */}
-      <p className="text-[10px] text-muted-foreground/70">
-        Saved as a linked text node
-      </p>
-    </div>
   );
 }

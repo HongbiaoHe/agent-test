@@ -13,7 +13,9 @@
  * 标识约定（对齐 canvas.agent.factory 的 resolveChatModel）：
  *  - 裸名（无冒号）→ google-genai provider（Gemini）；
  *  - `deepseek:<model>` → deepseek provider（需 DEEPSEEK_API_KEY，@langchain/deepseek）。
- * DeepSeek 型号取自其 /models API 的全部模型（deepseek-v4-flash / deepseek-v4-pro）。
+ * DeepSeek 型号取自其 /models API 的全部模型（2026-09-15 实测：deepseek-flash / deepseek-v4-pro）。
+ * 注：deepseek-v4-flash 是它的旧名，官方已下线该 ID 并改由 V4.1-Flash 承接；这里只留新名，
+ * 存量会话里的旧名已一并改写（旧名上游仍可调，但没必要继续用一个会消失的 ID）。
  */
 export const CANVAS_MODELS = [
   'gemini-3.1-pro-preview',
@@ -23,7 +25,7 @@ export const CANVAS_MODELS = [
   'gemini-3.6-flash',
   // 注：gemini-3-pro-preview 已移除——该模型 ID 在 API 上恒 404（2026-08-25 实测 5/5 失败）
   'gemini-3-flash-preview',
-  'deepseek:deepseek-v4-flash',
+  'deepseek:deepseek-flash',
   'deepseek:deepseek-v4-pro',
 ] as const;
 
@@ -48,18 +50,25 @@ export function asApprovalMode(v: unknown): CanvasApprovalMode {
   return v === 'auto' ? 'auto' : 'review';
 }
 
-/** 画布节点类型：上传图片 / 生图 / 文本 / 生视频 / 视频拼接。 */
+/**
+ * 画布节点类型：上传图片 / 生图 / 生视频 / 视频拼接。
+ *
+ * 曾经还有一个 `text` 节点专门承载提示词，生成节点靠入边去取。取消了：一次生成要摆两个
+ * 节点连一条线，agent 规划和用户操作都多一层；而生成节点本来就有 prompt 字段，让它自己
+ * 管自己的提示词，画布上少一类节点、少一半连线。
+ *
+ * ⚠️ 库里仍存在 type='text' 的历史行（未做数据迁移）。它们过不了 isCanvasNodeType，
+ * 由快照层连同相关连线一起过滤掉（见 canvas.service 的 buildSnapshot），老画布照常打开。
+ */
 export type CanvasNodeType =
   | 'image_upload'
   | 'image_gen'
-  | 'text'
   | 'video_gen'
   | 'video_concat';
 
 export const CANVAS_NODE_TYPES: readonly CanvasNodeType[] = [
   'image_upload',
   'image_gen',
-  'text',
   'video_gen',
   'video_concat',
 ] as const;
@@ -71,13 +80,16 @@ export function isCanvasNodeType(v: unknown): v is CanvasNodeType {
   );
 }
 
-/** 节点端口上流动的资源类型。连线合法性与 outputs 形状都以它为单位。 */
-export type CanvasIoType = 'text' | 'image' | 'video';
+/**
+ * 节点端口上流动的资源类型。连线合法性与 outputs 形状都以它为单位。
+ * 去掉 text 节点后没有任何节点再产出文本，故这里也不再有 'text'——提示词是生成节点
+ * 自己的字段，不是端口上流动的资源。
+ */
+export type CanvasIoType = 'image' | 'video';
 
 /**
  * 节点的一份输出。统一包成对象数组便于扩展——当前每个节点恒为 0 或 1 份。
  * content 的语义随 type 变：
- *  - text        → 字面文本；
  *  - image/video → MediaVersion.id（前端经带鉴权的 blob 接口取资产）；
  *  - 例外：image_upload 目前是 MVP 模拟上传，没有 MediaVersion，content 存 assetPath。
  */
@@ -90,8 +102,7 @@ export interface CanvasNodeOutput {
  * 每种节点的输入/输出契约（后端权威，前端在 canvas/_lib/node-io.ts 镜像）。
  * 入边数量不限（多输入），outputs 也是数组（多输出）——当前生成管线一次只产一份。
  *
- * 生成节点自身不带提示词：prompt 与参考图**全部来自入边**（上游 text 输出拼成提示词，
- * 上游 image 输出作参考图），见 canvas.tools 的 generate_media_node。
+ * 生成节点的提示词是它**自己的 prompt 字段**；入边只提供参考图（上游 image 输出）。
  *
  * ⚠️ video_gen 的 video 输入只放开**连线**，不参与生成：底层管线吃不下视频参考——
  * media.processor 的 loadRefs 把参考版本按图片读盘（mimeForExt 不认 .mp4），media.service
@@ -107,16 +118,15 @@ export const CANVAS_NODE_IO: Record<
   CanvasNodeType,
   { inputs: readonly CanvasIoType[]; outputs: readonly CanvasIoType[] }
 > = {
-  text: { inputs: [], outputs: ['text'] },
   image_upload: { inputs: [], outputs: ['image'] },
-  image_gen: { inputs: ['text', 'image'], outputs: ['image'] },
-  video_gen: { inputs: ['text', 'image', 'video'], outputs: ['video'] },
+  image_gen: { inputs: ['image'], outputs: ['image'] },
+  video_gen: { inputs: ['image', 'video'], outputs: ['video'] },
   video_concat: { inputs: ['video'], outputs: ['video'] },
 };
 
 /**
  * 连线是否合法：source 的任一输出类型被 target 接受即可。
- * target 无输入端口（text / image_upload）→ 一律非法。
+ * target 无输入端口（image_upload）→ 一律非法。
  */
 export function canConnectNodeTypes(
   source: CanvasNodeType,
@@ -138,7 +148,7 @@ export interface CanvasNodeDto {
   y: number;
   version: number;
   label: string | null;
-  text: string | null;
+  /** 生成节点的提示词（image_gen / video_gen 自己的字段，不再来自上游节点）。 */
   prompt: string | null;
   assetPath: string | null;
   mediaGenerationId: string | null;
@@ -155,7 +165,7 @@ export interface CanvasNodeDto {
   mediaStatus: string | null;
   /**
    * 该节点当前可供下游消费的输出（派生，不落表）。未就绪时为空数组：
-   * text 正文为空、image_upload 未上传、生成节点未 done 都是 []。
+   * image_upload 未上传、生成节点未 done 都是 []。
    * ⚠️ patch 事件里的 node 不带 media JOIN，生成节点的 outputs 会是 []——
    * 前端 applyPatch 的 upsertNode 已对此做保留旧值兜底，勿依赖 patch 里的 outputs。
    */
@@ -268,7 +278,6 @@ export interface AddNodeOp {
   x?: number;
   y?: number;
   label?: string;
-  text?: string;
   prompt?: string;
   assetPath?: string;
 }
@@ -277,7 +286,6 @@ export interface UpdateNodeOp {
   op: 'update_node';
   nodeId: string;
   label?: string;
-  text?: string;
   prompt?: string;
   assetPath?: string;
   mediaGenerationId?: string;
@@ -367,13 +375,11 @@ export function shortNodeId(id: string): string {
 }
 
 /**
- * 生成节点的素材：提示词与参考图**全部来自入边**（生成节点自身不带 prompt，
- * 见本文件 CANVAS_NODE_IO 的说明）。agent 工具与用户手动触发共用这一份，
+ * 生成节点从**入边**拿到的素材：只有参考图。提示词是节点自己的 prompt 字段，不走入边
+ * （见本文件 CANVAS_NODE_IO 的说明）。agent 工具与用户手动触发共用这一份，
  * 避免两条路各算各的、"agent 生成的和自己点生成的不一样"。
  */
 export interface CanvasGenerationInputs {
-  /** 上游 text 节点的正文，按入边顺序 */
-  promptParts: string[];
   /** 上游 image_gen 的产物版本 id（作参考图；只有 i2v-only 的视频模型才当首帧用，见 aigc.catalog 的 videoRefRole） */
   referenceVersionIds: string[];
   /** 被跳过的上游 image_upload 数（MVP 模拟上传，没有可引用的版本 id） */
@@ -392,9 +398,6 @@ export function collectGenerationInputs(
     .map((e) => e.source);
   const upstream = nodes.filter((n) => upstreamIds.includes(n.id));
   return {
-    promptParts: upstream.flatMap((n) =>
-      n.outputs.filter((o) => o.type === 'text').map((o) => o.content),
-    ),
     // 只收 image_gen：image_upload 的 content 是 assetPath 不是 versionId（MVP 模拟上传），
     // 传给 media 会被 validateReferences 拒。
     referenceVersionIds: upstream
@@ -409,13 +412,6 @@ export function collectGenerationInputs(
       n.outputs.some((o) => o.type === 'video'),
     ).length,
   };
-}
-
-/** 多路上游文本拼成一条提示词：单路原样，多路按边顺序编号。 */
-export function joinPromptParts(parts: readonly string[]): string {
-  return parts.length === 1
-    ? parts[0]
-    : parts.map((t, i) => `${i + 1}. ${t}`).join('\n');
 }
 
 /**

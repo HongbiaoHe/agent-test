@@ -1,7 +1,7 @@
 "use client";
 
 import { LayoutGrid, MessagesSquare } from "lucide-react";
-import { useState } from "react";
+import { useCallback, useRef, useState } from "react";
 
 import { Button } from "@/components/ui/button";
 import {
@@ -18,19 +18,14 @@ import {
   DrawerHeader,
   DrawerTitle,
 } from "@/components/ui/drawer";
-import {
-  FloatingPanel,
-  PanelHeader,
-  PanelTrigger,
-  PanelTriggerRail,
-} from "@/components/ui/floating-panel";
+import { PanelHeader } from "@/components/ui/floating-panel";
 
 import { useAgentPhaseUi } from "../_hooks/use-agent-phase-ui";
 import { useCanvas } from "../_hooks/use-canvas";
-import { useCanvasPanels } from "../_hooks/use-canvas-panels";
 import { useIsMobile } from "../_hooks/use-is-mobile";
 import { CanvasBoot } from "./canvas-boot";
 import { CanvasChat } from "./canvas-chat";
+import { CanvasFloatingLayer } from "./canvas-floating-layer";
 import { CanvasGallery } from "./canvas-gallery";
 import { CanvasHeader } from "./canvas-header";
 import { CanvasSidebar } from "./canvas-sidebar";
@@ -44,11 +39,12 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
   const c = useCanvas(sessionId);
   // 清空会话记录的二次确认弹窗
   const [confirmClear, setConfirmClear] = useState(false);
-  // 悬浮面板的定位基准：画布区域本身。面板绝对定位在它里面，不再占布局宽度。
-  // 存元素而不是 ref：桌面/手机分支互斥渲染，这个容器会整个换掉，
-  // 用 state 才能让面板的 ResizeObserver 跟着换到新节点上（否则会一直量旧节点的 0×0）
-  const [bounds, setBounds] = useState<HTMLDivElement | null>(null);
-  const panels = useCanvasPanels(bounds);
+  // 面板开合状态不在这儿——在 CanvasFloatingLayer 里。放在 shell 里的话每次开合都会把
+  // react-flow、整条对话流一起重渲染，压掉过渡动画的起始帧（详见该组件头注释）。
+  // 「点画布空白处收起未钉住的面板」是唯一的反向耦合：用 ref 接住那一层最新的回调，
+  // 给 FlowCanvas 的 onPaneClick 一个恒定引用，免得为它把状态提回来。
+  const dismissRef = useRef<() => void>(() => {});
+  const dismissUnpinned = useCallback(() => dismissRef.current(), []);
   // < md 改成底部抽屉：面板即便悬浮也会盖掉手机上本就不多的画布
   const isMobile = useIsMobile();
   const [listOpen, setListOpen] = useState(false);
@@ -108,7 +104,7 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
             saveStates={c.saveStates}
             onMarkSaving={c.markSaving}
             onCancelSaving={c.cancelSaving}
-            onPaneClick={isMobile ? undefined : panels.dismissUnpinned}
+            onPaneClick={isMobile ? undefined : dismissUnpinned}
             onRetryMedia={c.retryMedia}
             onGenerateNode={c.generateNode}
             onMergeVideo={c.mergeVideo}
@@ -139,65 +135,13 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
         {/* 悬浮层：自身穿透点击（pointer-events-none），只有触发按钮与面板接管指针。
             索引页不挂——那里没有「当前画布」，列表/对话/缩放都无从谈起 */}
         {!isMobile && sessionId && (
-          <div
-            ref={setBounds}
-            className="pointer-events-none absolute inset-0 z-20"
-          >
-            {/* 两个入口并成右侧一条竖轨（导航位置恒定，不随面板停在哪侧而变） */}
-            <PanelTriggerRail side="right" inset={panels.triggerRailInset}>
-              <PanelTrigger
-                side="right"
-                icon={<LayoutGrid className="size-5" />}
-                label="Canvases"
-                open={panels.listOpen}
-                onClick={() => panels.setListOpen(!panels.listOpen)}
-              />
-              {sessionId && (
-                <PanelTrigger
-                  side="right"
-                  // 空闲也用方阵，只是换成待机灯：这个入口是 agent 在画布上唯一的常驻
-                  // 化身，静态图标看不出它是活的
-                  icon={
-                    <ThinkingGrid
-                      size={20}
-                      animation={agentUi?.animation ?? "standby"}
-                    />
-                  }
-                  label="Canvas Agent"
-                  tooltip={agentUi?.phrase ?? "Agent standing by"}
-                  open={panels.chatOpen}
-                  onClick={() => panels.setChatOpen(!panels.chatOpen)}
-                />
-              )}
-            </PanelTriggerRail>
-
-            <FloatingPanel
-              panel={panels.list}
-              open={panels.listOpen}
-              icon={<LayoutGrid className="size-4" />}
-              title="Canvases"
-              pinned={panels.listPinned}
-              onPinnedChange={panels.setListPinned}
-              onClose={() => panels.setListOpen(false)}
-            >
-              {sidebar}
-            </FloatingPanel>
-
-            {sessionId && (
-              <FloatingPanel
-                panel={panels.chat}
-                open={panels.chatOpen}
-                icon={<MessagesSquare className="size-4" />}
-                title="Canvas Agent"
-                actions={chatActions}
-                pinned={panels.chatPinned}
-                onPinnedChange={panels.setChatPinned}
-                onClose={() => panels.setChatOpen(false)}
-              >
-                {chat}
-              </FloatingPanel>
-            )}
-          </div>
+          <CanvasFloatingLayer
+            agentUi={agentUi}
+            sidebar={sidebar}
+            chat={chat}
+            chatActions={chatActions}
+            dismissRef={dismissRef}
+          />
         )}
       </div>
 

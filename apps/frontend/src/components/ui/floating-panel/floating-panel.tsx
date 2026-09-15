@@ -55,13 +55,16 @@ export function FloatingPanel({
     getResizeHandleProps,
   } = panel;
   const draggable = !!dragHandleProps.onPointerDown;
-  // 收起时朝停靠的那条边滑出去；浮动态没有"哪条边"，只缩放淡出
+  // 收起：停靠态沿停靠边**整体滑出**（自身宽度 + 贴边间距，滑到完全离屏），浮动态没有
+  // "哪条边"，只淡出并轻微缩小。之前停靠态是 12px 位移 + 2% 缩放 + 140ms ease-in 淡出：
+  // 位移小到看不出方向，淡出曲线前半段几乎不动、最后 ~50ms（3 帧）突然消失——那就是
+  // 被感知成"卡顿"的一次弹掉。整体滑出是纯 transform，走合成层，且方向、距离一目了然。
   const exitShift =
     placement.mode === "dock"
       ? placement.side === "left"
-        ? "data-[open=false]:-translate-x-3"
-        : "data-[open=false]:translate-x-3"
-      : "";
+        ? "data-[open=false]:-translate-x-[calc(100%+1rem)]"
+        : "data-[open=false]:translate-x-[calc(100%+1rem)]"
+      : "data-[open=false]:scale-[0.98]";
 
   return (
     <>
@@ -84,7 +87,7 @@ export function FloatingPanel({
           // 最外层不裁切：缩放把手要跨出边界一点才好抓
           // .floating-panel 管进出场过渡（见 globals.css，那里说明了为什么不过渡几何属性）
           "floating-panel pointer-events-auto absolute z-30",
-          "data-[open=false]:pointer-events-none data-[open=false]:scale-[0.98]",
+          "data-[open=false]:pointer-events-none",
           interacting && "select-none",
           exitShift,
           className,

@@ -252,7 +252,7 @@ describe('sumCalls', () => {
   });
 
   it('DeepSeek 口径：reasoning 计入 output，思考量记 0 不重复计', () => {
-    expect(sumCalls([call('deepseek-v4-flash', 100, 900)]).reasoning).toBe(0);
+    expect(sumCalls([call('deepseek-flash', 100, 900)]).reasoning).toBe(0);
   });
 
   it('空调用 → 全零（前端据此避免除零算命中率）', () => {

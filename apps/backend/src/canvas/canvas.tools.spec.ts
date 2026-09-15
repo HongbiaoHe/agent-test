@@ -42,21 +42,41 @@ describe('add_node 的 type 校验', () => {
       revision: 7,
     });
 
-    const out = await addNode!.invoke({ type: 'text', text: '正文' });
+    const out = await addNode!.invoke({ type: 'image_gen', prompt: '正文' });
 
     expect(applyOp).toHaveBeenCalledWith(
       's1',
       'agent',
-      expect.objectContaining({ op: 'add_node', type: 'text' }),
+      expect.objectContaining({
+        op: 'add_node',
+        type: 'image_gen',
+        prompt: '正文',
+      }),
     );
     expect(JSON.parse(out)).toMatchObject({ revision: 7 });
   });
 
-  it('type 值非法仍由 schema 拦下（枚举照旧生效，只是不再管"缺失"）', async () => {
-    // 越过 TS 的静态检查喂一个不存在的类型：这正是运行期要靠 zod 拦的那类输入
-    const bad = { type: 'audio_gen' } as unknown as { type: 'text' };
-    await expect(addNode!.invoke(bad)).rejects.toThrow();
+  it('type 值非法：回一句话而不是抛异常（抛出去会把堆栈灌进对话历史、废掉一整轮）', async () => {
+    // 越过 TS 的静态检查喂一个不存在的类型：这正是运行期要拦的那类输入
+    const bad = { type: 'audio_gen' } as unknown as { type: 'image_gen' };
+    const out = await addNode!.invoke(bad);
     expect(applyOp).not.toHaveBeenCalled();
+    const parsed = JSON.parse(out) as { error?: string };
+    expect(parsed.error).toContain('audio_gen');
+    expect(parsed.error).toContain('video_concat');
+  });
+
+  /**
+   * 老会话的 checkpoint 里存着模型当初 add_node type:"text" 的调用记录，续跑时它很可能
+   * 照着自己的历史再发一次。这条锁住的是「回的话要能照做」——只说非法没用，得说清现在怎么办。
+   */
+  it('已下线的 text 类型：回一句能照做的指引，指向生成节点的 prompt', async () => {
+    const retired = { type: 'text' } as unknown as { type: 'image_gen' };
+    const out = await addNode!.invoke(retired);
+    expect(applyOp).not.toHaveBeenCalled();
+    const parsed = JSON.parse(out) as { error?: string };
+    expect(parsed.error).toContain('prompt');
+    expect(parsed.error).toContain('image_gen');
   });
 });
 
@@ -65,15 +85,10 @@ describe('add_node 的 type 校验', () => {
  *
  * agent 不参与选模型（它只决定"什么时候生成"），所以这里锁住两件事：
  * 节点配了模型就照配的传下去，没配就把三个字段都留空、由 MediaService 回落默认模型。
- * 素材收集（上游 text 拼提示词、上游 image_gen 作参考图）与用户手动触发共用同一段逻辑，
+ * 提示词取节点自己的 prompt、参考图取自上游 image_gen，与用户手动触发共用同一段逻辑，
  * 这两个用例同时覆盖它。
  */
 describe('generate_media_node 的模型来源', () => {
-  const textNode = {
-    id: 'n-text',
-    type: 'text',
-    outputs: [{ type: 'text', content: '一只柯基' }],
-  };
   const refNode = {
     id: 'n-ref',
     type: 'image_gen',
@@ -87,11 +102,8 @@ describe('generate_media_node 的模型来源', () => {
       .mockResolvedValue({ generationId: 'gen-1', versionId: 'ver-1' });
     const resolveNodeId = jest.fn().mockResolvedValue(genNode.id);
     const agentSnapshot = jest.fn().mockResolvedValue({
-      nodes: [textNode, refNode, genNode],
-      edges: [
-        { source: 'n-text', target: genNode.id },
-        { source: 'n-ref', target: genNode.id },
-      ],
+      nodes: [refNode, genNode],
+      edges: [{ source: 'n-ref', target: genNode.id }],
     });
     const tools = createCanvasTools(
       // cast-at-injection：只用到这两个方法
@@ -109,6 +121,7 @@ describe('generate_media_node 的模型来源', () => {
     const { tool, createGeneration } = harness({
       id: 'n-gen',
       type: 'image_gen',
+      prompt: '一只柯基',
       outputs: [],
       mediaChannel: 'google',
       mediaModel: 'nano-banana-2',
@@ -135,6 +148,7 @@ describe('generate_media_node 的模型来源', () => {
     const { tool, createGeneration } = harness({
       id: 'n-gen',
       type: 'video_gen',
+      prompt: '一只柯基',
       outputs: [],
       mediaChannel: null,
       mediaModel: null,
@@ -151,5 +165,20 @@ describe('generate_media_node 的模型来源', () => {
       ['ver-ref'],
       { channel: undefined, model: undefined, params: undefined },
     );
+  });
+
+  it('节点没写 prompt → 报错且不触发生成（提示词不再来自上游）', async () => {
+    const { tool, createGeneration } = harness({
+      id: 'n-gen',
+      type: 'image_gen',
+      prompt: '   ',
+      outputs: [],
+    });
+
+    const out = await tool.invoke({ nodeId: 'n-gen' });
+
+    expect(createGeneration).not.toHaveBeenCalled();
+    const parsed = JSON.parse(out) as { error?: string };
+    expect(parsed.error).toContain('prompt');
   });
 });

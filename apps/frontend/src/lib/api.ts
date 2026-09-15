@@ -244,16 +244,18 @@ export type CanvasApprovalMode = "review" | "auto";
 export type CanvasNodeType =
   | "image_upload"
   | "image_gen"
-  | "text"
   | "video_gen"
   | "video_concat";
 
-/** 节点端口上流动的资源类型（镜像后端 canvas.types）。 */
-export type CanvasIoType = "text" | "image" | "video";
+/**
+ * 节点端口上流动的资源类型（镜像后端 canvas.types）。
+ * 没有 text——提示词是生成节点自己的 prompt 字段，不是端口上流动的资源。
+ */
+export type CanvasIoType = "image" | "video";
 
 /**
  * 节点的一份输出（镜像后端 canvas.types）。content 语义随 type：
- * text → 字面文本；image/video → mediaVersionId；image_upload 破例存 assetPath。
+ * image/video → mediaVersionId；image_upload 破例存 assetPath。
  */
 export interface CanvasNodeOutput {
   type: CanvasIoType;
@@ -267,7 +269,7 @@ export interface CanvasNodeDto {
   y: number;
   version: number;
   label: string | null;
-  text: string | null;
+  /** 生成节点的提示词（image_gen / video_gen 自己的字段）。 */
   prompt: string | null;
   assetPath: string | null;
   mediaGenerationId: string | null;

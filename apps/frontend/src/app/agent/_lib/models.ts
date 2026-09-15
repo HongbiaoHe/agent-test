@@ -18,7 +18,7 @@ export const MODEL_OPTIONS: ModelOption[] = [
   { value: "google-genai:gemini-2.5-pro", hint: "Previous-gen flagship" },
   { value: "google-genai:gemini-2.5-flash", hint: "Previous-gen fast tier" },
   { value: "google-genai:gemini-flash-lite-latest", hint: "Fastest · least capable" },
-  { value: "deepseek:deepseek-v4-flash", hint: "DeepSeek · V4 fast tier" },
+  { value: "deepseek:deepseek-flash", hint: "DeepSeek · fast tier" },
   { value: "deepseek:deepseek-v4-pro", hint: "DeepSeek · V4 flagship" },
   { value: "deepseek:deepseek-chat", hint: "DeepSeek · general chat (compat alias)" },
   { value: "deepseek:deepseek-reasoner", hint: "DeepSeek · deep reasoning (compat alias)" },

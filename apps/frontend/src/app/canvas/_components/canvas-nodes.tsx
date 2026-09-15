@@ -29,7 +29,6 @@ import { cn } from "@/lib/utils";
 import { useMediaAsset } from "../_hooks/use-media-asset";
 import {
   canConnectNodeTypes,
-  resolvePrompt,
   type NodeInputSource,
 } from "../_lib/node-io";
 import {
@@ -42,7 +41,6 @@ import {
   NodeComposer,
   type ClipSource,
   type NodeBodyField,
-  type PromptSource,
 } from "./node-composer";
 import { NodeTitleField } from "./node-inline-field";
 import { NodeMediaDialog } from "./node-media-dialog";
@@ -105,7 +103,6 @@ function NodeShell({
   dragging,
   label,
   body,
-  promptSources,
   clips,
   modelControls,
   composerMeta,
@@ -125,10 +122,8 @@ function NodeShell({
   /** 正在拖拽：拖动期间隐藏浮窗 */
   dragging: boolean;
   label: string;
-  /** composer 里的可编辑提示词（只有 text 节点有） */
+  /** composer 里的可编辑提示词（生成节点的 prompt） */
   body?: NodeBodyField;
-  /** composer 里的提示词来源（生成节点：每段来自一张上游 text 卡） */
-  promptSources?: PromptSource[];
   /** composer 里的待拼接视频序列（video_concat 专有） */
   clips?: ClipSource[];
   /** composer 里的模型区（生成节点专有）：选模型 / 选档位 / Generate */
@@ -189,7 +184,6 @@ function NodeShell({
         selected={single}
         dragging={dragging}
         body={body}
-        promptSources={promptSources}
         clips={clips}
         model={modelControls}
         meta={composerMeta}
@@ -426,7 +420,7 @@ function HeroFrame({
       onDoubleClick={
         onZoom &&
         ((e) => {
-          e.stopPropagation(); // 别冒泡到画布的「空白处双击建节点」
+          e.stopPropagation(); // 别冒泡到画布容器，那里不该再收到这次双击
           onZoom();
         })
       }
@@ -570,24 +564,11 @@ function extFor(mime: string, kind: "image" | "video"): string {
   return kind === "video" ? "mp4" : "png";
 }
 
-/**
- * 生成节点的正文 = 本次生成会用的提示词。它来自上游 text 节点，节点自身不存 prompt，
- * 所以没有上游文本时直接说清楚缺什么（此时触发生成后端也会报错）。
- */
-function UpstreamPrompt({
-  nodeId,
-  inputs,
-}: {
-  nodeId: string;
-  inputs: NodeInputSource[];
-}) {
-  const prompt = resolvePrompt(inputs);
+/** 生成节点卡面上的提示词摘要——就是这个节点自己的 prompt 字段。 */
+function NodePrompt({ prompt }: { prompt: string }) {
   if (!prompt) return null;
   return (
-    <p
-      key={nodeId}
-      className="line-clamp-3 text-xs leading-relaxed whitespace-pre-wrap text-muted-foreground"
-    >
+    <p className="line-clamp-3 text-xs leading-relaxed whitespace-pre-wrap text-muted-foreground">
       {prompt}
     </p>
   );
@@ -625,30 +606,6 @@ function InputSummary({ inputs }: { inputs: NodeInputSource[] }) {
     <span className="canvas-node__inputs">
       <span className="truncate">{summary}</span>
     </span>
-  );
-}
-
-function TextNode({ data, selected, dragging }: NodeProps) {
-  const d = data as NodeData;
-  return (
-    <NodeShell
-      nodeId={d.id}
-      nodeType="text"
-      selected={!!selected}
-      dragging={!!dragging}
-      label={d.label ?? ""}
-      body={{ field: "text", value: d.text ?? "", placeholder: "Node text…" }}
-      status={
-        d.text ? undefined : <StatusLine text="Empty — click to write it" />
-      }
-      hasSource
-    >
-      {d.text && (
-        <p className="line-clamp-5 text-[13px] leading-relaxed whitespace-pre-wrap">
-          {d.text}
-        </p>
-      )}
-    </NodeShell>
   );
 }
 
@@ -697,13 +654,8 @@ function MediaGenNode({
   const { resolveInputs, retryMedia, readOnly } =
     useContext(CanvasEditorContext);
   const inputs = resolveInputs(data.id);
-  const prompt = resolvePrompt(inputs);
-  // 面板里按来源分段列出（而不是像卡面那样拼成一段）：每段都要能点回它的那张 text 卡
-  const promptSources: PromptSource[] = inputs.flatMap((s) =>
-    s.outputs
-      .filter((o) => o.type === "text")
-      .map((o) => ({ nodeId: s.nodeId, title: s.title, text: o.content })),
-  );
+  // 提示词是这个节点自己的字段（入边只提供参考图）
+  const prompt = data.prompt?.trim() ?? "";
   const title = data.label?.trim() || NODE_META[nodeType].label;
   const [zoom, setZoom] = useState(false);
 
@@ -791,7 +743,7 @@ function MediaGenNode({
         />
       );
     } else if (!prompt) {
-      status = <StatusLine text="Needs a text node for its prompt" />;
+      status = <StatusLine text="Empty prompt — click to write it" />;
     } else {
       // 生成入口在面板里（选中节点即浮出）：既能选模型也能直接按 Generate
       status = <StatusLine text="Ready — pick a model and generate" />;
@@ -805,8 +757,12 @@ function MediaGenNode({
       selected={selected}
       dragging={dragging}
       label={data.label ?? ""}
-      // 生成节点自身不存 prompt：面板里列出各路上游文本（点一下可跳到那张卡）
-      promptSources={promptSources}
+      // 提示词就地可编辑——它是这个节点自己的字段，不必再去别的卡上改
+      body={{
+        field: "prompt",
+        value: data.prompt ?? "",
+        placeholder: "Describe what to generate…",
+      }}
       // 模型区紧跟提示词：确认了"用什么料"，接着就是"用哪个模型出"和"出"
       modelControls={
         <NodeModelControls
@@ -828,7 +784,7 @@ function MediaGenNode({
       hasTarget
       hasSource
     >
-      <UpstreamPrompt nodeId={data.id} inputs={inputs} />
+      <NodePrompt prompt={prompt} />
     </NodeShell>
   );
 
@@ -1042,7 +998,6 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
 }
 
 export const nodeTypes: NodeTypes = {
-  text: TextNode,
   image_upload: ImageUploadNode,
   image_gen: ImageGenNode,
   video_gen: VideoGenNode,

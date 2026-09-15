@@ -237,12 +237,15 @@ model CanvasMessage {
 }
 
 /**
- * 画布节点（物化当前态）。type ∈ image_upload | image_gen | text | video_gen。
+ * 画布节点（物化当前态）。type ∈ image_upload | image_gen | video_gen | video_concat。
  * 扁平强类型可空列（非 Json blob），按 type 填不同列：
- *  - text        : text
  *  - image_upload: assetPath（MVP 模拟上传占位）
  *  - image_gen   : prompt, mediaGenerationId（状态靠 JOIN MediaVersion 算）
  *  - video_gen   : prompt, mediaGenerationId
+ *  - video_concat: mediaGenerationId（源视频按入边顺序取，无自有字段）
+ *
+ * ⚠️ 曾有 type='text' 的提示词节点，已下线（提示词改为生成节点自己的 prompt 字段）。
+ * 历史行仍留在表里，未做数据迁移；快照层按 isCanvasNodeType 过滤，不会进到接口。
  * version：节点级乐观锁，改 data 时自增；位置(x/y)走 LWW 不占版本。
  */
 model CanvasNode {
@@ -254,7 +257,6 @@ model CanvasNode {
   y         Float         @default(0)
 
   label             String? // 展示用标题（可选）
-  text              String? @db.Text // text 节点正文 / image_upload 说明
   prompt            String? @db.Text // image_gen / video_gen 提示词
   assetPath         String? // image_upload 已上传资产（MVP 模拟占位）
   mediaGenerationId String? // 生成节点触发后回填；状态/资产靠 JOIN MediaVersion

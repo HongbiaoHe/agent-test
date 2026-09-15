@@ -10,7 +10,7 @@ describe('keepsNativeBlocks', () => {
   });
 
   it('OpenAI 兼容端不保留（请求体 schema 里没有这些 variant）', () => {
-    expect(keepsNativeBlocks('deepseek:deepseek-v4-flash')).toBe(false);
+    expect(keepsNativeBlocks('deepseek:deepseek-flash')).toBe(false);
     expect(keepsNativeBlocks('deepseek:deepseek-reasoner')).toBe(false);
   });
 });

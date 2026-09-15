@@ -29,7 +29,6 @@ export interface ConnectDrop {
  * 新增类型必须加进来——候选是先按这张表列举、再按端口契约过滤的，漏了就永远不出现。
  */
 const ORDER: CanvasNodeType[] = [
-  "text",
   "image_upload",
   "image_gen",
   "video_gen",

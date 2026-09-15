@@ -45,11 +45,6 @@ const NODE_NOTES: {
   note: string;
 }[] = [
   {
-    type: "text",
-    Icon: Type,
-    note: "The prompt lives here, and nowhere else.",
-  },
-  {
     type: "image_upload",
     Icon: Upload,
     note: "A picture you bring in yourself.",
@@ -57,12 +52,12 @@ const NODE_NOTES: {
   {
     type: "image_gen",
     Icon: ImageIcon,
-    note: "Draws a frame from the text and images wired into it.",
+    note: "Draws a frame from its own prompt, plus any images wired in.",
   },
   {
     type: "video_gen",
     Icon: Film,
-    note: "Moves it. Takes the same upstream text and images.",
+    note: "Moves it. Same idea: its own prompt, plus upstream images.",
   },
   {
     type: "video_concat",
@@ -76,8 +71,8 @@ const CAPABILITIES: { title: string; points: string[] }[] = [
   {
     title: "Images",
     points: [
-      // node-io.ts:19 + resolvePrompt()：生成节点没有自己的提示词字段
-      "A generation node owns no prompt field. It reads the prompt off the text nodes wired into it, so editing one text node re-aims everything downstream.",
+      // canvas.types.ts CANVAS_NODE_IO：入边只提供参考图，提示词是节点自己的字段
+      "Each generation node carries its own prompt. Edges only carry reference images, so one node is one shot — nothing to wire up before you can describe it.",
       // use-aigc-models.ts + node-model-controls.tsx 的 PARAM_LABEL
       "Model and tier sit on the node — ratio, quality — and the list comes from the server's live catalogue rather than a hardcoded menu.",
     ],

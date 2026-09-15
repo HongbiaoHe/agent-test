@@ -28,7 +28,6 @@ import {
   collectGenerationInputs,
   collectVideoSources,
   isCanvasNodeType,
-  joinPromptParts,
   shortNodeId,
 } from './canvas.types';
 import { groupByModel, sumCalls } from './token-usage';
@@ -63,12 +62,10 @@ function readTriggerGoal(trigger: Prisma.JsonValue): string {
  */
 function deriveOutputs(
   type: CanvasNodeType,
-  n: { text: string | null; assetPath: string | null },
+  n: { assetPath: string | null },
   media?: { id: string; status: string },
 ): CanvasNodeOutput[] {
   switch (type) {
-    case 'text':
-      return n.text?.trim() ? [{ type: 'text', content: n.text }] : [];
     // MVP 模拟上传：没有 MediaVersion，content 破例存 assetPath
     case 'image_upload':
       return n.assetPath ? [{ type: 'image', content: n.assetPath }] : [];
@@ -273,18 +270,20 @@ export class CanvasService {
         HttpStatus.BAD_REQUEST,
       );
     }
-    const inputs = collectGenerationInputs(snap.nodes, snap.edges, nodeId);
-    if (inputs.promptParts.length === 0) {
+    // 提示词是节点自己的字段（入边只提供参考图）
+    const prompt = node.prompt?.trim() ?? '';
+    if (!prompt) {
       throw new BusinessException(
         ErrorCodes.CANVAS_PROMPT_REQUIRED,
         HttpStatus.BAD_REQUEST,
       );
     }
+    const inputs = collectGenerationInputs(snap.nodes, snap.edges, nodeId);
     const { generationId } = await this.media.createGeneration(
       id,
       userId,
       node.type === 'video_gen' ? 'video' : 'image',
-      joinPromptParts(inputs.promptParts),
+      prompt,
       inputs.referenceVersionIds.length
         ? inputs.referenceVersionIds
         : undefined,
@@ -340,7 +339,7 @@ export class CanvasService {
     // id 一律用短 id（完整 cuid 的后 6 位）：完整 id 会让本段膨胀近 3 倍，而这段每次画布变化都要
     // 追加一份进上下文。工具侧用 resolveNodeId 反解，短 id / 完整 id 都吃。
     const nodeLines = listed.map((n) => {
-      const desc = (n.label ?? n.text ?? n.prompt ?? '').slice(0, 30);
+      const desc = (n.label ?? n.prompt ?? '').slice(0, 30);
       const media = n.mediaStatus ? ` <生成:${n.mediaStatus}>` : '';
       return `- ${shortNodeId(n.id)} [${n.type}] "${desc}" @(${Math.round(n.x)},${Math.round(n.y)})${media}`;
     });
@@ -433,10 +432,16 @@ export class CanvasService {
       );
     }
 
+    // 已下线类型的历史节点（取消 text 节点前建的那批，未做数据迁移）连同相关连线一并滤掉：
+    // 库里的行原样保留，但不再出现在快照里——老画布照常打开，前端也不必为未知类型写分支。
+    const nodes = session.nodes.filter((n) => isCanvasNodeType(n.type));
+    const liveIds = new Set(nodes.map((n) => n.id));
+    const edges = session.edges.filter(
+      (e) => liveIds.has(e.source) && liveIds.has(e.target),
+    );
+
     const latestByGen = await this.resolveMedia(
-      session.nodes
-        .map((n) => n.mediaGenerationId)
-        .filter((g): g is string => !!g),
+      nodes.map((n) => n.mediaGenerationId).filter((g): g is string => !!g),
     );
 
     // 会话累计 token：run 级持久化列的聚合（明细在 CanvasTokenUsage，快照只回总量）
@@ -456,12 +461,12 @@ export class CanvasService {
       totalTokens: tokenAgg._sum.totalTokens ?? 0,
       // 圈定的节点里可能有已被删掉的，过滤掉再回给前端，免得画布上标不出来又清不掉
       focusNodeIds: readFocusIds(session.focusNodeIds).filter((fid) =>
-        session.nodes.some((n) => n.id === fid),
+        nodes.some((n) => n.id === fid),
       ),
-      nodes: session.nodes.map((n) =>
+      nodes: nodes.map((n) =>
         this.toNodeDto(n, latestByGen.get(n.mediaGenerationId ?? '')),
       ),
-      edges: session.edges.map((e) => this.toEdgeDto(e)),
+      edges: edges.map((e) => this.toEdgeDto(e)),
     };
   }
 
@@ -845,7 +850,6 @@ export class CanvasService {
             x: op.x ?? 0,
             y: op.y ?? 0,
             label: op.label ?? null,
-            text: op.text ?? null,
             prompt: op.prompt ?? null,
             assetPath: op.assetPath ?? null,
           },
@@ -866,7 +870,6 @@ export class CanvasService {
           where: { id: op.nodeId },
           data: {
             ...(op.label !== undefined ? { label: op.label } : {}),
-            ...(op.text !== undefined ? { text: op.text } : {}),
             ...(op.prompt !== undefined ? { prompt: op.prompt } : {}),
             ...(op.assetPath !== undefined ? { assetPath: op.assetPath } : {}),
             ...(op.mediaGenerationId !== undefined
@@ -1050,7 +1053,6 @@ export class CanvasService {
       y: number;
       version: number;
       label: string | null;
-      text: string | null;
       prompt: string | null;
       assetPath: string | null;
       mediaGenerationId: string | null;
@@ -1060,7 +1062,11 @@ export class CanvasService {
     },
     media?: { id: string; status: string },
   ): CanvasNodeDto {
-    const type: CanvasNodeType = isCanvasNodeType(n.type) ? n.type : 'text';
+    // 库里可能留着已下线的类型（如历史的 text 节点）——调用方在 buildSnapshot 里已把它们
+    // 过滤掉，这里的兜底只是类型收窄用，取一个无输入无输出的类型最不会引发误连线。
+    const type: CanvasNodeType = isCanvasNodeType(n.type)
+      ? n.type
+      : 'image_upload';
     return {
       id: n.id,
       type,
@@ -1068,7 +1074,6 @@ export class CanvasService {
       y: n.y,
       version: n.version,
       label: n.label,
-      text: n.text,
       prompt: n.prompt,
       assetPath: n.assetPath,
       mediaGenerationId: n.mediaGenerationId,

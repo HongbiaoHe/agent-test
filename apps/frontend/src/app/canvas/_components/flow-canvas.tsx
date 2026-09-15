@@ -21,7 +21,7 @@ import {
   useState,
 } from "react";
 
-import type { CanvasNodeType, CanvasOpInput } from "@/lib/api";
+import type { CanvasNodeDto, CanvasNodeType, CanvasOpInput } from "@/lib/api";
 
 import type { CanvasState } from "../_lib/canvas-state";
 import {
@@ -52,7 +52,8 @@ const NODE_WIDTH = 256;
 /** 节点内容可编辑字段（update_node op 的子集，位置与 generationId 回填不在此列）。 */
 export interface NodeContentPatch {
   label?: string;
-  text?: string;
+  /** 生成节点的提示词（image_gen / video_gen 自己的字段） */
+  prompt?: string;
   /** 生成节点的模型选择（面板上的模型 / 档位下拉，见 NodeModelControls） */
   mediaChannel?: string;
   mediaModel?: string;
@@ -88,14 +89,8 @@ export const CanvasEditorContext = createContext<{
   mergeVideo: (nodeId: string) => void;
   /** 点端口上的「+」：在该处弹出「接一个什么节点」菜单（与拖到空白处同一个菜单） */
   openConnectMenu: (input: ConnectMenuRequest) => void;
-  /** 选中并把视图移到某个节点上（面板里点上游提示词 → 跳到那张 text 卡） */
+  /** 选中并把视图移到某个节点上（如上游摘要里点某一路来源 → 跳到那张卡） */
   focusNode: (nodeId: string) => void;
-  /**
-   * 给生成节点补一个上游 text 节点当提示词。
-   * 生成节点自身不存 prompt（后端 CANVAS_NODE_IO），所以在它的面板里写提示词
-   * 只能落成一个真的 text 节点并接上线——写完画布上会多出那张卡。
-   */
-  addPromptNode: (mediaNodeId: string, text: string) => void;
   /** 「加入对话」圈定的节点 id：节点据此画圈定标记 */
   focusedNodeIds: ReadonlySet<string>;
   /** 当前选中的节点数：>1 时单个节点的编辑面板让位给多选工具条 */
@@ -119,42 +114,93 @@ export const CanvasEditorContext = createContext<{
   mergeVideo: () => {},
   openConnectMenu: () => {},
   focusNode: () => {},
-  addPromptNode: () => {},
   focusedNodeIds: new Set<string>(),
   selectedCount: 0,
   multiSelecting: false,
   groupSelect: false,
 });
 
-function toRfNodes(canvas: CanvasState): Node[] {
-  return canvas.nodes.map((n) => ({
-    id: n.id,
-    type: n.type,
-    position: { x: n.x, y: n.y },
-    data: { ...n },
-  }));
+/**
+ * 画布投影 → react-flow 节点。**增量**：没变的节点原样复用上一份对象。
+ *
+ * 为什么不能整表重建：react-flow 把实测尺寸（`measured`）存在节点对象上。每次换新对象都会
+ * 把它丢掉，节点要重新量一遍，那一帧连线按缺省尺寸画 → 整张画布闪一下。而 canvas 的任何变化
+ * 都会触发这里——agent 加一条**边**、媒体状态刷新，都会让全部节点跟着重建，于是"agent 连线时
+ * 画布闪烁"。
+ *
+ * 「没变」的判定靠 `seen`——上一轮各节点对应的 DTO 引用表。applyPatch 是不可变更新，没动到的
+ * 节点 DTO 引用不变，一次引用比较即可。不把 DTO 直接放进 `data`（那样最省事）是因为
+ * react-flow 的 `Node.data` 要求 `Record<string, unknown>`，而 DTO 是没有索引签名的 interface。
+ */
+function syncRfNodes(
+  prev: Node[],
+  canvas: CanvasState,
+  seen: Map<string, CanvasNodeDto>,
+): Node[] {
+  const byId = new Map(prev.map((n) => [n.id, n]));
+  let changed = prev.length !== canvas.nodes.length;
+  const next = canvas.nodes.map((dto, i) => {
+    const old = byId.get(dto.id);
+    if (old && seen.get(dto.id) === dto) {
+      // 顺序也没变才算完全没动（节点顺序决定叠放层级）
+      if (prev[i] !== old) changed = true;
+      return old;
+    }
+    changed = true;
+    // 复用旧对象的其余字段：selected / measured / dragging 都在上面，重建会把它们抹掉
+    return old
+      ? {
+          ...old,
+          type: dto.type,
+          position: { x: dto.x, y: dto.y },
+          data: { ...dto },
+        }
+      : {
+          id: dto.id,
+          type: dto.type,
+          position: { x: dto.x, y: dto.y },
+          data: { ...dto },
+        };
+  });
+  seen.clear();
+  for (const dto of canvas.nodes) seen.set(dto.id, dto);
+  // 一个都没动就连数组引用一起复用，省掉一次 react-flow 的整表 diff
+  return changed ? next : prev;
 }
 
-function toRfEdges(canvas: CanvasState): Edge[] {
+/** 画布投影 → react-flow 连线。同样增量，理由见 syncRfNodes。 */
+function syncRfEdges(prev: Edge[], canvas: CanvasState): Edge[] {
   // 目标节点正在生成 → 该入边常驻流光（表现数据正流入这个节点）
   const generating = new Set(
     canvas.nodes.filter((n) => n.mediaStatus === "generating").map((n) => n.id),
   );
-  return canvas.edges.map((e) => ({
-    id: e.id,
-    source: e.source,
-    target: e.target,
-    type: "flow",
-    data: { busy: generating.has(e.target) },
-  }));
+  const byId = new Map(prev.map((e) => [e.id, e]));
+  let changed = prev.length !== canvas.edges.length;
+  const next = canvas.edges.map((e, i) => {
+    const busy = generating.has(e.target);
+    const old = byId.get(e.id);
+    if (
+      old &&
+      old.source === e.source &&
+      old.target === e.target &&
+      (old.data as FlowEdgeData | undefined)?.busy === busy
+    ) {
+      if (prev[i] !== old) changed = true;
+      return old;
+    }
+    changed = true;
+    return {
+      id: e.id,
+      source: e.source,
+      target: e.target,
+      type: "flow",
+      // active 由下方 flowEdges 按选中态派生，这里保留住不要抹掉
+      data: { ...(old?.data as FlowEdgeData | undefined), busy },
+    };
+  });
+  return changed ? next : prev;
 }
 
-/**
- * agent 操控期，把**刚新增的节点**聚焦到画布窗口中央（而非 fit 全部）。必须作为 <ReactFlow>
- * 子组件才能拿到上下文。做法：记录上一次的节点 id 集合，每次变化算出新增的 id，用
- * fitView({ nodes }) 只对新增节点做视野——例如新增 3 个节点，就把这 3 个居中展示。
- * 首次挂载只记录基线不聚焦（初始视图由 fitView prop 处理）；空闲期不自动聚焦，避免打断用户平移。
- */
 /**
  * 保存状态徽标（画布左上角，全画布唯一一处）：聚合所有节点的 update_node 状态。
  * 任一节点在保存 → 保存中；否则有失败 → 失败；否则刚成功 → 已保存；都没有则不渲染。
@@ -177,12 +223,27 @@ function FitOnFirstLoad({ count }: { count: number }) {
   return null;
 }
 
+/**
+ * agent 操控期，把**刚发生的改动**聚焦到画布窗口中央（而非 fit 全部）。必须作为 <ReactFlow>
+ * 子组件才能拿到上下文。
+ *
+ * 算进这一批的有两类：
+ *  - **新增的节点**——例如新增 3 个节点，就把这 3 个居中展示；
+ *  - **新增连线的目标节点**——连线同样是"这一步做了什么"，只连线不建节点时（把已有的两个
+ *    节点接起来）原先画面纹丝不动，用户不知道刚发生了什么。聚焦目标端而不是两端：连线的语义
+ *    是"数据流向它"，落点才是这一步的结果。目标节点本轮就是新建的话，Set 天然去重。
+ *
+ * 首次挂载只记录基线不聚焦（初始视图由 fitView prop 处理）；空闲期不自动聚焦，避免打断用户平移。
+ */
 function FitOnChange({
   nodeIdsKey,
+  edgeTargetsKey,
   active,
 }: {
   /** 当前全部节点 id 以 '|' 连接（仅在节点集合增删时变化，拖拽/选中不变）。 */
   nodeIdsKey: string;
+  /** 当前全部连线的 `边id>目标节点id`，以 '|' 连接（仅在连线集合增删时变化）。 */
+  edgeTargetsKey: string;
   active: boolean;
 }) {
   const { fitView } = useReactFlow();
@@ -191,43 +252,66 @@ function FitOnChange({
   // 固定收集窗口计时器：**第一个新节点到达时开一个 500ms 窗口，期间不重置**；
   // 窗口结束时把这 500ms 内新增的所有节点作为一批一起聚焦。
   const windowTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
-  // 最新节点 id 键（供窗口到点时读取窗口内累积到的最新节点，而非窗口开始时的快照）。
+  // 连线基线，与节点同一套：上次已聚焦（或对齐）的连线 id 集合
+  const baseEdgeIds = useRef<Set<string> | null>(null);
+  // 最新的两个键（供窗口到点时读取窗口内累积到的最新状态，而非窗口开始时的快照）。
   const latestKey = useRef(nodeIdsKey);
+  const latestEdgeKey = useRef(edgeTargetsKey);
 
   useEffect(() => {
     latestKey.current = nodeIdsKey;
+    latestEdgeKey.current = edgeTargetsKey;
     const ids = nodeIdsKey ? nodeIdsKey.split("|") : [];
+    const edgePairs = edgeTargetsKey ? edgeTargetsKey.split("|") : [];
+    const edgeIds = edgePairs.map((p) => p.split(">")[0]);
     if (baseIds.current === null) {
-      baseIds.current = new Set(ids); // 首次记基线，不聚焦
+      // 首次记基线，不聚焦
+      baseIds.current = new Set(ids);
+      baseEdgeIds.current = new Set(edgeIds);
       return;
     }
     if (!active) {
       // 空闲期不聚焦，对齐基线；若有未结束的窗口一并取消
       baseIds.current = new Set(ids);
+      baseEdgeIds.current = new Set(edgeIds);
       if (windowTimer.current) {
         clearTimeout(windowTimer.current);
         windowTimer.current = null;
       }
       return;
     }
-    const added = ids.filter((id) => !baseIds.current!.has(id));
+    const addedNodes = ids.filter((id) => !baseIds.current!.has(id));
+    const addedEdges = edgeIds.filter((id) => !baseEdgeIds.current!.has(id));
     // 无新增，或 500ms 收集窗口已在计时（本次新增会在窗口到点时被计入）→ 不新开窗口
-    if (added.length === 0 || windowTimer.current) return;
+    if ((addedNodes.length === 0 && addedEdges.length === 0) || windowTimer.current) {
+      return;
+    }
     windowTimer.current = setTimeout(() => {
       windowTimer.current = null;
       const curIds = latestKey.current ? latestKey.current.split("|") : [];
+      const curPairs = latestEdgeKey.current
+        ? latestEdgeKey.current.split("|")
+        : [];
       const base = baseIds.current ?? new Set<string>();
-      const batch = curIds.filter((id) => !base.has(id)); // 窗口内累积的全部新增
+      const baseEdges = baseEdgeIds.current ?? new Set<string>();
+      const alive = new Set(curIds);
+      // 窗口内累积的全部新增节点 + 新增连线的目标端（目标节点可能已被删掉 → 用 alive 过滤）
+      const batch = new Set(curIds.filter((id) => !base.has(id)));
+      for (const pair of curPairs) {
+        const [edgeId, target] = pair.split(">");
+        if (!baseEdges.has(edgeId) && alive.has(target)) batch.add(target);
+      }
       baseIds.current = new Set(curIds);
-      if (batch.length === 0) return;
+      baseEdgeIds.current = new Set(curPairs.map((p) => p.split(">")[0]));
+      if (batch.size === 0) return;
       void fitView({
-        nodes: batch.map((id) => ({ id })),
+        nodes: [...batch].map((id) => ({ id })),
         padding: 0.35,
         duration: 500,
         maxZoom: 1.2,
       });
     }, 500);
-  }, [nodeIdsKey, active, fitView]);
+  }, [nodeIdsKey, edgeTargetsKey, active, fitView]);
 
   // 卸载时清理未结束的窗口计时器
   useEffect(
@@ -368,20 +452,17 @@ function FlowCanvasInner({
     [screenToFlowPosition, getNodes],
   );
 
-  // 外部画布状态（快照 / canvas_patch / media 刷新）变化时重建 RF 视图。
+  // 外部画布状态（快照 / canvas_patch / media 刷新）变化时增量同步 RF 视图。
   // 本地拖拽不改 canvas，故不会在拖拽中被打断。
-  // ⚠️ 必须保留 selected：update_node 成功后服务端回广播 canvas_patch，整表重建会丢掉
-  // 选中态 → 正在编辑的浮窗（NodeToolbar 依赖 selected）会在保存成功那刻突然消失。
+  // 逐节点复用而非整表重建：既保住 selected（update_node 回广播时正在编辑的浮窗不会消失），
+  // 也保住 measured（丢了要重新量，那一帧连线按缺省尺寸画 → 画布闪烁）。详见 syncRfNodes。
+  // 上一轮各节点的 DTO 引用：syncRfNodes 据此判断"这个节点没变"（见该函数注释）
+  const seenDtos = useRef<Map<string, CanvasNodeDto>>(new Map());
   useEffect(() => {
-    setNodes((prev) => {
-      const selected = new Set(prev.filter((n) => n.selected).map((n) => n.id));
-      return toRfNodes(canvas).map((n) =>
-        selected.has(n.id) ? { ...n, selected: true } : n,
-      );
-    });
+    setNodes((prev) => syncRfNodes(prev, canvas, seenDtos.current));
   }, [canvas, setNodes]);
   useEffect(() => {
-    setEdges(toRfEdges(canvas));
+    setEdges((prev) => syncRfEdges(prev, canvas));
   }, [canvas, setEdges]);
 
   // 用 join 出的字符串做依赖：父级每次渲染都会给一个新数组，直接依赖数组会让 memo 永远失效
@@ -533,7 +614,7 @@ function FlowCanvasInner({
   );
 
   /**
-   * 选中某个节点并把视图挪过去（生成节点面板里点提示词 → 跳到提供它的那张 text 卡）。
+   * 选中某个节点并把视图挪过去（如上游摘要里点某一路来源 → 跳到提供它的那张卡）。
    * 保持当前缩放：跳转是「看一眼上游」，把人的缩放层级换掉会让人丢失方位感。
    */
   const focusNodeOnCanvas = useCallback(
@@ -563,7 +644,7 @@ function FlowCanvasInner({
         op: "add_node",
         type: n.type,
         label: n.label ?? undefined,
-        text: n.text ?? undefined,
+        prompt: n.prompt ?? undefined,
         assetPath: n.assetPath ?? undefined,
         x: n.x + 40,
         y: n.y + 40,
@@ -598,19 +679,6 @@ function FlowCanvasInner({
       openConnectMenu: (r: ConnectMenuRequest) =>
         openDropAt(r.nodeId, r.direction, r.clientX, r.clientY),
       focusNode: focusNodeOnCanvas,
-      addPromptNode: (mediaNodeId: string, text: string) => {
-        const m = canvas.nodes.find((n) => n.id === mediaNodeId);
-        if (!m) return;
-        // 落在生成节点左侧一个卡宽 + 一段间距：与画布上「上游在左」的读法一致
-        onAddConnectedNode({
-          fromId: mediaNodeId,
-          direction: "upstream",
-          type: "text",
-          x: m.x - NODE_WIDTH - 80,
-          y: m.y,
-          text,
-        });
-      },
       focusedNodeIds: focusSet,
       selectedCount: selectedNodes.length,
       multiSelecting,
@@ -630,7 +698,6 @@ function FlowCanvasInner({
       onMergeVideo,
       openDropAt,
       focusNodeOnCanvas,
-      onAddConnectedNode,
       focusSet,
       selectedNodes.length,
       multiSelecting,
@@ -666,27 +733,10 @@ function FlowCanvasInner({
     return () => window.removeEventListener("keydown", onKey);
   }, [readOnly, duplicateFromCanvas]);
 
-  // 空白处双击 = 就地新建一个文本节点。空画布上原本一个入口都没有，只能去右边求 agent；
-  // 同类产品（Flora 等）也是双击建节点，故顺手把 react-flow 的双击缩放关掉（见 zoomOnDoubleClick）。
-  const addNodeAt = (e: React.MouseEvent) => {
-    if (readOnly) return;
-    // 只认画布空白：双击卡片里的文字不该冒出新节点
-    if (!(e.target instanceof Element)) return;
-    if (!e.target.classList.contains("react-flow__pane")) return;
-    const pos = screenToFlowPosition({ x: e.clientX, y: e.clientY });
-    onApplyOp({
-      op: "add_node",
-      type: "text",
-      x: pos.x - NODE_WIDTH / 2,
-      y: pos.y - 24,
-    });
-  };
-
   return (
     <div
       ref={wrapRef}
       className="relative h-full w-full"
-      onDoubleClick={addNodeAt}
       onPointerMove={onCanvasPointerMove}
       onPointerLeave={onCanvasPointerLeave}
     >
@@ -791,7 +841,8 @@ function FlowCanvasInner({
         connectionRadius={40}
         panOnScroll
         zoomOnScroll={false}
-        /* 双击留给「新建节点」（见 addNodeAt）。缩放还有：捏合 / Cmd+滚动 / 左下缩放键 */
+        /* 空白处双击不做任何事：建节点走右键菜单 / 端口拖线 / agent，缩放走捏合 / Cmd+滚动 /
+           左下缩放键。留着双击缩放会和媒体卡的「双击看大图」抢同一个手势，误触就是一次视口跳变 */
         zoomOnDoubleClick={false}
         fitView
         proOptions={{ hideAttribution: true }}
@@ -824,9 +875,10 @@ function FlowCanvasInner({
             }}
           />
         )}
-        {/* agent 操控期：把刚新增的节点聚焦到画布中央 */}
+        {/* agent 操控期：把刚新增的节点、以及刚连上的连线目标端聚焦到画布中央 */}
         <FitOnChange
           nodeIdsKey={nodes.map((n) => n.id).join("|")}
+          edgeTargetsKey={edges.map((e) => `${e.id}>${e.target}`).join("|")}
           active={readOnly}
         />
       </ReactFlow>
@@ -839,8 +891,8 @@ function FlowCanvasInner({
           </p>
           {!readOnly && (
             <p className="text-xs text-muted-foreground/70">
-              Double-click anywhere to add a text node, or ask the agent to build
-              the board for you.
+              Right-click anywhere to add a node, or ask the agent to build the
+              board for you.
             </p>
           )}
         </div>

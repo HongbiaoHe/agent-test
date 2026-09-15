@@ -15,7 +15,7 @@ export const ALLOWED_MODELS = [
   'google-genai:gemini-2.5-flash',
   'google-genai:gemini-flash-lite-latest',
   // DeepSeek：v4-* 为 /models API 列出的全部模型；chat/reasoner 为官方兼容别名（同样可调用）
-  'deepseek:deepseek-v4-flash',
+  'deepseek:deepseek-flash',
   'deepseek:deepseek-v4-pro',
   'deepseek:deepseek-chat',
   'deepseek:deepseek-reasoner',

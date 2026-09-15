@@ -96,8 +96,8 @@ export const CANVAS_MODEL_OPTIONS: CanvasModelOption[] = [
     },
   },
   {
-    value: "deepseek:deepseek-v4-flash",
-    label: "DeepSeek V4 Flash",
+    value: "deepseek:deepseek-flash",
+    label: "DeepSeek Flash",
     hint: "Light DeepSeek, fast and cheap",
     caps: {
       cache: "~98% hit — best in class",

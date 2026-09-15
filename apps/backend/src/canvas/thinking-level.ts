@@ -5,7 +5,7 @@
  * 两家能力**不对等**，这是实测结论、不是猜的：
  *
  * - DeepSeek 只有开/关两态。`thinking: { type: 'disabled' }` 稳定生效（3/3 采样思考量为 0）；
- *   而 OpenAI 风格的 `reasoningEffort` 对 deepseek-v4-flash **无效** —— 3 次采样 low 平均 3510
+ *   而 OpenAI 风格的 `reasoningEffort` 对 deepseek flash **无效** —— 3 次采样 low 平均 3510
  *   字符、high 平均 2700 字符，方向相反且区间大量重叠，纯属模型输出随机波动。所以绝不要给
  *   DeepSeek 暴露 low/medium/high：那是点了没反应的假选项。
  * - Gemini 分级 `thinkingConfig.thinkingLevel` = LOW | MEDIUM | HIGH 全模型可用；但**关闭**
