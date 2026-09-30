@@ -1,3 +1,7 @@
+import { signOut } from "next-auth/react";
+
+import { safeNextPath } from "@/lib/safe-next";
+
 const API_BASE =
   process.env.NEXT_PUBLIC_API_BASE_URL ?? "http://localhost:3101";
 
@@ -5,6 +9,24 @@ interface ApiEnvelope<T> {
   code: number;
   message: string;
   data: T;
+}
+
+let redirectingToLogin = false;
+
+/**
+ * 后端 401（缺 token / JWT 过期或验签失败）：next-auth 会话还在但 backendToken 已不可用，
+ * middleware 仍当已登录放行，只能由这里兜底——清掉会话再整页跳 /login，带上当前页作 next。
+ * 并发请求可能同时 401，只跳一次。
+ */
+function redirectToLogin() {
+  if (redirectingToLogin || typeof window === "undefined") return;
+  redirectingToLogin = true;
+  const { pathname, search } = window.location;
+  const next = safeNextPath(pathname + search);
+  const target = next ? `/login?next=${encodeURIComponent(next)}` : "/login";
+  void signOut({ redirect: false }).finally(() => {
+    window.location.href = target;
+  });
 }
 
 /** 统一请求：Authorization header 由 middleware 注入；解析 {code,message,data}。 */
@@ -18,6 +40,7 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
       ...(init?.headers ?? {}),
     },
   });
+  if (res.status === 401) redirectToLogin();
   // 后端正常返回 {code,message,data} JSON；但 5xx / 网关错误可能回纯文本或 HTML，
   // 直接 res.json() 会抛 "Unexpected token ..." 这种晦涩报错，故先按文本读、再尝试解析，
   // 解析失败时退化成带状态码的清晰错误，便于 UI 直接展示。
@@ -228,6 +251,7 @@ export async function fetchMediaAssetBlob(versionId: string): Promise<Blob> {
     },
   });
   if (!res.ok) {
+    if (res.status === 401) redirectToLogin();
     throw new Error(`Failed to load asset (${res.status})`);
   }
   return res.blob();
