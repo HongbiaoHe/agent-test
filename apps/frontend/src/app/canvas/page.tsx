@@ -188,6 +188,30 @@ export default async function CanvasIntroPage() {
 
       <IntroHero isLoggedIn={isLoggedIn} />
 
+      {/* 介绍片：把下面几段要讲的事（像素 → 帧 → 视频 → agent 的脸 → 一句话出片）连成 56 秒。
+          文件放 public/videos/ 而不是 public/canvas/：middleware 的 "/canvas/" 前缀要登录，
+          放那下面未登录访客会被弹去 /login。不自动播放——片子带旁白，静音自播就白讲了。
+          width/height 给出 16:9，元数据到手前也不跳布局。源码与重建脚本在 docs/video/ */}
+      <Section
+        id="film"
+        className="border-t border-border"
+        title="The idea, in under a minute"
+        lede="Nine squares make a picture — that is image generation. Frames in a row make a shot — that is video generation. Narrated in Mandarin, with captions in both languages."
+      >
+        <div className="overflow-hidden rounded-xl border border-border bg-card">
+          <video
+            className="block aspect-video w-full"
+            src="/videos/canvas-agent-intro.mp4"
+            poster="/videos/canvas-agent-intro-poster.jpg"
+            width={1920}
+            height={1080}
+            controls
+            playsInline
+            preload="none"
+          />
+        </div>
+      </Section>
+
       {/* 隐喻区：像素 → 一帧 → 一段。三张卡的视觉全部由同一种方格搭出来，
           说的就是「这三件事是同一种东西的三个尺度」 */}
       <Section

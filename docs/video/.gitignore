@@ -1,0 +1,9 @@
+stems/
+plan.json
+music.wav
+sfx.wav
+vo/*.aiff
+vo/*.wav
+canvas-agent-intro-silent.mp4
+canvas-agent-intro.mp4
+stills/
