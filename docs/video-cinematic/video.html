@@ -1,0 +1,773 @@
+<!doctype html>
+<html>
+<head>
+<meta charset="utf-8" />
+<title>Canvas Agent — from one pixel</title>
+<link href="https://fonts.googleapis.com/css2?family=Geist:wght@400;500;600;700&family=Geist+Mono:wght@400;500&display=block" rel="stylesheet" />
+<style>html,body{margin:0;background:#000}canvas{display:block}</style>
+</head>
+<body>
+<canvas id="c" width="1920" height="1080"></canvas>
+<script>
+/*
+ * 《从一个像素开始》—— Canvas Agent 预告片。每一帧都是 draw(t) 的纯函数输出，由 render.mjs 逐帧截取。
+ * 配色 = globals.css 的 .dark 语义 token + 节点身份色；方阵节律 = [data-thinking-anim] 规则。
+ * 画幅 2.35:1：上下各留 BAR 的黑边，旁白字幕落在下黑边里，章节号落在上黑边里。
+ */
+const W = 1920, H = 1080, BAR = 132, CY = H / 2, PIC_H = H - BAR * 2;
+const DURATION = 62;
+const ctx = document.getElementById("c").getContext("2d");
+
+const C = {
+  bg: "oklch(0.17 0.004 60)", card: "oklch(0.205 0.004 60)", fg: "oklch(0.95 0.002 80)",
+  muted: "oklch(0.7 0.005 70)", mutedBg: "oklch(0.255 0.004 60)", border: "oklch(1 0 0 / 8%)",
+  primary: "oklch(0.92 0.002 80)", primaryFg: "oklch(0.205 0.005 60)",
+  cell: "oklch(0.85 0.175 72)", upload: "oklch(0.74 0.1 210)", image: "oklch(0.72 0.15 292)",
+  video: "oklch(0.73 0.17 12)", concat: "oklch(0.72 0.12 165)",
+};
+const CELL = [0.85, 0.175, 72]; // --thinking-cell（dark），数值形式便于插值
+const DIM = 0.15;
+const SANS = 'Geist, "PingFang SC", "Hiragino Sans GB", sans-serif';
+const MONO = '"Geist Mono", "PingFang SC", monospace';
+
+// ---------- 数学 ----------
+const clamp = (v, a = 0, b = 1) => Math.min(b, Math.max(a, v));
+const lerp = (a, b, p) => a + (b - a) * p;
+const seg = (t, a, b) => clamp((t - a) / (b - a));
+const easeOut = (p) => 1 - Math.pow(1 - p, 3);
+const easeIn = (p) => p * p * p;
+const easeInOut = (p) => (p < 0.5 ? 4 * p * p * p : 1 - Math.pow(-2 * p + 2, 3) / 2);
+const easeOutBack = (p) => 1 + 2.5 * Math.pow(p - 1, 3) + 1.5 * Math.pow(p - 1, 2);
+const smooth = (p) => { p = clamp(p); return p * p * (3 - 2 * p); };
+const mod = (a, n) => ((a % n) + n) % n;
+const hash = (x, y) => { const s = Math.sin(x * 127.1 + y * 311.7) * 43758.5453; return s - Math.floor(s); };
+function rng(seed) { return () => { seed |= 0; seed = (seed + 0x6d2b79f5) | 0; let t = Math.imul(seed ^ (seed >>> 15), 1 | seed); t = (t + Math.imul(t ^ (t >>> 7), 61 | t)) ^ t; return ((t ^ (t >>> 14)) >>> 0) / 4294967296; }; }
+const ok = ([L, Cc, h], a = 1) => `oklch(${L.toFixed(3)} ${Cc.toFixed(3)} ${h.toFixed(1)}${a < 1 ? ` / ${a.toFixed(3)}` : ""})`;
+const mixLCH = (a, b, p) => { let dh = b[2] - a[2]; if (dh > 180) dh -= 360; if (dh < -180) dh += 360; return [lerp(a[0], b[0], p), lerp(a[1], b[1], p), mod(a[2] + dh * p, 360)]; };
+
+// CSS ease-in-out 逐段套用（和浏览器里方阵的 keyframes 一致）
+function cssEase(x) { let lo = 0, hi = 1, s = x; for (let i = 0; i < 22; i++) { s = (lo + hi) / 2; const bx = 3 * (1 - s) * (1 - s) * s * 0.42 + 3 * (1 - s) * s * s * 0.58 + s * s * s; if (bx < x) lo = s; else hi = s; } return 3 * (1 - s) * s * s + s * s * s; }
+function keyframes(p, st) { for (let i = 1; i < st.length; i++) if (p <= st[i][0]) { const [a, va] = st[i - 1], [b, vb] = st[i]; return lerp(va, vb, cssEase((p - a) / (b - a || 1))); } return st[st.length - 1][1]; }
+const PULSE_DELAY = [0, 0.62, 0.24, 0.86, 0.38, 1.02, 0.14, 0.72, 0.46], PULSE_DUR = [1.5, 1.7, 1.36, 1.62, 1.44, 1.78, 1.56, 1.32, 1.68];
+const ORBIT_DELAY = { 0: 0, 1: 0.2, 2: 0.4, 5: 0.6, 8: 0.8, 7: 1.0, 6: 1.2, 3: 1.4 };
+const BR_GAIN = { 4: 0.7, 1: 0.46, 7: 0.4, 5: 0.36, 3: 0.31, 0: 0.26, 8: 0.22, 2: 0.18, 6: 0.15 };
+const BR_DELAY = { 4: 0, 1: 0.18, 7: 0.24, 5: 0.21, 3: 0.3, 0: 0.4, 8: 0.44, 2: 0.5, 6: 0.55 };
+const SWEEP = [[0, DIM], [0.16, 1], [0.62, DIM], [1, DIM]];
+function cellOpacity(anim, i, t) {
+  if (anim === "lit") return 1;
+  if (anim === "pulse") return keyframes(mod(t - PULSE_DELAY[i], PULSE_DUR[i]) / PULSE_DUR[i], [[0, DIM], [0.5, 1], [1, DIM]]);
+  if (anim === "wave") return keyframes(mod(t - (Math.floor(i / 3) + (i % 3)) * 0.13, 1.3) / 1.3, SWEEP);
+  if (anim === "orbit") return i === 4 ? 1 : keyframes(mod(t - ORBIT_DELAY[i], 1.6) / 1.6, SWEEP);
+  const pk = DIM + (1 - DIM) * BR_GAIN[i];
+  return keyframes(mod(t - BR_DELAY[i], 4.5) / 4.5, [[0, DIM], [0.42, pk], [0.56, DIM + (1 - DIM) * BR_GAIN[i] * 0.92], [1, DIM]]);
+}
+
+// ---------- 绘制原语 ----------
+function rrect(x, y, w, h, r) { ctx.beginPath(); ctx.roundRect(x, y, w, h, r); }
+function text(str, x, y, o = {}) {
+  const { size = 24, weight = 400, font = SANS, color = C.fg, align = "left", alpha = 1, spacing = 0, blur = 0 } = o;
+  if (alpha <= 0.002) return;
+  ctx.save();
+  ctx.globalAlpha *= alpha;
+  if (blur > 0.3) ctx.filter = `blur(${blur}px)`;
+  ctx.font = `${weight} ${size}px ${font}`;
+  ctx.letterSpacing = `${spacing}px`;
+  ctx.fillStyle = color; ctx.textAlign = align; ctx.textBaseline = "alphabetic";
+  ctx.fillText(str, x, y);
+  ctx.restore();
+}
+const tw = (s, size, weight = 400, font = SANS, spacing = 0) => { ctx.save(); ctx.font = `${weight} ${size}px ${font}`; ctx.letterSpacing = `${spacing}px`; const w = ctx.measureText(s).width; ctx.restore(); return w; };
+/** 方形柔光：纯色方块 + blur（同 .canvas-thinking-grid::before 的做法） */
+function glowRect(cx, cy, size, color, alpha, blur) {
+  if (alpha <= 0) return;
+  ctx.save(); ctx.globalAlpha = alpha; ctx.filter = `blur(${blur}px)`; ctx.fillStyle = color;
+  ctx.fillRect(cx - size / 2, cy - size / 2, size, size); ctx.restore();
+}
+/** 3×3 方阵 */
+function grid9(cx, cy, size, gap, ops, color = C.cell, alpha = 1) {
+  const cs = (size - 2 * gap) / 3;
+  ctx.save();
+  for (let i = 0; i < 9; i++) {
+    ctx.globalAlpha = alpha * ops[i];
+    ctx.fillStyle = color;
+    ctx.fillRect(cx - size / 2 + (i % 3) * (cs + gap), cy - size / 2 + Math.floor(i / 3) * (cs + gap), cs, cs);
+  }
+  ctx.restore();
+}
+/** 方形冲击波：一圈往外扩、越扩越淡的方框 */
+function shockwave(cx, cy, t, t0, dur, maxSize, color = C.cell, width = 6) {
+  const p = seg(t, t0, t0 + dur);
+  if (p <= 0 || p >= 1) return;
+  const s = lerp(40, maxSize, easeOut(p));
+  ctx.save(); ctx.globalAlpha = (1 - p) * 0.8; ctx.strokeStyle = color; ctx.lineWidth = width * (1 - p) + 1;
+  ctx.strokeRect(cx - s / 2, cy - s / 2, s, s); ctx.restore();
+}
+
+// ---------- 一幅日落：所有「图」都从这一个函数取色 ----------
+// u, v ∈ [0,1]；phase ∈ [0,1] 是一天里的时刻（0 = 太阳半落，1 = 入夜）
+const HZ = 0.52; // 地平线
+function scene(u, v, phase) {
+  const sunU = 0.5, sunV = 0.5 + phase * 0.16;
+  const night = smooth(phase * 1.5 - 0.35);
+  const n = hash(Math.floor(u * 243), Math.floor(v * 243));
+  let col;
+  if (v < HZ) {
+    const k = (HZ - v) / HZ;
+    // 色相从橙（48°）经红、品红绕到紫（−68° = 292°），不能直线插值——那会穿过绿
+    col = [lerp(0.76, 0.27, Math.pow(k, 0.65)), lerp(0.16, 0.1, k), mod(lerp(48, -68, Math.pow(k, 0.75)), 360)];
+    col = mixLCH([col[0] * lerp(1, 0.42, night), col[1] * lerp(1, 0.75, night), col[2]], [col[0] * 0.42, col[1] * 0.75, 272], night * 0.8);
+    const d = Math.hypot(u - sunU, (v - sunV) * 1.1);
+    const g = Math.exp(-d / 0.05) * (1 - night * 0.85);
+    col = mixLCH(col, [0.84, 0.17, 66], g * 0.75);
+    // 太阳只占 ~3 格：1 格是日核，3×3 是一轮太阳，9×9 是光晕，27×27 才看得见天与地平线
+    const R = 0.0068;
+    if (d < R && phase < 0.62) col = [0.97 - d * 18 + (n - 0.5) * 0.02, lerp(0.07, 0.17, d / R), lerp(92, 74, d / R)];
+    // 两侧山影：离太阳越近，山脊越亮（逆光描边）
+    const ridgeL = HZ - (0.09 + 0.06 * Math.sin(u * 11 + 1.2) + 0.035 * Math.sin(u * 31)) * clamp(1 - u * 2.1);
+    const ridgeR = HZ - (0.1 + 0.055 * Math.sin(u * 13 + 4) + 0.03 * Math.sin(u * 37 + 2)) * clamp((u - 0.56) * 2.4);
+    const ridge = Math.min(ridgeL, ridgeR);
+    if (v > ridge && (u < 0.48 || u > 0.55)) {
+      const rim = Math.exp(-(v - ridge) / 0.006) * (1 - night) * 0.5;
+      col = [lerp(0.2, 0.13, night) + rim * 0.4, 0.05 + rim * 0.1, lerp(305, 60, rim)];
+    }
+    if (night > 0.05 && n > 0.985 && k > 0.2) col = mixLCH(col, [0.96, 0.02, 90], night * (0.6 + 0.4 * hash(n, 7)));
+  } else {
+    // 水面：天空的倒影压暗，外加一道太阳的碎金
+    const mv = HZ - (v - HZ) * 1.3;
+    col = scene(u, clamp(mv, 0, HZ - 0.001), phase);
+    col = [col[0] * 0.55, col[1] * 0.8, col[2]];
+    const w = 0.008 * (1 + (v - HZ) * 7);
+    const ripple = hash(Math.floor(v * 243), 3) > 0.35;
+    if (Math.abs(u - sunU) < w && ripple && phase < 0.7) {
+      const f = (1 - (v - HZ) / (1 - HZ)) * (1 - Math.abs(u - sunU) / w) * (1 - night);
+      col = mixLCH(col, [0.86, 0.16, 70], f * 0.9);
+    }
+    col = [col[0] + Math.sin(v * 420) * 0.012, col[1], col[2]];
+  }
+  return col;
+}
+
+// 大图 243×243 = 59,049 像素（3⁵ × 3⁵），逐级留缝：每一级 3×3 之间的缝 = 该级子块边长 × GAP
+const LV = 5, N243 = 243, GAP = 0.1;
+const S = [1]; for (let k = 0; k < LV; k++) S.push(3 * S[k] + 2 * GAP * S[k]);
+const POS = new Float32Array(N243);
+for (let i = 0; i < N243; i++) { let p = 0, x = i; for (let k = 0; k < LV; k++) { p += (x % 3) * (S[k] + GAP * S[k]); x = Math.floor(x / 3); } POS[i] = p; }
+const BIG_HALF = S[LV] / 2;
+const BIG = [];
+for (let j = 0; j < N243; j++) for (let i = 0; i < N243; i++) BIG.push(ok(scene((i + 0.5) / N243, (j + 0.5) / N243, 0)));
+
+// 隧道里的每一帧：27×27（3³ × 3³），逐帧推进一天的时刻
+const N27 = 27, FR = 44;
+const FRAMES = [];
+for (let k = 0; k < FR; k++) {
+  const ph = k / (FR - 1), cells = [];
+  for (let j = 0; j < N27; j++) for (let i = 0; i < N27; i++) cells.push(scene((i + 0.5) / N27, (j + 0.5) / N27, ph));
+  FRAMES.push({ lch: cells, str: cells.map((c) => ok(c)) });
+}
+
+// ---------- 旁白（文本与时间点在这里定；时长由 tts 量好后注入）----------
+const NARRATION = [
+  { id: "n01", at: 2.9, text: "一切，从一个像素开始。" },
+  { id: "n02", at: 6.4, text: "九个像素，拼成一张图。" },
+  { id: "n03", at: 10.0, text: "再多一些，就是一整个世界。" },
+  { id: "n04", at: 14.8, text: "这是 Canvas Agent 生成图片的能力。" },
+  { id: "n05", at: 19.4, text: "一帧，接着一帧，" },
+  { id: "n06", at: 22.0, text: "时间，开始流动。" },
+  { id: "n07", at: 26.4, text: "这是它生成视频的能力。" },
+  { id: "n08", at: 31.9, text: "而这九个方格，也是它的脸。" },
+  { id: "n09", at: 35.6, text: "它在想，在做，在找方向，你一眼就看得懂。" },
+  { id: "n10", at: 41.9, text: "你只需要一句话。" },
+  { id: "n11", at: 44.5, text: "它摆节点，连线，出图，出片，" },
+  { id: "n12", at: 48.4, text: "整块画板，为你一格一格点亮。" },
+  { id: "n13", at: 55.0, text: "从一个像素，到一整部片。" },
+  { id: "n14", at: 58.6, text: "Canvas Agent。" },
+];
+let VO = {}; // id → 秒，render.mjs 注入
+window.setVO = (m) => { VO = m; };
+
+// ---------- 时间线 ----------
+const T = {
+  ignite: 2.2,
+  neighbors: 6.0, zoom0: 7.2, zoom1: 15.0, imgTitle: 14.8,
+  tunnel0: 17.8, fly0: 19.2, fly1: 25.9, play0: 26.0, vidTitle: 26.4, fold0: 29.4, impact: 31.3,
+  faces: [32.3, 34.3, 36.3, 38.3], face1: 41.0,
+  board0: 41.0, implode0: 51.6, implode1: 53.5, boom: 54.2, end: 62,
+};
+
+// ======================= A + B：点火，然后九的幂 =======================
+function zoomScale(t) {
+  // 屏幕上一格像素的边长（px/单位）：点火后慢推，7.2s 起按对数匀速外拉
+  if (t < T.zoom0) return lerp(120, 170, easeInOut(seg(t, T.ignite, T.zoom0)));
+  const p = easeInOut(seg(t, T.zoom0, T.zoom1));
+  return Math.exp(lerp(Math.log(170), Math.log(760 / S[LV]), p));
+}
+/** 生成波前的半径（格数）：总是比屏幕可见范围略小一点，观众始终看得见那一圈在亮起来 */
+function revealR(t) {
+  if (t < T.neighbors) return 0;
+  if (t < T.zoom0) return seg(t, T.neighbors, T.neighbors + 0.9); // 九格：中心四周八格依次亮
+  const visHalf = (W * 0.38) / zoomScale(t) / (1 + GAP * 1.2);
+  return Math.max(1, Math.min(122, visHalf));
+}
+function sceneMosaic(t) {
+  if (t < T.ignite - 0.2 || t > T.fly0 + 0.4) return;
+  const sc = zoomScale(t);
+  // 点题时整幅图让到左边，大字放右边；进隧道前再回到正中
+  const side = easeInOut(seg(t, T.imgTitle - 0.4, T.imgTitle + 0.6)) * (1 - easeInOut(seg(t, T.tunnel0 - 0.6, T.tunnel0)));
+  const cx = W / 2 - SIDE * side, cy = CY;
+  const ctr = 121;
+  const R = revealR(t);
+  const shake = impactShake(t);
+  ctx.save();
+  ctx.translate(shake.x, shake.y);
+  // 进隧道前：整幅图退到第 0 帧的位置
+  const out = easeInOut(seg(t, T.tunnel0, T.fly0));
+  const sc2 = sc * lerp(1, 0.92, out);
+  const alpha = 1 - seg(t, T.fly0 - 0.1, T.fly0 + 0.4);
+  ctx.globalAlpha = alpha;
+  // 点火：单格从一个亮点炸开
+  const ign = easeOutBack(seg(t, T.ignite, T.ignite + 0.35));
+  if (t < T.neighbors + 0.01) {
+    const s = sc * ign;
+    glowRect(cx, cy, s * 1.9, C.cell, 0.55 * ign, s * 0.35);
+    ctx.fillStyle = BIG[ctr * N243 + ctr];
+    ctx.fillRect(cx - s / 2, cy - s / 2, s, s);
+    // 刚点燃那一下的白热
+    const hot = 1 - seg(t, T.ignite, T.ignite + 0.7);
+    if (hot > 0) { ctx.globalAlpha = alpha * hot * 0.9; ctx.fillStyle = "oklch(0.99 0.02 90)"; ctx.fillRect(cx - s / 2, cy - s / 2, s, s); }
+  } else {
+    const x0 = cx - (POS[ctr] + 0.5) * sc2, y0 = cy - (POS[ctr] + 0.5) * sc2;
+    const ps = Math.max(0.6, sc2);
+    const iMin = Math.max(0, Math.floor(ctr - R - 1)), iMax = Math.min(N243 - 1, Math.ceil(ctr + R + 1));
+    // 中心附近的光晕跟着可见范围一起扩
+    glowRect(cx, cy, Math.min(1400, (2 * R + 1) * sc2 * 1.25), C.cell, 0.1 * (1 - out), Math.min(120, sc2 * 3 + 20));
+    for (let j = iMin; j <= iMax; j++) {
+      const y = y0 + POS[j] * sc2;
+      if (y > H - BAR || y + ps < BAR) continue;
+      const dj = Math.abs(j - ctr);
+      for (let i = iMin; i <= iMax; i++) {
+        const x = x0 + POS[i] * sc2;
+        if (x > W || x + ps < 0) continue;
+        const d = Math.max(Math.abs(i - ctr), dj);
+        if (d > R + 0.5) continue;
+        ctx.globalAlpha = alpha;
+        ctx.fillStyle = BIG[j * N243 + i];
+        ctx.fillRect(x, y, ps, ps);
+        // 波前上的一圈白热：刚生成出来的像素先亮一下再落回本色
+        const fresh = 1 - (R - d) / 3.5;
+        if (fresh > 0 && R < 121.5) { ctx.globalAlpha = alpha * fresh * 0.75; ctx.fillStyle = "oklch(0.98 0.05 85)"; ctx.fillRect(x, y, ps, ps); }
+      }
+    }
+  }
+  ctx.restore();
+  // 冲击波（点火那一下）
+  shockwave(cx + shake.x, cy + shake.y, t, T.ignite, 1.6, 1500, C.cell, 10);
+  // 像素计数：九的幂
+  if (t >= T.neighbors && t < T.tunnel0 + 0.4) {
+    const r = Math.floor(R + 0.5), n = Math.pow(2 * Math.min(r, 121) + 1, 2);
+    const a = Math.min(seg(t, T.neighbors, T.neighbors + 0.5), 1 - seg(t, T.imgTitle - 0.3, T.imgTitle + 0.2));
+    text(n.toLocaleString("en-US"), W - 96, H - BAR - 64, { size: 64, weight: 600, font: MONO, align: "right", alpha: a });
+    text("PIXELS", W - 96, H - BAR - 30, { size: 18, font: MONO, color: C.muted, align: "right", alpha: a, spacing: 6 });
+  }
+}
+
+// ======================= C：时间隧道 =======================
+const FOCAL = 900, DZ = 420, FS = 640;
+const SIDE = 340; // 点题构图：画面左移的距离
+function framePos(k) {
+  // 每 8 帧有一帧正对镜头（穿过它就是一次闪白），其余沿螺旋排在镜头四周
+  if (k % 8 === 0) return { x: 0, y: 0, z: k * DZ };
+  const a = k * 0.62;
+  return { x: Math.cos(a) * 760, y: Math.sin(a) * 430, z: k * DZ };
+}
+const Z0 = -(FS * FOCAL) / 760 * 0.92; // 让第 0 帧起手正好接住整幅大图的大小
+function camZ(t) {
+  const p = seg(t, T.fly0, T.fly1);
+  // 先慢后快：越往后越快，最后一段是冲刺
+  const d = (FR - 6) * DZ;
+  return Z0 + d * (0.08 * p + 0.92 * Math.pow(p, 2.2));
+}
+function drawFrame(k, sx, sy, size, alpha) {
+  const F = FRAMES[k];
+  const n = size > 160 ? 27 : size > 40 ? 9 : 3;
+  const step = 27 / n;
+  const gap = size * 0.012 * (27 / n) / 3;
+  const cs = (size - gap * (n - 1)) / n;
+  ctx.save();
+  ctx.globalAlpha = alpha;
+  ctx.fillStyle = "oklch(0.12 0.004 60)";
+  ctx.fillRect(sx - size / 2 - size * 0.03, sy - size / 2 - size * 0.03, size * 1.06, size * 1.06);
+  for (let j = 0; j < n; j++) for (let i = 0; i < n; i++) {
+    const si = Math.floor(i * step + step / 2), sj = Math.floor(j * step + step / 2);
+    ctx.fillStyle = F.str[sj * 27 + si];
+    ctx.fillRect(sx - size / 2 + i * (cs + gap), sy - size / 2 + j * (cs + gap), cs + 0.5, cs + 0.5);
+  }
+  ctx.restore();
+}
+const STARS = (() => { const r = rng(7), s = []; for (let i = 0; i < 700; i++) s.push({ x: (r() - 0.5) * 5200, y: (r() - 0.5) * 3000, z: r() * FR * DZ, c: r() < 0.7 ? CELL : r() < 0.5 ? [0.74, 0.1, 210] : [0.72, 0.15, 292] }); return s; })();
+function sceneTunnel(t) {
+  if (t < T.tunnel0 || t > T.play0 + 0.3) return;
+  const cz = camZ(t);
+  const speed = (camZ(t + 1 / 30) - cz) * 30; // 单位/秒
+  const inA = seg(t, T.tunnel0, T.fly0);
+  ctx.save();
+  // 轻微的滚转：进入隧道后镜头在转
+  const roll = seg(t, T.fly0, T.fly1) * 0.5;
+  ctx.translate(W / 2, CY); ctx.rotate(roll * 0.35); ctx.translate(-W / 2, -CY);
+  // 星流：拉成线的像素
+  ctx.lineCap = "square";
+  for (const s of STARS) {
+    const dz = mod(s.z - cz, FR * DZ);
+    if (dz < 20) continue;
+    const k = FOCAL / dz, k2 = FOCAL / (dz + speed / 30 * 1.6 + 1);
+    const x1 = W / 2 + s.x * k, y1 = CY + s.y * k, x2 = W / 2 + s.x * k2, y2 = CY + s.y * k2;
+    const a = clamp(1 - dz / (FR * DZ * 0.8)) * inA;
+    ctx.globalAlpha = a * 0.8;
+    ctx.strokeStyle = ok(s.c);
+    ctx.lineWidth = clamp(k * 3, 1, 5);
+    ctx.beginPath(); ctx.moveTo(x1, y1); ctx.lineTo(x2, y2); ctx.stroke();
+  }
+  ctx.globalAlpha = 1;
+  // 帧：远的先画
+  const list = [];
+  for (let k = 0; k < FR; k++) { const p = framePos(k); const dz = p.z - cz; if (dz > 30 && dz < 9000) list.push({ k, p, dz }); }
+  list.sort((a, b) => b.dz - a.dz);
+  for (const { k, p, dz } of list) {
+    const s = FOCAL / dz;
+    const size = FS * s;
+    const fadeIn = k === 0 ? seg(t, T.fly0 - 0.1, T.fly0 + 0.4) : inA * clamp(1 - dz / 9000) * 1.2;
+    const near = clamp((dz - 30) / 260); // 贴脸前淡出
+    drawFrame(k, W / 2 + p.x * s, CY + p.y * s, size, clamp(fadeIn) * near);
+  }
+  ctx.restore();
+  // 穿过正对镜头的帧：一次闪白
+  for (let k = 0; k < FR; k += 8) {
+    const dz = framePos(k).z - cz;
+    if (dz > -60 && dz < 200) { const f = 1 - Math.abs(dz - 70) / 130; if (f > 0) { ctx.save(); ctx.globalAlpha = f * 0.55; ctx.fillStyle = "oklch(0.97 0.04 85)"; ctx.fillRect(0, 0, W, H); ctx.restore(); } }
+  }
+  // 帧号
+  if (t > T.fly0) {
+    const cur = clamp(Math.floor((cz - Z0) / DZ) + 1, 1, FR);
+    const a = Math.min(seg(t, T.fly0, T.fly0 + 0.5), 1 - seg(t, T.fly1 - 0.3, T.fly1));
+    text(`FRAME ${String(cur).padStart(3, "0")}`, W - 96, H - BAR - 64, { size: 56, weight: 600, font: MONO, align: "right", alpha: a });
+    text(`${(cur / 24).toFixed(2)}s @ 24fps`, W - 96, H - BAR - 30, { size: 18, font: MONO, color: C.muted, align: "right", alpha: a, spacing: 3 });
+  }
+}
+/** 冲出隧道：一块在放的屏 */
+const PLAY_SIZE = 560, PLAY_Y = CY - 30;
+function playFrameIndex(t) { return Math.min(FR - 1, Math.floor((t - T.play0) * 16)); }
+function scenePlay(t) {
+  if (t < T.play0 || t > T.impact) return;
+  const inP = easeOut(seg(t, T.play0, T.play0 + 0.6));
+  const fold = seg(t, T.fold0, T.impact);
+  if (fold > 0) return; // 折叠阶段交给 sceneFold
+  const k = playFrameIndex(t);
+  const size = PLAY_SIZE * lerp(1.3, 1, inP);
+  const px = W / 2 - SIDE * easeInOut(seg(t, T.vidTitle - 0.4, T.vidTitle + 0.6));
+  drawFrame(k, px, PLAY_Y, size, inP);
+  // 进度条 + 时间码
+  const bw = size, bx = px - bw / 2, by = PLAY_Y + size / 2 + 30;
+  ctx.save(); ctx.globalAlpha = inP;
+  ctx.fillStyle = C.mutedBg; ctx.fillRect(bx, by, bw, 4);
+  ctx.fillStyle = C.cell; ctx.fillRect(bx, by, bw * ((k + 1) / FR), 4);
+  ctx.restore();
+  text(`▶  00:0${Math.floor(k / 24)}:${String(k % 24).padStart(2, "0")}`, bx, by + 34, { size: 18, font: MONO, color: C.muted, alpha: inP, spacing: 2 });
+}
+
+// ======================= D：折叠成脸 =======================
+const FACE = 420, FACE_GAP = 12;
+function faceCellRect(c, size = FACE, gap = FACE_GAP, cx = W / 2, cy = CY - 40) {
+  const cs = (size - 2 * gap) / 3;
+  return { x: cx - size / 2 + (c % 3) * (cs + gap), y: cy - size / 2 + Math.floor(c / 3) * (cs + gap), s: cs };
+}
+function sceneFold(t) {
+  if (t < T.fold0 || t > T.impact + 0.05) return;
+  const p = seg(t, T.fold0, T.impact);
+  const e = easeIn(p);
+  const k = playFrameIndex(T.fold0);
+  const F = FRAMES[k];
+  const src = PLAY_SIZE / 27;
+  const cx = W / 2 - SIDE, cy = PLAY_Y; // 折叠从屏幕所在的左侧位置开始
+  for (let j = 0; j < 27; j++) for (let i = 0; i < 27; i++) {
+    // 源：屏上第 (i,j) 格；目标：九宫格里对应那一格内的同名子位置（729 → 9，每格收 81 个）
+    const sx = cx - PLAY_SIZE / 2 + (i + 0.5) * src, sy = cy - PLAY_SIZE / 2 + (j + 0.5) * src;
+    const cellIdx = Math.floor(j / 9) * 3 + Math.floor(i / 9);
+    const r = faceCellRect(cellIdx);
+    const tx = r.x + ((i % 9) + 0.5) * (r.s / 9), ty = r.y + ((j % 9) + 0.5) * (r.s / 9);
+    // 旋涡：先绕中心转，越接近终点转得越少
+    const ang = (1 - e) * (1 - e) * 0 + Math.sin(p * Math.PI) * 1.4 * (0.6 + hash(i, j) * 0.8);
+    let x = lerp(sx, tx, e), y = lerp(sy, ty, e);
+    const dx = x - W / 2, dy = y - (CY - 30);
+    x = W / 2 + dx * Math.cos(ang) - dy * Math.sin(ang);
+    y = CY - 30 + dx * Math.sin(ang) + dy * Math.cos(ang);
+    const size = lerp(src * 0.9, r.s / 9 + 0.8, e);
+    const col = mixLCH(F.lch[j * 27 + i], CELL, smooth((p - 0.55) / 0.45));
+    ctx.fillStyle = ok(col);
+    ctx.fillRect(x - size / 2, y - size / 2, size, size);
+  }
+  glowRect(W / 2, CY - 40, FACE * 1.4, C.cell, e * 0.5, 60);
+}
+function impactShake(t) {
+  let a = 0;
+  for (const t0 of [T.ignite, T.impact, T.boom]) { const d = t - t0; if (d >= 0 && d < 0.6) a += (1 - d / 0.6) * 14; }
+  return { x: (hash(t * 91, 1) - 0.5) * a, y: (hash(t * 57, 2) - 0.5) * a };
+}
+const FACE_STATES = [
+  { anim: "pulse", en: "THINKING", cn: "在想" },
+  { anim: "wave", en: "WORKING", cn: "在干活" },
+  { anim: "orbit", en: "LOOKING AROUND", cn: "在找方向" },
+  { anim: "standby", en: "STANDING BY", cn: "待命" },
+];
+function faceState(t) { let i = -1; T.faces.forEach((f, k) => { if (t >= f) i = k; }); return i; }
+function sceneFace(t) {
+  if (t < T.impact || t > T.board0 + 1.0) return;
+  const sh = impactShake(t);
+  const si = faceState(t);
+  const ops = [];
+  for (let i = 0; i < 9; i++) ops.push(si < 0 ? 1 : cellOpacity(FACE_STATES[si].anim, i, t - T.faces[si]));
+  // 退场：飞向画板顶部提示条里的小方阵
+  const fly = easeInOut(seg(t, T.board0, T.board0 + 0.9));
+  const size = lerp(FACE, 30, fly), cx = lerp(W / 2, PROMPT.x + 36, fly), cy = lerp(CY - 40, PROMPT.y + PROMPT.h / 2, fly);
+  const gp = 0.3 + 0.4 * (ops.reduce((a, b) => a + b, 0) / 9);
+  // 背后的巨大回声：同一张脸放大三倍，只剩轮廓
+  if (fly < 1) {
+    ctx.save(); ctx.globalAlpha = 0.06 * (1 - fly); ctx.strokeStyle = C.cell; ctx.lineWidth = 2;
+    const big = FACE * 2.6 * (1 + 0.02 * Math.sin(t * 2)), cs = big / 3;
+    for (let i = 0; i < 9; i++) ctx.strokeRect(W / 2 - big / 2 + (i % 3) * cs + 8, CY - 40 - big / 2 + Math.floor(i / 3) * cs + 8, cs - 16, cs - 16);
+    ctx.restore();
+  }
+  glowRect(cx + sh.x, cy + sh.y, size * 1.45, C.cell, gp * (1 - fly * 0.6), size * 0.16);
+  grid9(cx + sh.x, cy + sh.y, size, lerp(FACE_GAP, 2, fly), ops);
+  // 撞击那一下的白热 + 冲击波
+  const hot = 1 - seg(t, T.impact, T.impact + 0.5);
+  if (hot > 0) grid9(cx + sh.x, cy + sh.y, size, FACE_GAP, ops.map(() => hot * 0.9), "oklch(0.99 0.03 90)");
+  shockwave(cx, cy, t, T.impact, 1.4, 1700, C.cell, 12);
+  // 状态名：每次切换都是一记重拍
+  if (si >= 0 && fly < 0.2) {
+    const f = FACE_STATES[si], t0 = T.faces[si];
+    const pin = easeOut(seg(t, t0, t0 + 0.35));
+    const a = pin * (1 - seg(t, T.board0 - 0.4, T.board0));
+    text(f.en, W / 2, CY + 250, { size: 44, weight: 600, font: MONO, align: "center", alpha: a, spacing: lerp(40, 14, pin) });
+    text(f.cn, W / 2, CY + 300, { size: 26, color: C.muted, align: "center", alpha: a, spacing: 8 });
+    // 四个档位的小刻度
+    for (let k = 0; k < 4; k++) {
+      ctx.save(); ctx.globalAlpha = a * (k === si ? 1 : 0.25); ctx.fillStyle = k === si ? C.cell : C.fg;
+      ctx.fillRect(W / 2 - 66 + k * 36, CY + 330, 24, 4); ctx.restore();
+    }
+  }
+}
+
+// ======================= E：整块画板 =======================
+const PROMPT = { x: W / 2 - 460, y: BAR + 34, w: 920, h: 72 };
+const PROMPT_TEXT = "拍一支日落短片：五个镜头，最后连成一条。";
+const E0 = T.board0;
+// 画板上的节点（世界坐标，画板平面 Y=0：X 向右、Z 向里）
+const BOARD = (() => {
+  const n = [];
+  n.push({ id: "ref", type: "Upload", tone: [0.74, 0.1, 210], X: -1250, Z: 0, at: 2.6, ph: 0.1 });
+  for (let i = 0; i < 5; i++) n.push({ id: "img" + i, type: "Image", tone: [0.72, 0.15, 292], X: -420, Z: (i - 2) * 330, at: 3.0 + i * 0.14, gen: 4.0 + i * 0.28, ph: i / 4 });
+  for (let i = 0; i < 5; i++) n.push({ id: "vid" + i, type: "Video", tone: [0.73, 0.17, 12], X: 420, Z: (i - 2) * 330, at: 5.6 + i * 0.12, gen: 6.5 + i * 0.25, ph: i / 4 });
+  n.push({ id: "cut", type: "Merge", tone: [0.72, 0.12, 165], X: 1250, Z: 0, at: 7.9, gen: 8.5, ph: 0 });
+  return n;
+})();
+const EDGES = [];
+for (let i = 0; i < 5; i++) EDGES.push({ a: "ref", b: "img" + i, at: 3.3 + i * 0.1 });
+for (let i = 0; i < 5; i++) EDGES.push({ a: "img" + i, b: "vid" + i, at: 5.9 + i * 0.1 });
+for (let i = 0; i < 5; i++) EDGES.push({ a: "vid" + i, b: "cut", at: 8.0 + i * 0.07 });
+const NW3 = 300, NH3 = 250;
+const node3 = (id) => BOARD.find((n) => n.id === id);
+function boardCam(e) {
+  const p = easeInOut(seg(e, 0, 10.6));
+  const rise = easeInOut(seg(e, 8.6, 10.6));
+  return { x: lerp(-300, 120, p), h: lerp(1150, 1650, rise), z: lerp(-1850, -2250, rise) + p * 260, pitch: lerp(0.66, 0.75, rise) };
+}
+function project(X, Z, cam) {
+  const dx = X - cam.x, dy = -cam.h, dz = Z - cam.z;
+  const ca = Math.cos(cam.pitch), sa = Math.sin(cam.pitch);
+  const yc = dy * ca + dz * sa, zc = -dy * sa + dz * ca;
+  if (zc < 50) return null;
+  const f = 1150 / zc;
+  return { x: W / 2 + dx * f, y: CY + 20 - yc * f, f };
+}
+function quad(pts) { ctx.beginPath(); pts.forEach((p, i) => (i ? ctx.lineTo(p.x, p.y) : ctx.moveTo(p.x, p.y))); ctx.closePath(); }
+function drawNode3(n, e, cam) {
+  const a = seg(e, n.at, n.at + 0.3);
+  if (a <= 0) return;
+  const pop = easeOutBack(seg(e, n.at, n.at + 0.5));
+  const w = NW3 * lerp(0.6, 1, pop), h = NH3 * lerp(0.6, 1, pop);
+  const P = (u, v) => project(n.X - w / 2 + u * w, n.Z + h / 2 - v * h, cam);
+  const c = [P(0, 0), P(1, 0), P(1, 1), P(0, 1)];
+  if (c.some((p) => !p)) return;
+  const active = n.gen !== undefined && e >= n.gen && e < n.gen + 1.2;
+  ctx.save();
+  ctx.globalAlpha = a;
+  quad(c); ctx.fillStyle = C.card; ctx.fill();
+  ctx.lineWidth = active ? 3 : 1.5; ctx.strokeStyle = active ? C.cell : "oklch(1 0 0 / 14%)"; ctx.stroke();
+  // 头：身份色小方块 + 类型名
+  const ic = [P(0.05, 0.05), P(0.13, 0.05), P(0.13, 0.15), P(0.05, 0.15)];
+  quad(ic); ctx.fillStyle = ok(n.tone); ctx.fill();
+  const lp = P(0.17, 0.13);
+  ctx.restore();
+  text(n.type, lp.x, lp.y, { size: Math.max(10, 20 * lp.f), weight: 500, alpha: a });
+  // 缩略图：9×9 像素，生成时自左上向右下一格格亮起
+  const g0 = 0.08, g1 = 0.92, v0 = 0.22, v1 = 0.94;
+  const ph = n.type === "Video" || n.type === "Merge" ? (e > (n.gen ?? 0) + 0.9 ? mod((e - n.gen) * 0.35 + n.ph, 1) : n.ph) : n.ph;
+  const fk = Math.min(FR - 1, Math.floor(ph * (FR - 1)));
+  const F = FRAMES[fk];
+  ctx.save();
+  ctx.globalAlpha = a;
+  for (let j = 0; j < 9; j++) for (let i = 0; i < 9; i++) {
+    let lit = 1;
+    if (n.gen !== undefined) lit = seg(e, n.gen + (i + j) * 0.045, n.gen + (i + j) * 0.045 + 0.12);
+    const u0 = lerp(g0, g1, i / 9) + 0.004, u1 = lerp(g0, g1, (i + 1) / 9) - 0.004;
+    const w0 = lerp(v0, v1, j / 9) + 0.004, w1 = lerp(v0, v1, (j + 1) / 9) - 0.004;
+    const q = [P(u0, w0), P(u1, w0), P(u1, w1), P(u0, w1)];
+    quad(q);
+    if (lit <= 0) { ctx.fillStyle = C.mutedBg; ctx.fill(); continue; }
+    ctx.fillStyle = F.str[(j * 3 + 1) * 27 + (i * 3 + 1)];
+    ctx.fill();
+    if (lit < 1) { ctx.globalAlpha = a * (1 - lit) * 0.9; ctx.fillStyle = "oklch(0.98 0.05 85)"; ctx.fill(); ctx.globalAlpha = a; }
+  }
+  ctx.restore();
+  // 端口
+  for (const [u, v] of [[0, 0.5], [1, 0.5]]) {
+    const p = P(u, v);
+    ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = C.card; ctx.strokeStyle = C.muted; ctx.lineWidth = 1.5;
+    ctx.beginPath(); ctx.arc(p.x, p.y, Math.max(3, 7 * p.f), 0, Math.PI * 2); ctx.fill(); ctx.stroke(); ctx.restore();
+  }
+}
+function drawEdge3(ed, e, cam) {
+  const p = easeInOut(seg(e, ed.at, ed.at + 0.5));
+  if (p <= 0) return;
+  const A = node3(ed.a), B = node3(ed.b);
+  const x1 = A.X + NW3 / 2, z1 = A.Z, x2 = B.X - NW3 / 2, z2 = B.Z;
+  const pts = [];
+  const N = 36;
+  for (let i = 0; i <= N * p; i++) {
+    const s = i / N;
+    const X = Math.pow(1 - s, 3) * x1 + 3 * Math.pow(1 - s, 2) * s * (x1 + 260) + 3 * (1 - s) * s * s * (x2 - 260) + s * s * s * x2;
+    const Z = Math.pow(1 - s, 3) * z1 + 3 * Math.pow(1 - s, 2) * s * z1 + 3 * (1 - s) * s * s * z2 + s * s * s * z2;
+    const q = project(X, Z, cam); if (q) pts.push(q);
+  }
+  if (pts.length < 2) return;
+  ctx.save();
+  ctx.lineCap = "round";
+  for (const [lw, al, col] of [[10, 0.1, C.cell], [2.2, 0.55, "oklch(0.9 0.08 80)"]]) {
+    ctx.globalAlpha = al; ctx.strokeStyle = col; ctx.lineWidth = lw; ctx.beginPath();
+    pts.forEach((q, i) => (i ? ctx.lineTo(q.x, q.y) : ctx.moveTo(q.x, q.y))); ctx.stroke();
+  }
+  // 光脉冲：沿线往下游跑
+  if (p >= 1) {
+    for (let m = 0; m < 2; m++) {
+      const s = mod((e - ed.at) * 0.7 + m * 0.5, 1);
+      const q = pts[Math.floor(s * (pts.length - 1))];
+      ctx.globalAlpha = 0.9; ctx.fillStyle = "oklch(0.97 0.06 85)";
+      ctx.beginPath(); ctx.arc(q.x, q.y, 4.5, 0, Math.PI * 2); ctx.fill();
+      glowRect(q.x, q.y, 26, C.cell, 0.5, 8);
+    }
+  }
+  ctx.restore();
+}
+function sceneBoard(t) {
+  if (t < E0 || t > T.implode1) return;
+  const e = t - E0;
+  const cam = boardCam(e);
+  const inA = easeOut(seg(e, 0.2, 1.2));
+  // 坍缩：整块画板连同提示条一起被吸进中心的一个点
+  const imp = seg(t, T.implode0, T.implode1);
+  const s = 1 - easeIn(imp) * 0.998;
+  ctx.save();
+  ctx.translate(W / 2, CY); ctx.rotate(easeIn(imp) * 1.2); ctx.scale(s, s); ctx.translate(-W / 2, -CY);
+  ctx.globalAlpha = inA;
+  // 画板点阵（透视）
+  ctx.fillStyle = "oklch(0.8 0.006 70 / 0.22)";
+  for (let Z = -1400; Z <= 1800; Z += 130) for (let X = -2400; X <= 2400; X += 130) {
+    const q = project(X, Z, cam); if (!q) continue;
+    const r = Math.max(0.8, 2.2 * q.f);
+    ctx.fillRect(q.x - r / 2, q.y - r / 2, r, r);
+  }
+  ctx.globalAlpha = 1;
+  EDGES.forEach((ed) => drawEdge3(ed, e, cam));
+  BOARD.slice().sort((a, b) => b.Z - a.Z).forEach((n) => drawNode3(n, e, cam));
+  // 提示条（屏幕空间）
+  const pa = inA * (1 - seg(t, T.implode0, T.implode0 + 0.6));
+  if (pa > 0) {
+    ctx.save(); ctx.globalAlpha = pa; ctx.fillStyle = "oklch(0.205 0.004 60 / 0.92)";
+    rrect(PROMPT.x, PROMPT.y, PROMPT.w, PROMPT.h, 16); ctx.fill(); ctx.strokeStyle = "oklch(1 0 0 / 14%)"; ctx.lineWidth = 1.5; ctx.stroke(); ctx.restore();
+    const n = Math.floor(PROMPT_TEXT.length * seg(e, 0.9, 2.4));
+    text(PROMPT_TEXT.slice(0, n) + (e < 2.6 && Math.floor(e * 3) % 2 ? "▍" : ""), PROMPT.x + 72, PROMPT.y + 46, { size: 26, alpha: pa });
+    // 提示条左侧的小方阵：飞过来的那张脸落在这里，开工后走 wave
+    if (e > 0.9) {
+      const anim = e < 2.6 ? "standby" : e < 9.6 ? "wave" : "standby";
+      const ops = Array.from({ length: 9 }, (_, i) => cellOpacity(anim, i, e));
+      glowRect(PROMPT.x + 36, PROMPT.y + PROMPT.h / 2, 44, C.cell, 0.35 * pa, 6);
+      grid9(PROMPT.x + 36, PROMPT.y + PROMPT.h / 2, 30, 2, ops, C.cell, pa);
+    }
+  }
+  ctx.restore();
+  // 坍缩时越来越亮，最后只剩中心一个白热的点
+  if (imp > 0) {
+    glowRect(W / 2, CY, lerp(600, 30, imp), C.cell, imp * 0.8, lerp(80, 10, imp));
+    const ps = lerp(2, 14, smooth((imp - 0.7) / 0.3));
+    ctx.save(); ctx.globalAlpha = smooth((imp - 0.6) / 0.4); ctx.fillStyle = "oklch(0.98 0.05 85)"; ctx.fillRect(W / 2 - ps / 2, CY - ps / 2, ps, ps); ctx.restore();
+  }
+}
+
+// ======================= F：片名 =======================
+function sceneTitle(t) {
+  if (t < T.implode1) return;
+  // 53.5–54.2：只剩一个像素悬在黑里；然后炸开成方阵
+  if (t < T.boom) {
+    const a = 1 - seg(t, T.boom - 0.15, T.boom);
+    ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = "oklch(0.98 0.05 85)"; ctx.fillRect(W / 2 - 7, CY - 7, 14, 14); ctx.restore();
+    glowRect(W / 2, CY, 40, C.cell, 0.6 * a, 10);
+    return;
+  }
+  const sh = impactShake(t);
+  const p = easeOutBack(seg(t, T.boom, T.boom + 0.6));
+  const size = 150 * p;
+  const ops = Array.from({ length: 9 }, (_, i) => cellOpacity("standby", i, t - T.boom) * 0.6 + 0.4);
+  const gy = CY - 150;
+  glowRect(W / 2 + sh.x, gy + sh.y, size * 1.5, C.cell, 0.5, 22);
+  grid9(W / 2 + sh.x, gy + sh.y, size, 5, ops);
+  const hot = 1 - seg(t, T.boom, T.boom + 0.4);
+  if (hot > 0) { ctx.save(); ctx.globalAlpha = hot * 0.5; ctx.fillStyle = "oklch(0.97 0.04 85)"; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+  shockwave(W / 2, gy, t, T.boom, 1.8, 2400, C.cell, 12);
+  const t1 = easeOut(seg(t, T.boom + 0.5, T.boom + 1.5));
+  text("Canvas Agent", W / 2, CY + 60, { size: 116, weight: 600, align: "center", alpha: t1, spacing: lerp(30, -2, t1), blur: (1 - t1) * 12 });
+  const t2 = easeOut(seg(t, T.boom + 1.4, T.boom + 2.3));
+  text("从一个像素，到一整部片。", W / 2, CY + 140, { size: 38, color: C.muted, align: "center", alpha: t2, spacing: 6 });
+  text("FROM A SINGLE PIXEL TO A PICTURE IN MOTION", W / 2, CY + 188, { size: 18, font: MONO, color: C.muted, align: "center", alpha: t2 * 0.8, spacing: 6 });
+  const t3 = easeOut(seg(t, T.boom + 3.0, T.boom + 3.8));
+  text("生成图片  ·  生成视频  ·  一个 Agent        /canvas", W / 2, H - BAR - 40, { size: 20, font: MONO, color: C.muted, align: "center", alpha: t3 * 0.9, spacing: 2 });
+}
+
+// ======================= 大字：能力点题 =======================
+function bigTitle(t, t0, t1, cn, en, tone, icon) {
+  const pin = easeOut(seg(t, t0 + 0.3, t0 + 1.1));
+  const a = Math.min(pin, 1 - easeInOut(seg(t, t1 - 0.5, t1)));
+  if (a <= 0) return;
+  // 画面让到左边后，大字落在右半边
+  const x = W / 2 + 140 + (1 - pin) * 40, y = CY + 30;
+  ctx.save(); ctx.globalAlpha = a; ctx.translate(x, y - 150); ctx.scale(2, 2);
+  ctx.strokeStyle = tone; ctx.lineWidth = 2; ctx.lineCap = "round"; ctx.lineJoin = "round";
+  for (const d of ICONS[icon]) ctx.stroke(new Path2D(d));
+  ctx.restore();
+  text(cn, x - 6, y, { size: 124, weight: 700, alpha: a, spacing: lerp(40, 10, pin), blur: (1 - pin) * 10 });
+  text(en, x, y + 56, { size: 22, font: MONO, color: C.muted, alpha: a, spacing: lerp(18, 8, pin) });
+  ctx.save(); ctx.globalAlpha = a; ctx.fillStyle = tone; ctx.fillRect(x, y + 86, 64 * pin, 4); ctx.restore();
+}
+// lucide 的 Image / Film（与 /canvas 页 NODE_NOTES 同一对图标）
+const ICONS = {
+  image: ["M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z", "M11 9a2 2 0 1 1-4 0a2 2 0 1 1 4 0z", "m21 15-3.086-3.086a2 2 0 0 0-2.828 0L6 21"],
+  film: ["M5 3h14a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2z", "M7 3v18", "M3 7.5h4", "M3 12h18", "M3 16.5h4", "M17 3v18", "M17 7.5h4", "M17 16.5h4"],
+};
+
+// ======================= 电影外壳：黑边、章节、字幕、颗粒 =======================
+const CHAPTERS = [[2.2, "01", "PIXEL · 像素"], [6.0, "02", "IMAGE · 图片"], [17.8, "03", "VIDEO · 视频"], [29.4, "04", "AGENT · 它的脸"], [41.0, "05", "CANVAS · 画板"]];
+function chrome(t) {
+  ctx.fillStyle = "#000";
+  ctx.fillRect(0, 0, W, BAR); ctx.fillRect(0, H - BAR, W, BAR);
+  // 章节号
+  if (t < T.implode0) {
+    let cur = null; for (const c of CHAPTERS) if (t >= c[0]) cur = c;
+    if (cur) {
+      const a = Math.min(easeOut(seg(t, cur[0], cur[0] + 0.6)), 1 - seg(t, T.implode0 - 0.5, T.implode0));
+      text(cur[1], 96, BAR / 2 + 10, { size: 22, weight: 600, font: MONO, color: C.cell, alpha: a, spacing: 2 });
+      text(cur[2], 140, BAR / 2 + 10, { size: 18, font: MONO, color: C.muted, alpha: a, spacing: 4 });
+    }
+  }
+  // 旁白字幕（下黑边）
+  for (const n of NARRATION) {
+    const d = VO[n.id] ?? 2.5;
+    const a = Math.min(seg(t, n.at - 0.1, n.at + 0.2), 1 - seg(t, n.at + d + 0.2, n.at + d + 0.5));
+    if (a > 0) text(n.text, W / 2, H - BAR / 2 + 12, { size: 32, weight: 500, align: "center", alpha: a, spacing: 2 });
+  }
+}
+function grain(t) {
+  const r = rng(Math.floor(t * 30) + 1);
+  ctx.save();
+  for (let i = 0; i < 2600; i++) {
+    const x = r() * W, y = BAR + r() * PIC_H;
+    ctx.globalAlpha = 0.035 + r() * 0.04;
+    ctx.fillStyle = r() < 0.5 ? "#fff" : "#000";
+    ctx.fillRect(x, y, 2, 2);
+  }
+  ctx.restore();
+}
+
+function draw(t) {
+  ctx.save();
+  ctx.fillStyle = "oklch(0.1 0.004 60)"; ctx.fillRect(0, 0, W, H);
+  const v = ctx.createRadialGradient(W / 2, CY, 200, W / 2, CY, W * 0.62);
+  v.addColorStop(0, "oklch(0.15 0.006 60)"); v.addColorStop(1, "oklch(0.07 0.003 60)");
+  ctx.fillStyle = v; ctx.fillRect(0, 0, W, H);
+  ctx.restore();
+
+  sceneMosaic(t);
+  sceneTunnel(t);
+  scenePlay(t);
+  sceneFold(t);
+  sceneFace(t);
+  sceneBoard(t);
+  sceneTitle(t);
+  bigTitle(t, T.imgTitle, T.tunnel0 - 0.3, "生成图片", "IMAGE GENERATION", C.image, "image");
+  bigTitle(t, T.vidTitle, T.fold0 + 0.3, "生成视频", "VIDEO GENERATION", C.video, "film");
+  grain(t);
+  chrome(t);
+
+  const fade = Math.max(1 - seg(t, 0, 0.6), seg(t, T.end - 1.2, T.end));
+  if (fade > 0) { ctx.save(); ctx.globalAlpha = fade; ctx.fillStyle = "#000"; ctx.fillRect(0, 0, W, H); ctx.restore(); }
+}
+
+// ======================= 声音的时间表（全部从上面的时间线推出来） =======================
+function audioPlan() {
+  const c = [];
+  const add = (t, kind, i = 0, gain = 1) => c.push({ t: +t.toFixed(3), kind, i, gain });
+  add(1.0, "heart"); add(1.62, "heart", 0, 0.7);
+  add(T.ignite - 1.4, "riser", 14, 0.7); // 1.4s 蓄力，正好落在点火上
+  add(T.ignite, "boom");
+  for (let k = 1; k < 9; k++) add(T.neighbors + k * (0.9 / 8), "pixel", k);
+  // 波前每扩一圈响一声：圈越扩越快，声音自己就越来越密、越来越高
+  let last = 1;
+  for (let t = T.zoom0; t < T.zoom1; t += 1 / 120) {
+    const r = Math.floor(revealR(t));
+    if (r > last) { if (r % Math.max(1, Math.floor(r / 12)) === 0) add(t, "tick", r, 0.5 + 0.5 * (r / 121)); last = r; }
+  }
+  add(T.imgTitle - 0.05, "hit", 0);
+  add(T.tunnel0 + 0.2, "whoosh", 0, 1.2);
+  add(T.fly0, "braam");
+  for (let k = 1; k < FR; k++) {
+    const z = framePos(k).z;
+    for (let t = T.fly0; t < T.fly1; t += 1 / 60) if (camZ(t) < z && camZ(t + 1 / 60) >= z) { add(t, k % 8 === 0 ? "whooshBig" : "pass", k, 0.8); break; }
+  }
+  add(T.fly1 - 1.5, "riser", 15, 0.9); // 1.5s 蓄力，冲出隧道
+  add(T.play0, "hit", 1);
+  add(T.vidTitle - 0.05, "hit", 2, 0.8);
+  add(T.fold0, "suck", Math.round((T.impact - T.fold0) * 10));
+  add(T.impact, "boom", 1);
+  T.faces.forEach((f, k) => add(f, "state", k));
+  for (let k = 1; k <= PROMPT_TEXT.length; k += 2) add(E0 + 0.9 + (k / PROMPT_TEXT.length) * 1.5, "key", k);
+  BOARD.forEach((n) => add(E0 + n.at, "pop", 0, 0.7));
+  EDGES.forEach((ed) => add(E0 + ed.at, "zap", 0, 0.5));
+  BOARD.forEach((n) => { if (n.gen !== undefined) for (let d = 0; d < 17; d += 2) add(E0 + n.gen + d * 0.045, "pixel", d / 2, 0.4); });
+  add(T.implode0, "suck", Math.round((T.implode1 - T.implode0) * 10)); // riser / suck 的 i = 时长 × 10
+  add(T.boom, "boom", 2, 1.2);
+  add(T.boom, "chord");
+  return {
+    duration: DURATION,
+    cues: c.sort((a, b) => a.t - b.t),
+    narration: NARRATION,
+    // 配乐的段落：pad 从头铺；律动从穿越隧道起；坍缩时全部抽空；片名一记之后只剩长和弦
+    sections: { groove: T.fly0, grooveEnd: T.implode0, silence: T.implode1, boom: T.boom, faceHits: T.faces, impact: T.impact },
+  };
+}
+window.audioPlan = audioPlan;
+window.DURATION = DURATION;
+window.draw = draw;
+window.ready = document.fonts.ready.then(() => Promise.all([
+  document.fonts.load('700 104px Geist'), document.fonts.load('600 60px Geist'), document.fonts.load('500 20px Geist'), document.fonts.load('400 20px Geist'),
+  document.fonts.load('600 20px "Geist Mono"'), document.fonts.load('400 20px "Geist Mono"'),
+])).then(() => { draw(0); return true; });
+</script>
+</body>
+</html>
