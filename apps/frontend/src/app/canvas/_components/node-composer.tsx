@@ -74,9 +74,11 @@ export function NodeComposer({
   selected,
   dragging,
   body,
+  attachments,
   clips,
   model,
   meta,
+  action,
   actions,
 }: {
   nodeId: string;
@@ -86,12 +88,16 @@ export function NodeComposer({
   dragging: boolean;
   /** 可编辑正文（生成节点的提示词） */
   body?: NodeBodyField;
+  /** 提示词上方的附件栏（生成节点的上游素材，见 NodeAttachments） */
+  attachments?: React.ReactNode;
   /** 待拼接的视频序列（video_concat 专有；它没有提示词这回事） */
   clips?: ClipSource[];
   /** 模型区（生成节点专有）：选模型 / 选档位 / 触发生成，排在提示词之后 */
   model?: React.ReactNode;
   /** 参数条上除类型外的补充信息（上游来源摘要等） */
   meta?: React.ReactNode;
+  /** 面板主操作（生成节点的 Generate）：桌面端在参数条右端，手机抽屉里占满一行 */
+  action?: React.ReactNode;
   /** 节点操作（看大图 / 下载 / 复制 / 删除）。触屏没有 hover，只能挂在这里 */
   actions?: React.ReactNode;
 }) {
@@ -152,6 +158,7 @@ export function NodeComposer({
         {NODE_META[nodeType].label}
       </Pill>
       {meta}
+      {action && <div className="ml-auto shrink-0">{action}</div>}
     </div>
   );
 
@@ -174,8 +181,11 @@ export function NodeComposer({
             <DrawerTitle>Node prompt</DrawerTitle>
           </DrawerHeader>
           <div className="nodrag nowheel min-h-0 flex-auto space-y-3 overflow-y-auto px-4 pt-2 pb-4">
+            {attachments}
             {prompt}
             {model}
+            {/* grid 让按钮撑满整行：手机上主操作要好按 */}
+            {action && <div className="grid">{action}</div>}
           </div>
           <div className="flex items-center gap-1.5 border-t border-border px-4 py-3">
             <Pill>
@@ -210,6 +220,7 @@ export function NodeComposer({
           </button>
         </div>
         <div className="space-y-2.5 px-1 pb-3">
+          {attachments}
           {prompt}
           {model}
         </div>

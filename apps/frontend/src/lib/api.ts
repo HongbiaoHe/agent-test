@@ -550,6 +550,16 @@ export interface AigcModelParam {
   options: AigcParamOption[];
 }
 
+/**
+ * 档位间的联动规则（aigc 目录原样透出）：`when` 全部命中时，`forbid` 的维度不能传，
+ * `allow` 的维度只能取其中的值。`when` 里也会引用 derived 维度（有没有参考图等）。
+ */
+export interface AigcConstraint {
+  when: Record<string, string[]>;
+  allow?: Record<string, string[]>;
+  forbid?: string[];
+}
+
 export interface AigcModel {
   model_alias: string;
   identifier?: string;
@@ -557,6 +567,9 @@ export interface AigcModel {
   type: string;
   image_input_number: number;
   params: AigcModelParam[];
+  constraints: AigcConstraint[];
+  /** 视频模型的参考图以什么 role 提交（我方按模型名单推出，见后端 videoRefRole） */
+  ref_role?: "reference" | "first_frame" | "last_frame";
 }
 
 export interface AigcChannelModels {

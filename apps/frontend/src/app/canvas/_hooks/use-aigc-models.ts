@@ -6,7 +6,6 @@ import {
   listAigcModels,
   type AigcCatalog,
   type AigcModel,
-  type AigcModelParam,
 } from "@/lib/api";
 
 /**
@@ -38,16 +37,5 @@ export function findAigcModel(
   if (!catalog || !channel || !alias) return null;
   const ch = catalog.channels.find((c) => c.channel === channel);
   return ch?.models.find((m) => m.model_alias === alias) ?? null;
-}
-
-/**
- * 这个模型上用户真能选的维度：derived 是服务端按参考图推导的（不是入参），
- * range 是连续区间（当前只出现在音频维度，画布用不到）——两者都不渲染。
- */
-export function selectableParams(model: AigcModel): AigcModelParam[] {
-  return model.params.filter(
-    (p) =>
-      p.input !== "derived" && p.value_type !== "range" && p.options.length > 0,
-  );
 }
 

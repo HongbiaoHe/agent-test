@@ -13,6 +13,7 @@ import {
   derivedDims,
   sanitizeParams,
   taskPath,
+  toCatalog,
   videoRefRole,
 } from './aigc.catalog';
 import type { AigcChannel, AigcModel } from './aigc.types';
@@ -317,6 +318,58 @@ describe('buildTaskBody', () => {
       model: 'nano-banana',
       aspect_ratio: '1:1',
     });
+  });
+});
+
+describe('buildTaskBody：同名透传的维度', () => {
+  it('background / quality 按同名字段原样透传', () => {
+    const body = buildTaskBody({
+      type: 'image',
+      prompt: 'x',
+      config: {
+        channel: 'fal',
+        model: 'gpt-image-2.5-flare',
+        params: {
+          aspect_ratio: '1x1',
+          background: 'transparent',
+          quality: 'low',
+        },
+      },
+      references: [],
+    });
+    expect(body).toEqual({
+      prompt: 'x',
+      channel: 'fal',
+      model: 'gpt-image-2.5-flare',
+      aspect_ratio: '1x1',
+      background: 'transparent',
+      quality: 'low',
+    });
+  });
+});
+
+describe('toCatalog', () => {
+  it('视频模型补上参考图的提交 role；默认选择不受影响', () => {
+    const cat = toCatalog('video', [{ channel: 'byteplus', models: [veo] }]);
+    expect(cat.channels[0].models[0].ref_role).toBe('reference');
+    expect(cat.default?.model).toBe('veo-3.1');
+  });
+
+  it('i2v-only 模型标成 first_frame', () => {
+    const cat = toCatalog('video', [
+      {
+        channel: 'byteplus',
+        models: [{ ...veo, model_alias: 'seedance-1.5-pro' }],
+      },
+    ]);
+    expect(cat.channels[0].models[0].ref_role).toBe('first_frame');
+  });
+
+  it('图片目录不加 role', () => {
+    const cat = toCatalog('image', [
+      { channel: 'byteplus', models: [seedream] },
+    ]);
+    expect(cat.channels[0].models[0]).not.toHaveProperty('ref_role');
   });
 });
 

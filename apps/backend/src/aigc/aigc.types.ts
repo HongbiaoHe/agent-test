@@ -110,10 +110,19 @@ export interface AigcMediaConfig {
   params: Record<string, string>;
 }
 
+/**
+ * 目录里的一个模型 + 我方补充的能力：`ref_role` 是这个模型的参考图会以什么 role 提交
+ * （见 aigc.catalog 的 videoRefRole；只对视频模型有）。aigc 的目录不透出 role 能力，
+ * 由我们按名单推出来、随目录一起给前端——面板上的「生成方式」照它显示，与真提交的一致。
+ */
+export type AigcCatalogModel = AigcModel & {
+  ref_role?: AigcReference['role'];
+};
+
 /** 能力目录（GET /aigc/models 返回）：可选模型 + 该类型的默认选择。 */
 export interface AigcCatalog {
   type: AigcMediaType;
-  channels: AigcChannel[];
+  channels: { channel: string; models: AigcCatalogModel[] }[];
   /** 默认模型（目录里的第一个模型 + 各必填维度的第一个取值）；目录为空时为 null。 */
   default: AigcMediaConfig | null;
 }

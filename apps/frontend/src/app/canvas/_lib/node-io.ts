@@ -41,6 +41,8 @@ export interface NodeInputSource {
   /** 展示名（label 为空时退到类型缺省名） */
   title: string;
   outputs: CanvasNodeOutput[];
+  /** 生成节点的媒体状态（queued / generating / done / failed）；还没触发过或非生成节点为 null */
+  mediaStatus: string | null;
 }
 
 /** 节点类型的缺省名：label 为空时顶上，同时也是各处「这是哪类节点」的措辞来源。 */
@@ -72,5 +74,6 @@ export function resolveNodeInputs(
       nodeType: n.type,
       title: n.label?.trim() || NODE_TYPE_LABEL[n.type],
       outputs: n.outputs,
+      mediaStatus: n.mediaStatus,
     }));
 }

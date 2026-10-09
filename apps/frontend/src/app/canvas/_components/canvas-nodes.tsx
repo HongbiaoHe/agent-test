@@ -44,7 +44,8 @@ import {
 } from "./node-composer";
 import { NodeTitleField } from "./node-inline-field";
 import { NodeMediaDialog } from "./node-media-dialog";
-import { NodeModelControls } from "./node-model-controls";
+import { NodeAttachments } from "./node-attachments";
+import { NodeGenerateButton, NodeModelControls } from "./node-model-controls";
 import { NODE_META, NodeTypeIcon } from "./node-meta";
 import { VideoSequence } from "./video-sequence";
 
@@ -103,9 +104,11 @@ function NodeShell({
   dragging,
   label,
   body,
+  attachments,
   clips,
   modelControls,
   composerMeta,
+  composerAction,
   hero,
   mediaOnly,
   heroActions,
@@ -124,12 +127,16 @@ function NodeShell({
   label: string;
   /** composer 里的可编辑提示词（生成节点的 prompt） */
   body?: NodeBodyField;
+  /** composer 提示词上方的附件栏（生成节点的上游素材） */
+  attachments?: React.ReactNode;
   /** composer 里的待拼接视频序列（video_concat 专有） */
   clips?: ClipSource[];
-  /** composer 里的模型区（生成节点专有）：选模型 / 选档位 / Generate */
+  /** composer 里的模型区（生成节点专有）：选模型 / 选档位 */
   modelControls?: React.ReactNode;
   /** composer 参数条上的补充胶囊（上游来源摘要） */
   composerMeta?: React.ReactNode;
+  /** composer 参数条右端的主操作（生成节点的 Generate） */
+  composerAction?: React.ReactNode;
   /** 主视觉：出图/出片或生成中的骨架；没有产出时不传，卡片就不占那块高度 */
   hero?: React.ReactNode;
   /**
@@ -184,9 +191,11 @@ function NodeShell({
         selected={single}
         dragging={dragging}
         body={body}
+        attachments={attachments}
         clips={clips}
         model={modelControls}
         meta={composerMeta}
+        action={composerAction}
         actions={<NodeActions nodeId={nodeId} extra={heroActions} plain />}
       />
 
@@ -763,9 +772,18 @@ function MediaGenNode({
         value: data.prompt ?? "",
         placeholder: "Describe what to generate…",
       }}
-      // 模型区紧跟提示词：确认了"用什么料"，接着就是"用哪个模型出"和"出"
+      // 模型区紧跟提示词：确认了"用什么料"，接着是"用哪个模型出"；"出"（Generate）落在底栏右端
       modelControls={
         <NodeModelControls
+          nodeId={data.id}
+          mediaType={kind}
+          channel={data.mediaChannel}
+          model={data.mediaModel}
+          params={data.mediaParams}
+        />
+      }
+      composerAction={
+        <NodeGenerateButton
           nodeId={data.id}
           mediaType={kind}
           channel={data.mediaChannel}
@@ -775,8 +793,10 @@ function MediaGenNode({
           busy={busyNow}
         />
       }
+      // 上游素材以附件栏的形式排在提示词上方（取代参数条上的「From …」摘要胶囊——
+      // 同一份信息出现两遍，且附件栏能直接看到素材、点了能跳过去）
+      attachments={<NodeAttachments inputs={inputs} />}
       mediaOnly={mediaOnly}
-      composerMeta={<InputsPill inputs={inputs} />}
       hero={hero}
       heroActions={heroActions}
       status={status}

@@ -60,12 +60,25 @@ export function defaultParams(model: AigcModel): Record<string, string> {
   return params;
 }
 
-/** 目录 + 默认选择，直接回给前端。 */
+/** 目录 + 默认选择，直接回给前端。视频模型补上参考图的提交 role（见 AigcCatalogModel）。 */
 export function toCatalog(
   type: AigcMediaType,
   channels: AigcChannel[],
 ): AigcCatalog {
-  return { type, channels, default: defaultConfig(channels) };
+  return {
+    type,
+    channels:
+      type === 'video'
+        ? channels.map((c) => ({
+            ...c,
+            models: c.models.map((m) => ({
+              ...m,
+              ref_role: videoRefRole(m.model_alias),
+            })),
+          }))
+        : channels,
+    default: defaultConfig(channels),
+  };
 }
 
 /**
@@ -193,6 +206,9 @@ const PARAM_FIELDS: Record<
   duration: { field: 'duration_seconds', cast: (v) => Number(v) },
   with_audio: { field: 'with_audio', cast: (v) => v === 'true' },
   thinking: { field: 'thinking', cast: (v) => v === 'true' },
+  // 与 aspect_ratio / resolution 同规则：param_type 即字段名，取值原样（目录里是 auto/transparent/low…）
+  background: { field: 'background', cast: (v) => v },
+  quality: { field: 'quality', cast: (v) => v },
 };
 
 export interface AigcGenerationRequest {
