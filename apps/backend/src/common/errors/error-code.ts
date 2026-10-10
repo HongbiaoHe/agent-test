@@ -118,4 +118,9 @@ export const ErrorCodes = {
     code: 70008,
     message: 'This generation node has no prompt: write one on the node first',
   },
+  CANVAS_SKILL_NOT_FOUND: { code: 70009, message: 'Canvas skill not found' },
+  CANVAS_SKILL_BUILTIN: {
+    code: 70010,
+    message: 'Built-in skills cannot be deleted or disabled',
+  },
 } as const satisfies Record<string, ErrorDef>;

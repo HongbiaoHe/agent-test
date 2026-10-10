@@ -53,7 +53,7 @@ const MAX_SKILL_FILE_BYTES = 512 * 1024;
  * 迁移自 command-registry.service.ts:24 的 readSkillFiles；
  * 跳过 .git、.DS_Store 与超大文件，key 用 / 而非系统 sep。
  */
-function readSkillFiles(skillDir: string): Record<string, string> {
+export function readSkillFiles(skillDir: string): Record<string, string> {
   const out: Record<string, string> = {};
   const walk = (dir: string) => {
     for (const ent of readdirSync(dir, { withFileTypes: true })) {

@@ -1,6 +1,10 @@
 import { Logger } from '@nestjs/common';
 import { initChatModel } from 'langchain/chat_models/universal';
-import { createDeepAgent, StateBackend } from 'deepagents';
+import {
+  createDeepAgent,
+  StateBackend,
+  type CompositeBackend,
+} from 'deepagents';
 import { SystemMessage } from '@langchain/core/messages';
 import {
   buildCanvasStateUpdate,
@@ -15,6 +19,10 @@ import { z } from 'zod';
 import { GoogleGenAI } from '@google/genai';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
 import { keepsNativeBlocks, stripNonPortableBlocks } from './portable-content';
+import {
+  CANVAS_SKILLS_PROMPT,
+  buildSkillsListingUpdate,
+} from '../canvas-skills/skill-context';
 import type { CanvasApprovalMode } from './canvas.types';
 import {
   type CanvasThinkingLevel,
@@ -135,6 +143,15 @@ export interface BuildCanvasAgentOptions {
    * 画布有变化时作为一条消息写进 state。让 agent 始终拿到最新画布，无需调用 get_canvas。
    */
   liveCanvasContext?: (sessionId: string) => Promise<string>;
+  /**
+   * 技能库：`/skills/` 只读挂载的文件后端 + 当前技能清单文本。
+   * 清单由 worker 在 run 开头落库进历史；运行中有变化（save_skill 存了新技能）才由中间件追加新的一份。
+   * 不传 = 无技能（测试 / 旧调用方），文件后端退回 StateBackend。
+   */
+  skills?: {
+    backend: CompositeBackend;
+    listing: () => Promise<string>;
+  };
 }
 
 /** 对外最小 agent 接口（避免泄漏 deepagents 类型）。 */
@@ -341,10 +358,21 @@ export async function buildCanvasAgent(
           }),
       });
 
+  // 技能清单：与画布状态同一套 beforeModel + append-only 打法（不碰系统提示，见 skill-context.ts）。
+  // 排在画布状态之前，让实时画布状态仍是离模型最近的那一条。
+  const skillsListingMiddleware = opts.skills
+    ? createMiddleware({
+        name: 'canvasSkillsListingMiddleware',
+        beforeModel: (state) =>
+          buildSkillsListingUpdate(state, opts.skills?.listing),
+      })
+    : null;
+
   const middleware = [
     modelCallLimitMiddleware({ threadLimit: 500, exitBehavior: 'end' }),
     toolCallLimitMiddleware({ threadLimit: 2000, exitBehavior: 'continue' }),
     planContinuationMiddleware,
+    ...(skillsListingMiddleware ? [skillsListingMiddleware] : []),
     canvasStateMiddleware,
     ...(explicitCache ? [explicitCache] : []),
     // 排最内层：净化的是真正发出去的那一份，后面不再有人能把私有块加回来
@@ -354,9 +382,14 @@ export async function buildCanvasAgent(
 
   return createDeepAgent({
     model,
-    systemPrompt: CANVAS_SYSTEM_PROMPT + (opts.systemPromptExtra ?? ''),
+    // 技能说明是固定文本，有没有技能都一样拼上：系统提示不随技能库变化，前缀缓存稳定
+    systemPrompt:
+      CANVAS_SYSTEM_PROMPT +
+      CANVAS_SKILLS_PROMPT +
+      (opts.systemPromptExtra ?? ''),
     tools: opts.tools as never[],
-    backend: new StateBackend(),
+    // 画布 agent 不接沙箱：文件工具落在 StateBackend；/skills/ 路由到只读技能库
+    backend: opts.skills?.backend ?? new StateBackend(),
     contextSchema,
     middleware,
     // ask_user：暂停等用户输入。langchain 1.4.2 的 HITL 决策仅 approve/edit/reject（无 respond）——
@@ -374,6 +407,8 @@ export async function buildCanvasAgent(
             clear_canvas: { allowedDecisions: ['approve', 'reject'] },
             // 生成消耗配额/时间 → 不自动执行，弹确认（approve 才真正触发生成）
             generate_media_node: { allowedDecisions: ['approve', 'reject'] },
+            // 保存技能会写进用户的技能库（可能覆盖同名技能）→ 先给用户看名称与说明再存
+            save_skill: { allowedDecisions: ['approve', 'reject'] },
           },
         }),
     checkpointer: opts.checkpointer as never,

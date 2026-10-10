@@ -639,6 +639,48 @@ export function moveCanvasNode(
   });
 }
 
+// ——— 画布技能（canvas agent 专用，与主 agent 的 /skills 分开） ———
+
+/** 画布技能列表条目（GET /canvas-skills）。builtin 不能删除、不能停用。 */
+export interface CanvasSkillInfo {
+  name: string;
+  description: string;
+  kind: "builtin" | "user";
+  enabled: boolean;
+  /** 用户技能的最后修改时间（ISO）；内置为 null */
+  updatedAt: string | null;
+}
+
+/** 画布技能详情：文件路径列表 + SKILL.md 原文 */
+export interface CanvasSkillDetail extends CanvasSkillInfo {
+  files: string[];
+  content: string;
+}
+
+export function listCanvasSkills(): Promise<CanvasSkillInfo[]> {
+  return request("/canvas-skills");
+}
+
+export function getCanvasSkill(name: string): Promise<CanvasSkillDetail> {
+  return request(`/canvas-skills/${encodeURIComponent(name)}`);
+}
+
+export function setCanvasSkillEnabled(
+  name: string,
+  enabled: boolean,
+): Promise<{ name: string; enabled: boolean }> {
+  return request(`/canvas-skills/${encodeURIComponent(name)}`, {
+    method: "PATCH",
+    body: JSON.stringify({ enabled }),
+  });
+}
+
+export function deleteCanvasSkill(name: string): Promise<unknown> {
+  return request(`/canvas-skills/${encodeURIComponent(name)}`, {
+    method: "DELETE",
+  });
+}
+
 // ——— Skills 技能管理 ———
 
 /** 技能注册表条目（GET /skills）。kind==='builtin' 为内置（不可启停/删除）。 */

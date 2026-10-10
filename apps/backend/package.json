@@ -17,7 +17,9 @@
     "test:watch": "jest --watch",
     "test:cov": "jest --coverage",
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
-    "test:e2e": "jest --config ./test/jest-e2e.json"
+    "test:e2e": "jest --config ./test/jest-e2e.json",
+    "test:deepagents": "node --import tsx --test test/*.test.ts",
+    "test:e2e:canvas-skills": "node --import tsx test/canvas-skills.e2e.mjs"
   },
   "dependencies": {
     "@daytonaio/sdk": "^0.185.0",

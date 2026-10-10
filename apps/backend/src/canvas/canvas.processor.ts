@@ -28,6 +28,19 @@ import {
   type CanvasThinkingLevel,
 } from './thinking-level';
 import { asApprovalMode } from './canvas.types';
+import {
+  CanvasSkillsService,
+  upsertSkillDef,
+  type CanvasSkillDef,
+} from '../canvas-skills/canvas-skills.service';
+import { createSaveSkillTool } from '../canvas-skills/save-skill.tool';
+import {
+  SKILL_INVOCATION_TYPE,
+  SKILLS_LISTING_TYPE,
+  buildSkillsListing,
+  planSkillContext,
+} from '../canvas-skills/skill-context';
+import { createSkillsLibrary } from '../canvas-skills/skills-backend';
 
 interface JobData {
   sessionId: string;
@@ -75,6 +88,7 @@ export class CanvasProcessor extends WorkerHost {
     @Inject(CHECKPOINTER) private readonly checkpointer: unknown,
     @InjectQueue('canvas-run') private readonly queue: Queue,
     @Inject(CANVAS_ABORTS) private readonly aborts: AbortRegistry,
+    private readonly skills: CanvasSkillsService,
   ) {
     super();
   }
@@ -119,10 +133,24 @@ export class CanvasProcessor extends WorkerHost {
         configurable: { thread_id: sessionId, userId: session.userId },
       };
 
+      // 技能库：本 run 的只读 /skills/ + 清单文本。save_skill 存了新技能会更新这两样（见下方工具）
+      let skillDefs = await this.skills.effectiveFor(session.userId);
+      const library = await createSkillsLibrary(skillDefs);
+      let skillsListing = buildSkillsListing(skillDefs);
+
       let input: unknown;
       if (kind === 'resume') {
         input = new Command({ resume: { decisions } });
       } else {
+        // 先落库技能上下文（清单 / 本条消息的 /技能 调用），再重放历史——它们随历史一起进前缀，
+        // 位置跨轮固定（见 canvas-skills/skill-context.ts）
+        await this.persistSkillContext(
+          sessionId,
+          runId,
+          session.historyBaseSeq,
+          skillDefs,
+          skillsListing,
+        );
         const messages = await this.loadHistory(sessionId);
         input = { messages };
       }
@@ -131,11 +159,24 @@ export class CanvasProcessor extends WorkerHost {
       const activePlan = await this.buildActivePlan(sessionId);
 
       const approvalMode = asApprovalMode(session.approvalMode);
-      const tools = createCanvasTools(this.canvas, this.media, {
-        sessionId,
-        userId: session.userId,
-        approvalMode,
-      });
+      const tools = [
+        ...createCanvasTools(this.canvas, this.media, {
+          sessionId,
+          userId: session.userId,
+          approvalMode,
+        }),
+        createSaveSkillTool(async (skillInput) => {
+          const saved = await this.skills.save(session.userId, skillInput);
+          if (saved.ok) {
+            // 当轮就能 read_file 到、清单里也看得到（中间件比对到变化会追加新的一份）。
+            // save 已把存下的那份带回来，就地并进列表，不必整库重读
+            await library.put(saved.skill);
+            skillDefs = upsertSkillDef(skillDefs, saved.skill);
+            skillsListing = buildSkillsListing(skillDefs);
+          }
+          return saved;
+        }),
+      ];
       // 显式缓存开启时由中间件回填缓存真实大小；provider 报的 cache_read 在这种模式下
       // 被流式聚合重复累加（实测 9076 的缓存报成 36304），必须用这个值才能算准命中率。
       let explicitCacheTokens = 0;
@@ -150,6 +191,10 @@ export class CanvasProcessor extends WorkerHost {
         tools,
         // 每轮把最新画布状态 + 安全区注入提示词（省去 get_canvas 调用、保证实时性）
         liveCanvasContext: (sid) => this.canvas.agentCanvasContext(sid),
+        skills: {
+          backend: library.backend,
+          listing: () => Promise.resolve(skillsListing),
+        },
       });
 
       const stream = await agent.stream(input, {
@@ -533,7 +578,15 @@ export class CanvasProcessor extends WorkerHost {
         seq: { gte: baseSeq },
         // 刻意不含 reasoning：思考只给用户看，回灌给模型既没用又费 token
         // （推理型模型每轮自己重新思考，历史思考不进下一轮上下文）
-        type: { in: ['message', 'tool_end'] },
+        // 技能清单 / 技能调用要重放：它们是模型的上下文，且落在历史里位置固定、不伤缓存
+        type: {
+          in: [
+            'message',
+            'tool_end',
+            SKILLS_LISTING_TYPE,
+            SKILL_INVOCATION_TYPE,
+          ],
+        },
         role: { in: ['user', 'assistant', 'tool'] },
       },
       orderBy: { seq: 'asc' },
@@ -573,6 +626,71 @@ export class CanvasProcessor extends WorkerHost {
         content: (m.content as { text?: string })?.text ?? '',
       };
     });
+  }
+
+  /**
+   * run 开头落库技能上下文：清单（有变化才写）+ 最新用户消息的 `/技能名` 调用（SKILL.md 全文）。
+   * 写什么由纯函数 planSkillContext 决定，这里只负责查现状与写库；调用还会推一条事件给前端显示。
+   */
+  private async persistSkillContext(
+    sessionId: string,
+    runId: string,
+    /** 重放窗口起点（会话行已在 process 里取过，直接传进来） */
+    baseSeq: number,
+    skills: CanvasSkillDef[],
+    listing: string,
+  ): Promise<void> {
+    const [lastUser, lastListing] = await Promise.all([
+      this.prisma.canvasMessage.findFirst({
+        where: { sessionId, role: 'user', type: 'message' },
+        orderBy: { seq: 'desc' },
+        select: { seq: true, content: true },
+      }),
+      // 只认重放窗口里的那份：窗口外的模型看不到，等于没有
+      this.prisma.canvasMessage.findFirst({
+        where: { sessionId, type: SKILLS_LISTING_TYPE, seq: { gte: baseSeq } },
+        orderBy: { seq: 'desc' },
+        select: { content: true },
+      }),
+    ]);
+    const invoked = lastUser
+      ? await this.prisma.canvasMessage.count({
+          where: {
+            sessionId,
+            type: SKILL_INVOCATION_TYPE,
+            seq: { gt: lastUser.seq },
+          },
+        })
+      : 0;
+    const rows = planSkillContext({
+      listing,
+      lastListing: textOf(lastListing?.content),
+      userText: textOf(lastUser?.content),
+      alreadyInvoked: invoked > 0,
+      skills,
+    });
+    if (rows.length === 0) return;
+
+    let seq = await this.prisma.canvasMessage.count({ where: { sessionId } });
+    for (const row of rows) {
+      await this.prisma.canvasMessage.create({
+        data: {
+          sessionId,
+          runId: runId || null,
+          role: 'user',
+          type: row.type,
+          content: { text: row.text, ...(row.name ? { name: row.name } : {}) },
+          seq: seq++,
+        },
+      });
+      // 只把「调用了哪个技能」推给前端（显示一行 Using skill）；全文与清单只给模型
+      if (row.type === SKILL_INVOCATION_TYPE) {
+        await this.stream.publish(sessionId, {
+          type: SKILL_INVOCATION_TYPE,
+          payload: { name: row.name },
+        });
+      }
+    }
   }
 
   /**
@@ -673,6 +791,12 @@ export class CanvasProcessor extends WorkerHost {
       },
     });
   }
+}
+
+/** CanvasMessage.content 里的 text 字段（各类型的正文都存在这里） */
+function textOf(content: unknown): string | null {
+  const text = (content as { text?: unknown } | null | undefined)?.text;
+  return typeof text === 'string' ? text : null;
 }
 
 /**

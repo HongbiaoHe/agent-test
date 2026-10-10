@@ -12,10 +12,12 @@ import {
   Send,
   Sparkles,
   Square,
+  Wand2,
   Wrench,
   X,
 } from "lucide-react";
-import { useState } from "react";
+import { useQueryClient } from "@tanstack/react-query";
+import { useEffect, useRef, useState } from "react";
 
 import { JumpToLatest } from "@/components/chat/jump-to-latest";
 import { useChatScroll } from "@/components/chat/use-chat-scroll";
@@ -38,6 +40,19 @@ import { Markdown } from "./markdown";
 import { CanvasModelSwitcher } from "./model-switcher";
 import { CanvasThinkingIndicator } from "./thinking-indicator";
 import { CanvasThinkingSwitcher } from "./thinking-switcher";
+import {
+  CANVAS_SKILLS_KEY,
+  useCanvasSkills,
+} from "../_skills/use-canvas-skills";
+import { SkillCommandMenu } from "../_skills/skill-command-menu";
+import { SkillPicker } from "../_skills/skill-picker";
+import { SkillsDialog } from "../_skills/skills-dialog";
+import {
+  leadingSkill,
+  slashQuery,
+  withSkill,
+  withoutSkill,
+} from "../_skills/slash";
 
 const TOOL_LABEL: Record<string, string> = {
   add_node: "Add node",
@@ -48,10 +63,16 @@ const TOOL_LABEL: Record<string, string> = {
   get_canvas: "Read canvas",
   ask_user: "Ask you",
   write_todos: "Plan tasks",
+  save_skill: "Save skill",
+  read_file: "Read file",
 };
 
 /** 确认型中断工具（approve/reject 二选一），与后端 interruptOn 配置对应。 */
-const CONFIRM_TOOLS = new Set(["clear_canvas", "generate_media_node"]);
+const CONFIRM_TOOLS = new Set([
+  "clear_canvas",
+  "generate_media_node",
+  "save_skill",
+]);
 
 type ToolItem = Extract<ChatItem, { kind: "tool" }>;
 
@@ -92,6 +113,13 @@ function toolDetail(item: ToolItem): string {
       return "Read nodes and edges";
     case "ask_user":
       return preview(a.question);
+    case "save_skill":
+      return typeof a.name === "string" ? `/${a.name}` : "";
+    case "read_file":
+      // 读技能说明时显示读的是哪个技能，比整条路径好认
+      return typeof a.file_path === "string"
+        ? a.file_path.replace(/^\/skills\/([^/]+)\/SKILL\.md$/, "skill · $1")
+        : "";
     default:
       return preview(item.result, 40);
   }
@@ -217,15 +245,30 @@ function ReasoningBlock({ item }: { item: ReasoningItem }) {
   );
 }
 
-function Item({ item }: { item: ChatItem }) {
+function Item({
+  item,
+  invokedSkill,
+}: {
+  item: ChatItem;
+  /** 这条用户消息确实调起了的技能（后端紧跟着注入了调用）；没有则 undefined */
+  invokedSkill?: string;
+}) {
   switch (item.kind) {
     case "user":
       return (
         // data-chat-anchor：发送后 useChatScroll 靠它把这条消息顶到视口顶部（取最后一个）
         <div data-chat-anchor className="flex justify-end">
           <div className="max-w-[85%] whitespace-pre-wrap rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground">
-            {item.text}
+            <UserText text={item.text} invokedSkill={invokedSkill} />
           </div>
+        </div>
+      );
+    case "skill":
+      return (
+        <div className="flex items-center gap-2 text-xs text-muted-foreground">
+          <Wand2 className="size-3.5 shrink-0 text-primary" aria-hidden />
+          Using skill
+          <span className="font-medium text-foreground">{item.name}</span>
         </div>
       );
     case "reasoning":
@@ -254,6 +297,29 @@ function Item({ item }: { item: ChatItem }) {
   }
 }
 
+/**
+ * 用户消息：开头的 /技能名 渲染成一枚标签，看得出这条消息是交给哪个技能的。
+ * 只认真的调起了技能的那条——随手打的 `/2x 再快点` 不该被画成技能标签。
+ */
+function UserText({
+  text,
+  invokedSkill,
+}: {
+  text: string;
+  invokedSkill?: string;
+}) {
+  const cmd = leadingSkill(text);
+  if (!cmd || cmd.name !== invokedSkill) return text;
+  return (
+    <>
+      <span className="mr-1 rounded-sm bg-primary-foreground/15 px-1 py-px font-mono text-[12px]">
+        /{cmd.name}
+      </span>
+      {cmd.rest}
+    </>
+  );
+}
+
 /** 渲染消息流：连续的工具调用聚合进一个 ToolGroup，其余各自成项。 */
 function renderItems(items: ChatItem[]): React.ReactNode[] {
   const out: React.ReactNode[] = [];
@@ -264,16 +330,20 @@ function renderItems(items: ChatItem[]): React.ReactNode[] {
       buffer = [];
     }
   };
-  for (const it of items) {
+  items.forEach((it, i) => {
     if (it.kind === "tool") {
       buffer.push(it);
-      continue;
+      return;
     }
     // plan 不在流里内联：抽到输入框上方的固定可折叠面板呈现（见 TaskPlanPanel）
-    if (it.kind === "plan") continue;
+    if (it.kind === "plan") return;
     flush();
-    out.push(<Item key={it.id} item={it} />);
-  }
+    // 后端调起技能时紧跟在用户消息后面注入一条 skill 项——这是「真的调用了」的唯一凭据
+    const next = items[i + 1];
+    const invokedSkill =
+      it.kind === "user" && next?.kind === "skill" ? next.name : undefined;
+    out.push(<Item key={it.id} item={it} invokedSkill={invokedSkill} />);
+  });
   flush();
   return out;
 }
@@ -423,12 +493,16 @@ function AskPanel({
             {ask.actions.map((a, i) => (
               <li key={i} className="flex items-start gap-2">
                 <CircleDot className="mt-1 size-3 shrink-0" />
-                <span>{label(a.tool, a.label)}</span>
+                {/* pre-line：save_skill 的确认文案第二行是技能说明 */}
+                <span className="whitespace-pre-line">
+                  {label(a.tool, a.label)}
+                </span>
               </li>
             ))}
           </ul>
         ) : (
-          <p className="text-sm text-muted-foreground">
+          // pre-line：save_skill 的确认文案第二行是技能说明
+          <p className="whitespace-pre-line text-sm text-muted-foreground">
             {label(ask.tool, ask.question)}
           </p>
         )}
@@ -442,7 +516,9 @@ function AskPanel({
               ? "Clear canvas"
               : batch
                 ? `Approve all (${ask.actions.length})`
-                : "Approve"}
+                : ask.tool === "save_skill"
+                  ? "Save skill"
+                  : "Approve"}
           </Button>
           <Button size="sm" variant="outline" onClick={() => onResolve(false)}>
             {batch ? "Cancel all" : "Cancel"}
@@ -576,6 +652,48 @@ export function CanvasChat({
   const { contentRef, spacerRef, atLatest, armAnchor, jumpToLatest } =
     useChatScroll(chat.items, sessionId);
 
+  // ——— 技能：输入 / 补全、工具条上的选择器、管理弹窗 ———
+  const inputRef = useRef<HTMLTextAreaElement>(null);
+  const skills = useCanvasSkills();
+  const enabledSkills = (skills.data ?? []).filter((s) => s.enabled);
+  const [skillsOpen, setSkillsOpen] = useState(false);
+  // 正在敲命令名（以 / 开头、还没空格）→ 按前缀过滤
+  const query = slashQuery(text);
+  const matches =
+    query === null
+      ? []
+      : enabledSkills.filter((s) => s.name.startsWith(query));
+  // Esc 收起后，同一段草稿不再弹（继续打字草稿变了才重新出现）
+  const [dismissedFor, setDismissedFor] = useState<string | null>(null);
+  const menuOpen = !busy && matches.length > 0 && dismissedFor !== text;
+  const [activeIndex, setActiveIndex] = useState(0);
+  const [seenQuery, setSeenQuery] = useState(query);
+  if (seenQuery !== query) {
+    setSeenQuery(query);
+    setActiveIndex(0);
+  }
+  // 草稿以一个可用技能开头 → 输入框上方亮出「正在用的技能」条
+  const leading = leadingSkill(text);
+  const activeSkill = leading
+    ? enabledSkills.find((s) => s.name === leading.name)
+    : undefined;
+
+  function pickSkill(name: string) {
+    setText((t) => withSkill(t, name));
+    inputRef.current?.focus();
+  }
+
+  // agent 存了新技能（save_skill 完成）→ 刷新列表，补全里马上能看到
+  const queryClient = useQueryClient();
+  const savedSkills = chat.items.filter(
+    (it) => it.kind === "tool" && it.name === "save_skill" && it.done,
+  ).length;
+  useEffect(() => {
+    if (savedSkills > 0) {
+      void queryClient.invalidateQueries({ queryKey: CANVAS_SKILLS_KEY });
+    }
+  }, [savedSkills, queryClient]);
+
   function submit() {
     const t = text.trim();
     if (!t || busy) return;
@@ -638,6 +756,12 @@ export function CanvasChat({
         <TaskPlanPanel todos={planTodos} active={busy} onClear={onClearPlan} />
       )}
 
+      <SkillsDialog
+        open={skillsOpen}
+        onOpenChange={setSkillsOpen}
+        onUse={pickSkill}
+      />
+
       <div className="shrink-0 border-t border-border p-3">
         {/* 圈定提示：画布上圈了节点，这一轮 agent 的画布上下文就只有它们。
             放在输入框正上方而不是画布角落——它改变的是"这条消息会被怎么理解"，
@@ -658,33 +782,97 @@ export function CanvasChat({
             </button>
           </div>
         )}
+        {activeSkill && (
+          <div className="mb-2 flex items-center gap-1.5 rounded-lg bg-accent px-2.5 py-1.5 text-[11px] text-muted-foreground">
+            <Wand2 className="size-3 shrink-0 text-primary" aria-hidden />
+            <span className="shrink-0 font-medium text-foreground">
+              {activeSkill.name}
+            </span>
+            <span className="min-w-0 flex-1 truncate">
+              {activeSkill.description}
+            </span>
+            <button
+              type="button"
+              aria-label="Don't use this skill"
+              title="Don't use this skill"
+              onClick={() => {
+                setText((t) => withoutSkill(t));
+                inputRef.current?.focus();
+              }}
+              className="shrink-0 rounded-sm p-0.5 transition-colors hover:bg-background hover:text-foreground"
+            >
+              <X className="size-3" />
+            </button>
+          </div>
+        )}
         {/* 一体化 composer：容器承接焦点态（primary 描边 + 焦点环 + 轻抬升），
-            textarea 去边框内嵌、随输入自动增高（field-sizing-content），发送键内嵌右下 */}
+            textarea 去边框内嵌、随输入自动增高（field-sizing-content），发送键内嵌右下。
+            relative：技能补全菜单贴着它的上沿浮出 */}
         <div
           className={cn(
-            "group rounded-xl border border-input bg-background px-3 py-2.5 transition-all duration-200",
+            "group relative rounded-xl border border-input bg-background px-3 py-2.5 transition-all duration-200",
             "focus-within:border-primary/50 focus-within:shadow-sm focus-within:ring-3 focus-within:ring-ring/40",
             busy && "opacity-80",
           )}
         >
+          {menuOpen && (
+            <SkillCommandMenu
+              skills={matches}
+              activeIndex={activeIndex}
+              onPick={pickSkill}
+              onHover={setActiveIndex}
+            />
+          )}
           <Textarea
+            ref={inputRef}
             value={text}
             onChange={(e) => setText(e.target.value)}
             onKeyDown={(e) => {
+              if (menuOpen) {
+                if (e.key === "ArrowDown" || e.key === "ArrowUp") {
+                  e.preventDefault();
+                  const n = matches.length;
+                  setActiveIndex((i) =>
+                    e.key === "ArrowDown" ? (i + 1) % n : (i - 1 + n) % n,
+                  );
+                  return;
+                }
+                // 菜单开着时 Enter / Tab 是「选中」而不是发送半截命令
+                if ((e.key === "Enter" && !e.shiftKey) || e.key === "Tab") {
+                  e.preventDefault();
+                  pickSkill((matches[activeIndex] ?? matches[0]).name);
+                  return;
+                }
+                if (e.key === "Escape") {
+                  e.preventDefault();
+                  setDismissedFor(text);
+                  return;
+                }
+              }
               if (e.key === "Enter" && !e.shiftKey) {
                 e.preventDefault();
                 submit();
               }
             }}
             placeholder={
-              busy ? "Agent running…" : "Describe the workflow, the agent builds it"
+              busy
+                ? "Agent running…"
+                : "Describe the workflow, or type / for skills"
             }
             disabled={busy}
             rows={1}
             className="max-h-40 min-h-0 resize-none border-0 bg-transparent p-0 text-sm leading-relaxed shadow-none placeholder:text-muted-foreground/70 focus-visible:border-0 focus-visible:ring-0 disabled:bg-transparent disabled:opacity-100 dark:bg-transparent"
           />
-          <div className="mt-2 flex items-center justify-between gap-2">
-            <div className="flex min-w-0 items-center gap-1">
+          {/* items-end：左侧换行成两排时，发送键贴着最后一排 */}
+          <div className="mt-2 flex items-end justify-between gap-2">
+            {/* flex-wrap：面板窄时切换器折到第二排，而不是压到发送键上 */}
+            <div className="flex min-w-0 flex-wrap items-center gap-1">
+              <SkillPicker
+                skills={enabledSkills}
+                disabled={busy}
+                onPick={pickSkill}
+                onManage={() => setSkillsOpen(true)}
+              />
               <CanvasModelSwitcher
                 value={model}
                 onChange={changeModel}

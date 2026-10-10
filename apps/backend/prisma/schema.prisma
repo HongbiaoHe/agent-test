@@ -305,6 +305,21 @@ model CanvasOp {
 }
 
 /** 用户安装的技能（内置技能不入库）。落盘目录 SKILLS_DATA_DIR/<userId>/<name>/。 */
+/// 画布 agent 的用户技能（与主 agent 的 Skill 表分开：画布 agent 没有沙箱，技能只是文本工作流说明）。
+/// 内置技能随代码发布在磁盘 canvas-skills/，不进这张表；这里只存用户自己的（多由 skills-creator 让 agent 写出）。
+model CanvasSkill {
+  id          String   @id @default(cuid())
+  userId      String
+  name        String // Agent Skills 规范：小写字母/数字/连字符，≤64
+  description String   @db.Text
+  content     String   @db.MediumText // 完整 SKILL.md（含 frontmatter）
+  enabled     Boolean  @default(true)
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([userId, name])
+}
+
 model Skill {
   id          String   @id @default(cuid())
   name        String

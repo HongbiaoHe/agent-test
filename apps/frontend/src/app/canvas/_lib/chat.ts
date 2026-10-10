@@ -55,6 +55,8 @@ export type ChatItem =
       result?: string;
     }
   | { id: string; kind: "plan"; todos: { content: string; status: string }[] }
+  /** 用户以 /技能名 调用了技能（后端已把 SKILL.md 全文交给 agent；这里只显示调了哪个） */
+  | { id: string; kind: "skill"; name: string }
   | { id: string; kind: "error"; message: string };
 
 export interface ChatState {
@@ -82,11 +84,13 @@ function extractAsk(payload: Record<string, unknown>): AskRequest | null {
         ? (r as { name: string }).name
         : "ask_user";
     const args = (r as { args?: Record<string, unknown> } | undefined)?.args;
-    // generate_media_node 无 question 参数：给确认面板生成友好文案（带目标节点 id）
+    // generate_media_node / save_skill 无 question 参数：给确认面板生成友好文案
     const fallback =
       tool === "generate_media_node"
         ? `Run generation for this node?${typeof args?.nodeId === "string" ? ` (node ${args.nodeId})` : ""}`
-        : "Needs your approval to continue";
+        : tool === "save_skill"
+          ? `Save skill "${typeof args?.name === "string" ? args.name : "untitled"}" to your skills?${typeof args?.description === "string" ? `\n${args.description}` : ""}`
+          : "Needs your approval to continue";
     const label =
       typeof args?.question === "string" ? args.question : fallback;
     return { tool, label };
@@ -272,6 +276,11 @@ export function reduce(input: ChatState, ev: ChatEvent): ChatState {
       const items = state.items.slice();
       items[idx] = { ...items[idx], kind: "plan", todos } as ChatItem;
       return { ...state, items };
+    }
+    case "skill_invocation": {
+      const name = String(ev.payload.name ?? "");
+      if (!name) return state;
+      return bump([...state.items, { id: id(), kind: "skill", name }]);
     }
     case "control_request":
       return { ...state, status: "running", ask: extractAsk(ev.payload) };

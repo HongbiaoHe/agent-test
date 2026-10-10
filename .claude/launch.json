@@ -6,7 +6,7 @@
       "runtimeExecutable": "bash",
       "runtimeArgs": [
         "-c",
-        "export PATH=$HOME/.nvm/versions/node/v22.21.1/bin:$PATH; exec pnpm --filter backend start:dev"
+        "export PATH=$HOME/.nvm/versions/node/v22.21.1/bin:$PATH; export NODE_USE_ENV_PROXY=1; exec pnpm --filter backend start:dev"
       ],
       "port": 3101,
       "autoPort": false

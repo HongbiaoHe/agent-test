@@ -26,11 +26,19 @@ const REJECT_DEFAULT =
   "用户拒绝了此操作，即取消了该操作意图（例如：拒绝清空画布 = 不要删除节点）。" +
   "禁止改用其他工具去达成同一目的（不要再逐个 delete_node，也不要再次 clear_canvas）。" +
   "画布保持现状不变，不要声称已完成或已删除任何内容；停止该动作，转而询问用户或继续其他任务。";
+/** 导出给端到端测试复用同一句文案（apps/backend/test/canvas-skills.e2e.mjs） */
+export const REJECT_SAVE_SKILL =
+  "用户拒绝保存这个技能：技能没有保存，技能库保持不变。不要声称已保存、已创建或已配置好这个技能，" +
+  "也不要换个名字重试；问用户想怎么改（名称、步骤、风格等），按回答改好后再调用 save_skill。";
 const SKIP_ASK = "用户未回答这个问题，请按你的最佳判断继续，不要重复追问同一件事。";
 
 /** reject 必须带明确 message 回灌模型：默认拒绝语义模糊，模型会误以为操作已完成。 */
 function rejectMessage(tool: string): string {
-  return tool === "generate_media_node" ? REJECT_GENERATE : REJECT_DEFAULT;
+  if (tool === "generate_media_node") return REJECT_GENERATE;
+  // 默认文案讲的是画布（清空/删节点），套在保存技能上牛头不对马嘴，
+  // 实测模型被拒后仍回「已经为你配置好了这个技能」
+  if (tool === "save_skill") return REJECT_SAVE_SKILL;
+  return REJECT_DEFAULT;
 }
 
 /**
