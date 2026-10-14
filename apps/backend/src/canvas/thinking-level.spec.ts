@@ -33,6 +33,9 @@ describe('thinkingLevelsFor', () => {
       'high',
     ]);
     expect(thinkingLevelsFor('gemini-3-flash-preview')).toContain('off');
+    // 2026-10-14 实测：budget0 返回 200 且 thoughtsTokenCount=0
+    expect(thinkingLevelsFor('gemini-3.8-flash')).toContain('off');
+    expect(thinkingLevelsFor('gemini-4-argon')).toContain('off');
   });
 
   it('未知/新增 Gemini 模型默认不给 off —— 少个选项好过整轮跑挂在 400', () => {

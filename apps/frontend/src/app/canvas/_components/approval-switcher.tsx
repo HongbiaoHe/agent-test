@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import type { CanvasApprovalMode } from "@/lib/api";
 import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { cn } from "@/lib/utils";
 
 /**
@@ -13,8 +14,8 @@ import { cn } from "@/lib/utils";
  * 只有两档，刻意不做成开关（Switch）：这两种模式的差别是「会不会花钱、会不会毁掉画布」，
  * 值得让人看清楚每一档到底意味着什么，而不是猜一个开关的语义。
  *
- * 用 backdrop 处理外部点击关闭（不在 effect 里 setState，规避 Next16 的
- * react-hooks/set-state-in-effect），与另外两个切换器一致。
+ * 浮层用 Popover（Portal + 碰撞避让）：工具栏会随宽度换行，手写 absolute 定位在某种布局下
+ * 必然被聊天栏裁掉（见 CanvasThinkingSwitcher）。
  */
 const OPTIONS: {
   value: CanvasApprovalMode;
@@ -50,43 +51,33 @@ export function CanvasApprovalSwitcher({
   const auto = value === "auto";
 
   return (
-    <div className="relative">
-      <Button
-        type="button"
-        variant="ghost"
-        size="sm"
+    <Popover open={open} onOpenChange={setOpen}>
+      <PopoverTrigger
         disabled={disabled}
-        aria-haspopup="listbox"
-        aria-expanded={open}
-        aria-label="Approval mode"
-        onClick={() => setOpen((v) => !v)}
-        className={cn(
-          "h-8 gap-1.5 px-2 text-xs",
-          // 全自动会自己花钱、自己清空画布，值得一直显眼地提示着，而不是缩成一枚灰图标
-          auto
-            ? "text-warning hover:text-warning"
-            : "text-muted-foreground hover:text-foreground",
-        )}
+        render={
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            aria-label="Approval mode"
+            className={cn(
+              "h-8 gap-1.5 px-2 text-xs data-popup-open:bg-accent",
+              // 全自动会自己花钱、自己清空画布，值得一直显眼地提示着，而不是缩成一枚灰图标
+              auto
+                ? "text-warning hover:text-warning"
+                : "text-muted-foreground hover:text-foreground",
+            )}
+          />
+        }
       >
         <current.Icon className="size-3.5" />
         <span className="max-w-24 truncate">{auto ? "Auto" : "Review"}</span>
         <ChevronDown className="size-3.5 opacity-60" />
-      </Button>
-
-      {open && (
-        <>
-          <button
-            type="button"
-            aria-hidden
-            tabIndex={-1}
-            className="fixed inset-0 z-40 cursor-default"
-            onClick={() => setOpen(false)}
-          />
-          <div
-            role="listbox"
-            /* 右对齐向左展开：紧贴前一个切换器右侧，left-0 会让面板溢出聊天栏被裁掉 */
-            className="absolute right-0 bottom-full z-50 mb-2 w-72 rounded-xl border border-border bg-popover p-1.5 shadow-lg"
-          >
+      </PopoverTrigger>
+      {/* Portal 渲染到 body：不受聊天栏 overflow 裁剪；工具栏 flex-wrap 换行后位置会变，
+          由 Positioner 的碰撞避让自动挪回可视区（左对齐向上，与模型 / 技能选择一致） */}
+      <PopoverContent side="top" align="start" className="w-72 p-1.5">
+        <div role="listbox" aria-label="Approval mode">
             {OPTIONS.map((o) => {
               const active = o.value === value;
               return (
@@ -121,9 +112,8 @@ export function CanvasApprovalSwitcher({
                 </button>
               );
             })}
-          </div>
-        </>
-      )}
-    </div>
+        </div>
+      </PopoverContent>
+    </Popover>
   );
 }

@@ -19,6 +19,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
+import { ErrorNotice } from "@/components/chat/error-notice";
 import { JumpToLatest } from "@/components/chat/jump-to-latest";
 import { useChatScroll } from "@/components/chat/use-chat-scroll";
 import { Button } from "@/components/ui/button";
@@ -31,7 +32,7 @@ import type { CanvasApprovalMode } from "@/lib/api";
 import type { ChatItem, ChatState } from "../_lib/chat";
 import { PHASE_UI, agentPhase } from "../_lib/thinking-phase";
 import {
-  DEFAULT_CANVAS_MODEL,
+  normalizeCanvasModel,
   type ThinkingLevel,
   supportsThinkingLevel,
 } from "../_lib/models";
@@ -289,11 +290,7 @@ function Item({
       // 计划不在流内渲染（抽到输入框上方的固定面板）
       return null;
     case "error":
-      return (
-        <div className="rounded-lg border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-          {item.message}
-        </div>
-      );
+      return <ErrorNotice message={item.message} />;
   }
 }
 
@@ -610,19 +607,20 @@ export function CanvasChat({
   const [text, setText] = useState("");
   // agent 当前阶段：决定流末尾指示器显不显示、以哪种形态显示
   const phase = agentPhase(chat.items, busy);
-  const [model, setModel] = useState(sessionModel ?? DEFAULT_CANVAS_MODEL);
+  // 会话存的模型可能已下线（不在可选列表）→ 回退默认，避免发出被后端拒绝的模型名
+  const [model, setModel] = useState(normalizeCanvasModel(sessionModel));
   // 快照异步加载 / 切换会话后，把切换器同步到该会话实际模型（render 期调整 state，
   // 规避 Next16 的 effect-setState 限制）。用户本地改选后 sessionModel 不变，不会被覆盖。
   const [seenSessionModel, setSeenSessionModel] = useState(sessionModel ?? null);
   if (sessionModel && sessionModel !== seenSessionModel) {
     setSeenSessionModel(sessionModel);
-    setModel(sessionModel);
+    setModel(normalizeCanvasModel(sessionModel));
   }
   // 思考深度：同上的同步套路（render 期调整 state，不用 effect）。
   // 存库的档位可能已不被当前模型支持（换过模型，或能力表更新——例如 gemini-3.6-flash 其实
   // 不接受关闭思考），一律先归一，避免切换器显示一个下拉里根本没有的档位。
   const [thinking, setThinking] = useState<ThinkingLevel>(() =>
-    normalizeThinking(sessionModel ?? DEFAULT_CANVAS_MODEL, sessionThinkingLevel),
+    normalizeThinking(normalizeCanvasModel(sessionModel), sessionThinkingLevel),
   );
   // 审批模式：同上的 render 期同步套路。默认 review——放行是不可逆的，
   // 快照还没到手时不能先按"全自动"渲染。

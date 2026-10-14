@@ -3,7 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { FileWarning, Loader2 } from "lucide-react";
 
-import { fetchSandboxFile } from "@/lib/api";
+import { fetchSandboxFile, sandboxFileRawUrl } from "@/lib/api";
 
 import { CodeViewer } from "./highlight";
 
@@ -13,19 +13,57 @@ function formatBytes(n: number): string {
   return `${(n / (1024 * 1024)).toFixed(1)} MB`;
 }
 
+const VIDEO_EXTS = new Set(["mp4", "m4v", "mov", "webm", "ogv"]);
+const AUDIO_EXTS = new Set(["mp3", "wav", "m4a", "aac", "ogg", "oga", "flac"]);
+
+/** 按扩展名判断能否用原生播放器播放（不必先拉预览接口）。 */
+function mediaKindOf(path: string): "video" | "audio" | null {
+  const name = path.split("/").pop() ?? "";
+  const ext = name.includes(".") ? (name.split(".").pop() ?? "").toLowerCase() : "";
+  if (VIDEO_EXTS.has(ext)) return "video";
+  if (AUDIO_EXTS.has(ext)) return "audio";
+  return null;
+}
+
 /**
- * 通用文件预览：按 path 拉 /sandbox/file，按三态渲染——
+ * 通用文件预览：音视频直接用原生播放器播放 /sandbox/file/raw（支持 Range 拖动进度）；
+ * 其余按 path 拉 /sandbox/file，按三态渲染——
  *  - text：CodeViewer（剥行号 + 按扩展名/内容高亮，复用项目唯一代码渲染出口）
  *  - image：base64 dataUrl 内联 <img>
  *  - binary：不可预览占位 + 字节数
  * 仅负责内容区；外层文件名/关闭等 chrome 由调用方（sandbox-panel）提供。
  */
 export function FilePreview({ path }: { path: string }) {
+  const media = mediaKindOf(path);
   const { data, isLoading, error } = useQuery({
     queryKey: ["sandbox-file", path],
     queryFn: () => fetchSandboxFile(path),
     staleTime: 30_000,
+    // 音视频不走 JSON 预览接口（它会整文件下载只为算大小）
+    enabled: media === null,
   });
+
+  if (media === "video") {
+    return (
+      <div className="p-4">
+        {/* key=path：切换文件时重建播放器，避免沿用上一个视频的播放进度 */}
+        <video
+          key={path}
+          controls
+          preload="metadata"
+          src={sandboxFileRawUrl(path)}
+          className="mx-auto max-h-[70vh] w-full rounded-lg border border-border bg-muted"
+        />
+      </div>
+    );
+  }
+  if (media === "audio") {
+    return (
+      <div className="p-4">
+        <audio key={path} controls preload="metadata" src={sandboxFileRawUrl(path)} className="w-full" />
+      </div>
+    );
+  }
 
   if (isLoading) {
     return (

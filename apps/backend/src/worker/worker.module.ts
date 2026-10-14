@@ -6,6 +6,7 @@ import { EventsModule } from '../events/events.module';
 // 有意的模块依赖：worker 是 media 工具的注入点，耦合收敛在此，agent.factory 不感知 media 模块
 import { MediaModule } from '../media/media.module';
 import { AgentProcessor } from './agent.processor';
+import { SandboxModule } from '../sandbox/sandbox.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { AgentProcessor } from './agent.processor';
     EventsModule,
     MediaModule,
     AbortModule,
+    SandboxModule,
   ],
   providers: [AgentProcessor, checkpointerProvider],
 })

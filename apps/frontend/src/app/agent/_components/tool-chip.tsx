@@ -38,13 +38,18 @@ const TOOL_ICON: Record<string, LucideIcon> = {
 };
 
 /**
- * 文件类工具（read_file / write_file / edit_file 等）的参数统一带 file_path，
- * 返回完整路径显示在 chip 上；非文件工具无 file_path 时返回 null。
+ * chip 上紧跟工具名的摘要：
+ * - 文件类工具（read_file / write_file / edit_file 等）显示参数里的 file_path；
+ * - execute 显示所执行的命令，多行/连续空白折成一行（chip 只占一行，超出由 truncate 省略）。
+ * 其余工具无摘要返回 null。
  */
-export function toolFilePath(args: unknown): string | null {
+export function toolSummary(name: string, args: unknown): string | null {
   if (!args || typeof args !== "object") return null;
-  const path = (args as Record<string, unknown>).file_path;
-  return typeof path === "string" ? path : null;
+  const a = args as Record<string, unknown>;
+  if (name === "execute") {
+    return typeof a.command === "string" ? a.command.replace(/\s+/g, " ").trim() || null : null;
+  }
+  return typeof a.file_path === "string" ? a.file_path : null;
 }
 
 /** 单个工具调用 chip：点击打开右侧详情面板；done=false 时图标转圈、标签显示「cooking…」。 */
@@ -58,7 +63,7 @@ export function ToolChip({
   onOpenDetail: (id: string) => void;
 }) {
   const Icon = TOOL_ICON[item.name] ?? Wrench;
-  const path = toolFilePath(item.args);
+  const summary = toolSummary(item.name, item.args);
   return (
     <button
       type="button"
@@ -76,9 +81,9 @@ export function ToolChip({
         <Loader className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
       )}
       <span className="shrink-0 font-medium">{item.name}</span>
-      {path && (
-        <span className="truncate font-mono text-muted-foreground" title={path}>
-          {path}
+      {summary && (
+        <span className="min-w-0 truncate font-mono text-muted-foreground" title={summary}>
+          {summary}
         </span>
       )}
       <span className="shrink-0 text-[10px] tracking-wide text-muted-foreground uppercase">

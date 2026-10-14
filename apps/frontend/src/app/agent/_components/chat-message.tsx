@@ -7,6 +7,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { ErrorNotice } from "@/components/chat/error-notice";
 import { listCommands } from "@/lib/api";
 
 import type { ThreadItem } from "../_lib/thread";
@@ -32,11 +33,7 @@ export function ChatMessage({ item }: { item: ThreadItem }) {
   // 工具调用（含连续多个的聚合）由 ChatThread 收集后交给 ToolGroup 渲染，此处不处理。
 
   if (item.kind === "error") {
-    return (
-      <div className="rounded-xl border border-destructive/40 bg-destructive/10 px-3 py-2 text-sm text-destructive">
-        {item.text}
-      </div>
-    );
+    return <ErrorNotice message={item.text} />;
   }
 
   // plan 由输入框上方的固定面板渲染（见 TaskPlanPanel），此处不再展示。

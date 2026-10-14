@@ -40,21 +40,33 @@ export const CANVAS_MODEL_OPTIONS: CanvasModelOption[] = [
     },
   },
   {
+    value: "gemini-4-argon",
+    label: "Gemini 4 Argon",
+    hint: "Google's flagship reasoning model",
+    // 2026-10-14 实测：test/canvas-models.e2e.mjs 两次（各两轮真实 agent），第二轮命中 80% / 80%
+    caps: {
+      cache: "~80% hit, stable (2 of 2 runs)",
+      thinking: "Low / Medium / High · can be turned off",
+      notes: ["Slower: 25–90 s per turn in tests", GEMINI_THOUGHTS_NOTE],
+    },
+  },
+  {
+    value: "gemini-3.8-flash",
+    label: "Gemini 3.8 Flash",
+    hint: "Most capable Flash; Google's pick for new projects",
+    // 2026-10-14 实测：canvas e2e 两次第二轮均 0% 命中（直连 API 探测有命中，画布里没触发）
+    caps: {
+      cache: "None — 0% in 2 of 2 runs",
+      thinking: "Low / Medium / High · can be turned off",
+      notes: ["No prompt caching in canvas runs — long sessions cost more", GEMINI_THOUGHTS_NOTE],
+    },
+  },
+  {
     value: "gemini-3.1-flash-lite",
     label: "Gemini 3.1 Flash Lite",
     hint: "Light 3.1. Fast and cheap, weaker at following through",
     caps: {
       cache: "20–54% hit, unstable",
-      thinking: "Low / Medium / High · can be turned off",
-      notes: [GEMINI_THOUGHTS_NOTE],
-    },
-  },
-  {
-    value: "gemini-3.5-flash",
-    label: "Gemini 3.5 Flash",
-    hint: "Fast 3.5, balanced",
-    caps: {
-      cache: "0–76% hit, highly variable",
       thinking: "Low / Medium / High · can be turned off",
       notes: [GEMINI_THOUGHTS_NOTE],
     },
@@ -116,6 +128,14 @@ export const CANVAS_MODEL_OPTIONS: CanvasModelOption[] = [
 ];
 
 export const DEFAULT_CANVAS_MODEL = CANVAS_MODEL_OPTIONS[0].value;
+
+/**
+ * 会话里存的模型已不在可选列表（模型下线/白名单更新）→ 回退默认模型。
+ * 否则前端会把旧模型名发给后端，被 DTO 白名单拒绝（400），整个画布发不出消息。
+ */
+export function normalizeCanvasModel(value: string | null | undefined): string {
+  return value && CANVAS_MODEL_OPTIONS.some((m) => m.value === value) ? value : DEFAULT_CANVAS_MODEL;
+}
 
 export function canvasModelLabel(value: string | null | undefined): string {
   if (!value) return CANVAS_MODEL_OPTIONS[0].label;

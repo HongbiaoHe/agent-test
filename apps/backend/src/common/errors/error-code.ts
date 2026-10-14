@@ -75,6 +75,15 @@ export const ErrorCodes = {
     code: 40008,
     message: 'Sandbox is not running; desktop unavailable',
   },
+  SANDBOX_PROVIDER_NOT_CONFIGURED: {
+    code: 40009,
+    message: 'This sandbox provider is not configured on the server',
+  },
+  SANDBOX_NETWORK_UNSUPPORTED: {
+    code: 40010,
+    message:
+      "Outbound network on this Daytona account is managed by Daytona (Tier 1–2) and can't be limited per sandbox. Use E2B for outbound limits.",
+  },
   INVALID_PATH: {
     code: 40007,
     message:

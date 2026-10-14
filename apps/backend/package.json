@@ -19,7 +19,8 @@
     "test:debug": "node --inspect-brk -r tsconfig-paths/register -r ts-node/register node_modules/.bin/jest --runInBand",
     "test:e2e": "jest --config ./test/jest-e2e.json",
     "test:deepagents": "node --import tsx --test test/*.test.ts",
-    "test:e2e:canvas-skills": "node --import tsx test/canvas-skills.e2e.mjs"
+    "test:e2e:canvas-skills": "node --import tsx test/canvas-skills.e2e.mjs",
+    "test:e2e:sandbox": "node --import tsx test/sandbox-provider.e2e.ts"
   },
   "dependencies": {
     "@daytonaio/sdk": "^0.185.0",
@@ -44,6 +45,7 @@
     "class-transformer": "^0.5.1",
     "class-validator": "^0.15.1",
     "deepagents": "^1.10.2",
+    "e2b": "2.51.0",
     "ioredis": "^5.11.0",
     "langchain": "^1.4.2",
     "nestjs-pino": "^4.6.1",

@@ -1,7 +1,11 @@
 /**
  * SandboxStatusService 单测：只读状态查询的三态 + 降级行为。
- * mock agent/sandbox 的 pickUserSandbox/findUserSandbox/listWorkspaceFiles，不触真实 Daytona。
+ * mock agent/sandbox 的 pickUserSandbox/findUserSandbox/listWorkspaceFiles，不触真实沙箱提供方。
  */
+// 偏好服务会引入沙箱提供方 SDK（深 ESM 链，jest 加载失败）；偏好已整体 mock，不需要真实提供方
+jest.mock('../agent/sandbox-providers', () => ({}));
+import { ErrorCodes } from '../common/errors/error-code';
+import type { SandboxSettingsService } from './sandbox-settings.service';
 import { SandboxStatusService } from './sandbox.service';
 
 const mockPickUserSandbox = jest.fn();
@@ -9,31 +13,59 @@ const mockFindUserSandbox = jest.fn();
 const mockListWorkspaceFiles = jest.fn();
 const mockStartUserDesktop = jest.fn();
 const mockStopUserDesktop = jest.fn();
+const mockReadRawFile = jest.fn();
+const mockIsSandboxConfigured = jest.fn();
 jest.mock('../agent/sandbox', () => ({
+  isSandboxConfigured: (...args: unknown[]) => mockIsSandboxConfigured(...args),
+  getSandboxProviderInfo: () => ({
+    provider: 'daytona',
+    desktopSupported: true,
+  }),
   pickUserSandbox: (...args: unknown[]) => mockPickUserSandbox(...args),
   findUserSandbox: (...args: unknown[]) => mockFindUserSandbox(...args),
   listWorkspaceFiles: (...args: unknown[]) => mockListWorkspaceFiles(...args),
   startUserDesktop: (...args: unknown[]) => mockStartUserDesktop(...args),
   stopUserDesktop: (...args: unknown[]) => mockStopUserDesktop(...args),
+  readRawFile: (...args: unknown[]) => mockReadRawFile(...args),
 }));
 
 describe('SandboxStatusService', () => {
   let service: SandboxStatusService;
-  const KEY = process.env.DAYTONA_API_KEY;
+  /** 设置 mock：该用户选了 e2b、闲置 15 分钟 */
+  const config = {
+    provider: 'e2b',
+    lifecycle: { idleMinutes: 15, autoDeleteMinutes: 10 },
+  };
+  const prefs = {
+    resolve: jest.fn().mockResolvedValue(config),
+  } as unknown as SandboxSettingsService;
 
   beforeEach(() => {
     jest.clearAllMocks();
-    process.env.DAYTONA_API_KEY = 'test-key';
-    service = new SandboxStatusService();
+    mockIsSandboxConfigured.mockReturnValue(true);
+    service = new SandboxStatusService(prefs);
   });
 
-  afterAll(() => {
-    if (KEY === undefined) delete process.env.DAYTONA_API_KEY;
-    else process.env.DAYTONA_API_KEY = KEY;
+  it('按用户偏好解析出的提供方查询（透传给 pickUserSandbox / isSandboxConfigured）', async () => {
+    mockPickUserSandbox.mockResolvedValue(null);
+    await service.status('u1');
+    expect(prefs.resolve).toHaveBeenCalledWith('u1');
+    expect(mockIsSandboxConfigured).toHaveBeenCalledWith('e2b');
+    expect(mockPickUserSandbox).toHaveBeenCalledWith('u1', 'e2b');
   });
 
-  it('无 DAYTONA_API_KEY → exists:false（不触 SDK）', async () => {
-    delete process.env.DAYTONA_API_KEY;
+  it('列表不带闲置时长（E2B）→ autoStopMinutes 回退用户设置；文件列举透传完整配置', async () => {
+    mockPickUserSandbox.mockResolvedValue({ id: 'sb-1', state: 'started' });
+    mockFindUserSandbox.mockResolvedValue({ fake: true });
+    mockListWorkspaceFiles.mockResolvedValue([]);
+    const r = await service.status('u1', true);
+    expect(r.autoStopMinutes).toBe(15);
+    expect(r.autoDeleteMinutes).toBeNull();
+    expect(mockFindUserSandbox).toHaveBeenCalledWith('u1', config);
+  });
+
+  it('当前提供方未配置凭据 → exists:false（不触 SDK）', async () => {
+    mockIsSandboxConfigured.mockReturnValue(false);
     expect(await service.status('u1')).toEqual({ exists: false });
     expect(mockPickUserSandbox).not.toHaveBeenCalled();
   });
@@ -59,6 +91,8 @@ describe('SandboxStatusService', () => {
 
     expect(r).toEqual({
       exists: true,
+      provider: 'daytona',
+      desktopSupported: true,
       id: 'sb-1',
       state: 'started',
       createdAt: '2026-06-11T01:00:00Z',
@@ -125,7 +159,7 @@ describe('SandboxStatusService', () => {
       expect(await service.startDesktop('u1')).toEqual({
         url: 'https://x/vnc.html?autoconnect=true&resize=scale',
       });
-      expect(mockStartUserDesktop).toHaveBeenCalledWith('u1');
+      expect(mockStartUserDesktop).toHaveBeenCalledWith('u1', 'e2b');
     });
 
     it('startDesktop：helper 返回 null（无沙箱/未运行）→ SANDBOX_NOT_RUNNING', async () => {
@@ -138,7 +172,78 @@ describe('SandboxStatusService', () => {
     it('stopDesktop：透传 helper 且不抛错', async () => {
       mockStopUserDesktop.mockResolvedValue(undefined);
       await expect(service.stopDesktop('u1')).resolves.toBeUndefined();
-      expect(mockStopUserDesktop).toHaveBeenCalledWith('u1');
+      expect(mockStopUserDesktop).toHaveBeenCalledWith('u1', 'e2b');
+    });
+  });
+  describe('readRaw（播放/下载原始字节）', () => {
+    const video = new Uint8Array(Array.from({ length: 100 }, (_, i) => i));
+
+    beforeEach(() => {
+      mockFindUserSandbox.mockResolvedValue({ fake: true });
+      mockReadRawFile.mockResolvedValue(video);
+    });
+
+    it('无 Range → 200 全量，视频可内联，带安全头', async () => {
+      const r = await service.readRaw('u1', 'out/a.mp4', undefined, false);
+      expect(r.status).toBe(200);
+      expect(r.body.length).toBe(100);
+      expect(r.headers['Content-Type']).toBe('video/mp4');
+      expect(r.headers['Content-Disposition']).toMatch(/^inline;/);
+      expect(r.headers['Accept-Ranges']).toBe('bytes');
+      expect(r.headers['X-Content-Type-Options']).toBe('nosniff');
+      expect(mockFindUserSandbox).toHaveBeenCalledWith('u1', config);
+    });
+
+    it('Range → 206 + Content-Range + 对应切片', async () => {
+      const r = await service.readRaw('u1', 'out/a.mp4', 'bytes=10-19', false);
+      expect(r.status).toBe(206);
+      expect(r.headers['Content-Range']).toBe('bytes 10-19/100');
+      expect(Array.from(r.body)).toEqual([
+        10, 11, 12, 13, 14, 15, 16, 17, 18, 19,
+      ]);
+    });
+
+    it('越界 Range → 416', async () => {
+      const r = await service.readRaw('u1', 'out/a.mp4', 'bytes=200-', false);
+      expect(r.status).toBe(416);
+      expect(r.headers['Content-Range']).toBe('bytes */100');
+    });
+
+    it('download=1 → attachment；HTML 即使不下载也强制 attachment', async () => {
+      const d = await service.readRaw('u1', 'out/a.mp4', undefined, true);
+      expect(d.headers['Content-Disposition']).toMatch(/^attachment;/);
+      const h = await service.readRaw(
+        'u1',
+        'site/index.html',
+        undefined,
+        false,
+      );
+      expect(h.headers['Content-Disposition']).toMatch(/^attachment;/);
+    });
+
+    it('续传 Range 走缓存不回源；从头请求总是回源（拿到最新内容）', async () => {
+      await service.readRaw('u1', 'out/a.mp4', 'bytes=0-', false);
+      await service.readRaw('u1', 'out/a.mp4', 'bytes=50-', false);
+      expect(mockReadRawFile).toHaveBeenCalledTimes(1);
+      await service.readRaw('u1', 'out/a.mp4', 'bytes=0-', false);
+      expect(mockReadRawFile).toHaveBeenCalledTimes(2);
+    });
+
+    it('文件不存在 → SANDBOX_NOT_FOUND；路径逃逸 → INVALID_PATH', async () => {
+      mockReadRawFile.mockRejectedValue(new Error('file_not_found'));
+      await expect(
+        service.readRaw('u1', 'nope.mp4', undefined, false),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.SANDBOX_NOT_FOUND.code });
+      await expect(
+        service.readRaw('u1', '../etc/passwd', undefined, false),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.INVALID_PATH.code });
+    });
+
+    it('无沙箱 → SANDBOX_NOT_FOUND', async () => {
+      mockFindUserSandbox.mockResolvedValue(null);
+      await expect(
+        service.readRaw('u1', 'out/a.mp4', undefined, false),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.SANDBOX_NOT_FOUND.code });
     });
   });
 });

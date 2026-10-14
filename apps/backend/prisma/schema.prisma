@@ -20,6 +20,18 @@ model User {
   tenantId       String
   tenant         Tenant          @relation(fields: [tenantId], references: [id])
   authenticators Authenticator[]
+  /// 沙箱设置（/settings/sandbox）。提供方：daytona | e2b；null = 跟随 env SANDBOX_PROVIDER
+  sandboxProvider String?
+  /// 闲置多少分钟后自动停机（Daytona）/ 暂停（E2B）；null = 默认 5
+  sandboxIdleMinutes Int?
+  /// 停机后多少分钟自动删除（仅 Daytona；-1 = 永不删除）；null = 默认 10
+  sandboxAutoDeleteMinutes Int?
+  /// 出站网络：open | allowlist | blocked；null = 默认 open
+  sandboxNetworkMode String?
+  /// 出站白名单（string[]：域名 / IP / CIDR），仅 allowlist 模式生效
+  sandboxNetworkAllowList Json?
+  /// 沙箱端口公网地址是否免鉴权访问（仅 E2B，创建时生效）；null = 默认 false（需鉴权）
+  sandboxPublicTraffic Boolean?
   createdAt      DateTime        @default(now())
 
   @@index([tenantId])

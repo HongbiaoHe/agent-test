@@ -8,6 +8,8 @@
  * 其余涉及 Daytona 沙箱 / Prisma 的路径属于云端集成，无单元测试价值。
  */
 
+// 偏好服务会引入沙箱提供方 SDK（深 ESM 链，jest 加载失败）；偏好已整体 mock，不需要真实提供方
+jest.mock('../agent/sandbox-providers', () => ({}));
 import { Test } from '@nestjs/testing';
 import { getQueueToken } from '@nestjs/bullmq';
 import { AbortRegistry, AGENT_ABORTS } from '../agent/abort-registry';
@@ -17,6 +19,7 @@ import { ConversationsService } from './conversations.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SkillsService } from '../skills/skills.service';
 import { ErrorCodes } from '../common/errors/error-code';
+import { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
 
 // 最小 Mock：只需 conversation.findFirst 返回一条记录，不触及队列/沙箱
 const mockPrisma = {
@@ -57,6 +60,10 @@ describe('ConversationsService – downloadFile 路径校验', () => {
           useValue: { cancelByConversation: jest.fn() },
         },
         { provide: AGENT_ABORTS, useValue: new AbortRegistry() },
+        {
+          provide: SandboxSettingsService,
+          useValue: { resolve: jest.fn().mockResolvedValue('daytona') },
+        },
       ],
     }).compile();
 
@@ -109,6 +116,10 @@ describe('ConversationsService – 空会话创建与续聊', () => {
           useValue: { cancelByConversation: jest.fn() },
         },
         { provide: AGENT_ABORTS, useValue: new AbortRegistry() },
+        {
+          provide: SandboxSettingsService,
+          useValue: { resolve: jest.fn().mockResolvedValue('daytona') },
+        },
       ],
     }).compile();
     service = module.get(ConversationsService);
@@ -203,6 +214,10 @@ describe('ConversationsService – stop（主动停止）', () => {
         { provide: StreamService, useValue: mockStream },
         { provide: MediaService, useValue: mockMedia },
         { provide: AGENT_ABORTS, useValue: aborts },
+        {
+          provide: SandboxSettingsService,
+          useValue: { resolve: jest.fn().mockResolvedValue('daytona') },
+        },
       ],
     }).compile();
     service = module.get(ConversationsService);

@@ -16,11 +16,15 @@
  * DeepSeek 型号取自其 /models API 的全部模型（2026-09-15 实测：deepseek-flash / deepseek-v4-pro）。
  * 注：deepseek-v4-flash 是它的旧名，官方已下线该 ID 并改由 V4.1-Flash 承接；这里只留新名，
  * 存量会话里的旧名已一并改写（旧名上游仍可调，但没必要继续用一个会消失的 ID）。
+ * Gemini 型号对齐官方模型页（ai.google.dev/gemini-api/docs/models，2026-10-14）：新增
+ * gemini-4-argon / gemini-3.8-flash；移除文档已不再列出的 gemini-3.5-flash（存量会话由
+ * 前端 normalizeCanvasModel 回退到默认模型，不会因 DTO 校验发不出消息）。
  */
 export const CANVAS_MODELS = [
   'gemini-3.1-pro-preview',
+  'gemini-4-argon',
+  'gemini-3.8-flash',
   'gemini-3.1-flash-lite',
-  'gemini-3.5-flash',
   'gemini-3.5-flash-lite',
   'gemini-3.6-flash',
   // 注：gemini-3-pro-preview 已移除——该模型 ID 在 API 上恒 404（2026-08-25 实测 5/5 失败）

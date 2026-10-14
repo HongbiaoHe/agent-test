@@ -6,19 +6,21 @@
  * 前端的下拉选项（含展示名）见 apps/frontend/src/app/agent/_lib/models.ts，改动需两边同步。
  */
 export const ALLOWED_MODELS = [
+  // Gemini：按官方模型页（ai.google.dev/gemini-api/docs/models，2026-10-14）在列且实测
+  // 工具调用可用的型号。已移除：gemini-3-pro-preview（官方已下线，实测 404）、
+  // gemini-2.5-pro（对新用户 404）/ gemini-2.5-flash（官方注明仅限近期用户）、
+  // 文档未列的 gemini-3.5-flash / -customtools / gemini-flash-lite-latest 别名。
+  'google-genai:gemini-3.8-flash',
+  'google-genai:gemini-4-argon',
+  'google-genai:gemini-3.6-flash',
+  'google-genai:gemini-3.5-flash-lite',
+  'google-genai:gemini-3.1-flash-lite',
   'google-genai:gemini-3.1-pro-preview',
-  'google-genai:gemini-3.1-pro-preview-customtools',
-  'google-genai:gemini-3.5-flash',
   'google-genai:gemini-3-flash-preview',
-  'google-genai:gemini-3-pro-preview',
-  'google-genai:gemini-2.5-pro',
-  'google-genai:gemini-2.5-flash',
-  'google-genai:gemini-flash-lite-latest',
-  // DeepSeek：v4-* 为 /models API 列出的全部模型；chat/reasoner 为官方兼容别名（同样可调用）
+  // DeepSeek：官方 /models 与定价页只列这两个（2026-10-14）。deepseek-chat / deepseek-reasoner
+  // 仍可调用但实测都由 deepseek-flash 应答，已不是独立模型，故移除。
   'deepseek:deepseek-flash',
   'deepseek:deepseek-v4-pro',
-  'deepseek:deepseek-chat',
-  'deepseek:deepseek-reasoner',
 ] as const;
 
 export type AllowedModel = (typeof ALLOWED_MODELS)[number];

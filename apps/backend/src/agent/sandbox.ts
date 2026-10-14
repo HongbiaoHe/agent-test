@@ -1,55 +1,70 @@
 /**
  * 用户级（user-scoped）沙箱工厂。
  *
- * 分配粒度：**一个用户一个沙箱**（标签 user_id）——同一用户的所有会话共享同一个
+ * 分配粒度：**一个用户一个沙箱**（标签/元数据 user_id）——同一用户的所有会话共享同一个
  * 工作区（已装依赖、生成产物跨会话可见）；不同用户之间完全隔离。
  * （此前为 thread-scoped 每会话一个，按用户要求 2026-06-11 改为用户级。）
+ *
+ * 沙箱提供方可切换：每个函数接收可选的 provider（用户在 /settings/profile 的偏好，由
+ * SandboxSettingsService 解析）；不传则用 env SANDBOX_PROVIDER（缺省 daytona）。
+ * 具体实现见 ./sandbox-providers/。本文件只做与提供方无关的编排
+ * （选择→复用/拉起/创建→工作区守卫）。
  *
  * 为什么单独抽成一个文件？
  * - 沙箱生命周期管理（查找→复用→补拉起 / 创建）对 agent worker 和 conversations
  *   文件接口都有用，抽出来避免循环依赖。
  * - `getUserSandbox` 是幂等的：同一 userId 只维护一个沙箱；如果已停机，
  *   拉起后再返回；如果不存在，新建。
- * - 无 DAYTONA_API_KEY 时静默返回 null，调用方回退到 StateBackend（纯内存/DB）。
+ * - 当前提供方凭据未配置时静默返回 null，调用方回退到 StateBackend（纯内存/DB）。
  */
 
 import { createHash } from 'node:crypto';
-import { Daytona } from '@daytonaio/sdk';
-import { DaytonaSandbox } from '@langchain/daytona';
 import type { FileData } from 'deepagents';
 import { absolutizeRefPaths } from '../skills/skill-files';
 import type { SkillDef } from '../skills/skills.service';
 import { GuardedSandbox } from './guarded-sandbox';
+import {
+  type ConnectedSandbox,
+  DEFAULT_SANDBOX_LIFECYCLE,
+  DEFAULT_SANDBOX_NETWORK,
+  getSandboxProvider,
+  type SandboxLifecycle,
+  type SandboxListing,
+  type SandboxNetwork,
+  type SandboxProviderName,
+  type UserSandboxConfig,
+} from './sandbox-providers';
+
+export type { SandboxListing, SandboxProviderName, UserSandboxConfig };
+
+/** config 缺省（脚本/测试直调）：env 默认提供方 + 默认生命周期 + 默认网络。 */
+function withDefaults(config?: UserSandboxConfig): {
+  provider?: SandboxProviderName;
+  lifecycle: SandboxLifecycle;
+  network: SandboxNetwork;
+} {
+  return {
+    provider: config?.provider,
+    lifecycle: config?.lifecycle ?? DEFAULT_SANDBOX_LIFECYCLE,
+    network: config?.network ?? DEFAULT_SANDBOX_NETWORK,
+  };
+}
 
 /** agent 专用工作区目录名（相对于沙箱 home） */
 export const AGENT_WORKSPACE_DIR = 'agent-workspace';
 
-// ─── 验证过的 API 事实 ─────────────────────────────────────────────
-// @daytonaio/sdk 0.185.0 Daytona.d.ts:
-//   · list(query?: ListSandboxesQuery): AsyncIterableIterator<Sandbox>   — 无 findOne
-//   · ListSandboxesQuery.labels?: Record<string,string>                  — 按标签过滤
-// @daytonaio/sdk Sandbox.d.ts:
-//   · state?: SandboxState  （字符串常量枚举，"started"/"stopped" 等）    — 无 isRunning
-// @langchain/daytona 0.2.0 index.d.ts:
-//   · DaytonaSandbox.create(options?)                                     — 静态工厂
-//   · DaytonaSandbox.fromId(id, options?)                                 — 静态，按 SDK sandbox.id 连接
-//   · DaytonaSandbox.deleteAll(labels, options?)                          — 静态，按标签批量删
-//   · DaytonaSandbox.isRunning: boolean — ⚠️ 只表示「实例已初始化」（#sandbox !== null），
-//     fromId 之后恒为 true，与沙箱真实运行状态无关（dist/index.js:254）。
-//     判断是否需要 start() 必须用 SDK list() 返回的 sandbox.state === 'started'。
-//   · DaytonaSandbox.start(timeout?)                                      — 实例方法，委托 SDK start 并等待 started
-//   · DaytonaSandboxOptions.autoStopInterval / autoArchiveInterval / autoDeleteInterval — 单位：分钟
-//     （JSDoc: "Auto-stop interval in minutes" 等；三者 wrapper 均透传给 SDK create）
-// ──────────────────────────────────────────────────────────────────
+/** 该提供方（缺省 env 默认）是否可用（凭据已配置）。 */
+export function isSandboxConfigured(provider?: SandboxProviderName): boolean {
+  return getSandboxProvider(provider).isConfigured();
+}
 
-/** Daytona list() 返回项中本模块及状态接口用到的字段（避免 SDK 类型深耦合）。 */
-export interface SandboxListing {
-  id: string;
-  state?: string;
-  createdAt?: string;
-  updatedAt?: string;
-  autoStopInterval?: number;
-  autoDeleteInterval?: number;
+/** 当前提供方名与能力（状态接口透出给前端：展示提供方、按能力禁用桌面入口）。 */
+export function getSandboxProviderInfo(provider?: SandboxProviderName): {
+  provider: SandboxProviderName;
+  desktopSupported: boolean;
+} {
+  const p = getSandboxProvider(provider);
+  return { provider: p.name, desktopSupported: !!p.desktop };
 }
 
 /**
@@ -76,24 +91,41 @@ export function pickPreferredSandbox<T extends SandboxListing>(
 /** list 该用户全部沙箱并确定性选择（getUserSandbox / findUserSandbox / 状态接口共用）。 */
 export async function pickUserSandbox(
   userId: string,
+  provider?: SandboxProviderName,
 ): Promise<SandboxListing | null> {
-  const client = new Daytona();
-  const all: SandboxListing[] = [];
-  for await (const s of client.list({ labels: { user_id: userId } })) {
-    all.push(s);
+  return pickPreferredSandbox(
+    await getSandboxProvider(provider).listUserSandboxes(userId),
+  );
+}
+
+/** 在已连接沙箱的 home 下建立（或确认）工作区目录，返回守卫 wrapper。 */
+async function openWorkspace({
+  inner,
+  homeDir,
+}: ConnectedSandbox): Promise<GuardedSandbox> {
+  const ws = `${homeDir}/${AGENT_WORKSPACE_DIR}`;
+  const mkdir = `mkdir -p '${ws}'`;
+  // mkdir -p 幂等，失败重试一次：实测经本机代理时 E2B 命令启动请求偶发 fetch failed
+  // （压测约 2/444），不重试会让文件接口偶发 404。agent 的 execute 不在此重试（命令未必幂等）。
+  try {
+    await inner.execute(mkdir);
+  } catch {
+    await inner.execute(mkdir);
   }
-  return pickPreferredSandbox(all);
+  return new GuardedSandbox(inner, ws);
 }
 
 /**
- * 按 userId 获取（或创建）该用户的 Daytona 沙箱。
+ * 按 userId 获取（或创建）该用户的沙箱（当前提供方）。
  *
  * 逻辑：
- *  1. 无 DAYTONA_API_KEY → 立即返回 null（调用方用 StateBackend 兜底）。
+ *  1. 当前提供方凭据未配置 → 立即返回 null（调用方用 StateBackend 兜底）。
  *  2. pickUserSandbox 确定性选择已有沙箱（started 优先、createdAt 最早）。
- *  3. 找到 → fromId 拿 DaytonaSandbox wrapper；非 started 先 start() 再返回。
+ *  3. 找到 → provider.connect（非 started 先拉起再返回）。
  *     （停机实例 execute/downloadFiles 会失败，必须先拉起——设计 §5 停机恢复）
- *  4. 确认列表为空 → create 新沙箱，绑 user_id 标签。
+ *  4. 确认列表为空 → provider.create 新沙箱，绑 user_id（带上网络设置）。
+ *  5. 已有沙箱的出站策略与用户设置不一致（如设置改于沙箱暂停期间）→ 连接后先同步再交给 agent；
+ *     同步失败**向上抛**：宁可本轮无沙箱，也不让 agent 在错误的放行状态下跑命令。
  *
  * 错误处理策略（2026-06-11 修订）：
  *  - 查找/连接/启动失败一律**向上抛**，由调用方降级（worker → StateBackend + 提示）。
@@ -102,36 +134,21 @@ export async function pickUserSandbox(
  */
 export async function getUserSandbox(
   userId: string,
+  config?: UserSandboxConfig,
 ): Promise<GuardedSandbox | null> {
-  if (!process.env.DAYTONA_API_KEY) return null;
+  const { provider: providerName, lifecycle, network } = withDefaults(config);
+  const provider = getSandboxProvider(providerName);
+  if (!provider.isConfigured()) return null;
 
-  let sb: DaytonaSandbox;
-
-  const existing = await pickUserSandbox(userId);
-  if (existing) {
-    // 找到已有沙箱：用 LangChain wrapper 连接，以便 execute/upload 等高级方法可用
-    sb = await DaytonaSandbox.fromId(existing.id);
-    // ⚠️ 不能用 sb.isRunning 判断（fromId 后恒为 true，见文件顶部 API 事实），
-    // 须用 SDK list() 返回的 state；非 started（stopped/starting 等）都走 start()
-    // 等待就绪（停机沙箱不拉起，后续 getWorkDir/execute 会 400 "no IP address found"）。
-    if (existing.state !== 'started') {
-      await sb.start();
-    }
-  } else {
-    // 确认列表为空才创建（auto*Interval 单位：分钟，已验证；delete 从停机时刻起算）。
-    // 不配置 autoArchiveInterval：停机直接等删除，无归档中间态。
-    sb = await DaytonaSandbox.create({
-      labels: { user_id: userId },
-      autoStopInterval: 5, // 闲置 5 分钟自动停机，停机态只计存储费用
-      autoDeleteInterval: 10, // 停机 10 分钟后自动删除
-    });
+  const existing = await pickUserSandbox(userId, provider.name);
+  if (!existing) {
+    return openWorkspace(await provider.create(userId, lifecycle, network));
   }
-
-  // 建立（或确认）工作区目录，返回守卫 wrapper
-  const home = await sb.getWorkDir();
-  const ws = `${home}/${AGENT_WORKSPACE_DIR}`;
-  await sb.execute(`mkdir -p '${ws}'`);
-  return new GuardedSandbox(sb, ws);
+  const conn = await provider.connect(existing, lifecycle);
+  if (existing.egress !== provider.desiredEgress(network)) {
+    await provider.applyEgress({ ...existing, state: 'started' }, network);
+  }
+  return openWorkspace(conn);
 }
 
 /** 沙箱内记录「上次上传的技能集指纹」的清单文件（虚拟根路径）。 */
@@ -422,6 +439,22 @@ export async function readFilePreview(
 }
 
 /**
+ * 读取工作区文件的原始字节（GET /sandbox/file/raw：视频/音频播放与下载）。
+ * relPath 为相对虚拟路径，经 GuardedSandbox.downloadFiles 的虚拟根映射与逃逸守卫；
+ * 成功结果不脱敏，二进制安全。文件不存在/是目录等 → 抛错（由调用方转 404）。
+ */
+export async function readRawFile(
+  sb: GuardedSandbox,
+  relPath: string,
+): Promise<Uint8Array> {
+  const [res] = await sb.downloadFiles([relPath]);
+  if (!res || res.error || !res.content) {
+    throw new Error(res?.error ?? 'file_not_found');
+  }
+  return res.content;
+}
+
+/**
  * deepagents FileData 联合（V1=行数组 / V2=string|Uint8Array）→ Buffer。
  * readRaw 实际返回 V2，但类型是联合，逐分支收窄以零断言取字节。
  */
@@ -436,59 +469,37 @@ function fileDataMime(data: FileData): string {
   return 'mimeType' in data ? data.mimeType : 'application/octet-stream';
 }
 
-/** noVNC web 客户端端口（computerUse.start 拉起的 novnc 进程监听 6080） */
-const DESKTOP_PORT = 6080;
-/** 签名预览 URL 有效期（秒）：单次 Dialog 会话足够，重开重签 */
-const DESKTOP_URL_TTL_S = 3600;
-
 /**
  * 启动用户沙箱的图形桌面并返回 noVNC 访问地址。
  *
- * GuardedSandbox 不暴露 computerUse/getSignedPreviewUrl，须走 SDK 原生对象
- * （client.get(id)）。沙箱不存在或未运行返回 null（是否报错由调用方定语义，
- * 不在这里唤醒停机沙箱——桌面只对运行中的沙箱有意义）。
- * computerUse.start() 幂等：已 active 时秒回（实测拉起 Xvfb/XFCE/x11vnc/noVNC 约 3-5s）。
- *
- * ⚠️ stop→start 循环自愈（2026-07-25 实测 Daytona 缺陷）：computerUse.stop() 后再
- * start() 会报 `failed to start: [novnc]`——start 按序拉起四进程，卡在 novnc（supervisor
- * 状态残留），此时其余进程其实已在运行。恢复手段是对未运行进程逐个 restartProcess()
- * （实测一次即全绿）。故 start 失败不直接抛：先探测补救，补救仍失败才抛原错误。
+ * 提供方不支持桌面（如 E2B）、沙箱不存在或未运行 → 返回 null（是否报错由调用方定语义，
+ * 不在这里唤醒停机沙箱——桌面只对运行中的沙箱有意义）。具体拉起逻辑见提供方实现。
  */
-export async function startUserDesktop(userId: string): Promise<string | null> {
-  if (!process.env.DAYTONA_API_KEY) return null;
-  const existing = await pickUserSandbox(userId);
+export async function startUserDesktop(
+  userId: string,
+  providerName?: SandboxProviderName,
+): Promise<string | null> {
+  const provider = getSandboxProvider(providerName);
+  if (!provider.isConfigured() || !provider.desktop) return null;
+  const existing = await pickUserSandbox(userId, provider.name);
   if (!existing || existing.state !== 'started') return null;
-
-  const sb = await new Daytona().get(existing.id);
-  try {
-    await sb.computerUse.start();
-  } catch (startErr) {
-    // 自愈路径：把没跑起来的桌面进程逐个 restart；任何一步失败都抛回 start 的原错误
-    // （比 restart 的错误更能说明根因），由前端「重试」按钮兜底。
-    try {
-      for (const name of ['xvfb', 'xfce4', 'x11vnc', 'novnc']) {
-        const st = await sb.computerUse.getProcessStatus(name);
-        if (!st.running) await sb.computerUse.restartProcess(name);
-      }
-    } catch {
-      throw startErr;
-    }
-  }
-  const signed = await sb.getSignedPreviewUrl(DESKTOP_PORT, DESKTOP_URL_TTL_S);
-  return `${signed.url}/vnc.html?autoconnect=true&resize=scale`;
+  return provider.desktop.start(existing.id);
 }
 
 /**
  * 停止用户沙箱的图形桌面（Dialog 关闭时调用）。
  * 收尾语义：沙箱不存在/已停/stop 失败一律静默——桌面进程随沙箱 auto-stop 一并回收。
  */
-export async function stopUserDesktop(userId: string): Promise<void> {
-  if (!process.env.DAYTONA_API_KEY) return;
+export async function stopUserDesktop(
+  userId: string,
+  providerName?: SandboxProviderName,
+): Promise<void> {
+  const provider = getSandboxProvider(providerName);
+  if (!provider.isConfigured() || !provider.desktop) return;
   try {
-    const existing = await pickUserSandbox(userId);
+    const existing = await pickUserSandbox(userId, provider.name);
     if (!existing || existing.state !== 'started') return;
-    const sb = await new Daytona().get(existing.id);
-    await sb.computerUse.stop();
+    await provider.desktop.stop(existing.id);
   } catch {
     // 收尾失败无害：桌面随沙箱闲置自动停机一并回收
   }
@@ -498,30 +509,23 @@ export async function stopUserDesktop(userId: string): Promise<void> {
  * 只查不建（conversations 文件接口用），按 userId 查找。
  *
  * - 找到且在运行 → 直接返回。
- * - 找到但停机   → start() 拉起后返回（downloadFiles 对停机实例会失败）。
+ * - 找到但停机   → 拉起后返回（downloadFiles 对停机实例会失败）。
  * - 未找到       → 返回 null。
  * - 任何错误     → 返回 null（调用方做好 null 检查即可）。
  */
 export async function findUserSandbox(
   userId: string,
+  config?: UserSandboxConfig,
 ): Promise<GuardedSandbox | null> {
-  if (!process.env.DAYTONA_API_KEY) return null;
+  const { provider: providerName, lifecycle } = withDefaults(config);
+  const provider = getSandboxProvider(providerName);
+  if (!provider.isConfigured()) return null;
 
   try {
     // 与 getUserSandbox / 状态接口共用同一确定性选择，保证各处看到同一个沙箱
-    const existing = await pickUserSandbox(userId);
+    const existing = await pickUserSandbox(userId, provider.name);
     if (!existing) return null;
-
-    const sb = await DaytonaSandbox.fromId(existing.id);
-    // 同 getUserSandbox：isRunning 不可信，须用 list() 的 state 判断
-    if (existing.state !== 'started') {
-      await sb.start();
-    }
-    // 建立工作区目录后返回守卫 wrapper
-    const home = await sb.getWorkDir();
-    const ws = `${home}/${AGENT_WORKSPACE_DIR}`;
-    await sb.execute(`mkdir -p '${ws}'`);
-    return new GuardedSandbox(sb, ws);
+    return await openWorkspace(await provider.connect(existing, lifecycle));
   } catch {
     return null;
   }

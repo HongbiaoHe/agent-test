@@ -12,6 +12,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SkillsService } from '../skills/skills.service';
 import { assertSafeEntryPath } from '../skills/skill-installer';
 import { findUserSandbox, listWorkspaceFiles } from '../agent/sandbox';
+import { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
 
 @Injectable()
 export class ConversationsService {
@@ -22,6 +23,7 @@ export class ConversationsService {
     private readonly stream: StreamService,
     private readonly media: MediaService,
     @Inject(AGENT_ABORTS) private readonly aborts: AbortRegistry,
+    private readonly sandboxSettings: SandboxSettingsService,
   ) {}
 
   /**
@@ -229,7 +231,10 @@ export class ConversationsService {
   async listFiles(id: string, tenantId: string) {
     const ownerUserId = await this.assertConversationOwner(id, tenantId);
 
-    const sb = await findUserSandbox(ownerUserId);
+    const sb = await findUserSandbox(
+      ownerUserId,
+      await this.sandboxSettings.resolve(ownerUserId),
+    );
     if (!sb) {
       throw new BusinessException(
         ErrorCodes.SANDBOX_NOT_FOUND,
@@ -264,7 +269,10 @@ export class ConversationsService {
       );
     }
 
-    const sb = await findUserSandbox(ownerUserId);
+    const sb = await findUserSandbox(
+      ownerUserId,
+      await this.sandboxSettings.resolve(ownerUserId),
+    );
     if (!sb) {
       throw new BusinessException(
         ErrorCodes.SANDBOX_NOT_FOUND,

@@ -18,6 +18,8 @@
  *     gemini-3.5-flash-lite     400       ok
  *     gemini-3.6-flash          400       ok
  *     gemini-3-flash-preview    ok        ok
+ *     gemini-3.8-flash          ok        ok    （2026-10-14 实测：budget0 后 thoughtsTokenCount=0）
+ *     gemini-4-argon            ok        ok    （同上）
  *     （gemini-3-pro-preview 恒 404，已从白名单移除）
  *
  *   所以「关闭」只对下面这张白名单里的模型开放。用白名单而不是黑名单：新模型进来时默认不给
@@ -35,6 +37,8 @@ const GEMINI_CAN_DISABLE_THINKING = new Set([
   'gemini-3.1-flash-lite',
   'gemini-3.5-flash',
   'gemini-3-flash-preview',
+  'gemini-3.8-flash',
+  'gemini-4-argon',
 ]);
 
 /** 去掉 provider 前缀，拿裸模型名（白名单里既有 `gemini-*` 也有 `google-genai:gemini-*`）。 */

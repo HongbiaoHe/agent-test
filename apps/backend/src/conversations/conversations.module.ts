@@ -6,6 +6,7 @@ import { EventsModule } from '../events/events.module';
 import { MediaModule } from '../media/media.module';
 import { ConversationsController } from './conversations.controller';
 import { ConversationsService } from './conversations.service';
+import { SandboxModule } from '../sandbox/sandbox.module';
 
 @Module({
   imports: [
@@ -13,6 +14,7 @@ import { ConversationsService } from './conversations.service';
     EventsModule,
     MediaModule,
     AbortModule,
+    SandboxModule,
   ],
   controllers: [ConversationsController],
   providers: [ConversationsService],

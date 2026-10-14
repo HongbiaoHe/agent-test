@@ -1,6 +1,6 @@
 "use client";
 
-import { CircleUserRound, Wrench } from "lucide-react";
+import { Box, CircleUserRound, Wrench } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 const ITEMS = [
   { href: "/settings/profile", label: "Profile", icon: CircleUserRound },
   { href: "/settings/skills", label: "Skills", icon: Wrench },
+  { href: "/settings/sandbox", label: "Sandbox", icon: Box },
 ] as const;
 
 /** Settings 左侧分区导航（desktop 纵向）/ 顶部横向（mobile）。 */

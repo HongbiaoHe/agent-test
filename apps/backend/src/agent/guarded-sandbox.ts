@@ -1,8 +1,8 @@
 /**
  * GuardedSandbox — agent 专用目录守卫 + 虚拟根目录（官方 §9.5 policy hook 模式）。
  *
- * 包装一个 DaytonaSandbox（或任意 SandboxBackendProtocolV2 实现），把工作区
- * （workspaceRoot，如 /home/daytona/agent-workspace）虚拟化为 agent 眼中的 `/`：
+ * 包装一个 DaytonaSandbox / E2BSandbox（任意 GuardableSandbox 实现），把工作区
+ * （workspaceRoot，如 /home/daytona/agent-workspace、/home/user/agent-workspace）虚拟化为 agent 眼中的 `/`：
  *
  *  - 入站（agent → 沙箱）：文件方法的路径按虚拟根解析——
  *      `/` 或 ''        → workspaceRoot
@@ -16,7 +16,7 @@
  * ⚠️  execute 的安全边界说明：
  *   路径守卫只作用于文件工具（ls/read/readRaw/write/edit/glob/grep）。
  *   execute 仅做 cwd 锚定 + 输出脱敏——绝对路径仍可逃逸工作区（如 `cat /etc/passwd`）。
- *   真正的隔离边界是沙箱本身（Daytona 用户级容器）；本守卫的目标是：
+ *   真正的隔离边界是沙箱本身（Daytona / E2B 用户级沙箱）；本守卫的目标是：
  *     1) 文件工具层面的硬限制（agent 调 write_file/read_file 无法出域）；
  *     2) execute 工作目录锚定（相对路径安全，绝对路径由沙箱隔离保证）；
  *     3) 真实路径不进入模型上下文（理解为「工作目录就是 /」即可）。
@@ -39,7 +39,6 @@
  */
 
 import path from 'node:path';
-import type { DaytonaSandbox } from '@langchain/daytona';
 import type {
   EditResult,
   ExecuteResponse,
@@ -52,6 +51,7 @@ import type {
   ReadResult,
   WriteResult,
 } from 'deepagents';
+import type { GuardableSandbox } from './sandbox-providers';
 
 export class GuardedSandbox {
   /** 满足 isSandboxProtocol duck-typing：id 委托给 inner */
@@ -59,13 +59,13 @@ export class GuardedSandbox {
     return this.inner.id;
   }
 
-  /** 满足 DaytonaSandbox.isRunning 透传（caller 做 isRunning 检查） */
+  /** isRunning 透传（caller 做 isRunning 检查） */
   get isRunning(): boolean {
     return this.inner.isRunning;
   }
 
   constructor(
-    private readonly inner: DaytonaSandbox,
+    private readonly inner: GuardableSandbox,
     readonly workspaceRoot: string,
   ) {}
 
@@ -216,7 +216,7 @@ export class GuardedSandbox {
   // ─── execute（cwd 锚定 + 输出脱敏，无路径级硬隔离——见文件顶部说明）──────
 
   async execute(command: string): Promise<ExecuteResponse> {
-    // 用单引号包围路径防空格，workspaceRoot 本身不含单引号（Daytona 路径约定）
+    // 用单引号包围路径防空格，workspaceRoot 本身不含单引号（Daytona / E2B home 路径约定）
     const result = await this.inner.execute(
       `cd '${this.workspaceRoot}' && ( ${command} )`,
     );

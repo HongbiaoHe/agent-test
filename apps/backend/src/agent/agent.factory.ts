@@ -114,14 +114,14 @@ const skillReadPolicyMiddleware = createMiddleware({
 
 /**
  * 把模型标识解析为 LangChain Chat Model：
- * - `provider:model`（如 `deepseek:deepseek-chat` / `google-genai:gemini-3.5-flash`）
+ * - `provider:model`（如 `deepseek:deepseek-flash` / `google-genai:gemini-3.8-flash`）
  *   → initChatModel 按前缀动态加载对应 provider 包；
  * - 裸名（旧 DB 会话、env GOOGLE_GENAI_MODEL 的存量值）→ 兼容回退 google-genai
  *   （不能靠 initChatModel 自动推断：它会把 `gemini-*` 推到 google-vertexai）。
  * API key 由各 provider 包从 env 自取（GOOGLE_API_KEY / DEEPSEEK_API_KEY）。
  */
 function resolveChatModel(model?: string) {
-  const name = model ?? process.env.GOOGLE_GENAI_MODEL ?? 'gemini-3.5-flash';
+  const name = model ?? process.env.GOOGLE_GENAI_MODEL ?? 'gemini-3.8-flash';
   if (name.includes(':')) return initChatModel(name);
   return initChatModel(name, { modelProvider: 'google-genai' });
 }

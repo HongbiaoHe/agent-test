@@ -2,21 +2,33 @@
  * pickPreferredSandbox 单测：多沙箱（历史裂变残留）下的确定性选择规则。
  * started 优先 > stopped > 过渡/异常态；同级取 createdAt 最早。
  *
- * sandbox.ts 模块级引入 Daytona SDK / @langchain/daytona（深 ESM 链 jest 加载失败），
- * 被测函数是纯函数不触及它们，mock 掉即可。
+ * sandbox.ts 模块级引入 sandbox-providers（其下 Daytona / E2B SDK 为深 ESM 链，jest 加载失败），
+ * 被测函数不触及提供方，mock 掉即可。
  */
-jest.mock('@daytonaio/sdk', () => ({ Daytona: jest.fn() }));
-jest.mock('@langchain/daytona', () => ({ DaytonaSandbox: class {} }));
+jest.mock('./sandbox-providers', () => ({
+  getSandboxProvider: jest.fn(),
+  DEFAULT_SANDBOX_LIFECYCLE: { idleMinutes: 5, autoDeleteMinutes: 10 },
+  DEFAULT_SANDBOX_NETWORK: {
+    egress: 'open',
+    allowList: [],
+    publicTraffic: false,
+  },
+}));
 
 import {
+  findUserSandbox,
+  getUserSandbox,
   listDir,
   pickPreferredSandbox,
+  startUserDesktop,
+  stopUserDesktop,
   readFilePreview,
   uploadSkillsToSandbox,
   type SandboxListing,
 } from './sandbox';
 import type { GuardedSandbox } from './guarded-sandbox';
 import type { SkillDef } from '../skills/skills.service';
+import { getSandboxProvider } from './sandbox-providers';
 
 const sb = (id: string, state: string, createdAt: string): SandboxListing => ({
   id,
@@ -208,5 +220,194 @@ describe('uploadSkillsToSandbox 去重', () => {
     await uploadSkillsToSandbox(second.sbm, [changed]);
     expect(second.sbm.execute).toHaveBeenCalledWith('rm -rf skills');
     expect(second.sbm.uploadFiles).toHaveBeenCalled();
+  });
+});
+
+describe('提供方编排（getUserSandbox / findUserSandbox / desktop）', () => {
+  const mockGetProvider = getSandboxProvider as jest.Mock;
+
+  /** 构造一个 provider mock；inner.execute 记录 mkdir 工作区命令。 */
+  function makeProvider(opts: {
+    configured?: boolean;
+    listings?: Array<{
+      id: string;
+      state: string;
+      createdAt?: string;
+      egress?: string;
+    }>;
+    desktop?: boolean;
+  }) {
+    const inner = {
+      id: 'inner',
+      execute: jest
+        .fn()
+        .mockResolvedValue({ output: '', exitCode: 0, truncated: false }),
+    };
+    const conn = { inner, homeDir: '/home/user' };
+    const provider = {
+      name: 'e2b',
+      isConfigured: () => opts.configured ?? true,
+      listUserSandboxes: jest.fn().mockResolvedValue(opts.listings ?? []),
+      connect: jest.fn().mockResolvedValue(conn),
+      create: jest.fn().mockResolvedValue(conn),
+      // 指纹口径简化：open → 'open'，blocked → 'blocked'
+      desiredEgress: jest.fn((n: { egress: string }) => n.egress),
+      applyEgress: jest.fn().mockResolvedValue(undefined),
+      desktop: opts.desktop
+        ? {
+            start: jest.fn().mockResolvedValue('https://vnc'),
+            stop: jest.fn().mockResolvedValue(undefined),
+          }
+        : undefined,
+    };
+    mockGetProvider.mockReturnValue(provider);
+    return { provider, inner };
+  }
+
+  it('凭据未配置 → getUserSandbox/findUserSandbox 返回 null，不 list', async () => {
+    const { provider } = makeProvider({ configured: false });
+    expect(await getUserSandbox('u1')).toBeNull();
+    expect(await findUserSandbox('u1')).toBeNull();
+    expect(provider.listUserSandboxes).not.toHaveBeenCalled();
+  });
+
+  it('无已有沙箱 → create，并在 home 下建工作区、返回守卫 wrapper', async () => {
+    const { provider, inner } = makeProvider({});
+    const sb = await getUserSandbox('u1');
+    // 不传 config → 默认生命周期（闲置 5 分钟 / 停机 10 分钟删除）
+    expect(provider.create).toHaveBeenCalledWith(
+      'u1',
+      { idleMinutes: 5, autoDeleteMinutes: 10 },
+      { egress: 'open', allowList: [], publicTraffic: false },
+    );
+    expect(provider.connect).not.toHaveBeenCalled();
+    expect(inner.execute).toHaveBeenCalledWith(
+      "mkdir -p '/home/user/agent-workspace'",
+    );
+    expect(sb?.workspaceRoot).toBe('/home/user/agent-workspace');
+  });
+
+  it('建工作区 mkdir 偶发网络失败 → 重试一次后成功', async () => {
+    const { inner } = makeProvider({});
+    inner.execute.mockRejectedValueOnce(new Error('fetch failed'));
+    const sb = await getUserSandbox('u1');
+    expect(inner.execute).toHaveBeenCalledTimes(2);
+    expect(sb?.workspaceRoot).toBe('/home/user/agent-workspace');
+  });
+
+  it('有已有沙箱 → connect 确定性选中的那个（started 优先），不 create', async () => {
+    const { provider } = makeProvider({
+      listings: [
+        { id: 'old-stopped', state: 'stopped', createdAt: '1' },
+        { id: 'run', state: 'started', createdAt: '2' },
+      ],
+    });
+    await getUserSandbox('u1');
+    expect(provider.connect).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'run' }),
+      { idleMinutes: 5, autoDeleteMinutes: 10 },
+    );
+    expect(provider.create).not.toHaveBeenCalled();
+  });
+
+  it('传入用户配置 → 按其提供方取沙箱、生命周期与网络透传给 create', async () => {
+    const { provider } = makeProvider({});
+    const lifecycle = { idleMinutes: 30, autoDeleteMinutes: -1 };
+    const network = {
+      egress: 'blocked' as const,
+      allowList: [],
+      publicTraffic: false,
+    };
+    await getUserSandbox('u1', { provider: 'e2b', lifecycle, network });
+    expect(mockGetProvider).toHaveBeenCalledWith('e2b');
+    expect(provider.create).toHaveBeenCalledWith('u1', lifecycle, network);
+  });
+
+  describe('出站规则同步（已有沙箱）', () => {
+    const lifecycle = { idleMinutes: 5, autoDeleteMinutes: 10 };
+    const blocked = {
+      egress: 'blocked' as const,
+      allowList: [],
+      publicTraffic: false,
+    };
+
+    it('远端指纹与设置一致 → 不发更新请求', async () => {
+      const { provider } = makeProvider({
+        listings: [{ id: 'a', state: 'started', egress: 'blocked' }],
+      });
+      await getUserSandbox('u1', {
+        provider: 'e2b',
+        lifecycle,
+        network: blocked,
+      });
+      expect(provider.applyEgress).not.toHaveBeenCalled();
+    });
+
+    it('不一致（如暂停期间改了设置）→ 连接后先同步再返回', async () => {
+      const { provider } = makeProvider({
+        listings: [{ id: 'a', state: 'stopped', egress: 'open' }],
+      });
+      const sb = await getUserSandbox('u1', {
+        provider: 'e2b',
+        lifecycle,
+        network: blocked,
+      });
+      expect(provider.applyEgress).toHaveBeenCalledWith(
+        expect.objectContaining({ id: 'a', state: 'started' }),
+        blocked,
+      );
+      expect(sb).not.toBeNull();
+    });
+
+    it('同步失败 → 向上抛（宁可本轮无沙箱也不在错误放行状态下跑）', async () => {
+      const { provider } = makeProvider({
+        listings: [{ id: 'a', state: 'started', egress: 'open' }],
+      });
+      provider.applyEgress.mockRejectedValue(new Error('tier not allowed'));
+      await expect(
+        getUserSandbox('u1', { provider: 'e2b', lifecycle, network: blocked }),
+      ).rejects.toThrow('tier not allowed');
+    });
+  });
+
+  it('connect 失败 → getUserSandbox 向上抛（不裂变新沙箱）', async () => {
+    const { provider } = makeProvider({
+      listings: [{ id: 'a', state: 'stopped' }],
+    });
+    provider.connect.mockRejectedValue(new Error('resume failed'));
+    await expect(getUserSandbox('u1')).rejects.toThrow('resume failed');
+    expect(provider.create).not.toHaveBeenCalled();
+  });
+
+  it('findUserSandbox：无沙箱 → null 且不 create；connect 失败 → null', async () => {
+    const { provider } = makeProvider({});
+    expect(await findUserSandbox('u1')).toBeNull();
+    expect(provider.create).not.toHaveBeenCalled();
+
+    makeProvider({
+      listings: [{ id: 'a', state: 'stopped' }],
+    }).provider.connect.mockRejectedValue(new Error('x'));
+    expect(await findUserSandbox('u1')).toBeNull();
+  });
+
+  it('提供方不支持桌面（E2B）→ startUserDesktop 返回 null、stop 静默', async () => {
+    const { provider } = makeProvider({
+      listings: [{ id: 'a', state: 'started' }],
+    });
+    expect(await startUserDesktop('u1')).toBeNull();
+    await expect(stopUserDesktop('u1')).resolves.toBeUndefined();
+    expect(provider.listUserSandboxes).not.toHaveBeenCalled();
+  });
+
+  it('支持桌面且运行中 → 委托 provider.desktop.start；停机 → null', async () => {
+    const { provider } = makeProvider({
+      listings: [{ id: 'a', state: 'started' }],
+      desktop: true,
+    });
+    expect(await startUserDesktop('u1')).toBe('https://vnc');
+    expect(provider.desktop?.start).toHaveBeenCalledWith('a');
+
+    makeProvider({ listings: [{ id: 'a', state: 'stopped' }], desktop: true });
+    expect(await startUserDesktop('u1')).toBeNull();
   });
 });

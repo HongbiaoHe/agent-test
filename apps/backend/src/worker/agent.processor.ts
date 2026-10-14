@@ -6,6 +6,7 @@ import { AbortRegistry, AGENT_ABORTS } from '../agent/abort-registry';
 import { buildAgent } from '../agent/agent.factory';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
 import { getUserSandbox, uploadSkillsToSandbox } from '../agent/sandbox';
+import { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
 import { normalize, RawEvent } from '../agent/event-normalizer';
 import { parseCommand } from '../commands/parse-command';
 import { StreamService } from '../events/stream.service';
@@ -51,6 +52,7 @@ export class AgentProcessor extends WorkerHost {
     @InjectQueue('agent-run') private readonly queue: Queue,
     private readonly media: MediaService,
     @Inject(AGENT_ABORTS) private readonly aborts: AbortRegistry,
+    private readonly sandboxSettings: SandboxSettingsService,
   ) {
     super();
   }
@@ -97,16 +99,25 @@ export class AgentProcessor extends WorkerHost {
       // ② 沙箱：user-scoped find-or-create（同一用户全部会话共享工作区）；无 key/创建失败 → 回退 StateBackend
       let sandbox: Awaited<ReturnType<typeof getUserSandbox>> = null;
       try {
-        sandbox = await getUserSandbox(conv.userId);
+        // 用户在 /settings/profile 选的提供方（未选/未配置 → env 默认）
+        sandbox = await getUserSandbox(
+          conv.userId,
+          await this.sandboxSettings.resolve(conv.userId),
+        );
       } catch (e) {
         // 降级而非失败整个 run；提示用户本轮无执行能力（设计 §8）
         this.logger.warn(
           `getUserSandbox 失败，降级 StateBackend：${(e as Error)?.message ?? e}`,
         );
+        // 出站策略被提供方拒绝（账户等级不支持）是配置问题而不是故障：给出可操作的提示
+        const networkUnsupported =
+          e instanceof Error && e.name === 'SandboxNetworkUnsupportedError';
         await this.stream.publish(conversationId, {
           type: 'message',
           payload: {
-            text: '⚠️ 沙箱创建失败，本轮无命令执行与技能能力。',
+            text: networkUnsupported
+              ? '⚠️ 当前沙箱账户不支持按沙箱限制出站网络，本轮未使用沙箱（无命令执行与技能能力）。请在 Settings → Sandbox 把出站改为「Open internet」，或切换到 E2B。'
+              : '⚠️ 沙箱创建失败，本轮无命令执行与技能能力。',
           },
         });
       }

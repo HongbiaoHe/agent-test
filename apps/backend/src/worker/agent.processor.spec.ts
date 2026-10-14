@@ -3,6 +3,8 @@ import {
   ToolMessage,
   type ToolCall,
 } from '@langchain/core/messages';
+// 偏好服务会引入沙箱提供方 SDK（深 ESM 链，jest 加载失败）；偏好已整体 mock，不需要真实提供方
+jest.mock('../agent/sandbox-providers', () => ({}));
 import type { Job, Queue } from 'bullmq';
 import { buildAgent } from '../agent/agent.factory';
 import { StreamService } from '../events/stream.service';
@@ -13,7 +15,13 @@ import { getUserSandbox, uploadSkillsToSandbox } from '../agent/sandbox';
 import type { SkillDef } from '../skills/skills.service';
 import { SkillsService } from '../skills/skills.service';
 import { AbortRegistry } from '../agent/abort-registry';
+import type { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
 import { AgentProcessor } from './agent.processor';
+
+/** 沙箱提供方偏好 mock：固定解析为 daytona（sandbox 模块已整体 mock，取值不影响行为）。 */
+const sandboxSettingsMock = {
+  resolve: jest.fn().mockResolvedValue('daytona'),
+} as unknown as SandboxSettingsService;
 
 // 避免加载 deepagents / google-genai 等重依赖，并能捕获传给 agent 的 input
 jest.mock('../agent/agent.factory', () => ({ buildAgent: jest.fn() }));
@@ -116,6 +124,7 @@ describe('AgentProcessor 多轮重放', () => {
       queue,
       makeMediaService(),
       new AbortRegistry(),
+      sandboxSettingsMock,
     );
     await proc.process({
       data: { conversationId: 'c1', kind: 'run' },
@@ -204,6 +213,7 @@ describe('AgentProcessor 多轮重放', () => {
       queue,
       makeMediaService(),
       new AbortRegistry(),
+      sandboxSettingsMock,
     );
     await proc.process({
       data: { conversationId: 'c3', kind: 'run' },
@@ -286,6 +296,7 @@ describe('AgentProcessor 多轮重放', () => {
       queue,
       makeMediaService(),
       new AbortRegistry(),
+      sandboxSettingsMock,
     );
     await proc.process({
       data: { conversationId: 'c4', kind: 'run' },
@@ -355,6 +366,7 @@ describe('AgentProcessor 多轮重放', () => {
       queue,
       makeMediaService(),
       new AbortRegistry(),
+      sandboxSettingsMock,
     );
     await proc.process({
       data: { conversationId: 'c2', kind: 'run' },
@@ -433,6 +445,7 @@ describe('AgentProcessor 多轮重放', () => {
       queue,
       makeMediaService(),
       new AbortRegistry(),
+      sandboxSettingsMock,
     );
     await proc.process({
       data: { conversationId: 'seed1', kind: 'run' },
@@ -498,12 +511,168 @@ describe('AgentProcessor 多轮重放', () => {
       queue,
       makeMediaService(),
       new AbortRegistry(),
+      sandboxSettingsMock,
     );
     await proc.process({
       data: { conversationId: 'no-sbx', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
 
     expect(uploadSkillsToSandbox).not.toHaveBeenCalled();
+  });
+
+  it('起沙箱失败（一般故障）→ 降级并提示「沙箱创建失败」', async () => {
+    const def: SkillDef = {
+      name: 'tvc-director',
+      description: '',
+      kind: 'builtin' as const,
+      source: 'builtin',
+      enabled: true,
+      files: { 'SKILL.md': '# tvc' },
+    };
+    const history = [{ role: 'user', content: { text: '无沙箱' } }];
+
+    const prisma = {
+      conversation: {
+        update: jest.fn().mockResolvedValue(makeConv()),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(makeConv()),
+      },
+      message: {
+        findMany: jest.fn().mockResolvedValue(history),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(history.length),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+
+    const streamSvc = {
+      publish: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StreamService;
+
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([def]),
+      getFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as SkillsService;
+
+    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+
+    (getUserSandbox as jest.Mock).mockRejectedValueOnce(
+      new Error('network down'),
+    );
+    (uploadSkillsToSandbox as jest.Mock).mockClear();
+
+    const fakeAgent = {
+      stream: jest.fn(async () => (async function* () {})()),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    };
+    (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
+
+    const proc = new AgentProcessor(
+      prisma,
+      streamSvc,
+      skills,
+      {},
+      queue,
+      makeMediaService(),
+      new AbortRegistry(),
+      sandboxSettingsMock,
+    );
+    await proc.process({
+      data: { conversationId: 'no-sbx', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+
+    const texts = (streamSvc.publish as jest.Mock).mock.calls
+      .map((c: unknown[]) => c[1])
+      .filter(
+        (e: unknown): e is { type: string; payload: { text: string } } =>
+          typeof e === 'object' &&
+          e !== null &&
+          (e as { type?: unknown }).type === 'message',
+      )
+      .map((e) => e.payload.text);
+    expect(texts.some((t) => t.includes('沙箱创建失败'))).toBe(true);
+  });
+
+  it('出站策略被提供方拒绝（账户等级不支持）→ 降级并给出可操作的提示', async () => {
+    const def: SkillDef = {
+      name: 'tvc-director',
+      description: '',
+      kind: 'builtin' as const,
+      source: 'builtin',
+      enabled: true,
+      files: { 'SKILL.md': '# tvc' },
+    };
+    const history = [{ role: 'user', content: { text: '无沙箱' } }];
+
+    const prisma = {
+      conversation: {
+        update: jest.fn().mockResolvedValue(makeConv()),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(makeConv()),
+      },
+      message: {
+        findMany: jest.fn().mockResolvedValue(history),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(history.length),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+
+    const streamSvc = {
+      publish: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StreamService;
+
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([def]),
+      getFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as SkillsService;
+
+    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+
+    (getUserSandbox as jest.Mock).mockRejectedValueOnce(
+      Object.assign(new Error('cannot be overridden at the sandbox level'), {
+        name: 'SandboxNetworkUnsupportedError',
+      }),
+    );
+    (uploadSkillsToSandbox as jest.Mock).mockClear();
+
+    const fakeAgent = {
+      stream: jest.fn(async () => (async function* () {})()),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    };
+    (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
+
+    const proc = new AgentProcessor(
+      prisma,
+      streamSvc,
+      skills,
+      {},
+      queue,
+      makeMediaService(),
+      new AbortRegistry(),
+      sandboxSettingsMock,
+    );
+    await proc.process({
+      data: { conversationId: 'no-sbx', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+
+    const texts = (streamSvc.publish as jest.Mock).mock.calls
+      .map((c: unknown[]) => c[1])
+      .filter(
+        (e: unknown): e is { type: string; payload: { text: string } } =>
+          typeof e === 'object' &&
+          e !== null &&
+          (e as { type?: unknown }).type === 'message',
+      )
+      .map((e) => e.payload.text);
+    expect(
+      texts.some(
+        (t) =>
+          t.includes('不支持按沙箱限制出站网络') &&
+          t.includes('Settings → Sandbox'),
+      ),
+    ).toBe(true);
+    expect(texts.some((t) => t.includes('沙箱创建失败'))).toBe(false);
   });
 
   it('stream config 的 configurable.userId === conv.userId', async () => {
@@ -559,6 +728,7 @@ describe('AgentProcessor 多轮重放', () => {
       queue,
       makeMediaService(),
       new AbortRegistry(),
+      sandboxSettingsMock,
     );
     await proc.process({
       data: { conversationId: 'uid1', kind: 'run' },
@@ -629,6 +799,7 @@ describe('AgentProcessor 多轮重放', () => {
       queue,
       makeMediaService(),
       new AbortRegistry(),
+      sandboxSettingsMock,
     );
     await proc.process({
       data: {
@@ -690,6 +861,7 @@ describe('AgentProcessor 多轮重放', () => {
       queue,
       makeMediaService(),
       new AbortRegistry(),
+      sandboxSettingsMock,
     );
     await proc.process({
       data: { conversationId: 'ha1', kind: 'run' },
@@ -750,6 +922,7 @@ describe('AgentProcessor 多轮重放', () => {
       queue,
       makeMediaService(),
       new AbortRegistry(),
+      sandboxSettingsMock,
     );
     await proc.process({
       data: { conversationId: 'mt1', kind: 'run' },
@@ -819,6 +992,7 @@ describe('AgentProcessor 多轮重放', () => {
       queue,
       makeMediaService(fakeGenerations),
       new AbortRegistry(),
+      sandboxSettingsMock,
     );
     await proc.process({
       data: { conversationId: 'media1', kind: 'run' },
@@ -875,6 +1049,7 @@ describe('AgentProcessor 多轮重放', () => {
       queue,
       makeMediaService([]),
       new AbortRegistry(),
+      sandboxSettingsMock,
     );
     await proc.process({
       data: { conversationId: 'media2', kind: 'run' },
@@ -979,6 +1154,7 @@ describe('AgentProcessor 流式聚合落库', () => {
       queue,
       makeMediaService(),
       new AbortRegistry(),
+      sandboxSettingsMock,
     );
     await proc.process({
       data: { conversationId: 'agg1', kind: 'run' },
@@ -1056,6 +1232,7 @@ describe('AgentProcessor 主动停止', () => {
       queue,
       makeMediaService(),
       reg,
+      sandboxSettingsMock,
     );
     await proc.process({
       data: { conversationId: 'c-stop', kind: 'run' },
@@ -1104,6 +1281,7 @@ describe('AgentProcessor 主动停止', () => {
       queue,
       makeMediaService(),
       reg,
+      sandboxSettingsMock,
     );
     await proc.process({
       data: { conversationId: 'c-gate', kind: 'run' },
@@ -1133,6 +1311,7 @@ describe('AgentProcessor 主动停止', () => {
       queue,
       makeMediaService(),
       reg,
+      sandboxSettingsMock,
     );
     await proc.process({
       data: { conversationId: 'c-quiet', kind: 'run' },
@@ -1170,6 +1349,7 @@ describe('AgentProcessor 超时按 toolName 分叉', () => {
       deps.queue,
       makeMediaService(),
       new AbortRegistry(),
+      sandboxSettingsMock,
     );
 
   const timeoutJob = (toolName?: string) =>

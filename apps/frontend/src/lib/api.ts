@@ -134,6 +134,10 @@ export function stopConversation(id: string): Promise<{ stopped: boolean }> {
 /** GET /sandbox/status（user 级只读，不唤醒停机沙箱）。 */
 export interface SandboxStatus {
   exists: boolean;
+  /** 沙箱提供方（用户在 /settings/sandbox 的选择，未选则为服务端默认） */
+  provider?: SandboxProviderName;
+  /** 当前提供方是否支持图形桌面（E2B 不支持） */
+  desktopSupported?: boolean;
   id?: string;
   state?: string;
   createdAt?: string | null;
@@ -150,6 +154,76 @@ export interface SandboxStatus {
  */
 export function fetchSandboxStatus(includeFiles = false): Promise<SandboxStatus> {
   return request(`/sandbox/status${includeFiles ? "?files=1" : ""}`);
+}
+
+export type SandboxProviderName = "daytona" | "e2b";
+
+/** 沙箱生命周期：闲置停机/暂停分钟数；停机后自动删除分钟数（-1 = 永不，仅 Daytona）。 */
+export interface SandboxLifecycle {
+  idleMinutes: number;
+  autoDeleteMinutes: number;
+}
+
+/** 出站网络：open 全放行 / allowlist 仅白名单 / blocked 全禁止。 */
+export type SandboxEgressMode = "open" | "allowlist" | "blocked";
+
+/** 沙箱网络设置。publicTraffic = 端口公网地址免鉴权（仅 E2B，创建时生效）。 */
+export interface SandboxNetwork {
+  egress: SandboxEgressMode;
+  allowList: string[];
+  publicTraffic: boolean;
+}
+
+/** GET/PATCH /sandbox/settings：沙箱设置（/settings/sandbox 页面用）。 */
+export interface SandboxSettings {
+  /** 实际生效的提供方 */
+  current: SandboxProviderName;
+  /** 用户显式选择；null = 跟随服务端默认 */
+  preference: SandboxProviderName | null;
+  /** 服务端默认（env SANDBOX_PROVIDER） */
+  default: SandboxProviderName;
+  providers: {
+    name: SandboxProviderName;
+    configured: boolean;
+    desktopSupported: boolean;
+    supportsAutoDelete: boolean;
+    /** 能按沙箱设置出站规则（Daytona Tier 1–2 不能：出站由 Daytona 组织策略决定） */
+    supportsEgressControl: boolean;
+    /** 出站白名单支持域名（Daytona 只支持 IP/CIDR） */
+    supportsDomainAllowList: boolean;
+    /** 可配置端口公网地址免鉴权（仅 E2B） */
+    supportsPublicTrafficToggle: boolean;
+  }[];
+  lifecycle: SandboxLifecycle;
+  lifecycleDefaults: SandboxLifecycle;
+  network: SandboxNetwork;
+  networkDefaults: SandboxNetwork;
+  /** 现有沙箱端口公网地址是否免鉴权（实际值；入站设置只在创建时生效）。无沙箱为 null */
+  currentPublicTraffic: boolean | null;
+  /** 仅改了出站设置的 PATCH 返回：applied 已生效 / pending 下次运行时同步 / failed 应用失败 */
+  egressSync?: "applied" | "pending" | "failed";
+}
+
+/** PATCH 局部更新：未传字段保持不变；provider 传 null = 跟随服务端默认。 */
+export interface SandboxSettingsPatch {
+  provider?: SandboxProviderName | null;
+  idleMinutes?: number;
+  autoDeleteMinutes?: number;
+  egressMode?: SandboxEgressMode;
+  /** 整体替换白名单 */
+  allowList?: string[];
+  publicTraffic?: boolean;
+}
+
+export function fetchSandboxSettings(): Promise<SandboxSettings> {
+  return request("/sandbox/settings");
+}
+
+export function updateSandboxSettings(patch: SandboxSettingsPatch): Promise<SandboxSettings> {
+  return request("/sandbox/settings", {
+    method: "PATCH",
+    body: JSON.stringify(patch),
+  });
 }
 
 /** POST /sandbox/desktop：启动图形桌面（幂等），返回 noVNC iframe 地址。 */
@@ -189,6 +263,15 @@ export type SandboxFilePreview =
 /** GET /sandbox/file?path=：读取单个文件用于预览。 */
 export function fetchSandboxFile(path: string): Promise<SandboxFilePreview> {
   return request(`/sandbox/file?path=${encodeURIComponent(path)}`);
+}
+
+/**
+ * GET /sandbox/file/raw：文件原始字节 URL，直接给 <video>/<audio> src 或下载链接用。
+ * 走同源反代（/api-backend），middleware 从登录 session 注入 Authorization，无需手动带 token。
+ * download=true → 后端返回 attachment，浏览器直接保存。
+ */
+export function sandboxFileRawUrl(path: string, download = false): string {
+  return `${API_BASE}/sandbox/file/raw?path=${encodeURIComponent(path)}${download ? "&download=1" : ""}`;
 }
 
 // ——— 生图/生视频 媒体 ———

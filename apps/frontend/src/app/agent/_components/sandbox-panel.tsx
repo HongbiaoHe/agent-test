@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Loader2, Monitor, Server, Timer, X } from "lucide-react";
+import { Download, Loader2, Monitor, Server, Timer, X } from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -19,7 +19,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { fetchSandboxStatus, type SandboxStatus } from "@/lib/api";
+import { fetchSandboxStatus, sandboxFileRawUrl, type SandboxStatus } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 import { DesktopDialog } from "./desktop-dialog";
@@ -196,14 +196,27 @@ export function SandboxStatusButton() {
               <div className="flex min-w-0 flex-1 flex-col">
                 <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b px-3">
                   <span className="truncate font-mono text-xs">{selected}</span>
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label="Close preview"
-                    onClick={() => setSelected(null)}
-                  >
-                    <X />
-                  </Button>
+                  <div className="flex shrink-0 items-center gap-0.5">
+                    {/* 同源链接 + attachment：浏览器直接保存原文件（任意类型） */}
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="Download file"
+                      title="Download"
+                      nativeButton={false}
+                      render={<a href={sandboxFileRawUrl(selected, true)} download />}
+                    >
+                      <Download />
+                    </Button>
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="Close preview"
+                      onClick={() => setSelected(null)}
+                    >
+                      <X />
+                    </Button>
+                  </div>
                 </div>
                 <ScrollArea className="min-h-0 flex-1">
                   <FilePreview path={selected} />
@@ -276,6 +289,9 @@ function SandboxDetail({
       )}
 
       <div className="space-y-2">
+        {data.provider && (
+          <InfoRow label="Provider" value={data.provider === "e2b" ? "E2B" : "Daytona"} />
+        )}
         <InfoRow label="ID" value={<code className="font-mono text-xs">{data.id}</code>} />
         <InfoRow label="Created" value={formatTime(data.createdAt)} />
         <InfoRow label="Last state change" value={formatTime(data.updatedAt)} />
@@ -287,17 +303,22 @@ function SandboxDetail({
         )}
       </div>
 
-      {/* 图形桌面入口：仅运行中可用（停机沙箱起不了 computerUse，也不应为此唤醒） */}
+      {/* 图形桌面入口：仅运行中可用（停机沙箱起不了 computerUse，也不应为此唤醒）；
+          提供方不支持桌面（E2B）时禁用 */}
       <div>
         <Button
           variant="outline"
           size="sm"
           className="w-full"
-          disabled={data.state !== "started"}
+          disabled={data.desktopSupported === false || data.state !== "started"}
           onClick={() => setDesktopOpen(true)}
         >
           <Monitor />
-          {data.state === "started" ? "Open desktop" : "Desktop (sandbox stopped)"}
+          {data.desktopSupported === false
+            ? "Desktop not supported"
+            : data.state === "started"
+              ? "Open desktop"
+              : "Desktop (sandbox stopped)"}
         </Button>
         <DesktopDialog open={desktopOpen} onOpenChange={setDesktopOpen} />
       </div>
