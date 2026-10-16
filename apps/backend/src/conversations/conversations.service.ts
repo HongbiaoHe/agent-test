@@ -43,18 +43,26 @@ export class ConversationsService {
     tenantId: string,
     userId: string,
     model?: string,
+    thinkingLevel?: string,
   ) {
     // goal 为空 → 创建 idle 空会话（先建会话再进入）：不落首条消息、不入队，
     // 等首条 appendMessage 时再置 queued 并回填 goal。
     if (!goal?.trim()) {
       const conv = await this.prisma.conversation.create({
-        data: { goal: '', status: 'idle', tenantId, userId, model },
+        data: {
+          goal: '',
+          status: 'idle',
+          tenantId,
+          userId,
+          model,
+          thinkingLevel,
+        },
       });
       return { conversationId: conv.id };
     }
     await this.assertKnownCommand(goal, userId);
     const conv = await this.prisma.conversation.create({
-      data: { goal, status: 'queued', tenantId, userId, model },
+      data: { goal, status: 'queued', tenantId, userId, model, thinkingLevel },
     });
     // 把首轮目标落成 user message（seq 0），与追加轮统一；worker 每轮从 DB 重放完整对话历史
     await this.prisma.message.create({
@@ -80,6 +88,7 @@ export class ConversationsService {
     tenantId: string,
     userId: string,
     model?: string,
+    thinkingLevel?: string,
   ) {
     if (!content?.trim()) {
       throw new BusinessException(ErrorCodes.CONVERSATION_GOAL_EMPTY);
@@ -108,13 +117,14 @@ export class ConversationsService {
 
     // 状态重置为 queued（必须）：上一轮若是 stopped 终态，不重置会让新 job 撞 worker 的
     // CAS 门（where status != 'stopped'）被误判「排队期间被停止」——一次停止永久封死会话。
-    // 顺带把本轮选定的模型落到会话上（含审批 resume / 超时兜底都复用同一模型）；
+    // 顺带把本轮选定的模型与思考档位落到会话上（含审批 resume / 超时兜底都复用同一设置）；
     // 空会话（idle 创建、goal 为空）首条消息回填 goal 作为侧栏标题。
     await this.prisma.conversation.update({
       where: { id },
       data: {
         status: 'queued',
         ...(model ? { model } : {}),
+        ...(thinkingLevel ? { thinkingLevel } : {}),
         ...(conv.goal.trim() ? {} : { goal: content }),
       },
     });

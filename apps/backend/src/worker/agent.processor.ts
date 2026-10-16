@@ -1,3 +1,4 @@
+import { isBaseMessage } from '@langchain/core/messages';
 import { Command } from '@langchain/langgraph';
 import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
@@ -7,7 +8,13 @@ import { buildAgent } from '../agent/agent.factory';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
 import { getUserSandbox, uploadSkillsToSandbox } from '../agent/sandbox';
 import { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
-import { normalize, RawEvent } from '../agent/event-normalizer';
+import {
+  extractThinkingBlocks,
+  normalize,
+  RawEvent,
+} from '../agent/event-normalizer';
+import { ReasoningCollector } from '../agent/reasoning-parts';
+import { asThinkingLevel } from '../agent/thinking-level';
 import { parseCommand } from '../commands/parse-command';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
@@ -185,6 +192,7 @@ export class AgentProcessor extends WorkerHost {
         checkpointer: this.checkpointer,
         systemPromptExtra,
         model: conv.model ?? undefined,
+        thinkingLevel: asThinkingLevel(conv.thinkingLevel),
         defaultBackend,
         hasSandbox: !!sandbox,
         extraTools,
@@ -205,6 +213,32 @@ export class AgentProcessor extends WorkerHost {
 
       // resume 续跑时从已有消息数接着排 seq
       let seq = await this.prisma.message.count({ where: { conversationId } });
+      // 思考按「源消息」归集：一条 AIMessage 一块、一块落一行（规则见 reasoning-parts.ts）。
+      // 逐个增量落库会让表随字数膨胀，且刷新后要靠前端再拼回去。priorIds = run 开始前 checkpoint
+      // 里就有的消息（审批 resume 时 updates 流会把它们整批回放），其思考已在上一段落过库，必须排掉。
+      const reasoning = new ReasoningCollector(
+        await this.priorMessageIds(agent, config),
+      );
+      /** 收口：把本段新产生的思考按源消息各落一行。时机 = 思考之后的第一个其它事件或本轮结束。 */
+      const flushReasoning = async () => {
+        for (const part of reasoning.drain()) {
+          await this.persist(
+            conversationId,
+            { type: 'reasoning', payload: part },
+            seq++,
+          );
+        }
+      };
+      /** 收下一块思考并推流（null = collector 判定该丢：历史重放 / 同轮回显 / 空文本）。 */
+      const pushReasoning = async (
+        part: { sourceId: string; text: string } | null,
+      ) => {
+        if (!part) return;
+        await this.stream.publish(conversationId, {
+          type: 'reasoning',
+          payload: part,
+        });
+      };
       // 逐字 token 实时推流但不逐条落库（否则每条 token 一行、表爆炸）；改为按助手文本段累积，
       // 在遇到边界（工具调用/结果/计划/审批）或流结束时，把累积文本收口成一条完整 message：
       // 推流 + 落库都用「用户实际看到的累积文本」，从而 live 与刷新恢复一致、结尾不再被更短的聚合覆盖。
@@ -219,8 +253,28 @@ export class AgentProcessor extends WorkerHost {
       };
       for await (const chunk of stream) {
         const [ns, mode, data] = chunk as [string[], string, unknown];
+        // Gemini 的思考正文只能从 updates 拿（messages 流会把它丢掉，见
+        // extractThinkingBlocks 注释）。整段一次给出，非流式。
+        if (mode === 'updates') {
+          for (const part of extractThinkingBlocks(data)) {
+            await pushReasoning(reasoning.takeBlock(part.id, part.text));
+          }
+        }
         const raw = normalize(ns, mode, data);
         if (!raw) continue;
+        // DeepSeek 的思考经 messages 流逐块增量到达
+        if (raw.type === 'reasoning') {
+          const p = raw.payload as { text?: string; sourceId?: string };
+          await pushReasoning(
+            reasoning.appendDelta(
+              String(p.sourceId ?? ''),
+              String(p.text ?? ''),
+            ),
+          );
+          continue;
+        }
+        // 思考之后的第一个事件即代表这段思考已结束 → 先收口落库，保证 seq 顺序在前
+        await flushReasoning();
         if (raw.type === 'token') {
           buf += String((raw.payload as { text?: string }).text ?? '');
           await this.stream.publish(conversationId, raw);
@@ -240,6 +294,7 @@ export class AgentProcessor extends WorkerHost {
         await this.stream.publish(conversationId, raw);
         await this.persist(conversationId, raw, seq++);
       }
+      await flushReasoning();
       await flush(); // 流自然结束、末段文本无后继事件触发时收尾
 
       // 流结束后检测审批中断（state.tasks 是 LangGraph 内部概念，勿与业务表混淆）
@@ -328,6 +383,32 @@ export class AgentProcessor extends WorkerHost {
     } finally {
       dispose();
     }
+  }
+
+  /**
+   * run 开始前 checkpoint 里已有的消息 id（同 canvas.processor.priorMessageIds）。
+   * 读不到就返回空集：功能降级为不排除，绝不因此让整轮跑挂掉。
+   */
+  private async priorMessageIds(
+    agent: { getState(config: unknown): Promise<unknown> },
+    config: unknown,
+  ): Promise<Set<string>> {
+    const ids = new Set<string>();
+    try {
+      const state = (await agent.getState(config)) as {
+        values?: { messages?: unknown[] };
+      };
+      const msgs = state?.values?.messages;
+      if (!Array.isArray(msgs)) return ids;
+      for (const m of msgs) {
+        if (isBaseMessage(m) && m.id) ids.add(m.id);
+      }
+    } catch {
+      this.logger.warn(
+        'priorMessageIds 读取 checkpoint 失败，本轮不排除历史思考',
+      );
+    }
+    return ids;
   }
 
   /**

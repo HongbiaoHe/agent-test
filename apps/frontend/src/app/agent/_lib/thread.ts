@@ -13,6 +13,18 @@ export interface Approval {
 export type ThreadItem =
   | { kind: "user"; id: string; text: string }
   | { kind: "assistant"; id: string; text: string; streaming: boolean }
+  /**
+   * 模型思考过程（推理型模型才有）：流式累加，其后第一个其它事件到来即收口（streaming=false）。
+   * sourceId = 产生这段思考的那条 AIMessage id —— 同一 id 的增量并进同一块；
+   * 落库前没带 id 的旧行为空串，走「末尾那块」的合并规则。
+   */
+  | {
+      kind: "reasoning";
+      id: string;
+      sourceId: string;
+      text: string;
+      streaming: boolean;
+    }
   | {
       kind: "tool";
       id: string;
@@ -33,7 +45,7 @@ export type ThreadItem =
  * 再喂给同一个 reduce 折叠，避免两套渲染逻辑。
  */
 export interface NormalizedEvent {
-  type: string; // message | token | tool_start | tool_end | plan_update | control_request | result | error
+  type: string; // message | token | reasoning | tool_start | tool_end | plan_update | control_request | result | error
   payload: Record<string, unknown>;
   role?: string; // 仅 DB Message 带（user/assistant/tool）；socket 事件不带
 }
@@ -63,14 +75,58 @@ const EMPTY: ThreadState = {
   nextId: 0,
 };
 
+/**
+ * 把仍在流的思考块收口（后端在思考之后的第一个事件处同样收口落库，两边语义一致）。
+ * 收**全部**而不只是末尾那块：按 sourceId 归集后，正在流的思考不一定还在队尾。
+ */
+function sealReasoning(state: ThreadState): ThreadState {
+  if (!state.items.some((it) => it.kind === "reasoning" && it.streaming)) {
+    return state;
+  }
+  return {
+    ...state,
+    items: state.items.map((it) =>
+      it.kind === "reasoning" && it.streaming ? { ...it, streaming: false } : it,
+    ),
+  };
+}
+
 /** 纯函数：把一个归一事件折叠进当前 thread 状态。 */
-export function reduce(state: ThreadState, ev: NormalizedEvent): ThreadState {
+export function reduce(input: ThreadState, ev: NormalizedEvent): ThreadState {
+  // 思考之后的第一个其它事件即代表这段思考结束
+  const state = ev.type === "reasoning" ? input : sealReasoning(input);
   const items = state.items.slice();
   const last = items[items.length - 1];
   let nextId = state.nextId;
   const id = () => `i${nextId++}`;
 
   switch (ev.type) {
+    case "reasoning": {
+      const text = String(ev.payload?.text ?? "");
+      if (!text) return state;
+      // 按源消息归集：同一条 AIMessage 的多次增量并进同一块；没带 id 的只并进末尾正在流的那块
+      const sourceId = String(ev.payload?.sourceId ?? "");
+      const at = sourceId
+        ? items.findIndex((it) => it.kind === "reasoning" && it.sourceId === sourceId)
+        : last?.kind === "reasoning" && last.streaming
+          ? items.length - 1
+          : -1;
+      const prev = at >= 0 ? items[at] : undefined;
+      if (prev?.kind === "reasoning") {
+        items[at] = { ...prev, text: prev.text + text };
+      } else {
+        const block: ThreadItem = { kind: "reasoning", id: id(), sourceId, text, streaming: true };
+        // Gemini 的思考只能在模型调用结束后从 updates 整块拿到，此时同一条消息的正文已在流式渲染。
+        // 思考属于那段正文之前（与落库 seq 顺序一致），插到正文前面；正文保持 streaming，
+        // 随后的 message 事件才能照常收口它（否则会因末尾不是流式正文而再新建一条，正文重复）。
+        if (last?.kind === "assistant" && last.streaming) {
+          items.splice(items.length - 1, 0, block);
+        } else {
+          items.push(block);
+        }
+      }
+      return { ...state, items, nextId };
+    }
     case "message": {
       const text = String(ev.payload?.text ?? "");
       if (!text) return state;
@@ -197,6 +253,8 @@ export function buildBaseState(conv: Conversation): ThreadState {
   for (const m of conv.messages) {
     state = reduce(state, messageToEvent(m));
   }
+  // 落库的思考都是收口后的完整块（后端在思考结束时才落一行），历史里不存在「还在流」的思考
+  state = sealReasoning(state);
   // 会话已终态时收尾未完成的工具 chip，避免历史也卡「调用中」。
   // waiting_approval 不收尾——send_email 此时确实在等审批。
   if (

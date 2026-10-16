@@ -83,10 +83,11 @@ export interface ConversationListItem {
 /** 创建空会话（idle，不带首条消息、不触发运行）：先建会话再进入，首条消息走 appendMessage。 */
 export function createEmptyConversation(
   model?: string,
+  thinkingLevel?: string,
 ): Promise<{ conversationId: string }> {
   return request("/conversations", {
     method: "POST",
-    body: JSON.stringify({ model }),
+    body: JSON.stringify({ model, thinkingLevel }),
   });
 }
 
@@ -117,10 +118,11 @@ export function appendMessage(
   id: string,
   content: string,
   model?: string,
+  thinkingLevel?: string,
 ): Promise<{ conversationId: string }> {
   return request(`/conversations/${id}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content, model }),
+    body: JSON.stringify({ content, model, thinkingLevel }),
   });
 }
 

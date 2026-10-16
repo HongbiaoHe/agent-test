@@ -25,9 +25,9 @@ import {
 } from '../canvas-skills/skill-context';
 import type { CanvasApprovalMode } from './canvas.types';
 import {
-  type CanvasThinkingLevel,
+  type ThinkingLevel,
   thinkingModelParams,
-} from './thinking-level';
+} from '../agent/thinking-level';
 import {
   ExplicitCacheRegistry,
   cacheKey,
@@ -114,7 +114,7 @@ export function resolveCanvasModelName(model?: string | null): string {
 
 function resolveChatModel(
   model?: string,
-  thinkingLevel?: CanvasThinkingLevel | null,
+  thinkingLevel?: ThinkingLevel | null,
 ) {
   const name = resolveCanvasModelName(model);
   // 思考深度按模型能力映射成各家参数（deepseek 只有开关、gemini 支持分级，见 thinking-level.ts）
@@ -128,7 +128,7 @@ export interface BuildCanvasAgentOptions {
   systemPromptExtra?: string;
   model?: string;
   /** 思考深度档位（会话级）；null/缺省 = 跟随模型默认。 */
-  thinkingLevel?: CanvasThinkingLevel | null;
+  thinkingLevel?: ThinkingLevel | null;
   /** 敏感操作审批模式（会话级）；auto = 不设任何中断，一路做完。缺省 review。 */
   approvalMode?: CanvasApprovalMode;
   /**

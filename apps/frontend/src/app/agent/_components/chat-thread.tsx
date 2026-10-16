@@ -12,6 +12,7 @@ import {
 } from "lucide-react";
 import { useRef, useState } from "react";
 
+import { ThinkingSwitcher } from "@/components/agent/thinking-switcher";
 import { JumpToLatest } from "@/components/chat/jump-to-latest";
 import { useChatScroll } from "@/components/chat/use-chat-scroll";
 import { Button } from "@/components/ui/button";
@@ -19,6 +20,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { type SkillKind, listCommands } from "@/lib/api";
+import type { ThinkingLevel } from "@/lib/thinking-level";
 
 import type { Approval, ThreadItem } from "../_lib/thread";
 import { ApprovalPanel } from "./approval-panel";
@@ -26,6 +28,7 @@ import { isAskUserApproval, QuestionPanel } from "./question-panel";
 import { ChatMessage } from "./chat-message";
 import { MediaCard } from "./media-card";
 import { ModelSwitcher } from "./model-switcher";
+import { ReasoningBlock } from "./reasoning-block";
 import { SandboxStatusButton } from "./sandbox-panel";
 import { TaskPlanPanel } from "./task-plan-panel";
 import { ThinkingIndicator } from "./thinking-indicator";
@@ -57,6 +60,8 @@ export function ChatThread({
   stopping,
   model,
   onModelChange,
+  thinkingLevel,
+  onThinkingLevelChange,
   onOpenSidebar,
 }: {
   title: string;
@@ -79,6 +84,9 @@ export function ChatThread({
   stopping: boolean;
   model: string;
   onModelChange: (model: string) => void;
+  /** 思考深度（对当前模型生效的档位） */
+  thinkingLevel: ThinkingLevel;
+  onThinkingLevelChange: (level: ThinkingLevel) => void;
   onOpenSidebar: () => void;
 }) {
   const [draft, setDraft] = useState("");
@@ -183,6 +191,7 @@ export function ChatThread({
   const lastItem = streamItems[streamItems.length - 1];
   const lastActive =
     (lastItem?.kind === "assistant" && lastItem.streaming) ||
+    (lastItem?.kind === "reasoning" && lastItem.streaming) ||
     (lastItem?.kind === "tool" && !lastItem.done);
   const thinkingVisible = busy && !approval && !lastActive;
 
@@ -269,6 +278,8 @@ export function ChatThread({
                         mediaType={r.item.mediaType}
                       />
                     </div>
+                  ) : r.item.kind === "reasoning" ? (
+                    <ReasoningBlock key={r.item.id} item={r.item} />
                   ) : (
                     <ChatMessage key={r.item.id} item={r.item} />
                   ),
@@ -356,13 +367,22 @@ export function ChatThread({
               // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
               className="max-h-40 min-h-0 resize-none border-0 bg-transparent px-4 pt-3.5 pb-1.5 text-base shadow-none focus-visible:border-0 focus-visible:ring-0 md:text-sm dark:bg-transparent"
             />
-            {/* 工具条：左侧模型切换，右侧发送 */}
+            {/* 工具条：左侧模型切换 + 思考深度，右侧发送 */}
             <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
-              <ModelSwitcher
-                value={model}
-                onChange={onModelChange}
-                disabled={busy}
-              />
+              <div className="flex min-w-0 items-center gap-1">
+                <ModelSwitcher
+                  value={model}
+                  onChange={onModelChange}
+                  disabled={busy}
+                />
+                <ThinkingSwitcher
+                  model={model}
+                  value={thinkingLevel}
+                  onChange={onThinkingLevelChange}
+                  disabled={busy}
+                  className="h-6"
+                />
+              </div>
               {busy ? (
                 // 运行中：发送位变停止——立即中止本轮所有操作（LLM 流式/工具等待/媒体生成）
                 <Button

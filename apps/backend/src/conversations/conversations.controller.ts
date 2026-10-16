@@ -25,6 +25,7 @@ export class ConversationsController {
       user.tenantId,
       user.userId,
       dto.model,
+      dto.thinkingLevel,
     );
   }
 
@@ -56,6 +57,7 @@ export class ConversationsController {
       user.tenantId,
       user.userId,
       dto.model,
+      dto.thinkingLevel,
     );
   }
 

@@ -19,6 +19,7 @@ import { DetailPanel } from "./detail-panel";
 import { useConversation } from "../_hooks/use-conversation";
 import { useIsDesktop } from "../_hooks/use-is-desktop";
 import { useModelPreference } from "../_hooks/use-model-preference";
+import { useThinkingPreference } from "../_hooks/use-thinking-preference";
 import { useTheme } from "../_hooks/use-theme";
 import type { ThreadItem } from "../_lib/thread";
 
@@ -40,6 +41,8 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   const [search, setSearch] = useState("");
   // 回答模型（前端可切换），发消息时随 create/append 带给后端；选择缓存到 localStorage（刷新保留）
   const [model, setModel] = useModelPreference();
+  // 思考深度：同样随 create/append 带给后端；当前模型不支持的档位已在 hook 里回落 auto
+  const [thinkingLevel, setThinkingLevel] = useThinkingPreference(model);
 
   // 切换会话（含 [id1]→[id2] 不重挂载的情况）时清掉详情面板选择
   const [trackedId, setTrackedId] = useState(conversationId);
@@ -58,7 +61,7 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
 
   // 先创建空会话（idle）再进入：成功后跳 /agent/[id]，首条消息走 appendMessage
   const createMut = useMutation({
-    mutationFn: () => createEmptyConversation(model),
+    mutationFn: () => createEmptyConversation(model, thinkingLevel),
     onSuccess: ({ conversationId: newId }) => {
       void qc.invalidateQueries({ queryKey: ["conversations"] });
       router.push(`/agent/${newId}`); // 跳到新会话路由，URL 持有 id，刷新可恢复
@@ -66,7 +69,7 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   });
   const appendMut = useMutation({
     mutationFn: (text: string) =>
-      appendMessage(conversationId as string, text, model),
+      appendMessage(conversationId as string, text, model, thinkingLevel),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["conversations"] }),
   });
   // 主动停止：busy 收尾由后端 result{status:'stopped'} 事件驱动（SSE），这里只发指令。
@@ -183,6 +186,8 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
         stopping={stopRequested}
         model={model}
         onModelChange={setModel}
+        thinkingLevel={thinkingLevel}
+        onThinkingLevelChange={setThinkingLevel}
         onOpenSidebar={() => setSidebarOpen(true)}
       />
 

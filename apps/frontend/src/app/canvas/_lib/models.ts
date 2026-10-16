@@ -142,78 +142,11 @@ export function canvasModelLabel(value: string | null | undefined): string {
   return CANVAS_MODEL_OPTIONS.find((m) => m.value === value)?.label ?? value;
 }
 
-/**
- * 思考深度档位。与后端 `canvas/thinking-level.ts` 的 CANVAS_THINKING_LEVELS 一一对应，
- * 改动需两边同步。
- *
- * 各家能力**不对等**（后端实测结论，详见 backend/src/canvas/thinking-level.ts 的矩阵）：
- * - DeepSeek 只有开/关两态（OpenAI 风格的 reasoningEffort 对它无效，点了没反应）
- * - Gemini 的 低/中/高 全模型可用，但**关闭**（thinkingBudget:0）只有部分模型接受，
- *   其余会 400 Bad Request —— 所以 off 档只给白名单内的模型。
- *
- * ⚠️ Gemini 目前拿不到思考正文（@langchain/google-genai 2.1.31 不暴露 thought 块），
- * 思考过程面板在 Gemini 上是空的；档位仍然影响它思考多少。
- *
- * 这张表须与后端 thinking-level.ts 保持一致，改动需两边同步。
- */
-export type ThinkingLevel = "auto" | "off" | "on" | "low" | "medium" | "high";
-
-export interface ThinkingLevelOption {
-  value: ThinkingLevel;
-  label: string;
-  hint: string;
-}
-
-const THINKING_OPTION: Record<ThinkingLevel, ThinkingLevelOption> = {
-  auto: { value: "auto", label: "Auto", hint: "Model default, unchanged" },
-  off: { value: "off", label: "Off", hint: "No thinking. Fastest and cheapest" },
-  on: { value: "on", label: "On", hint: "Think before answering" },
-  low: { value: "low", label: "Low", hint: "Brief thinking" },
-  medium: { value: "medium", label: "Medium", hint: "Balanced thinking" },
-  high: { value: "high", label: "High", hint: "Deepest thinking, slowest" },
-};
-
-const DEEPSEEK_LEVELS: ThinkingLevel[] = ["auto", "off", "on"];
-const GEMINI_LEVELS: ThinkingLevel[] = ["auto", "low", "medium", "high"];
-const GEMINI_LEVELS_WITH_OFF: ThinkingLevel[] = [
-  "auto",
-  "off",
-  "low",
-  "medium",
-  "high",
-];
-
-/** 实测接受 thinkingBudget:0 的 Gemini 模型；其余传 0 会 400。与后端白名单一致。 */
-const GEMINI_CAN_DISABLE_THINKING = new Set([
-  "gemini-3.1-flash-lite",
-  "gemini-3.5-flash",
-  "gemini-3-flash-preview",
-]);
-
-function bareModelName(model: string): string {
-  const i = model.indexOf(":");
-  return i === -1 ? model : model.slice(i + 1);
-}
-
-/** 该模型真正支持的档位（顺序即展示顺序）。 */
-export function thinkingLevelsFor(model: string): ThinkingLevelOption[] {
-  if (model.startsWith("deepseek:")) {
-    return DEEPSEEK_LEVELS.map((l) => THINKING_OPTION[l]);
-  }
-  const levels = GEMINI_CAN_DISABLE_THINKING.has(bareModelName(model))
-    ? GEMINI_LEVELS_WITH_OFF
-    : GEMINI_LEVELS;
-  return levels.map((l) => THINKING_OPTION[l]);
-}
-
-/** 档位在该模型上是否可用——换模型后用它决定要不要把选择回落到 auto。 */
-export function supportsThinkingLevel(
-  model: string,
-  level: ThinkingLevel,
-): boolean {
-  return thinkingLevelsFor(model).some((o) => o.value === level);
-}
-
-export function thinkingLevelLabel(level: ThinkingLevel): string {
-  return THINKING_OPTION[level]?.label ?? THINKING_OPTION.auto.label;
-}
+// 思考深度档位表已与 Spark agent 共用，移到 @/lib/thinking-level；这里转出，画布内引用不变。
+export {
+  type ThinkingLevel,
+  type ThinkingLevelOption,
+  supportsThinkingLevel,
+  thinkingLevelLabel,
+  thinkingLevelsFor,
+} from "@/lib/thinking-level";

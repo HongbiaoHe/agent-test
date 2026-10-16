@@ -185,6 +185,50 @@ describe('ConversationsService – 空会话创建与续聊', () => {
     expect(data.status).toBe('queued');
     expect(data).not.toHaveProperty('goal');
   });
+
+  it('创建空会话时落下选定的模型与思考档位', async () => {
+    mockPrisma.conversation.create.mockResolvedValue({ id: 'conv-th' });
+
+    await service.create(
+      undefined,
+      'tenant-1',
+      'u1',
+      'deepseek:deepseek-flash',
+      'on',
+    );
+
+    expect(mockPrisma.conversation.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        model: 'deepseek:deepseek-flash',
+        thinkingLevel: 'on',
+      }),
+    });
+  });
+
+  it('追加时带了思考档位就更新到会话上（resume/超时兜底复用）；没带则不动既有档位', async () => {
+    mockPrisma.conversation.findFirst.mockResolvedValue({
+      id: 'conv-1',
+      status: 'done',
+      goal: 'g',
+    });
+    mockPrisma.message.count.mockResolvedValue(2);
+
+    await service.appendMessage(
+      'conv-1',
+      'a',
+      'tenant-1',
+      'u1',
+      undefined,
+      'high',
+    );
+    await service.appendMessage('conv-1', 'b', 'tenant-1', 'u1');
+
+    const [withLevel, without] = mockPrisma.conversation.update.mock.calls.map(
+      (c) => (c[0] as { data: Record<string, unknown> }).data,
+    );
+    expect(withLevel.thinkingLevel).toBe('high');
+    expect(without).not.toHaveProperty('thinkingLevel');
+  });
 });
 
 describe('ConversationsService – stop（主动停止）', () => {

@@ -3,6 +3,7 @@ import { createDeepAgent, StateBackend } from 'deepagents';
 import { createMiddleware } from 'langchain';
 import { z } from 'zod';
 import { injectActivePlan, injectSkillReadPolicy } from './plan-injection';
+import { type ThinkingLevel, thinkingModelParams } from './thinking-level';
 import { askUserTool } from './tools/ask-user.tool';
 import { getWeatherTool } from './tools/get-weather.tool';
 import { sendEmailTool } from './tools/send-email.tool';
@@ -119,11 +120,17 @@ const skillReadPolicyMiddleware = createMiddleware({
  * - 裸名（旧 DB 会话、env GOOGLE_GENAI_MODEL 的存量值）→ 兼容回退 google-genai
  *   （不能靠 initChatModel 自动推断：它会把 `gemini-*` 推到 google-vertexai）。
  * API key 由各 provider 包从 env 自取（GOOGLE_API_KEY / DEEPSEEK_API_KEY）。
+ * 思考深度档位在这里映射成模型参数；该模型不支持的档位静默回落 auto（见 thinkingModelParams）。
  */
-function resolveChatModel(model?: string) {
+function resolveChatModel(
+  model?: string,
+  thinkingLevel?: ThinkingLevel | null,
+) {
   const name = model ?? process.env.GOOGLE_GENAI_MODEL ?? 'gemini-3.8-flash';
-  if (name.includes(':')) return initChatModel(name);
-  return initChatModel(name, { modelProvider: 'google-genai' });
+  // 思考深度按模型能力映射成各家参数（deepseek 只有开关、gemini 支持分级，见 thinking-level.ts）
+  const thinking = thinkingModelParams(name, thinkingLevel);
+  if (name.includes(':')) return initChatModel(name, thinking);
+  return initChatModel(name, { modelProvider: 'google-genai', ...thinking });
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -140,6 +147,8 @@ export interface BuildAgentOptions {
    * 裸名按 google-genai 兼容处理；缺省时回退 env GOOGLE_GENAI_MODEL / 代码默认。
    */
   model?: string;
+  /** 思考深度档位（前端可切换）；缺省/null = auto（跟随模型默认）。 */
+  thinkingLevel?: ThinkingLevel | null;
 
   /**
    * 默认 backend（agent 文件工具/skills/execute 的落点）。沙箱模式传 GuardedSandbox 实例；
@@ -190,7 +199,7 @@ export interface BuiltAgent {
 export async function buildAgent(
   opts: BuildAgentOptions = {},
 ): Promise<BuiltAgent> {
-  const model = await resolveChatModel(opts.model);
+  const model = await resolveChatModel(opts.model, opts.thinkingLevel);
 
   // backend = 沙箱（GuardedSandbox）或 StateBackend 兜底；/skills/ 不再单独路由到内存 store，
   // 直接读 backend：沙箱模式落在 ${workspaceRoot}/skills/，无沙箱则为空（不提供技能）。
