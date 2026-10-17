@@ -78,6 +78,8 @@ export interface ConversationListItem {
   goal: string;
   status: string;
   createdAt: string;
+  /** 置顶时刻；null = 未置顶 */
+  pinnedAt: string | null;
 }
 
 /** 创建空会话（idle，不带首条消息、不触发运行）：先建会话再进入，首条消息走 appendMessage。 */
@@ -129,6 +131,22 @@ export function appendMessage(
 /** 主动停止当前运行（幂等；stopped 表示本次是否实际停掉了什么）。 */
 export function stopConversation(id: string): Promise<{ stopped: boolean }> {
   return request(`/conversations/${id}/stop`, { method: "POST" });
+}
+
+/** 置顶 / 取消置顶。 */
+export function setConversationPinned(
+  id: string,
+  pinned: boolean,
+): Promise<{ id: string; pinnedAt: string | null }> {
+  return request(`/conversations/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ pinned }),
+  });
+}
+
+/** 删除会话（后端软删除；运行中的会先停止）。 */
+export function deleteConversation(id: string): Promise<{ deleted: true }> {
+  return request(`/conversations/${id}`, { method: "DELETE" });
 }
 
 // ——— 沙箱状态 ———

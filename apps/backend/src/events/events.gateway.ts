@@ -83,9 +83,9 @@ export class EventsGateway implements OnGatewayConnection {
     if (subscribed.has(conversationId)) return { ok: true };
     subscribed.add(conversationId);
 
-    // 租户隔离：只能订阅自己租户的会话
+    // 租户隔离：只能订阅自己租户的会话（已删除的视同不存在）
     const conv = await this.prisma.conversation.findFirst({
-      where: { id: conversationId, tenantId: user.tenantId },
+      where: { id: conversationId, tenantId: user.tenantId, deletedAt: null },
       select: { id: true },
     });
     if (!conv) {
@@ -125,6 +125,7 @@ export class EventsGateway implements OnGatewayConnection {
         id: conversationId,
         tenantId: user.tenantId,
         status: 'waiting_approval',
+        deletedAt: null,
       },
       data: { status: 'running' },
     });

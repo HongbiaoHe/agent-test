@@ -94,9 +94,9 @@ export class ConversationsService {
       throw new BusinessException(ErrorCodes.CONVERSATION_GOAL_EMPTY);
     }
     await this.assertKnownCommand(content, userId);
-    // 租户隔离：只能往自己租户的会话追加
+    // 租户隔离：只能往自己租户的会话追加（已删除的视同不存在）
     const conv = await this.prisma.conversation.findFirst({
-      where: { id, tenantId },
+      where: { id, tenantId, deletedAt: null },
       select: { id: true, status: true, goal: true },
     });
     if (!conv) {
@@ -188,19 +188,49 @@ export class ConversationsService {
     return { stopped: aborted || cas.count > 0 };
   }
 
-  /** 列出当前租户的会话（SSR 列表用）。 */
+  /** 列出当前租户未删除的会话：置顶的在前（按置顶时刻倒序），其余按创建时间倒序。 */
   async list(tenantId: string) {
     return this.prisma.conversation.findMany({
-      where: { tenantId },
-      orderBy: { createdAt: 'desc' },
-      select: { id: true, goal: true, status: true, createdAt: true },
+      where: { tenantId, deletedAt: null },
+      // MySQL 降序时 NULL 排最后：未置顶的自然落到置顶之后
+      orderBy: [{ pinnedAt: 'desc' }, { createdAt: 'desc' }],
+      select: {
+        id: true,
+        goal: true,
+        status: true,
+        createdAt: true,
+        pinnedAt: true,
+      },
     });
+  }
+
+  /** 置顶 / 取消置顶。 */
+  async setPinned(id: string, tenantId: string, pinned: boolean) {
+    await this.assertConversationOwner(id, tenantId);
+    return this.prisma.conversation.update({
+      where: { id },
+      data: { pinnedAt: pinned ? new Date() : null },
+      select: { id: true, pinnedAt: true },
+    });
+  }
+
+  /**
+   * 软删除：先按「停止」收尾（运行中 / 排队 / 审批中的一并停掉，媒体任务取消），再打删除标记。
+   * 之后列表、详情、订阅、续聊都当它不存在；消息等数据留库，可人工恢复。
+   */
+  async remove(id: string, tenantId: string) {
+    await this.stop(id, tenantId);
+    await this.prisma.conversation.update({
+      where: { id },
+      data: { deletedAt: new Date() },
+    });
+    return { deleted: true };
   }
 
   /** 按 tenantId 过滤，保证只能查到自己租户的会话（多租户隔离）。 */
   async findOne(id: string, tenantId: string) {
     const conv = await this.prisma.conversation.findFirst({
-      where: { id, tenantId },
+      where: { id, tenantId, deletedAt: null },
       include: { messages: { orderBy: { seq: 'asc' } } },
     });
     if (!conv) {
@@ -222,7 +252,7 @@ export class ConversationsService {
     tenantId: string,
   ): Promise<string> {
     const conv = await this.prisma.conversation.findFirst({
-      where: { id, tenantId },
+      where: { id, tenantId, deletedAt: null },
       select: { id: true, userId: true },
     });
     if (!conv) {

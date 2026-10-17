@@ -306,3 +306,118 @@ describe('ConversationsService – stop（主动停止）', () => {
     expect(mockStream.publish).not.toHaveBeenCalled();
   });
 });
+
+describe('ConversationsService – 置顶与删除', () => {
+  let service: ConversationsService;
+  let aborts: AbortRegistry;
+  const prisma = {
+    conversation: {
+      findFirst: jest.fn(),
+      findMany: jest.fn(),
+      update: jest.fn(),
+      updateMany: jest.fn(),
+    },
+    message: { count: jest.fn(), create: jest.fn() },
+  };
+  const media = { cancelByConversation: jest.fn() };
+
+  beforeEach(async () => {
+    aborts = new AbortRegistry();
+    prisma.conversation.findFirst.mockResolvedValue({
+      id: 'conv-1',
+      userId: 'u1',
+    });
+    prisma.conversation.updateMany.mockResolvedValue({ count: 0 });
+    const module = await Test.createTestingModule({
+      providers: [
+        ConversationsService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: SkillsService, useValue: mockSkills },
+        { provide: getQueueToken('agent-run'), useValue: mockQueue },
+        { provide: StreamService, useValue: { publish: jest.fn() } },
+        { provide: MediaService, useValue: media },
+        { provide: AGENT_ABORTS, useValue: aborts },
+        {
+          provide: SandboxSettingsService,
+          useValue: { resolve: jest.fn().mockResolvedValue('daytona') },
+        },
+      ],
+    }).compile();
+    service = module.get(ConversationsService);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  it('列表只含未删除的会话，置顶在前、再按创建时间倒序，并带回 pinnedAt', async () => {
+    prisma.conversation.findMany.mockResolvedValue([]);
+    await service.list('tenant-1');
+    expect(prisma.conversation.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { tenantId: 'tenant-1', deletedAt: null },
+        orderBy: [{ pinnedAt: 'desc' }, { createdAt: 'desc' }],
+        select: expect.objectContaining({ pinnedAt: true }),
+      }),
+    );
+  });
+
+  it('置顶写入当前时刻，取消置顶清空；都先校验会话归属', async () => {
+    await service.setPinned('conv-1', 'tenant-1', true);
+    await service.setPinned('conv-1', 'tenant-1', false);
+    const [pin, unpin] = prisma.conversation.update.mock.calls.map(
+      (c) => (c[0] as { data: { pinnedAt: Date | null } }).data.pinnedAt,
+    );
+    expect(pin).toBeInstanceOf(Date);
+    expect(unpin).toBeNull();
+    expect(prisma.conversation.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { id: 'conv-1', tenantId: 'tenant-1', deletedAt: null },
+      }),
+    );
+  });
+
+  it('别人的 / 已删除的会话：置顶与删除都 404，不写库', async () => {
+    prisma.conversation.findFirst.mockResolvedValue(null);
+    await expect(
+      service.setPinned('x', 'tenant-1', true),
+    ).rejects.toMatchObject({
+      errCode: ErrorCodes.CONVERSATION_NOT_FOUND.code,
+    });
+    await expect(service.remove('x', 'tenant-1')).rejects.toMatchObject({
+      errCode: ErrorCodes.CONVERSATION_NOT_FOUND.code,
+    });
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
+  });
+
+  it('删除运行中的会话：先停止（abort + 取消媒体 + CAS 到 stopped），再打删除标记', async () => {
+    const { signal } = aborts.register('conv-1');
+    prisma.conversation.updateMany.mockResolvedValue({ count: 1 });
+
+    expect(await service.remove('conv-1', 'tenant-1')).toEqual({
+      deleted: true,
+    });
+
+    expect(signal.aborted).toBe(true);
+    expect(media.cancelByConversation).toHaveBeenCalledWith('conv-1');
+    expect(prisma.conversation.update).toHaveBeenCalledWith({
+      where: { id: 'conv-1' },
+      data: { deletedAt: expect.any(Date) as Date },
+    });
+  });
+
+  it('已删除的会话：详情 404、不能续聊', async () => {
+    prisma.conversation.findFirst.mockResolvedValue(null);
+    await expect(service.findOne('conv-1', 'tenant-1')).rejects.toMatchObject({
+      errCode: ErrorCodes.CONVERSATION_NOT_FOUND.code,
+    });
+    await expect(
+      service.appendMessage('conv-1', 'hi', 'tenant-1', 'u1'),
+    ).rejects.toMatchObject({
+      errCode: ErrorCodes.CONVERSATION_NOT_FOUND.code,
+    });
+    for (const [arg] of prisma.conversation.findFirst.mock.calls as [
+      { where: Record<string, unknown> },
+    ][]) {
+      expect(arg.where).toMatchObject({ deletedAt: null });
+    }
+  });
+});

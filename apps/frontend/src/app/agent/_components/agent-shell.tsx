@@ -9,7 +9,9 @@ import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import {
   appendMessage,
   createEmptyConversation,
+  deleteConversation,
   listConversations,
+  setConversationPinned,
   stopConversation,
 } from "@/lib/api";
 
@@ -93,6 +95,20 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
     onError: () => setStopRequested(false),
   });
 
+  const pinMut = useMutation({
+    mutationFn: ({ id, pinned }: { id: string; pinned: boolean }) =>
+      setConversationPinned(id, pinned),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["conversations"] }),
+  });
+  // 删掉的是当前打开的会话 → 回到新会话页（旧 URL 已经 404）
+  const deleteMut = useMutation({
+    mutationFn: deleteConversation,
+    onSuccess: (_r, id) => {
+      void qc.invalidateQueries({ queryKey: ["conversations"] });
+      if (id === conversationId) router.push("/agent");
+    },
+  });
+
   const busy = thread.busy || createMut.isPending;
   // 运行已结束 → 复位（render-time reset，同 trackedId 模式，避免 effect 里 setState）
   if (stopRequested && !busy) {
@@ -157,6 +173,8 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
     onQueryChange: setSearch,
     onSelect: selectConversation,
     onNewChat: newChat,
+    onTogglePin: (id: string, pinned: boolean) => pinMut.mutate({ id, pinned }),
+    onDelete: (id: string) => deleteMut.mutate(id),
     userEmail,
     theme,
     onCycleTheme: cycle,
