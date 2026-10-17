@@ -1,7 +1,15 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
-import { Download, Loader2, Monitor, Server, Timer, X } from "lucide-react";
+import {
+  AppWindow,
+  Download,
+  Loader2,
+  Monitor,
+  Server,
+  Timer,
+  X,
+} from "lucide-react";
 import { useEffect, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -25,6 +33,7 @@ import { cn } from "@/lib/utils";
 import { DesktopDialog } from "./desktop-dialog";
 import { FilePreview } from "./file-preview";
 import { FileTree } from "./file-tree";
+import { useOpenSitePreview } from "./site-preview";
 
 /**
  * 沙箱状态 → 展示语义（状态色 dot / 文案）。
@@ -74,6 +83,7 @@ export function SandboxStatusButton() {
   const [open, setOpen] = useState(false);
   // 当前预览的文件（虚拟相对路径）；非 null 时侧栏加宽为左树右预览
   const [selected, setSelected] = useState<string | null>(null);
+  const openPreview = useOpenSitePreview();
   const { data } = useQuery({
     queryKey: ["sandbox-status"],
     queryFn: () => fetchSandboxStatus(),
@@ -197,6 +207,24 @@ export function SandboxStatusButton() {
                 <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b px-3">
                   <span className="truncate font-mono text-xs">{selected}</span>
                   <div className="flex shrink-0 items-center gap-0.5">
+                    {/* HTML 入口：以可交互网页打开（与 agent 的 preview_page 同一个弹窗） */}
+                    {openPreview && /\.html?$/i.test(selected) && (
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label="Preview page"
+                        title="Preview page"
+                        onClick={() =>
+                          openPreview({
+                            kind: "file",
+                            path: selected,
+                            title: selected.split("/").pop() ?? selected,
+                          })
+                        }
+                      >
+                        <AppWindow />
+                      </Button>
+                    )}
                     {/* 同源链接 + attachment：浏览器直接保存原文件（任意类型） */}
                     <Button
                       variant="ghost"

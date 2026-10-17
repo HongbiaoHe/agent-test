@@ -3,24 +3,32 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import {
   appendMessage,
   createEmptyConversation,
+  deleteConversation,
   listConversations,
+  setConversationPinned,
   stopConversation,
 } from "@/lib/api";
 
 import { ChatThread } from "./chat-thread";
 import { ConversationSidebar, SidebarContent } from "./conversation-sidebar";
 import { DetailPanel } from "./detail-panel";
+import {
+  type PreviewTarget,
+  SitePreviewContext,
+  SitePreviewDialog,
+} from "./site-preview";
 import { useConversation } from "../_hooks/use-conversation";
 import { useIsDesktop } from "../_hooks/use-is-desktop";
 import { useModelPreference } from "../_hooks/use-model-preference";
+import { useThinkingPreference } from "../_hooks/use-thinking-preference";
 import { useTheme } from "../_hooks/use-theme";
-import type { ThreadItem } from "../_lib/thread";
+import type { PreviewSpec, ThreadItem } from "../_lib/thread";
 
 /**
  * 会话外壳：会话由 URL（/agent 或 /agent/[id]）驱动，conversationId 作为入参。
@@ -40,6 +48,8 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   const [search, setSearch] = useState("");
   // 回答模型（前端可切换），发消息时随 create/append 带给后端；选择缓存到 localStorage（刷新保留）
   const [model, setModel] = useModelPreference();
+  // 思考深度：同样随 create/append 带给后端；当前模型不支持的档位已在 hook 里回落 auto
+  const [thinkingLevel, setThinkingLevel] = useThinkingPreference(model);
 
   // 切换会话（含 [id1]→[id2] 不重挂载的情况）时清掉详情面板选择
   const [trackedId, setTrackedId] = useState(conversationId);
@@ -54,11 +64,17 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   });
   const conversations = convQuery.data ?? [];
 
-  const thread = useConversation(conversationId);
+  // 网页预览弹窗（全局一个）：agent 主动触发、消息流卡片、沙箱文件面板三个入口共用
+  const [preview, setPreview] = useState<PreviewTarget | null>(null);
+  const openPreview = useCallback((spec: PreviewSpec) => {
+    setPreview({ ...spec, nonce: Date.now() });
+  }, []);
+
+  const thread = useConversation(conversationId, { onPreview: openPreview });
 
   // 先创建空会话（idle）再进入：成功后跳 /agent/[id]，首条消息走 appendMessage
   const createMut = useMutation({
-    mutationFn: () => createEmptyConversation(model),
+    mutationFn: () => createEmptyConversation(model, thinkingLevel),
     onSuccess: ({ conversationId: newId }) => {
       void qc.invalidateQueries({ queryKey: ["conversations"] });
       router.push(`/agent/${newId}`); // 跳到新会话路由，URL 持有 id，刷新可恢复
@@ -66,7 +82,7 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   });
   const appendMut = useMutation({
     mutationFn: (text: string) =>
-      appendMessage(conversationId as string, text, model),
+      appendMessage(conversationId as string, text, model, thinkingLevel),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["conversations"] }),
   });
   // 主动停止：busy 收尾由后端 result{status:'stopped'} 事件驱动（SSE），这里只发指令。
@@ -77,6 +93,20 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
     mutationFn: () => stopConversation(conversationId as string),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["conversations"] }),
     onError: () => setStopRequested(false),
+  });
+
+  const pinMut = useMutation({
+    mutationFn: ({ id, pinned }: { id: string; pinned: boolean }) =>
+      setConversationPinned(id, pinned),
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["conversations"] }),
+  });
+  // 删掉的是当前打开的会话 → 回到新会话页（旧 URL 已经 404）
+  const deleteMut = useMutation({
+    mutationFn: deleteConversation,
+    onSuccess: (_r, id) => {
+      void qc.invalidateQueries({ queryKey: ["conversations"] });
+      if (id === conversationId) router.push("/agent");
+    },
   });
 
   const busy = thread.busy || createMut.isPending;
@@ -143,52 +173,59 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
     onQueryChange: setSearch,
     onSelect: selectConversation,
     onNewChat: newChat,
+    onTogglePin: (id: string, pinned: boolean) => pinMut.mutate({ id, pinned }),
+    onDelete: (id: string) => deleteMut.mutate(id),
     userEmail,
     theme,
     onCycleTheme: cycle,
   };
 
   return (
-    <div className="flex h-full w-full overflow-clip">
-      {/* desktop 常驻侧边栏 */}
-      <ConversationSidebar {...sidebarProps} />
+    <SitePreviewContext value={openPreview}>
+      <div className="flex h-full w-full overflow-clip">
+        {/* desktop 常驻侧边栏 */}
+        <ConversationSidebar {...sidebarProps} />
 
-      {/* mobile 会话抽屉 */}
-      <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-        <SheetContent
-          side="left"
-          showCloseButton={false}
-          className="w-72 gap-0 bg-background p-0"
-        >
-          <SheetTitle className="sr-only">Conversations</SheetTitle>
-          <SidebarContent {...sidebarProps} />
-        </SheetContent>
-      </Sheet>
+        {/* mobile 会话抽屉 */}
+        <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
+          <SheetContent
+            side="left"
+            showCloseButton={false}
+            className="w-72 gap-0 bg-background p-0"
+          >
+            <SheetTitle className="sr-only">Conversations</SheetTitle>
+            <SidebarContent {...sidebarProps} />
+          </SheetContent>
+        </Sheet>
 
-      <ChatThread
-        title={title}
-        conversationId={conversationId}
-        items={thread.items}
-        approval={thread.approval}
-        busy={busy}
-        isLoading={thread.isLoading}
-        isNewChat={!conversationId}
-        creating={createMut.isPending}
-        onNewChat={newChat}
-        activeDetailId={panelOpen ? activeDetailId : null}
-        onOpenDetail={openDetail}
-        onDecide={thread.respondApproval}
-        onSend={handleSend}
-        onStop={handleStop}
-        stopping={stopRequested}
-        model={model}
-        onModelChange={setModel}
-        onOpenSidebar={() => setSidebarOpen(true)}
-      />
+        <ChatThread
+          title={title}
+          conversationId={conversationId}
+          items={thread.items}
+          approval={thread.approval}
+          busy={busy}
+          isLoading={thread.isLoading}
+          isNewChat={!conversationId}
+          creating={createMut.isPending}
+          onNewChat={newChat}
+          activeDetailId={panelOpen ? activeDetailId : null}
+          onOpenDetail={openDetail}
+          onDecide={thread.respondApproval}
+          onSend={handleSend}
+          onStop={handleStop}
+          stopping={stopRequested}
+          model={model}
+          onModelChange={setModel}
+          thinkingLevel={thinkingLevel}
+          onThinkingLevelChange={setThinkingLevel}
+          onOpenSidebar={() => setSidebarOpen(true)}
+        />
 
-      {panelOpen && selectedTool && (
-        <DetailPanel tool={selectedTool} onClose={() => setManualPanel(false)} />
-      )}
-    </div>
+        {panelOpen && selectedTool && (
+          <DetailPanel tool={selectedTool} onClose={() => setManualPanel(false)} />
+        )}
+      </div>
+      <SitePreviewDialog target={preview} onClose={() => setPreview(null)} />
+    </SitePreviewContext>
   );
 }

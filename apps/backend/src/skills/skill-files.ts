@@ -18,8 +18,13 @@
  *   - http(s)://、已是 / 开头的绝对路径不以这两种前缀起始，天然不被波及
  *   - frontmatter 的 description 是散文、不含这些 token，解析不受影响
  */
-export function absolutizeRefPaths(name: string, skillMd: string): string {
-  const base = `/skills/${name}/`;
+export function absolutizeRefPaths(
+  name: string,
+  skillMd: string,
+  /** 技能库目录：Spark 沙箱为 `${visibleRoot}/skills`，画布的只读技能库仍是 `/skills` */
+  skillsDir = '/skills',
+): string {
+  const base = `${skillsDir}/${name}/`;
   return (
     skillMd
       // 反引号 / markdown 链接 `](` 后、以 ./ 开头的 skill 内相对路径 → 绝对路径

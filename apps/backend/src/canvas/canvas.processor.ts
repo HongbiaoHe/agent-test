@@ -22,11 +22,8 @@ import { CanvasService } from './canvas.service';
 import { createCanvasTools } from './canvas.tools';
 import { type CallUsage, extractUsages } from './token-usage';
 import { planHistoryWindow, stripClearedPlan } from './history-window';
-import { ReasoningCollector } from './reasoning-parts';
-import {
-  CANVAS_THINKING_LEVELS,
-  type CanvasThinkingLevel,
-} from './thinking-level';
+import { ReasoningCollector } from '../agent/reasoning-parts';
+import { asThinkingLevel } from '../agent/thinking-level';
 import { asApprovalMode } from './canvas.types';
 import {
   CanvasSkillsService,
@@ -50,13 +47,6 @@ interface JobData {
 }
 
 const TIMEOUT_MS = Number(process.env.CANVAS_APPROVAL_TIMEOUT_MS ?? 600000);
-
-/** DB 里存的是自由字符串（旧行/手改可能超出白名单）→ 收窄成档位，非法值按 null（跟随模型默认）。 */
-function asThinkingLevel(v: string | null): CanvasThinkingLevel | null {
-  return CANVAS_THINKING_LEVELS.includes(v as CanvasThinkingLevel)
-    ? (v as CanvasThinkingLevel)
-    : null;
-}
 
 const ROLE_BY_TYPE: Record<string, string> = {
   message: 'assistant',

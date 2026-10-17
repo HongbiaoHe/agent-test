@@ -28,6 +28,7 @@ import {
   DEFAULT_SANDBOX_LIFECYCLE,
   DEFAULT_SANDBOX_NETWORK,
   getSandboxProvider,
+  type PortUpstream,
   type SandboxLifecycle,
   type SandboxListing,
   type SandboxNetwork,
@@ -35,7 +36,12 @@ import {
   type UserSandboxConfig,
 } from './sandbox-providers';
 
-export type { SandboxListing, SandboxProviderName, UserSandboxConfig };
+export type {
+  PortUpstream,
+  SandboxListing,
+  SandboxProviderName,
+  UserSandboxConfig,
+};
 
 /** config 缺省（脚本/测试直调）：env 默认提供方 + 默认生命周期 + 默认网络。 */
 function withDefaults(config?: UserSandboxConfig): {
@@ -52,6 +58,30 @@ function withDefaults(config?: UserSandboxConfig): {
 
 /** agent 专用工作区目录名（相对于沙箱 home） */
 export const AGENT_WORKSPACE_DIR = 'agent-workspace';
+
+/**
+ * agent 眼中的工作区路径：沙箱里 `/workspace → ~/agent-workspace` 软链，让文件工具与 shell
+ * 对同一条绝对路径的理解一致（见 GuardedSandbox 文件头）。不搬数据：真实目录不变。
+ */
+export const VISIBLE_WORKSPACE = '/workspace';
+
+/** 建链脚本的输出标记：软链就绪 → 用 VISIBLE_WORKSPACE，否则退回真实路径。 */
+const LINK_OK = 'WORKSPACE_LINK_OK';
+
+/**
+ * 确保 `/workspace` 指向本工作区：
+ * - 已是指向它的软链 → 直接用；是指向别处的软链（换过 home 等）→ 改指；
+ * - 不存在 → sudo -n 建（Daytona/E2B 默认用户都有免密 sudo；-n 保证没有时立刻失败而不是卡住等密码）；
+ * - 被真实目录/文件占用（镜像自带 /workspace）→ 不动它，退回真实路径。
+ */
+export function workspaceLinkScript(ws: string): string {
+  const v = VISIBLE_WORKSPACE;
+  return (
+    `if [ -L ${v} ]; then [ "$(readlink ${v})" = '${ws}' ] || sudo -n ln -sfn '${ws}' ${v}; ` +
+    `elif [ ! -e ${v} ]; then sudo -n ln -s '${ws}' ${v}; fi 2>/dev/null; ` +
+    `[ -L ${v} ] && [ "$(readlink ${v})" = '${ws}' ] && echo ${LINK_OK}`
+  );
+}
 
 /** 该提供方（缺省 env 默认）是否可用（凭据已配置）。 */
 export function isSandboxConfigured(provider?: SandboxProviderName): boolean {
@@ -104,15 +134,17 @@ async function openWorkspace({
   homeDir,
 }: ConnectedSandbox): Promise<GuardedSandbox> {
   const ws = `${homeDir}/${AGENT_WORKSPACE_DIR}`;
-  const mkdir = `mkdir -p '${ws}'`;
-  // mkdir -p 幂等，失败重试一次：实测经本机代理时 E2B 命令启动请求偶发 fetch failed
+  const setup = `mkdir -p '${ws}' && { ${workspaceLinkScript(ws)}; }`;
+  // 幂等，失败重试一次：实测经本机代理时 E2B 命令启动请求偶发 fetch failed
   // （压测约 2/444），不重试会让文件接口偶发 404。agent 的 execute 不在此重试（命令未必幂等）。
+  let res: Awaited<ReturnType<typeof inner.execute>>;
   try {
-    await inner.execute(mkdir);
+    res = await inner.execute(setup);
   } catch {
-    await inner.execute(mkdir);
+    res = await inner.execute(setup);
   }
-  return new GuardedSandbox(inner, ws);
+  const visible = res.output.includes(LINK_OK) ? VISIBLE_WORKSPACE : ws;
+  return new GuardedSandbox(inner, ws, visible);
 }
 
 /**
@@ -151,15 +183,15 @@ export async function getUserSandbox(
   return openWorkspace(conn);
 }
 
-/** 沙箱内记录「上次上传的技能集指纹」的清单文件（虚拟根路径）。 */
-const SKILLS_MANIFEST_PATH = '/skills/.manifest';
+/** 沙箱内记录「上次上传的技能集指纹」的清单文件名（位于技能库目录下）。 */
+const SKILLS_MANIFEST_NAME = '.manifest';
 
 /**
- * 把该用户的生效技能写入沙箱磁盘（`/skills/<name>/<rel>`，虚拟根路径，
+ * 把该用户的生效技能写入沙箱磁盘（`${sb.skillsDir}/<name>/<rel>`，
  * GuardedSandbox.uploadFiles 会映射到 `${workspaceRoot}/skills/...`）。
  *
  * 会话启动时序：getUserSandbox 起沙箱 → 本函数加载技能 → buildAgent → 调 LLM。
- * deepagents 的 skills 中间件在 beforeAgent 通过 ls + downloadFiles 扫 `/skills/`，
+ * deepagents 的 skills 中间件在 beforeAgent 通过 ls + downloadFiles 扫 skillsDir，
  * 故必须在 agent.stream 之前完成上传，模型才能在系统提示里看到技能清单。
  *
  * 幂等去重（防每轮重复上传）：用户级沙箱跨会话/多轮共享，每条消息都会进 process。
@@ -168,8 +200,8 @@ const SKILLS_MANIFEST_PATH = '/skills/.manifest';
  *  - 不一致（首次/新沙箱/技能增删改/启停）→ 先清空旧技能目录（去除被禁用/删除技能的残留，
  *    恢复旧 seedSkillsStore 的删除语义），再全量上传并写入新指纹。
  *
- * SKILL.md 经 absolutizeRefPaths 把相对引用改写为 `/skills/<name>/...` 绝对路径
- * （read_file 精确匹配，无相对解析）；其余文件原样上传。
+ * SKILL.md 经 absolutizeRefPaths 把相对引用改写为 `${skillsDir}/<name>/...` 绝对路径
+ * （read_file 精确匹配，无相对解析；这条路径在 execute 里同样可用）；其余文件原样上传。
  * 任一文件上传失败即抛错，由调用方降级（沙箱可用但技能缺失没有意义）。
  */
 export async function uploadSkillsToSandbox(
@@ -177,13 +209,17 @@ export async function uploadSkillsToSandbox(
   defs: SkillDef[],
 ): Promise<void> {
   const enc = new TextEncoder();
-  // 收集 [虚拟路径, 文本] 并按路径排序，保证指纹与上传内容确定、与 defs 顺序无关
+  const skillsDir = sb.skillsDir;
+  const manifestPath = `${skillsDir}/${SKILLS_MANIFEST_NAME}`;
+  // 收集 [agent 路径, 文本] 并按路径排序，保证指纹与上传内容确定、与 defs 顺序无关
   const entries: Array<{ path: string; text: string }> = [];
   for (const def of defs) {
     for (const [rel, content] of Object.entries(def.files)) {
       const text =
-        rel === 'SKILL.md' ? absolutizeRefPaths(def.name, content) : content;
-      entries.push({ path: `/skills/${def.name}/${rel}`, text });
+        rel === 'SKILL.md'
+          ? absolutizeRefPaths(def.name, content, skillsDir)
+          : content;
+      entries.push({ path: `${skillsDir}/${def.name}/${rel}`, text });
     }
   }
   entries.sort((a, b) => a.path.localeCompare(b.path));
@@ -192,7 +228,7 @@ export async function uploadSkillsToSandbox(
     .digest('hex');
 
   // 与沙箱内上次指纹比对：一致则跳过（下载失败/缺失 = 视为不一致，照常上传）
-  const [manifest] = await sb.downloadFiles([SKILLS_MANIFEST_PATH]);
+  const [manifest] = await sb.downloadFiles([manifestPath]);
   if (
     manifest &&
     !manifest.error &&
@@ -211,7 +247,7 @@ export async function uploadSkillsToSandbox(
     enc.encode(e.text),
   ]);
   // 指纹清单一并写入（.manifest 是文件，skills 中间件只认目录，不会被当成技能）
-  files.push([SKILLS_MANIFEST_PATH, enc.encode(fingerprint)]);
+  files.push([manifestPath, enc.encode(fingerprint)]);
 
   const results = await sb.uploadFiles(files);
   const failed = results.filter((r) => r.error);
@@ -236,14 +272,12 @@ export async function listWorkspaceFiles(
   const cmd = `find "${workdir}" -maxdepth 4 -type f -not -path '*/node_modules/*' -not -path '*/.*' -not -path '*/skills/*'`;
   const result = await sb.execute(cmd);
 
-  return (
-    result.output
-      .split('\n')
-      .map((line) => line.trim())
-      .filter((line) => line.length > 0)
-      // GuardedSandbox 出站脱敏后路径已是虚拟根（/xxx），去掉前导 / 得相对路径
-      .map((p) => ({ path: p.replace(/^\//, '') }))
-  );
+  // GuardedSandbox 出站已把真实路径改写成 visibleRoot（/workspace/xxx），按工作区相对路径归一
+  return result.output
+    .split('\n')
+    .map((line) => sb.toWorkspaceRelative(line.trim()))
+    .filter((rel): rel is string => !!rel)
+    .map((rel) => ({ path: rel }));
 }
 
 /** 树节点：工作区某目录下的直接子项（相对虚拟路径，无前导 /）。 */
@@ -268,9 +302,9 @@ function isHiddenTreeEntry(name: string): boolean {
  *
  * 与 listWorkspaceFiles（一次性扁平 find）的区别：这里只列**单层**，前端展开目录
  * 才调一次——「不展开不加载」。底层用 GuardedSandbox.ls（find -maxdepth 1 + stat，
- * 已做路径守卫与出站脱敏，返回虚拟路径：目录带尾 /、文件不带）。
+ * 已做路径守卫与出站改写：目录带尾 /、文件不带）。
  *
- * dir 为相对虚拟路径（''/'/' = 根）。排除 node_modules/隐藏/skills，目录优先排序。
+ * dir 为工作区相对路径（''/'/' = 根）。排除 node_modules/隐藏/skills，目录优先排序。
  */
 export async function listDir(
   sb: GuardedSandbox,
@@ -279,9 +313,11 @@ export async function listDir(
   const res = await sb.ls(dir && dir !== '/' ? dir : '/');
   const entries: DirEntry[] = [];
   for (const f of res.files ?? []) {
-    // ls 返回虚拟路径：目录尾随 /、前导 /；取末级名并归一相对路径
-    const rel = f.path.replace(/^\//, '').replace(/\/$/, '');
-    const name = rel.split('/').filter(Boolean).pop() ?? '';
+    // ls 返回 agent 视角的路径（/workspace/xxx，目录尾随 /）：归一成工作区相对路径——
+    // 前端点开目录时原样回传它，必须是 listDir 能接受的相对写法
+    const rel = sb.toWorkspaceRelative(f.path.replace(/\/$/, ''));
+    if (!rel) continue;
+    const name = rel.split('/').pop() ?? '';
     if (!name || isHiddenTreeEntry(name)) continue;
     entries.push({
       name,
@@ -484,6 +520,38 @@ export async function startUserDesktop(
   const existing = await pickUserSandbox(userId, provider.name);
   if (!existing || existing.state !== 'started') return null;
   return provider.desktop.start(existing.id);
+}
+
+/**
+ * 用户沙箱某端口的上游地址与访问头（端口预览反代用）。沙箱不存在或未运行 → null：
+ * 预览是「看 agent 已经跑起来的服务」，不该为此拉起一台停机沙箱。
+ */
+export async function getUserPortUpstream(
+  userId: string,
+  port: number,
+  providerName?: SandboxProviderName,
+): Promise<PortUpstream | null> {
+  const provider = getSandboxProvider(providerName);
+  if (!provider.isConfigured()) return null;
+  const existing = await pickUserSandbox(userId, provider.name);
+  if (!existing || existing.state !== 'started') return null;
+  return provider.portUpstream(existing.id, port);
+}
+
+/**
+ * 让用户的沙箱保持活跃（预览使用期间，由调用方节流）。没有沙箱或没在运行 → 不做任何事：
+ * 预览只负责「别在用户用着的时候停掉」，不负责拉起停机的沙箱。
+ */
+export async function keepUserSandboxAlive(
+  userId: string,
+  config?: UserSandboxConfig,
+): Promise<void> {
+  const { provider: name, lifecycle } = withDefaults(config);
+  const provider = getSandboxProvider(name);
+  if (!provider.isConfigured()) return;
+  const existing = await pickUserSandbox(userId, provider.name);
+  if (!existing || existing.state !== 'started') return;
+  await provider.keepAlive(existing.id, lifecycle);
 }
 
 /**

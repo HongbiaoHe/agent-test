@@ -19,14 +19,17 @@ import {
   findUserSandbox,
   getUserSandbox,
   listDir,
+  listWorkspaceFiles,
   pickPreferredSandbox,
+  keepUserSandboxAlive,
   startUserDesktop,
   stopUserDesktop,
   readFilePreview,
   uploadSkillsToSandbox,
   type SandboxListing,
 } from './sandbox';
-import type { GuardedSandbox } from './guarded-sandbox';
+import { GuardedSandbox } from './guarded-sandbox';
+import type { GuardableSandbox } from './sandbox-providers';
 import type { SkillDef } from '../skills/skills.service';
 import { getSandboxProvider } from './sandbox-providers';
 
@@ -73,36 +76,80 @@ describe('pickPreferredSandbox', () => {
   });
 });
 
-describe('listDir', () => {
-  // ls 返回虚拟路径：目录尾随 /、前导 /（GuardedSandbox 出站脱敏后形态）
-  const mkSb = (files: { path: string; is_dir?: boolean; size?: number }[]) =>
-    ({
-      ls: jest.fn().mockResolvedValue({ files }),
-    }) as unknown as GuardedSandbox;
+/**
+ * 文件面板的两个列举函数：用**真的** GuardedSandbox 包一个只模拟提供方的 inner——inner 返回
+ * 真实路径，经出站改写成 /workspace/... 后再被归一。以前这里直接 mock 出 `/src/` 这种旧格式，
+ * 把旧约定写死在测试里，于是工作区路径改成 /workspace 后「根目录列得出、展开全是空」没被拦住。
+ */
+const WS = '/home/user/agent-workspace';
+function guardedWith(inner: {
+  ls?: jest.Mock;
+  execute?: jest.Mock;
+}): GuardedSandbox {
+  return new GuardedSandbox(
+    inner as unknown as GuardableSandbox,
+    WS,
+    '/workspace',
+  );
+}
 
-  it('过滤 node_modules / 隐藏 / skills，目录优先按名排序', async () => {
-    const sbm = mkSb([
-      { path: '/src/', is_dir: true },
-      { path: '/README.md', size: 12 },
-      { path: '/node_modules/', is_dir: true },
-      { path: '/.git/', is_dir: true },
-      { path: '/skills/', is_dir: true },
-      { path: '/app/', is_dir: true },
-    ]);
-    const out = await listDir(sbm, '');
+describe('listDir', () => {
+  it('过滤 node_modules / 隐藏 / skills，目录优先按名排序；path 是工作区相对路径', async () => {
+    const ls = jest.fn().mockResolvedValue({
+      files: [
+        { path: `${WS}/src/`, is_dir: true },
+        { path: `${WS}/README.md`, size: 12 },
+        { path: `${WS}/node_modules/`, is_dir: true },
+        { path: `${WS}/.git/`, is_dir: true },
+        { path: `${WS}/skills/`, is_dir: true },
+        { path: `${WS}/app/`, is_dir: true },
+      ],
+    });
+    const out = await listDir(guardedWith({ ls }), '');
+    expect(ls).toHaveBeenCalledWith(WS);
     expect(out.map((e) => e.name)).toEqual(['app', 'src', 'README.md']);
     expect(out[0]).toMatchObject({ name: 'app', path: 'app', isDir: true });
   });
 
-  it('子目录项归一为相对路径（去前导/尾随斜杠）', async () => {
-    const sbm = mkSb([
-      { path: '/my-blog/pages/', is_dir: true },
-      { path: '/my-blog/index.tsx', size: 3 },
+  it('根目录列出的 path 原样传回去展开 → 命中正确的子目录（回归：曾展开为空）', async () => {
+    const ls = jest
+      .fn()
+      .mockResolvedValueOnce({
+        files: [{ path: `${WS}/todo-vite/`, is_dir: true }],
+      })
+      .mockResolvedValueOnce({
+        files: [
+          { path: `${WS}/todo-vite/src/`, is_dir: true },
+          { path: `${WS}/todo-vite/index.html`, size: 3 },
+        ],
+      });
+    const sb = guardedWith({ ls });
+    const [root] = await listDir(sb, '');
+    expect(root.path).toBe('todo-vite');
+    const children = await listDir(sb, root.path);
+    expect(ls).toHaveBeenLastCalledWith(`${WS}/todo-vite`);
+    expect(children).toEqual([
+      { name: 'src', path: 'todo-vite/src', isDir: true, size: 0 },
+      {
+        name: 'index.html',
+        path: 'todo-vite/index.html',
+        isDir: false,
+        size: 3,
+      },
     ]);
-    const out = await listDir(sbm, 'my-blog');
-    expect(out).toEqual([
-      { name: 'pages', path: 'my-blog/pages', isDir: true, size: 0 },
-      { name: 'index.tsx', path: 'my-blog/index.tsx', isDir: false, size: 3 },
+  });
+});
+
+describe('listWorkspaceFiles', () => {
+  it('find 输出（真实路径）→ 工作区相对路径', async () => {
+    const execute = jest.fn().mockResolvedValue({
+      output: `${WS}/todo-vite/index.html\n${WS}/notes.md\n\n`,
+      exitCode: 0,
+      truncated: false,
+    });
+    expect(await listWorkspaceFiles(guardedWith({ execute }))).toEqual([
+      { path: 'todo-vite/index.html' },
+      { path: 'notes.md' },
     ]);
   });
 });
@@ -172,9 +219,12 @@ describe('uploadSkillsToSandbox 去重', () => {
   }) => {
     const uploaded: Array<[string, Uint8Array]> = [];
     const sbm = {
+      skillsDir: '/workspace/skills',
       downloadFiles: jest
         .fn()
-        .mockResolvedValue([{ path: '/skills/.manifest', ...manifest }]),
+        .mockResolvedValue([
+          { path: '/workspace/skills/.manifest', ...manifest },
+        ]),
       execute: jest.fn().mockResolvedValue({ output: '', exitCode: 0 }),
       uploadFiles: jest.fn(async (files: Array<[string, Uint8Array]>) => {
         uploaded.push(...files);
@@ -189,8 +239,22 @@ describe('uploadSkillsToSandbox 去重', () => {
     await uploadSkillsToSandbox(sbm, [def]);
     expect(sbm.execute).toHaveBeenCalledWith('rm -rf skills');
     const paths = uploaded.map(([p]) => p);
-    expect(paths).toContain('/skills/tvc-director/SKILL.md');
-    expect(paths).toContain('/skills/.manifest');
+    // 技能库在工作区下（/workspace/skills），这条路径在 shell 里同样可用
+    expect(paths).toContain('/workspace/skills/tvc-director/SKILL.md');
+    expect(paths).toContain('/workspace/skills/.manifest');
+  });
+
+  it('SKILL.md 的相对引用改写到工作区技能库（read_file 与 execute 都能命中）', async () => {
+    const { sbm, uploaded } = mkSb({ content: null, error: 'file_not_found' });
+    const withRef: SkillDef = {
+      ...def,
+      files: { 'SKILL.md': '先读 `./references/a.md`' },
+    };
+    await uploadSkillsToSandbox(sbm, [withRef]);
+    const md = uploaded.find(([p]) => p.endsWith('/SKILL.md'))![1];
+    expect(new TextDecoder().decode(md)).toBe(
+      '先读 `/workspace/skills/tvc-director/references/a.md`',
+    );
   });
 
   it('manifest 指纹一致 → 跳过：不 execute、不 uploadFiles', async () => {
@@ -198,7 +262,7 @@ describe('uploadSkillsToSandbox 去重', () => {
     const first = mkSb({ content: null, error: 'file_not_found' });
     await uploadSkillsToSandbox(first.sbm, [def]);
     const fingerprint = first.uploaded.find(
-      ([p]) => p === '/skills/.manifest',
+      ([p]) => p === '/workspace/skills/.manifest',
     )![1];
 
     // 第二次：downloadFiles 回灌相同指纹 → 应整体跳过
@@ -212,7 +276,7 @@ describe('uploadSkillsToSandbox 去重', () => {
     const first = mkSb({ content: null, error: 'file_not_found' });
     await uploadSkillsToSandbox(first.sbm, [def]);
     const fingerprint = first.uploaded.find(
-      ([p]) => p === '/skills/.manifest',
+      ([p]) => p === '/workspace/skills/.manifest',
     )![1];
 
     const changed: SkillDef = { ...def, files: { 'SKILL.md': '# tvc v2' } };
@@ -253,6 +317,7 @@ describe('提供方编排（getUserSandbox / findUserSandbox / desktop）', () =
       // 指纹口径简化：open → 'open'，blocked → 'blocked'
       desiredEgress: jest.fn((n: { egress: string }) => n.egress),
       applyEgress: jest.fn().mockResolvedValue(undefined),
+      keepAlive: jest.fn().mockResolvedValue(undefined),
       desktop: opts.desktop
         ? {
             start: jest.fn().mockResolvedValue('https://vnc'),
@@ -281,10 +346,30 @@ describe('提供方编排（getUserSandbox / findUserSandbox / desktop）', () =
       { egress: 'open', allowList: [], publicTraffic: false },
     );
     expect(provider.connect).not.toHaveBeenCalled();
-    expect(inner.execute).toHaveBeenCalledWith(
-      "mkdir -p '/home/user/agent-workspace'",
-    );
+    const setup = String(inner.execute.mock.calls[0][0]);
+    expect(setup).toMatch(/^mkdir -p '\/home\/user\/agent-workspace' && /);
+    expect(setup).toContain("ln -s '/home/user/agent-workspace' /workspace");
     expect(sb?.workspaceRoot).toBe('/home/user/agent-workspace');
+  });
+
+  it('/workspace 软链就绪 → agent 看到的工作区是 /workspace', async () => {
+    const { inner } = makeProvider({});
+    inner.execute.mockResolvedValueOnce({
+      output: 'WORKSPACE_LINK_OK\n',
+      exitCode: 0,
+      truncated: false,
+    });
+    const sb = await getUserSandbox('u1');
+    expect(sb?.visibleRoot).toBe('/workspace');
+    expect(sb?.skillsDir).toBe('/workspace/skills');
+  });
+
+  it('建不了软链（无 sudo / /workspace 被占用）→ 退回真实路径，两边依然一致', async () => {
+    // inner.execute 缺省输出为空（没有 WORKSPACE_LINK_OK）
+    makeProvider({});
+    const sb = await getUserSandbox('u1');
+    expect(sb?.visibleRoot).toBe('/home/user/agent-workspace');
+    expect(sb?.skillsDir).toBe('/home/user/agent-workspace/skills');
   });
 
   it('建工作区 mkdir 偶发网络失败 → 重试一次后成功', async () => {
@@ -409,5 +494,25 @@ describe('提供方编排（getUserSandbox / findUserSandbox / desktop）', () =
 
     makeProvider({ listings: [{ id: 'a', state: 'stopped' }], desktop: true });
     expect(await startUserDesktop('u1')).toBeNull();
+  });
+
+  it('keepUserSandboxAlive：运行中的沙箱按用户设置续期；没有 / 停机的沙箱不碰（预览不负责拉起）', async () => {
+    const lifecycle = { idleMinutes: 15, autoDeleteMinutes: 10 };
+    const network = { egress: 'open', allowList: [], publicTraffic: false };
+    const running = makeProvider({
+      listings: [{ id: 'sb-1', state: 'started' }],
+    });
+    await keepUserSandboxAlive('u1', {
+      provider: 'e2b',
+      lifecycle,
+      network,
+    } as never);
+    expect(running.provider.keepAlive).toHaveBeenCalledWith('sb-1', lifecycle);
+
+    const stopped = makeProvider({
+      listings: [{ id: 'sb-2', state: 'stopped' }],
+    });
+    await keepUserSandboxAlive('u1');
+    expect(stopped.provider.keepAlive).not.toHaveBeenCalled();
   });
 });

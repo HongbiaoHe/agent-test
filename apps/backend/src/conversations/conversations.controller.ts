@@ -1,8 +1,10 @@
 import {
   Body,
   Controller,
+  Delete,
   Get,
   Param,
+  Patch,
   Post,
   Query,
   UseGuards,
@@ -12,6 +14,7 @@ import { type AuthUser, JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { ConversationsService } from './conversations.service';
 import { AppendMessageDto } from './dto/append-message.dto';
 import { CreateConversationDto } from './dto/create-conversation.dto';
+import { UpdateConversationDto } from './dto/update-conversation.dto';
 
 @Controller('conversations')
 @UseGuards(JwtAuthGuard)
@@ -25,6 +28,7 @@ export class ConversationsController {
       user.tenantId,
       user.userId,
       dto.model,
+      dto.thinkingLevel,
     );
   }
 
@@ -36,6 +40,22 @@ export class ConversationsController {
   @Get(':id')
   findOne(@Param('id') id: string, @CurrentUser() user: AuthUser) {
     return this.conversations.findOne(id, user.tenantId);
+  }
+
+  /** 置顶 / 取消置顶。 */
+  @Patch(':id')
+  update(
+    @Param('id') id: string,
+    @Body() dto: UpdateConversationDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.conversations.setPinned(id, user.tenantId, dto.pinned);
+  }
+
+  /** 删除（软删除；运行中的先停止）。 */
+  @Delete(':id')
+  remove(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.conversations.remove(id, user.tenantId);
   }
 
   /** 主动停止当前运行（幂等；返回 { stopped } 表示本次是否实际停掉了什么）。 */
@@ -56,6 +76,7 @@ export class ConversationsController {
       user.tenantId,
       user.userId,
       dto.model,
+      dto.thinkingLevel,
     );
   }
 

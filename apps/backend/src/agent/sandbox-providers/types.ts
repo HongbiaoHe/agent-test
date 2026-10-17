@@ -112,10 +112,28 @@ export interface SandboxProvider {
     listing: SandboxListing,
     lifecycle: SandboxLifecycle,
   ): Promise<void>;
+  /**
+   * 沙箱端口的上游地址（端口预览反代用，见 preview 模块）：origin = 提供方给该端口的公网地址，
+   * headers = 访问它必须带的请求头（私有沙箱的访问令牌等）。令牌只放请求头、由后端反代代带，
+   * 绝不下发给浏览器。沙箱须已运行。
+   */
+  portUpstream(sandboxId: string, port: number): Promise<PortUpstream>;
+  /**
+   * 让运行中的沙箱保持活跃（用户正在用预览时调用，调用方负责节流）。
+   * 预览流量直接打到提供方的端口地址、或只读文件，提供方都不把它算作活跃
+   * （2026-10-17 实测 E2B：持续访问端口预览，到期时间照样线性减少），不续就会在用户操作中途停机/暂停。
+   */
+  keepAlive(sandboxId: string, lifecycle: SandboxLifecycle): Promise<void>;
   /** 图形桌面（noVNC）。不支持的提供方不提供该字段。 */
   desktop?: {
     /** 启动桌面并返回 noVNC 地址（沙箱须已运行）。 */
     start(sandboxId: string): Promise<string>;
     stop(sandboxId: string): Promise<void>;
   };
+}
+
+/** 沙箱端口的上游：反代把请求转到 `${origin}${path}` 并附上 headers。 */
+export interface PortUpstream {
+  origin: string;
+  headers: Record<string, string>;
 }
