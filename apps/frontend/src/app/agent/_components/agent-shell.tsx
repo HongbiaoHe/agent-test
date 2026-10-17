@@ -3,7 +3,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { useSession } from "next-auth/react";
 import { useRouter } from "next/navigation";
-import { useState } from "react";
+import { useCallback, useState } from "react";
 
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import {
@@ -16,12 +16,17 @@ import {
 import { ChatThread } from "./chat-thread";
 import { ConversationSidebar, SidebarContent } from "./conversation-sidebar";
 import { DetailPanel } from "./detail-panel";
+import {
+  type PreviewTarget,
+  SitePreviewContext,
+  SitePreviewDialog,
+} from "./site-preview";
 import { useConversation } from "../_hooks/use-conversation";
 import { useIsDesktop } from "../_hooks/use-is-desktop";
 import { useModelPreference } from "../_hooks/use-model-preference";
 import { useThinkingPreference } from "../_hooks/use-thinking-preference";
 import { useTheme } from "../_hooks/use-theme";
-import type { ThreadItem } from "../_lib/thread";
+import type { PreviewSpec, ThreadItem } from "../_lib/thread";
 
 /**
  * 会话外壳：会话由 URL（/agent 或 /agent/[id]）驱动，conversationId 作为入参。
@@ -57,7 +62,13 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   });
   const conversations = convQuery.data ?? [];
 
-  const thread = useConversation(conversationId);
+  // 网页预览弹窗（全局一个）：agent 主动触发、消息流卡片、沙箱文件面板三个入口共用
+  const [preview, setPreview] = useState<PreviewTarget | null>(null);
+  const openPreview = useCallback((spec: PreviewSpec) => {
+    setPreview({ ...spec, nonce: Date.now() });
+  }, []);
+
+  const thread = useConversation(conversationId, { onPreview: openPreview });
 
   // 先创建空会话（idle）再进入：成功后跳 /agent/[id]，首条消息走 appendMessage
   const createMut = useMutation({
@@ -152,48 +163,51 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   };
 
   return (
-    <div className="flex h-full w-full overflow-clip">
-      {/* desktop 常驻侧边栏 */}
-      <ConversationSidebar {...sidebarProps} />
+    <SitePreviewContext value={openPreview}>
+      <div className="flex h-full w-full overflow-clip">
+        {/* desktop 常驻侧边栏 */}
+        <ConversationSidebar {...sidebarProps} />
 
-      {/* mobile 会话抽屉 */}
-      <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
-        <SheetContent
-          side="left"
-          showCloseButton={false}
-          className="w-72 gap-0 bg-background p-0"
-        >
-          <SheetTitle className="sr-only">Conversations</SheetTitle>
-          <SidebarContent {...sidebarProps} />
-        </SheetContent>
-      </Sheet>
+        {/* mobile 会话抽屉 */}
+        <Sheet open={sidebarOpen} onOpenChange={setSidebarOpen}>
+          <SheetContent
+            side="left"
+            showCloseButton={false}
+            className="w-72 gap-0 bg-background p-0"
+          >
+            <SheetTitle className="sr-only">Conversations</SheetTitle>
+            <SidebarContent {...sidebarProps} />
+          </SheetContent>
+        </Sheet>
 
-      <ChatThread
-        title={title}
-        conversationId={conversationId}
-        items={thread.items}
-        approval={thread.approval}
-        busy={busy}
-        isLoading={thread.isLoading}
-        isNewChat={!conversationId}
-        creating={createMut.isPending}
-        onNewChat={newChat}
-        activeDetailId={panelOpen ? activeDetailId : null}
-        onOpenDetail={openDetail}
-        onDecide={thread.respondApproval}
-        onSend={handleSend}
-        onStop={handleStop}
-        stopping={stopRequested}
-        model={model}
-        onModelChange={setModel}
-        thinkingLevel={thinkingLevel}
-        onThinkingLevelChange={setThinkingLevel}
-        onOpenSidebar={() => setSidebarOpen(true)}
-      />
+        <ChatThread
+          title={title}
+          conversationId={conversationId}
+          items={thread.items}
+          approval={thread.approval}
+          busy={busy}
+          isLoading={thread.isLoading}
+          isNewChat={!conversationId}
+          creating={createMut.isPending}
+          onNewChat={newChat}
+          activeDetailId={panelOpen ? activeDetailId : null}
+          onOpenDetail={openDetail}
+          onDecide={thread.respondApproval}
+          onSend={handleSend}
+          onStop={handleStop}
+          stopping={stopRequested}
+          model={model}
+          onModelChange={setModel}
+          thinkingLevel={thinkingLevel}
+          onThinkingLevelChange={setThinkingLevel}
+          onOpenSidebar={() => setSidebarOpen(true)}
+        />
 
-      {panelOpen && selectedTool && (
-        <DetailPanel tool={selectedTool} onClose={() => setManualPanel(false)} />
-      )}
-    </div>
+        {panelOpen && selectedTool && (
+          <DetailPanel tool={selectedTool} onClose={() => setManualPanel(false)} />
+        )}
+      </div>
+      <SitePreviewDialog target={preview} onClose={() => setPreview(null)} />
+    </SitePreviewContext>
   );
 }

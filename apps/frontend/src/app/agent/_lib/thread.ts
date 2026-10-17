@@ -38,7 +38,20 @@ export type ThreadItem =
   // 生图/生视频卡片：由 generate_image/generate_video 的 tool_end 在工具 chip **之后**追加。
   // tool chip 本身保留（与 read_file 一样进工具组、参数可见），卡片只承载 generationId 锚点；
   // 卡片状态一律从 React Query（GET /conversations/:id/media）读。
-  | { kind: "media"; id: string; generationId: string; mediaType: "image" | "video" };
+  | { kind: "media"; id: string; generationId: string; mediaType: "image" | "video" }
+  // 网页预览卡片：agent 调 preview_page 成功后（tool_end）在工具 chip 之后追加，可再次打开预览。
+  // 只存「预览什么」——预览地址带短期令牌/会话 id，打开时现签，不进 thread 状态。
+  | { kind: "preview"; id: string; spec: PreviewSpec };
+
+/**
+ * 要预览什么：
+ * - file：工作区里的静态 HTML，path 是工作区相对路径；
+ * - port：沙箱里运行中的 web 服务（支持 vite HMR），path 是应用内路径。
+ * 两种都经后端子域名反代（p-<id>.<基域名>），与主站不同源。
+ */
+export type PreviewSpec =
+  | { kind: "file"; path: string; title: string }
+  | { kind: "port"; port: number; path: string; title: string };
 
 /**
  * 归一事件：DB 历史 Message 与 socket ConversationEvent 都先转成这个形状，
@@ -55,6 +68,35 @@ export interface ThreadState {
   status: string;
   approval: Approval | null;
   nextId: number;
+}
+
+/**
+ * 解析 preview_page 的工具结果（LangChain 把返回值序列化成 JSON 字符串）。
+ * 只认成功形态 `{ status:'opened', path, port?, title }`：带 port 是端口预览，否则是静态页。
+ * 文件不存在 / 端口没在监听等错误结果返回 null（不出卡片、不弹窗）。
+ */
+export function parsePreviewResult(content: unknown): PreviewSpec | null {
+  try {
+    const v: unknown = typeof content === "string" ? JSON.parse(content) : content;
+    if (
+      !v ||
+      typeof v !== "object" ||
+      !("status" in v) ||
+      v.status !== "opened" ||
+      !("path" in v) ||
+      typeof v.path !== "string"
+    ) {
+      return null;
+    }
+    const title = "title" in v && typeof v.title === "string" ? v.title : v.path;
+    if ("port" in v && typeof v.port === "number") {
+      return { kind: "port", port: v.port, path: v.path, title };
+    }
+    return { kind: "file", path: v.path, title };
+  } catch {
+    // 非 JSON：不是成功结果
+  }
+  return null;
 }
 
 /** 工具结果可能是字符串或对象，统一转成可读文本（对象做缩进 JSON），避免渲染成 [object Object]。 */
@@ -198,6 +240,10 @@ export function reduce(input: ThreadState, ev: NormalizedEvent): ThreadState {
         if (generationId && !exists) {
           items.push({ kind: "media", id: id(), generationId, mediaType });
         }
+      }
+      if (name === "preview_page") {
+        const spec = parsePreviewResult(ev.payload?.content);
+        if (spec) items.push({ kind: "preview", id: id(), spec });
       }
       return { ...state, items, nextId };
     }

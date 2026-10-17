@@ -19,6 +19,7 @@ import { parseCommand } from '../commands/parse-command';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
 import { createMediaTools } from '../media/media.tools';
+import { createPreviewPageTool } from '../agent/tools/preview-page.tool';
 import { PrismaService } from '../prisma/prisma.service';
 import { absolutizeRefPaths } from '../skills/skill-files';
 import type { SkillDef } from '../skills/skills.service';
@@ -129,8 +130,8 @@ export class AgentProcessor extends WorkerHost {
         });
       }
 
-      // ②.5 加载技能：起沙箱后、调 LLM 前把技能写入沙箱盘（/skills/<name>/...），
-      // deepagents skills 中间件随后扫 /skills/ 才能读到。上传失败只告警不中断
+      // ②.5 加载技能：起沙箱后、调 LLM 前把技能写入沙箱盘（${skillsDir}/<name>/...），
+      // deepagents skills 中间件随后扫 skillsDir 才能读到。上传失败只告警不中断
       // （沙箱仍可执行命令/读写文件，仅本轮无技能）。无沙箱 → 不提供技能（设计：无沙箱=无技能）。
       if (sandbox) {
         try {
@@ -168,7 +169,11 @@ export class AgentProcessor extends WorkerHost {
         }
         runName = lastLabel || runName;
         input = { messages };
-        systemPromptExtra = await this.buildSkillPrompt(conv.userId, messages);
+        systemPromptExtra = await this.buildSkillPrompt(
+          conv.userId,
+          messages,
+          sandbox?.skillsDir,
+        );
         const mediaInventory = await this.buildMediaInventory(
           conversationId,
           conv.userId,
@@ -184,10 +189,14 @@ export class AgentProcessor extends WorkerHost {
       const activePlan = await this.buildActivePlan(conversationId);
 
       // ③ 装配：media 工具闭包注入——conversationId/userId 由 worker 上下文提供，不经模型传递（无注入风险）
-      const extraTools = createMediaTools(this.media, {
-        conversationId,
-        userId: conv.userId,
-      });
+      // 网页预览工具只在有沙箱时注入：没有沙箱就没有可预览的工作区文件
+      const extraTools = [
+        ...createMediaTools(this.media, {
+          conversationId,
+          userId: conv.userId,
+        }),
+        ...(sandbox ? [createPreviewPageTool(sandbox)] : []),
+      ];
       const agent = await buildAgent({
         checkpointer: this.checkpointer,
         systemPromptExtra,
@@ -195,6 +204,7 @@ export class AgentProcessor extends WorkerHost {
         thinkingLevel: asThinkingLevel(conv.thinkingLevel),
         defaultBackend,
         hasSandbox: !!sandbox,
+        workspace: sandbox?.visibleRoot,
         extraTools,
       });
 
@@ -513,7 +523,7 @@ export class AgentProcessor extends WorkerHost {
    * 多轮续跑时，上一轮 read_file 读到的 SKILL.md 不会回到上下文里：loadHistory 只重放
    * user/assistant 文本消息，read_file 的调用与结果落在 tool_start/tool_end（见 ROLE_BY_TYPE）
    * 被排除，且 deepagents 跑完一轮不在 state 保留对话消息。于是每个后续轮次模型都缺少已激活
-   * 技能的 SKILL.md，只能反复 read_file 同一个 /skills/<name>/SKILL.md（用户观察到的「重复读取」）。
+   * 技能的 SKILL.md，只能反复 read_file 同一个 SKILL.md（用户观察到的「重复读取」）。
    *
    * 这里：若本会话在**之前的轮次**已通过 /command 激活了某技能（即最近一次能解析到已知技能的
    * /command 不是本轮当前请求），就把该技能的 SKILL.md 全文注入系统提示，并显式告知无需再
@@ -524,6 +534,8 @@ export class AgentProcessor extends WorkerHost {
   private async buildSkillPrompt(
     userId: string,
     messages: { role: string; content: string }[],
+    /** 沙箱技能库目录（GuardedSandbox.skillsDir）；无沙箱时沿用默认 /skills 表述 */
+    skillsDir = '/skills',
   ): Promise<string> {
     const users = messages.filter((m) => m.role === 'user');
     if (users.length === 0) return '';
@@ -544,11 +556,11 @@ export class AgentProcessor extends WorkerHost {
 
     const skillMd = active.files['SKILL.md'];
     if (!skillMd) return '';
-    const content = absolutizeRefPaths(active.name, skillMd);
+    const content = absolutizeRefPaths(active.name, skillMd, skillsDir);
     return (
       `\n\n## 已加载技能：${active.name}（SKILL.md 已提供，请勿重复读取）\n` +
       `本会话在之前的轮次已通过 \`/${active.name}\` 激活该技能，其 SKILL.md 全文见下。` +
-      `请直接据此继续，**不要再 read_file 读取 \`/skills/${active.name}/SKILL.md\`**；` +
+      `请直接据此继续，**不要再 read_file 读取 \`${skillsDir}/${active.name}/SKILL.md\`**；` +
       `仅当需要其引用的 references/ 子技能等子文件时，才按需 read_file 那些子文件。\n\n` +
       `<skill name="${active.name}">\n${content}\n</skill>`
     );

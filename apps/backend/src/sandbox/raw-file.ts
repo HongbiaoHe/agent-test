@@ -34,6 +34,18 @@ const MIME_BY_EXT: Record<string, string> = {
   csv: 'text/csv',
   srt: 'text/plain',
   zip: 'application/zip',
+  // 网页预览（静态文件会话，见 preview/site-files.ts）用到的前端资源类型
+  js: 'text/javascript',
+  mjs: 'text/javascript',
+  css: 'text/css',
+  map: 'application/json',
+  xml: 'application/xml',
+  webmanifest: 'application/manifest+json',
+  wasm: 'application/wasm',
+  woff: 'font/woff',
+  woff2: 'font/woff2',
+  ttf: 'font/ttf',
+  otf: 'font/otf',
 };
 
 export function contentTypeFor(path: string): string {

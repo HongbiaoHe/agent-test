@@ -54,6 +54,7 @@ export type { SandboxEgressMode, SandboxNetwork } from './network';
 export type {
   ConnectedSandbox,
   GuardableSandbox,
+  PortUpstream,
   SandboxLifecycle,
   SandboxListing,
   SandboxProvider,

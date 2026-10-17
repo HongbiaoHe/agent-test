@@ -53,6 +53,27 @@ function makeSbx() {
 
 const IDLE = 300_000;
 
+/** commands.run(…, { background: true }) 返回的句柄：wait 的结局由参数决定。 */
+function handle(
+  outcome:
+    | { result: { exitCode: number; stdout: string; stderr: string } }
+    | { error: Error }
+    | 'hang',
+  partial = { stdout: '', stderr: '' },
+) {
+  return {
+    ...partial,
+    wait: jest.fn(() =>
+      outcome === 'hang'
+        ? new Promise(() => {})
+        : 'error' in outcome
+          ? Promise.reject(outcome.error)
+          : Promise.resolve(outcome.result),
+    ),
+    kill: jest.fn().mockResolvedValue(true),
+  };
+}
+
 describe('E2BSandbox', () => {
   let sbx: ReturnType<typeof makeSbx>;
   let e2b: E2BSandbox;
@@ -68,22 +89,39 @@ describe('E2BSandbox', () => {
     expect(e2b.id).toBe('e2b-1');
   });
 
-  it('execute 成功：stdout/stderr 合并、exitCode 透传、放宽命令超时', async () => {
-    sbx.commands.run.mockResolvedValue({
-      exitCode: 0,
-      stdout: 'out',
-      stderr: 'warn',
-    });
+  it('execute 成功：background 模式跑、等 shell 退出；stdout/stderr 合并、exitCode 透传', async () => {
+    sbx.commands.run.mockResolvedValue(
+      handle({ result: { exitCode: 0, stdout: 'out', stderr: 'warn' } }),
+    );
     expect(await e2b.execute('ls')).toEqual({
       output: 'out\nwarn',
       exitCode: 0,
       truncated: false,
     });
-    expect(sbx.commands.run).toHaveBeenCalledWith('ls', { timeoutMs: 240_000 });
+    // 前台 run 会被命令里的后台服务拖到超时，所以一律 background + wait（见文件头）
+    expect(sbx.commands.run).toHaveBeenCalledWith('ls', {
+      background: true,
+      timeoutMs: 0,
+    });
+  });
+
+  it('execute 超时 → kill 并作为结果返回（124 + 已有输出 + 提示），不抛错拖垮整轮', async () => {
+    jest.useFakeTimers();
+    const h = handle('hang', { stdout: 'partial', stderr: '' });
+    sbx.commands.run.mockResolvedValue(h);
+    const p = e2b.execute('npm run dev');
+    await jest.advanceTimersByTimeAsync(240_000);
+    const r = await p;
+    expect(h.kill).toHaveBeenCalled();
+    expect(r.exitCode).toBe(124);
+    expect(r.output).toContain('partial');
+    expect(r.output).toContain('已被终止');
   });
 
   it('execute 非零退出（SDK 抛 CommandExitError）→ 转成结果而非抛错', async () => {
-    sbx.commands.run.mockRejectedValue(new ExitError(3, '', 'boom'));
+    sbx.commands.run.mockResolvedValue(
+      handle({ error: new ExitError(3, '', 'boom') }),
+    );
     expect(await e2b.execute('false')).toEqual({
       output: 'boom',
       exitCode: 3,
@@ -131,7 +169,11 @@ describe('E2BSandbox', () => {
     jest.useFakeTimers({ now: Date.now() });
     sbx = makeSbx();
     e2b = new E2BSandbox(sbx as unknown as Sandbox, IDLE);
-    sbx.commands.run.mockResolvedValue({ exitCode: 0, stdout: '', stderr: '' });
+    sbx.commands.run.mockImplementation(() =>
+      Promise.resolve(
+        handle({ result: { exitCode: 0, stdout: '', stderr: '' } }),
+      ),
+    );
 
     await e2b.execute('a');
     expect(sbx.setTimeout).not.toHaveBeenCalled();

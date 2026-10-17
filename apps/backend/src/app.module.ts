@@ -6,6 +6,7 @@ import { AppController } from './app.controller';
 import { AppService } from './app.service';
 import { EventsModule } from './events/events.module';
 import { PrismaModule } from './prisma/prisma.module';
+import { PreviewModule } from './preview/preview.module';
 import { RedisModule } from './redis/redis.module';
 import { AigcModule } from './aigc/aigc.module';
 import { AuthModule } from './auth/auth.module';
@@ -52,6 +53,7 @@ import { WorkerModule } from './worker/worker.module';
     ConversationsModule,
     MediaModule,
     SandboxModule,
+    PreviewModule,
     UsersModule,
     CanvasModule,
   ],

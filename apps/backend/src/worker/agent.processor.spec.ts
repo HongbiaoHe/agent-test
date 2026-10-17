@@ -1357,6 +1357,78 @@ describe('AgentProcessor 思考深度与思考过程', () => {
   });
 });
 
+describe('AgentProcessor 网页预览工具注入', () => {
+  let lastWorkspace: string | undefined;
+
+  /** 跑一轮空流，返回 buildAgent 收到的工具名。 */
+  async function toolNamesWith(sandbox: unknown) {
+    (getUserSandbox as jest.Mock).mockResolvedValueOnce(sandbox);
+    const prisma = {
+      conversation: {
+        update: jest.fn().mockResolvedValue(makeConv()),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(makeConv()),
+      },
+      message: {
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(0),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+    let names: string[] = [];
+    (buildAgent as jest.Mock).mockImplementation(
+      (o: { extraTools?: { name: string }[]; workspace?: string }) => {
+        names = (o.extraTools ?? []).map((t) => t.name);
+        lastWorkspace = o.workspace;
+        return {
+          stream: jest.fn(async () => (async function* () {})()),
+          getState: jest.fn(async () => ({ tasks: [] })),
+        };
+      },
+    );
+    const proc = new AgentProcessor(
+      prisma,
+      {
+        publish: jest.fn().mockResolvedValue(undefined),
+      } as unknown as StreamService,
+      {
+        effectiveSkillsFor: jest.fn().mockResolvedValue([] as SkillDef[]),
+        getFor: jest.fn().mockResolvedValue(undefined),
+      } as unknown as SkillsService,
+      {},
+      { add: jest.fn().mockResolvedValue({}) } as unknown as Queue,
+      makeMediaService(),
+      new AbortRegistry(),
+      sandboxSettingsMock,
+    );
+    await proc.process({
+      data: { conversationId: 'pv1', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+    return names;
+  }
+
+  it('有沙箱 → 媒体工具之外再注入 preview_page', async () => {
+    expect(await toolNamesWith({ id: 'sbx-1' })).toEqual([
+      'generate_image',
+      'generate_video',
+      'preview_page',
+    ]);
+  });
+
+  it('有沙箱 → buildAgent 收到沙箱的工作区路径（系统提示与技能库目录据此生成）', async () => {
+    await toolNamesWith({ id: 'sbx-1', visibleRoot: '/workspace' });
+    expect(lastWorkspace).toBe('/workspace');
+  });
+
+  it('无沙箱 → 不注入 preview_page（没有可预览的工作区文件）', async () => {
+    expect(await toolNamesWith(null)).toEqual([
+      'generate_image',
+      'generate_video',
+    ]);
+  });
+});
+
 describe('AgentProcessor 主动停止', () => {
   const makeDeps = () => {
     const prisma = {

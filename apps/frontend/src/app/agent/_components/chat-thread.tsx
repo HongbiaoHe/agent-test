@@ -28,6 +28,7 @@ import { isAskUserApproval, QuestionPanel } from "./question-panel";
 import { ChatMessage } from "./chat-message";
 import { MediaCard } from "./media-card";
 import { ModelSwitcher } from "./model-switcher";
+import { PreviewCard } from "./preview-card";
 import { ReasoningBlock } from "./reasoning-block";
 import { SandboxStatusButton } from "./sandbox-panel";
 import { TaskPlanPanel } from "./task-plan-panel";
@@ -278,6 +279,8 @@ export function ChatThread({
                         mediaType={r.item.mediaType}
                       />
                     </div>
+                  ) : r.item.kind === "preview" ? (
+                    <PreviewCard key={r.item.id} spec={r.item.spec} />
                   ) : r.item.kind === "reasoning" ? (
                     <ReasoningBlock key={r.item.id} item={r.item} />
                   ) : (

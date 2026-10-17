@@ -1,7 +1,7 @@
 "use client";
 
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useEffectEvent, useMemo, useState } from "react";
 
 import { getConversation } from "@/lib/api";
 import { respondControl, subscribeConversation } from "@/lib/socket";
@@ -11,6 +11,8 @@ import {
   emptyState,
   foldLive,
   type NormalizedEvent,
+  parsePreviewResult,
+  type PreviewSpec,
 } from "../_lib/thread";
 
 /**
@@ -18,8 +20,14 @@ import {
  * - 历史 ← GET /conversations/:id（基底，含 goal 首气泡）
  * - 实时 ← socket conversation:subscribe（订阅之后的增量事件）
  * 两段折叠进同一个 reducer。提供乐观追加与审批 4 决策。
+ *
+ * onPreview：agent 调 preview_page 成功时**实时**回调（自动弹出预览）。只看 socket 实时事件，
+ * 历史回放与重连对齐不触发——打开旧会话不会把历史里的预览一个个弹出来。
  */
-export function useConversation(conversationId: string | null) {
+export function useConversation(
+  conversationId: string | null,
+  options?: { onPreview?: (spec: PreviewSpec) => void },
+) {
   const queryClient = useQueryClient();
   const [liveEvents, setLiveEvents] = useState<NormalizedEvent[]>([]);
   // 乐观 in-flight：创建/追加后置 true，收到 result/error 置 false（控制发送禁用与状态徽标）
@@ -51,6 +59,11 @@ export function useConversation(conversationId: string | null) {
     setPending(serverStatus === "running" || serverStatus === "queued");
   }
 
+  // effect event：拿最新的 onPreview，又不把它放进订阅 effect 的依赖（否则每次渲染都重订阅）
+  const firePreview = useEffectEvent((spec: PreviewSpec) => {
+    options?.onPreview?.(spec);
+  });
+
   // 订阅实时事件（effect 体内不 setState，只在 socket 回调里更新）
   const refetch = query.refetch; // React Query 的 refetch 引用稳定
   useEffect(() => {
@@ -71,6 +84,14 @@ export function useConversation(conversationId: string | null) {
           { type: e.type, payload: (e.payload ?? {}) as Record<string, unknown> },
         ]);
         if (e.type === "result" || e.type === "error") setPending(false);
+        if (e.type === "tool_end") {
+          const payload = (e.payload ?? {}) as Record<string, unknown>;
+          const spec =
+            payload.name === "preview_page"
+              ? parsePreviewResult(payload.content)
+              : null;
+          if (spec) firePreview(spec);
+        }
       },
       // 重连：回拉历史对齐断线期间漏掉的事件（result 等已持久化），liveEvents 随 dataUpdatedAt 重置
       () => void refetch(),

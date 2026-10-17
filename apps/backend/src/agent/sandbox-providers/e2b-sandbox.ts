@@ -9,6 +9,11 @@
  *  · commands.run 非零退出码会抛 CommandExitError（带 exitCode/stdout/stderr），
  *    不是返回结果——须 catch 后转成 ExecuteResponse，否则 agent 拿不到失败输出。
  *  · commands.run 默认超时 60s（CommandStartOpts.timeoutMs），这里放宽到 4 分钟。
+ *  · 前台 commands.run 会等整棵进程树：命令里后台起的 dev server（`nohup … &`，即使
+ *    `< /dev/null`、setsid）会让它一直挂到超时并抛 TimeoutError（2026-10-17 实测）。
+ *    `background: true` + handle.wait() 只等 shell 本身退出（同一命令 0.5s 返回、服务照常在跑），
+ *    stdout/stderr/退出码（非零照样抛 CommandExitError）与前台一致——所以 execute 一律这样跑，
+ *    超时自己计时、到点 kill，并作为结果返回而不是抛错（抛错会让整轮 agent 直接失败）。
  *  · files.write 自动创建父目录；files.read(path, { format: 'bytes' }) 返回 Uint8Array。
  *  · 读不存在文件抛 FileNotFoundError；读目录抛 InvalidArgumentError（"is a directory"）。
  *  · 沙箱超时是**绝对时长**（不是闲置计时）：到期即按 lifecycle 暂停，执行中的命令
@@ -32,6 +37,8 @@ import {
 
 /** 单条命令超时：须小于闲置超时，保证命令跑完前沙箱不会因到期被暂停。 */
 const COMMAND_TIMEOUT_MS = 4 * 60_000;
+/** 命令超时被我们终止时的退出码（与 coreutils timeout 一致）。 */
+const TIMEOUT_EXIT_CODE = 124;
 /** 续期节流：距上次续期不足该间隔就跳过，避免每个文件操作都打一次 API。 */
 const TOUCH_THROTTLE_MS = 30_000;
 
@@ -68,16 +75,35 @@ export class E2BSandbox extends BaseSandbox {
 
   async execute(command: string): Promise<ExecuteResponse> {
     await this.touch();
+    // background + wait：只等 shell 退出，不被命令里起的后台服务拖住（见文件头）。
+    // timeoutMs: 0 关掉 SDK 的连接超时，改由下面自己计时
+    const handle = await this.sbx.commands.run(command, {
+      background: true,
+      timeoutMs: 0,
+    });
+    let timer: NodeJS.Timeout | undefined;
+    const timedOut = new Promise<'timeout'>((resolve) => {
+      timer = setTimeout(() => resolve('timeout'), COMMAND_TIMEOUT_MS);
+    });
     try {
-      const r = await this.sbx.commands.run(command, {
-        timeoutMs: COMMAND_TIMEOUT_MS,
-      });
+      const r = await Promise.race([handle.wait(), timedOut]);
+      if (r === 'timeout') {
+        await handle.kill().catch(() => false);
+        return toResponse(
+          handle.stdout,
+          `${handle.stderr}\n[命令运行超过 ${COMMAND_TIMEOUT_MS / 1000}s 已被终止；` +
+            '长时间运行的服务请放到后台（如 nohup … > x.log 2>&1 &）]',
+          TIMEOUT_EXIT_CODE,
+        );
+      }
       return toResponse(r.stdout, r.stderr, r.exitCode);
     } catch (e) {
       if (e instanceof CommandExitError) {
         return toResponse(e.stdout, e.stderr, e.exitCode);
       }
       throw e;
+    } finally {
+      clearTimeout(timer);
     }
   }
 

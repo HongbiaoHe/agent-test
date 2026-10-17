@@ -18,13 +18,15 @@ import { sendEmailTool } from './tools/send-email.tool';
  * 必须防注入）；§8.4 外发护栏；§4.6 关键规则独立标题。原稿的全部领域知识
  * （斜杠命令语义 / progressive disclosure / 历史命令不重放）全部保留。
  */
-const BASE_SYSTEM_PROMPT = `你是 Spark：一个带技能库（skills）与虚拟文件系统的任务执行助手，在多轮对话中为用户完成内容创作与自动化任务。你的回复以 Markdown 呈现给用户；工具调用过程用户可见，无需复述。
+const BASE_SYSTEM_PROMPT = (
+  skillsDir: string,
+) => `你是 Spark：一个带技能库（skills）与虚拟文件系统的任务执行助手，在多轮对话中为用户完成内容创作与自动化任务。你的回复以 Markdown 呈现给用户；工具调用过程用户可见，无需复述。
 
 ## 回复语言
 始终以用户当前消息的语言回复（默认简体中文）。代码、命令、文件路径与技术标识符保留原文。
 
 ## 斜杠命令（/command）
-用户**本轮**消息以 \`/<技能名>\`（如 \`/tvc-director ...\`）开头 = 显式指定使用该技能：先用 \`read_file\` 加载 \`/skills/<技能名>/SKILL.md\` 并遵循它，把命令后的文字当作该技能的输入；命令后无内容时按技能说明执行。
+用户**本轮**消息以 \`/<技能名>\`（如 \`/tvc-director ...\`）开头 = 显式指定使用该技能：先用 \`read_file\` 加载 \`${skillsDir}/<技能名>/SKILL.md\` 并遵循它，把命令后的文字当作该技能的输入；命令后无内容时按技能说明执行。
 历史对话里出现过、其后已有助手回复的 \`/\` 命令，表示上一轮已处理完毕——不要重新加载或重新执行，除非用户本轮重新发起。
 
 ## 技能资源按需加载（progressive disclosure）
@@ -48,23 +50,36 @@ SKILL.md 只是技能的入口索引，读完它不等于加载完毕。动手�
 4) 用户要求重新生成时同样先确认提示词再调用。
 可用 referenceVersionIds 引用此前生成的图片（图生图，或作视频首帧）；引用键即工具结果里的 versionId。versionId 必须取自工具结果或资产清单（cuid 格式），不存在就先生成图片。`;
 
-/** 沙箱可用时追加的额外系统提示区块（§2.2 条件门控：无沙箱时模型看不到 execute 守则）。 */
-const SANDBOX_SYSTEM_PROMPT_BLOCK = `
+/**
+ * 沙箱可用时追加的额外系统提示区块（§2.2 条件门控：无沙箱时模型看不到 execute 守则）。
+ * workspace = GuardedSandbox.visibleRoot（正常为 /workspace 软链）：文件工具与 execute 共用
+ * 这一套绝对路径——以前把工作区伪装成 `/`，shell 里的 `/` 却是容器根，模型因此 sudo 往系统
+ * 目录写、文件两边各一份、技能脚本按 /skills/ 执行找不到（见 GuardedSandbox 文件头）。
+ */
+const SANDBOX_SYSTEM_PROMPT_BLOCK = (w: string) => `
 
-## 沙箱执行（execute）
-- 技能 \`scripts/*\` 下的脚本用 \`execute\` 在沙箱内运行；运行前先读 SKILL.md 中对应脚本的运行说明。
+## 工作区与沙箱执行（execute）
+- 你的工作区是 \`${w}\`。文件工具（ls / read_file / write_file / edit_file / glob / grep）与 execute 用**同一套路径**：\`${w}/my-app/index.html\` 在两边指同一个文件。
+- 产物一律放在 \`${w}\` 下（如 \`${w}/my-app/\`）。execute 默认就在 \`${w}\` 里执行，也可以用相对路径（\`my-app/\`）。
+- 不要在 \`${w}\` 以外创建项目文件，不要用 sudo 往系统目录（/、/usr、/opt 等）写东西——那些位置文件工具看不到，用户也拿不到。
+- 向用户描述文件位置时用 \`${w}/...\` 路径，不要提及服务器内部实现路径。
+- \`${w}/skills/\` 是只读技能库，禁止写入。技能 \`scripts/*\` 下的脚本用 execute 运行（如 \`python ${w}/skills/<技能名>/scripts/xxx.py\`）；运行前先读 SKILL.md 中对应脚本的运行说明。
 - 缺依赖就在沙箱内安装（pip install / npm install）。
-- 你的文件工作目录是 \`/\`：ls / read_file / write_file 等文件工具从 \`/\` 开始访问（如 \`ls /\` 列出工作区），产物文件也写到 \`/\` 下；execute 默认已在工作目录执行。
-- 向用户描述文件位置时同样用 \`/\` 下的路径，不要提及服务器内部实现路径。
-- /skills/ 是只读技能库（execute 运行技能脚本用 /skills/ 下的绝对路径），禁止向它写入。
-- 命令失败时把 stderr 关键行告诉用户，不要静默重试超过 2 次。`;
+- 命令失败时把 stderr 关键行告诉用户，不要静默重试超过 2 次。
+- 写出网页、可视化、小游戏等 HTML 产物后，调用 preview_page 为用户弹出可交互预览（入口目录即站点根，资源用相对路径）。
+- 需要 dev server 的前端项目（vite 等）或 web 服务：后台启动并监听 0.0.0.0，确认启动成功后用 preview_page 传 port 预览。`;
 
 /**
- * 构建系统提示：base 文本 VERBATIM，沙箱区块仅在 hasSandbox=true 时追加。
+ * 构建系统提示：沙箱区块仅在有沙箱（workspace 非空）时追加。
+ * 无沙箱时没有技能库，斜杠命令段里的技能路径按默认 /skills 表述即可（不会命中任何文件）。
  * 后续任务（提示优化 Task）可在此函数里调整措辞，不需要改业务逻辑。
  */
-export function buildSystemPrompt(hasSandbox: boolean): string {
-  return BASE_SYSTEM_PROMPT + (hasSandbox ? SANDBOX_SYSTEM_PROMPT_BLOCK : '');
+export function buildSystemPrompt(workspace?: string): string {
+  if (!workspace) return BASE_SYSTEM_PROMPT('/skills');
+  return (
+    BASE_SYSTEM_PROMPT(`${workspace}/skills`) +
+    SANDBOX_SYSTEM_PROMPT_BLOCK(workspace)
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -157,11 +172,16 @@ export interface BuildAgentOptions {
    */
   defaultBackend?: unknown;
   /**
-   * 是否为沙箱模式（对应 Daytona 沙箱 backend）。
+   * 是否为沙箱模式（对应 Daytona / E2B 沙箱 backend）。
    * true → 追加沙箱系统提示区块（execute 守则）。技能文件由 worker 在调用前写入沙箱盘。
    * 缺省 = false。
    */
   hasSandbox?: boolean;
+  /**
+   * 沙箱模式下 agent 眼中的工作区路径（GuardedSandbox.visibleRoot，正常为 /workspace）。
+   * 系统提示里的路径与技能库扫描目录（`${workspace}/skills/`）都由它决定。
+   */
+  workspace?: string;
   /**
    * 业务工具（如 media 生图/生视频）由 worker 闭包注入——agent 模块不依赖业务模块，
    * 耦合点收敛在 worker，保持 agent.factory 的低耦合边界。
@@ -189,10 +209,10 @@ export interface BuiltAgent {
 /**
  * 装配主 agent：多提供商模型（initChatModel 动态切换）+ 内置工具 + get_weather + 需审批的 send_email。
  *
- * Skills 来源：`/skills/` 直接读 backend（沙箱模式下即沙箱磁盘的 `${workspaceRoot}/skills/`）。
+ * Skills 来源：`${workspace}/skills/` 直接读 backend（沙箱模式下即沙箱磁盘的 `${workspaceRoot}/skills/`）。
  *   技能文件由 worker 在起沙箱后、调 LLM 前用 uploadSkillsToSandbox 写入沙箱盘（见 agent.processor），
- *   deepagents 的 skills 中间件在 beforeAgent 扫 `/skills/` 即可读到。
- *   无沙箱（StateBackend 兜底）时 `/skills/` 为空 → 不提供任何技能（设计：无沙箱=无技能）。
+ *   deepagents 的 skills 中间件在 beforeAgent 扫该目录即可读到。
+ *   无沙箱（StateBackend 兜底）时为空 → 不提供任何技能（设计：无沙箱=无技能）。
  *
  * defaultBackend / hasSandbox 均可选，缺省 = new StateBackend()（无沙箱，无技能、无 execute）。
  */
@@ -201,7 +221,7 @@ export async function buildAgent(
 ): Promise<BuiltAgent> {
   const model = await resolveChatModel(opts.model, opts.thinkingLevel);
 
-  // backend = 沙箱（GuardedSandbox）或 StateBackend 兜底；/skills/ 不再单独路由到内存 store，
+  // backend = 沙箱（GuardedSandbox）或 StateBackend 兜底；技能库不单独路由到内存 store，
   // 直接读 backend：沙箱模式落在 ${workspaceRoot}/skills/，无沙箱则为空（不提供技能）。
   const backend =
     (opts.defaultBackend as StateBackend | undefined) ?? new StateBackend();
@@ -212,7 +232,7 @@ export async function buildAgent(
   return createDeepAgent({
     model,
     systemPrompt:
-      buildSystemPrompt(opts.hasSandbox ?? false) +
+      buildSystemPrompt(opts.hasSandbox ? opts.workspace : undefined) +
       (opts.systemPromptExtra ?? ''),
     tools: [
       getWeatherTool,
@@ -221,7 +241,8 @@ export async function buildAgent(
       ...((opts.extraTools ?? []) as never[]),
     ],
     backend,
-    skills: ['/skills/'],
+    // 技能库扫描目录：沙箱工作区下的 skills/（无沙箱时 StateBackend 为空，不提供技能）
+    skills: [opts.workspace ? `${opts.workspace}/skills/` : '/skills/'],
     contextSchema,
     // 顺序即 recency：数组靠后 = 更内层 = systemMessage.concat 更晚 = 离模型更近。
     middleware,

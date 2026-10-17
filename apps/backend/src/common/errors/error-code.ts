@@ -84,6 +84,20 @@ export const ErrorCodes = {
     message:
       "Outbound network on this Daytona account is managed by Daytona (Tier 1–2) and can't be limited per sandbox. Use E2B for outbound limits.",
   },
+  PREVIEW_SANDBOX_NOT_RUNNING: {
+    code: 40011,
+    message:
+      'Sandbox is not running; start the service in a conversation, then open the preview again',
+  },
+  PREVIEW_NOT_FOUND: {
+    code: 40013,
+    message: 'Preview not found or expired',
+  },
+  PREVIEW_PORT_NOT_ALLOWED: {
+    code: 40012,
+    message:
+      'This port is reserved by the sandbox provider and cannot be previewed',
+  },
   INVALID_PATH: {
     code: 40007,
     message:
