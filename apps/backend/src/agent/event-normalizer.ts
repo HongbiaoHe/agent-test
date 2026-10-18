@@ -40,7 +40,13 @@ function normalizeMessage(data: unknown): RawEvent | null {
   if (isToolMessage(msg)) {
     return {
       type: 'tool_end',
-      payload: { name: msg.name, content: msg.content, status: msg.status },
+      // toolCallId：前端据此与对应的 tool_start 配对（同名工具并发 / 审批续跑重发时按名字配不准）
+      payload: {
+        name: msg.name,
+        content: msg.content,
+        status: msg.status,
+        toolCallId: msg.tool_call_id,
+      },
     };
   }
   if (isAIMessage(msg)) {
@@ -160,8 +166,12 @@ function normalizeUpdate(data: unknown): RawEvent | null {
         if (last.tool_calls && last.tool_calls.length) {
           return {
             type: 'tool_start',
+            // 带上 tool_call id：审批（HITL）续跑时中间件会把同一条 AIMessage 改写 tool_calls 后再发一次
+            // （langchain hitl.js：edit 保留原 id），updates 流里就会出现同一个调用的第二次 tool_start；
+            // 前端按 id 合并成一个 chip，否则先出的那个永远等不到 tool_end、一直转圈。
             payload: {
               tool_calls: last.tool_calls.map((c) => ({
+                id: c.id,
                 name: c.name,
                 args: c.args,
               })),

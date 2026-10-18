@@ -49,6 +49,8 @@ export type ChatItem =
   | {
       id: string;
       kind: "tool";
+      /** 后端 tool_call id（旧历史没有）：tool_start 合并、tool_end 配对都按它 */
+      callId?: string;
       name: string;
       done: boolean;
       args?: Record<string, unknown>;
@@ -210,6 +212,7 @@ export function reduce(input: ChatState, ev: ChatEvent): ChatState {
     case "tool_start": {
       const calls =
         (ev.payload.tool_calls as {
+          id?: string;
           name?: string;
           args?: Record<string, unknown>;
         }[]) ?? [];
@@ -218,6 +221,19 @@ export function reduce(input: ChatState, ev: ChatEvent): ChatState {
         // write_todos 只由「任务计划」卡片呈现（plan_update），且它不发 tool_end 会永远转圈——
         // 不渲染成 tool 卡片，避免刷屏与假 loading。
         if (c.name === "write_todos") continue;
+        // 审批（HITL）续跑时中间件会把同一个调用改写参数后再发一次 tool_start（id 不变；
+        // 续跑是新的一次 run，后端按 AIMessage id 的去重集合挡不住它）：合并进已有卡片、换成
+        // 最终参数，而不是再插一张永远等不到 tool_end 的卡片。
+        const existing = c.id
+          ? s.items.findIndex((it) => it.kind === "tool" && it.callId === c.id)
+          : -1;
+        if (existing >= 0) {
+          const items = s.items.slice();
+          const it = items[existing];
+          if (it.kind === "tool") items[existing] = { ...it, args: c.args };
+          s = { ...s, items };
+          continue;
+        }
         // 防御性去重：与上一条工具卡片 name+args 完全相同 → 跳过（兜底 updates echo 的历史脏数据；
         // 后端已按 AIMessage id 去重，新数据不会重复）。
         const last = s.items[s.items.length - 1];
@@ -235,6 +251,7 @@ export function reduce(input: ChatState, ev: ChatEvent): ChatState {
             {
               id: `i${s.nextId}`,
               kind: "tool",
+              callId: c.id,
               name: c.name ?? "tool",
               done: false,
               args: c.args,
@@ -247,13 +264,20 @@ export function reduce(input: ChatState, ev: ChatEvent): ChatState {
     }
     case "tool_end": {
       const name = String(ev.payload.name ?? "");
+      const callId = ev.payload.toolCallId;
       const content = ev.payload.content;
       const result =
         typeof content === "string" ? content : JSON.stringify(content ?? "");
       const items = state.items.slice();
+      // 有 toolCallId 按它精确配对；旧历史没有，退回「同名、最近一个未完成」
       for (let i = items.length - 1; i >= 0; i--) {
         const it = items[i];
-        if (it.kind === "tool" && it.name === name && !it.done) {
+        if (it.kind !== "tool" || it.done) continue;
+        const match =
+          typeof callId === "string" && it.callId
+            ? it.callId === callId
+            : it.name === name;
+        if (match) {
           items[i] = { ...it, done: true, result };
           break;
         }

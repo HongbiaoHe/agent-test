@@ -6,7 +6,16 @@ import {
   useQueryClient,
   type InfiniteData,
 } from "@tanstack/react-query";
-import { ArrowLeft, ArrowRight, LayoutGrid, Loader2, Pencil, Plus } from "lucide-react";
+import {
+  ArrowLeft,
+  ArrowRight,
+  LayoutGrid,
+  Loader2,
+  Pencil,
+  Pin,
+  PinOff,
+  Plus,
+} from "lucide-react";
 import Link from "next/link";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
@@ -30,6 +39,7 @@ import {
   relativeTime,
 } from "../_lib/canvas-status";
 import { PHASE_UI } from "../_lib/thinking-phase";
+import { useCanvasPin } from "../_hooks/use-canvas-pin";
 
 import { ThinkingGrid } from "./thinking-indicator";
 
@@ -110,6 +120,8 @@ export function CanvasGallery() {
     },
     onSettled: () => void qc.invalidateQueries({ queryKey: ["canvas-list"] }),
   });
+
+  const pinMut = useCanvasPin();
 
   // 内联重命名的本地态；finishRef 防止 Esc/Enter 与随后的 blur 重复触发
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -314,6 +326,8 @@ export function CanvasGallery() {
                       onClick={() => router.push(`/canvas/${c.id}`)}
                       className={cn(
                         "flex w-full items-center gap-4 rounded-lg px-3 py-3.5 text-left transition-colors duration-200",
+                        // 触屏没有悬停，行内操作常显：给它们让出位置，别压在时间列上
+                        "[@media(pointer:coarse)]:pr-20",
                         "-mx-3 hover:bg-accent/60 focus-visible:bg-accent/60 focus-visible:outline-none",
                         "motion-reduce:transition-none",
                       )}
@@ -322,8 +336,16 @@ export function CanvasGallery() {
                       <span className="w-8 shrink-0 font-mono text-xs tabular-nums text-muted-foreground/60 transition-colors group-hover:text-foreground motion-reduce:transition-none">
                         {String(i + 1).padStart(3, "0")}
                       </span>
-                      <span className="min-w-0 flex-1 truncate text-[15px] font-medium text-foreground">
-                        {c.title}
+                      <span className="flex min-w-0 flex-1 items-center gap-2">
+                        {c.pinnedAt && (
+                          <Pin
+                            aria-label="Pinned"
+                            className="size-3.5 shrink-0 text-muted-foreground"
+                          />
+                        )}
+                        <span className="truncate text-[15px] font-medium text-foreground">
+                          {c.title}
+                        </span>
                       </span>
 
                       {/* 状态：点 + 人话。光靠颜色分不了七种状态（ux: color-not-only） */}
@@ -341,7 +363,8 @@ export function CanvasGallery() {
                         </span>
                       </span>
 
-                      <span className="w-16 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground">
+                      {/* 悬停 / 聚焦时行内操作会盖在这一列上：先把时间淡出让位（触屏下操作常显、已另外留出位置） */}
+                      <span className="w-16 shrink-0 text-right font-mono text-[11px] tabular-nums text-muted-foreground transition-opacity group-focus-within:opacity-0 group-hover:opacity-0 motion-reduce:transition-none [@media(pointer:coarse)]:opacity-100">
                         {relativeTime(c.updatedAt)}
                       </span>
 
@@ -349,16 +372,34 @@ export function CanvasGallery() {
                       <ArrowRight className="size-4 shrink-0 -translate-x-1 text-muted-foreground opacity-0 transition-all duration-200 group-focus-within:translate-x-0 group-focus-within:opacity-100 group-hover:translate-x-0 group-hover:opacity-100 motion-reduce:transition-none" />
                     </button>
 
-                    {/* 重命名压在行右侧偏内的位置，避开箭头 */}
-                    <button
-                      type="button"
-                      onClick={() => startEdit(c)}
-                      aria-label={`Rename ${c.title}`}
-                      title="Rename"
-                      className="absolute right-7 top-1/2 flex size-7 -translate-y-1/2 items-center justify-center rounded-md text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100 motion-reduce:transition-none"
-                    >
-                      <Pencil className="size-3.5" />
-                    </button>
+                    {/* 行内操作（置顶 / 重命名）压在行右侧偏内的位置，避开箭头；
+                        悬停或键盘聚焦时出现，触屏常显 */}
+                    <div className="absolute right-10 top-1/2 flex -translate-y-1/2 items-center gap-0.5 opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 motion-reduce:transition-none [@media(pointer:coarse)]:opacity-100">
+                      <button
+                        type="button"
+                        onClick={() =>
+                          pinMut.mutate({ id: c.id, pinned: !c.pinnedAt })
+                        }
+                        aria-label={`${c.pinnedAt ? "Unpin" : "Pin"} ${c.title}`}
+                        title={c.pinnedAt ? "Unpin" : "Pin"}
+                        className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                      >
+                        {c.pinnedAt ? (
+                          <PinOff className="size-3.5" />
+                        ) : (
+                          <Pin className="size-3.5" />
+                        )}
+                      </button>
+                      <button
+                        type="button"
+                        onClick={() => startEdit(c)}
+                        aria-label={`Rename ${c.title}`}
+                        title="Rename"
+                        className="flex size-7 items-center justify-center rounded-md text-muted-foreground hover:bg-accent hover:text-foreground focus-visible:outline-none focus-visible:ring-3 focus-visible:ring-ring/50"
+                      >
+                        <Pencil className="size-3.5" />
+                      </button>
+                    </div>
                   </div>
                 )}
               </li>

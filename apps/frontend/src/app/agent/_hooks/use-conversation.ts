@@ -3,10 +3,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useEffectEvent, useMemo, useState } from "react";
 
-import { getConversation } from "@/lib/api";
+import { getConversation, type MediaGeneration } from "@/lib/api";
 import { respondControl, subscribeConversation } from "@/lib/socket";
 
 import {
+  applyMediaUpdate,
   buildBaseState,
   emptyState,
   foldLive,
@@ -72,11 +73,14 @@ export function useConversation(
       conversationId,
       (e) => {
         // media_update 不进 thread reducer（卡片状态一律从 media query 读，设计 §前端职责）：
-        // 只做一件事——invalidate media query，触发卡片重新拉最新版本状态。
+        // 先把事件里的状态就地写进缓存（状态变化立刻可见，不等 refetch 往返），
+        // 再 invalidate 拉全量（新建的生成位、产物文件名等事件里没有的字段）。
         if (e.type === "media_update") {
-          void queryClient.invalidateQueries({
-            queryKey: ["conversation-media", conversationId],
-          });
+          const key = ["conversation-media", conversationId];
+          queryClient.setQueryData<MediaGeneration[]>(key, (prev) =>
+            prev ? applyMediaUpdate(prev, e.payload) : prev,
+          );
+          void queryClient.invalidateQueries({ queryKey: key });
           return;
         }
         setLiveEvents((prev) => [

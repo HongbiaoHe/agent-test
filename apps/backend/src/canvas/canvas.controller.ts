@@ -17,7 +17,7 @@ import { AppendCanvasMessageDto } from './dto/append-message.dto';
 import { ApplyOpDto } from './dto/apply-op.dto';
 import { CreateCanvasDto } from './dto/create-canvas.dto';
 import { MoveNodeDto } from './dto/move-node.dto';
-import { RenameCanvasDto } from './dto/rename-canvas.dto';
+import { UpdateCanvasDto } from './dto/update-canvas.dto';
 import { SetFocusDto } from './dto/set-focus.dto';
 
 @Controller('canvas')
@@ -98,14 +98,14 @@ export class CanvasController {
     );
   }
 
-  /** 重命名画布（仅改标题）。 */
+  /** 重命名 / 置顶（只改传了的字段）。 */
   @Patch(':id')
-  rename(
+  update(
     @Param('id') id: string,
-    @Body() dto: RenameCanvasDto,
+    @Body() dto: UpdateCanvasDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.canvas.rename(id, dto.title, user.tenantId);
+    return this.canvas.update(id, user.tenantId, dto);
   }
 
   /**

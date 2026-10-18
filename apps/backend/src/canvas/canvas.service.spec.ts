@@ -554,7 +554,12 @@ describe('CanvasService', () => {
       expect(mockPrisma.canvasSession.findMany).toHaveBeenCalledWith(
         expect.objectContaining({
           take: 3,
-          orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
+          orderBy: [
+            { pinnedAt: 'desc' },
+            { updatedAt: 'desc' },
+            { id: 'desc' },
+          ],
+          select: expect.objectContaining({ pinnedAt: true }),
         }),
       );
     });
@@ -572,6 +577,59 @@ describe('CanvasService', () => {
       expect(mockPrisma.canvasSession.findMany).toHaveBeenCalledWith(
         expect.objectContaining({ cursor: { id: 'c9' }, skip: 1 }),
       );
+    });
+  });
+
+  describe('update（重命名 / 置顶）', () => {
+    const updated = new Date('2026-10-01T00:00:00Z');
+    beforeEach(() => {
+      mockPrisma.canvasSession.findFirst.mockResolvedValue({
+        id: 's1',
+        userId: 'u1',
+        status: 'idle',
+        revision: 0,
+      });
+      mockPrisma.canvasSession.findUnique.mockResolvedValue({
+        updatedAt: updated,
+      });
+    });
+    const dataOf = (n: number) =>
+      (
+        mockPrisma.canvasSession.update.mock.calls[n][0] as {
+          data: Record<string, unknown>;
+        }
+      ).data;
+
+    it('置顶写入当前时刻、取消置顶清空，且都保留原 updatedAt、不碰标题', async () => {
+      await service.update('s1', 't1', { pinned: true });
+      await service.update('s1', 't1', { pinned: false });
+      expect(dataOf(0).pinnedAt).toBeInstanceOf(Date);
+      expect(dataOf(0).updatedAt).toBe(updated);
+      expect(dataOf(0)).not.toHaveProperty('title');
+      expect(dataOf(1)).toEqual({ pinnedAt: null, updatedAt: updated });
+    });
+
+    it('重命名去掉首尾空白；不碰置顶，也不保留 updatedAt（改名算一次更新）', async () => {
+      await service.update('s1', 't1', { title: '  海报工作流  ' });
+      expect(dataOf(0)).toEqual({ title: '海报工作流' });
+      expect(mockPrisma.canvasSession.findUnique).not.toHaveBeenCalled();
+    });
+
+    it('空白标题拒绝，不写库', async () => {
+      await expect(
+        service.update('s1', 't1', { title: '   ' }),
+      ).rejects.toMatchObject({
+        errCode: ErrorCodes.CANVAS_TITLE_EMPTY.code,
+      });
+      expect(mockPrisma.canvasSession.update).not.toHaveBeenCalled();
+    });
+
+    it('别人的画布：404，不写库', async () => {
+      mockPrisma.canvasSession.findFirst.mockResolvedValue(null);
+      await expect(
+        service.update('x', 't1', { pinned: true }),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_NOT_FOUND.code });
+      expect(mockPrisma.canvasSession.update).not.toHaveBeenCalled();
     });
   });
 

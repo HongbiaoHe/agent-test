@@ -1,6 +1,14 @@
 import { Injectable, Logger } from '@nestjs/common';
 import { AigcClient } from './aigc.client';
 import {
+  agentDerivedDims,
+  resolveAgentModel,
+  toAgentCatalog,
+  validateAgentRequest,
+  type AgentCatalogView,
+  type AgentParamIssue,
+} from './aigc.agent';
+import {
   buildTaskBody,
   defaultConfig,
   derivedDims,
@@ -40,6 +48,44 @@ export class AigcService {
   /** 某类型的能力目录（含默认模型）。 */
   async catalog(type: AigcMediaType): Promise<AigcCatalog> {
     return toCatalog(type, await this.channels(type));
+  }
+
+  /** 给对话 agent 看的精简目录（list_media_models 工具的返回）。 */
+  async agentCatalog(type: AigcMediaType): Promise<AgentCatalogView> {
+    return toAgentCatalog(type, await this.channels(type));
+  }
+
+  /**
+   * agent 发起生成前的严格校验（见 aigc.agent）：解析模型名、逐项校验档位/提示词/参考图张数。
+   * 不合法时返回 issues 交回模型改参，**不**像 resolveConfig 那样静默回落或收窄。
+   */
+  async prepareAgentGeneration(
+    type: AigcMediaType,
+    req: {
+      model?: string;
+      channel?: string;
+      params?: Record<string, string>;
+      prompt: string;
+      referenceCount: number;
+    },
+  ): Promise<
+    | { ok: true; config: AigcMediaConfig }
+    | { ok: false; issues: AgentParamIssue[] }
+  > {
+    const resolved = resolveAgentModel(await this.channels(type), req);
+    if ('issue' in resolved) return { ok: false, issues: [resolved.issue] };
+    const { channel, model } = resolved;
+    const checked = validateAgentRequest(model, {
+      params: req.params ?? {},
+      prompt: req.prompt,
+      referenceCount: req.referenceCount,
+      derived: agentDerivedDims(type, model.model_alias, req.referenceCount),
+    });
+    if (!checked.ok) return checked;
+    return {
+      ok: true,
+      config: { channel, model: model.model_alias, params: checked.params },
+    };
   }
 
   /**

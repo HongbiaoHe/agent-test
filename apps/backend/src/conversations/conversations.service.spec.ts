@@ -348,26 +348,28 @@ describe('ConversationsService – 置顶与删除', () => {
 
   afterEach(() => jest.clearAllMocks());
 
-  it('列表只含未删除的会话，置顶在前、再按创建时间倒序，并带回 pinnedAt', async () => {
+  it('列表只含未删除的会话，置顶在前、再按创建时间倒序，并带回 pinnedAt / title', async () => {
     prisma.conversation.findMany.mockResolvedValue([]);
     await service.list('tenant-1');
     expect(prisma.conversation.findMany).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { tenantId: 'tenant-1', deletedAt: null },
         orderBy: [{ pinnedAt: 'desc' }, { createdAt: 'desc' }],
-        select: expect.objectContaining({ pinnedAt: true }),
+        select: expect.objectContaining({ pinnedAt: true, title: true }),
       }),
     );
   });
 
   it('置顶写入当前时刻，取消置顶清空；都先校验会话归属', async () => {
-    await service.setPinned('conv-1', 'tenant-1', true);
-    await service.setPinned('conv-1', 'tenant-1', false);
+    await service.update('conv-1', 'tenant-1', { pinned: true });
+    await service.update('conv-1', 'tenant-1', { pinned: false });
     const [pin, unpin] = prisma.conversation.update.mock.calls.map(
-      (c) => (c[0] as { data: { pinnedAt: Date | null } }).data.pinnedAt,
+      (c) => (c[0] as { data: { pinnedAt: Date | null } }).data,
     );
-    expect(pin).toBeInstanceOf(Date);
-    expect(unpin).toBeNull();
+    expect(pin.pinnedAt).toBeInstanceOf(Date);
+    expect(unpin.pinnedAt).toBeNull();
+    // 只改传了的字段：置顶不碰标题
+    expect(pin).not.toHaveProperty('title');
     expect(prisma.conversation.findFirst).toHaveBeenCalledWith(
       expect.objectContaining({
         where: { id: 'conv-1', tenantId: 'tenant-1', deletedAt: null },
@@ -375,10 +377,30 @@ describe('ConversationsService – 置顶与删除', () => {
     );
   });
 
-  it('别人的 / 已删除的会话：置顶与删除都 404，不写库', async () => {
+  it('重命名：去掉首尾空白后写入；空串清除为 NULL；不碰置顶', async () => {
+    await service.update('conv-1', 'tenant-1', { title: '  秋日读书会海报  ' });
+    await service.update('conv-1', 'tenant-1', { title: '   ' });
+    const [named, cleared] = prisma.conversation.update.mock.calls.map(
+      (c) => (c[0] as { data: Record<string, unknown> }).data,
+    );
+    expect(named).toEqual({ title: '秋日读书会海报' });
+    expect(cleared).toEqual({ title: null });
+    expect(prisma.conversation.update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        select: { id: true, pinnedAt: true, title: true },
+      }),
+    );
+  });
+
+  it('别人的 / 已删除的会话：置顶、重命名与删除都 404，不写库', async () => {
     prisma.conversation.findFirst.mockResolvedValue(null);
     await expect(
-      service.setPinned('x', 'tenant-1', true),
+      service.update('x', 'tenant-1', { pinned: true }),
+    ).rejects.toMatchObject({
+      errCode: ErrorCodes.CONVERSATION_NOT_FOUND.code,
+    });
+    await expect(
+      service.update('x', 'tenant-1', { title: '新名字' }),
     ).rejects.toMatchObject({
       errCode: ErrorCodes.CONVERSATION_NOT_FOUND.code,
     });

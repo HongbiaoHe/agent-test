@@ -1,6 +1,6 @@
 "use client";
 
-import { AlertTriangle, Clock, Film, ImageOff, Loader2 } from "lucide-react";
+import { AlertTriangle, Ban, Clock, Film, ImageOff, Loader2 } from "lucide-react";
 import { useContext, useEffect, useRef } from "react";
 
 import {
@@ -300,6 +300,11 @@ function nodeState(s: NodeInputSource): {
         icon: <AlertTriangle className="size-3.5" aria-hidden />,
         text: "Failed",
         tone: "danger",
+      };
+    case "cancelled":
+      return {
+        icon: <Ban className="size-3.5" aria-hidden />,
+        text: "Cancelled",
       };
     default:
       return {

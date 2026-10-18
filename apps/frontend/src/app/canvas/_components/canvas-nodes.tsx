@@ -9,6 +9,7 @@ import {
 } from "@xyflow/react";
 import {
   AlertTriangle,
+  Ban,
   Check,
   Clock,
   Copy,
@@ -733,12 +734,20 @@ function MediaGenNode({
   // 变成一边转圈一边写着「Ready — ask the agent to render it」。
   let status: React.ReactNode = null;
   if (!done && !busyNow) {
-    if (data.mediaStatus === "failed") {
+    if (data.mediaStatus === "failed" || data.mediaStatus === "cancelled") {
+      // cancelled = 用户停止：不是错误，用中性色，但同样可以重试
+      const cancelled = data.mediaStatus === "cancelled";
       status = (
         <StatusLine
-          icon={<AlertTriangle className="size-3" aria-hidden />}
-          tone="danger"
-          text="Render failed"
+          icon={
+            cancelled ? (
+              <Ban className="size-3" aria-hidden />
+            ) : (
+              <AlertTriangle className="size-3" aria-hidden />
+            )
+          }
+          tone={cancelled ? "muted" : "danger"}
+          text={cancelled ? "Render cancelled" : "Render failed"}
           action={
             readOnly || !data.mediaGenerationId
               ? undefined
@@ -927,12 +936,19 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
   // 在跑时整条状态条都不出（否则会掉进末尾的分支，一边合成一边还给一个 Merge 按钮）
   let status: React.ReactNode = null;
   if (!done && !busyNow) {
-    if (d.mediaStatus === "failed") {
+    if (d.mediaStatus === "failed" || d.mediaStatus === "cancelled") {
+      const cancelled = d.mediaStatus === "cancelled";
       status = (
         <StatusLine
-          icon={<AlertTriangle className="size-3" aria-hidden />}
-          tone="danger"
-          text="Merge failed"
+          icon={
+            cancelled ? (
+              <Ban className="size-3" aria-hidden />
+            ) : (
+              <AlertTriangle className="size-3" aria-hidden />
+            )
+          }
+          tone={cancelled ? "muted" : "danger"}
+          text={cancelled ? "Merge cancelled" : "Merge failed"}
           action={
             readOnly
               ? undefined

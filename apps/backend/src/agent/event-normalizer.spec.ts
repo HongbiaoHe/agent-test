@@ -24,7 +24,12 @@ describe('normalize', () => {
     ]);
     expect(ev).toEqual({
       type: 'tool_end',
-      payload: { name: 'get_weather', content: '{}', status: 'success' },
+      payload: {
+        name: 'get_weather',
+        content: '{}',
+        status: 'success',
+        toolCallId: 'tc-1',
+      },
     });
   });
 
@@ -135,7 +140,9 @@ describe('normalize', () => {
     expect(ev).toEqual({
       type: 'tool_start',
       payload: {
-        tool_calls: [{ name: 'get_weather', args: { city: '上海' } }],
+        tool_calls: [
+          { id: 'call-1', name: 'get_weather', args: { city: '上海' } },
+        ],
       },
     });
   });

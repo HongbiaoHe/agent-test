@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   AlertCircle,
+  Ban,
   CheckCircle2,
   ChevronDown,
   ChevronLeft,
@@ -13,7 +14,7 @@ import {
   Video as VideoIcon,
   X,
 } from "lucide-react";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -34,29 +35,147 @@ const TYPE_META = {
   video: { Icon: VideoIcon, label: "Video", tool: "generate_video" },
 } as const;
 
+/** objectURL 引用计数：同一个 URL 此刻被几个已挂载的组件用着。 */
+const objectUrlRefs = new Map<string, number>();
+
 /**
- * 对话内生图/生视频卡片。
+ * blob → objectURL，组件真正卸载后才 revoke。
  *
- * 数据流：卡片状态的唯一数据源是 React Query（GET /conversations/:id/media）；
- * 锚点（thread item）只带 generationId，状态全从 query 里按 id 取（设计 §前端职责）。
- * live media_update 由 use-conversation 钩子负责 invalidate 该 query，卡片自动刷新。
+ * 不能在卸载 effect 里直接 revoke：开发模式 StrictMode 会把 effect 先清理一次再重跑，清理时吊销的
+ * 正是这次渲染已交给 <img> 的 URL，而重跑时 useMemo 不会再建新的。blob 已在缓存里时（参考图那张卡片
+ * 先加载过），新卡片一挂载就拿到 URL、随即被吊销 → 缩略图成坏图，刷新才好（2026-10-18 无头 Chrome 复现）。
+ * 所以 effect 里只登记 / 减引用，延到下一个宏任务再看：StrictMode 重跑已把计数加回去就不吊销。
+ * 渲染期仍用 useMemo 派生（set-state-in-effect 是 error 级，不能在 effect 里 setUrl）。
  */
-export function MediaCard({
-  conversationId,
-  generationId,
-  mediaType,
-}: {
-  conversationId: string;
-  generationId: string;
-  mediaType: "image" | "video";
-}) {
-  const { data, isLoading, refetch } = useQuery({
+function useObjectUrl(blob: Blob | undefined): string | null {
+  const url = useMemo(() => (blob ? URL.createObjectURL(blob) : null), [blob]);
+  useEffect(() => {
+    if (!url) return;
+    objectUrlRefs.set(url, (objectUrlRefs.get(url) ?? 0) + 1);
+    return () => {
+      objectUrlRefs.set(url, (objectUrlRefs.get(url) ?? 1) - 1);
+      setTimeout(() => {
+        if ((objectUrlRefs.get(url) ?? 0) > 0) return;
+        objectUrlRefs.delete(url);
+        URL.revokeObjectURL(url);
+      }, 0);
+    };
+  }, [url]);
+  return url;
+}
+
+/**
+ * 会话媒体列表（卡片状态的唯一数据源）。单卡与批量组共用同一 query key，
+ * use-conversation 收到 media_update 时就地改状态 + invalidate 的也是它。
+ */
+function useConversationMedia(conversationId: string) {
+  return useQuery({
     queryKey: ["conversation-media", conversationId],
     queryFn: () => listConversationMedia(conversationId),
     // 卡片首次出现时（live 锚点先于 query 落地）可能尚无该 generation，靠 media_update invalidate 补齐。
     staleTime: 0,
     refetchOnWindowFocus: false,
   });
+}
+
+/**
+ * 一次 generate_* 调用产出的卡片：1 个 → 单卡；批量（count>1）→ 组头（提示词/模型/参数/进度只写一次）
+ * + 网格紧凑卡，每张卡各自独立显示状态、各自可重新生成。
+ */
+export function MediaGroup({
+  conversationId,
+  generationIds,
+  mediaType,
+}: {
+  conversationId: string;
+  generationIds: string[];
+  mediaType: "image" | "video";
+}) {
+  const { data } = useConversationMedia(conversationId);
+  if (generationIds.length === 1) {
+    return (
+      <MediaCard
+        conversationId={conversationId}
+        generationId={generationIds[0]}
+        mediaType={mediaType}
+      />
+    );
+  }
+
+  const latest = generationIds
+    .map((id) => data?.find((g) => g.id === id)?.versions[0])
+    .filter((v): v is MediaVersion => v !== undefined);
+  const count = (status: MediaStatus) => latest.filter((v) => v.status === status).length;
+  const done = count("done");
+  const failed = count("failed");
+  const cancelled = count("cancelled");
+  const settled = done + failed + cancelled === generationIds.length;
+  const first = latest[0];
+  const { Icon, tool } = TYPE_META[mediaType];
+
+  return (
+    <div className="overflow-hidden rounded-xl border bg-card">
+      <div className="flex items-center gap-2 border-b px-3 py-2">
+        <Icon className="size-4 shrink-0 text-muted-foreground" />
+        <span className="font-mono text-xs text-foreground">{tool}</span>
+        <Badge variant="secondary" className="tabular-nums">
+          ×{generationIds.length}
+        </Badge>
+        {first?.model && (
+          <Badge variant="outline" className="min-w-0 shrink font-mono">
+            <span className="truncate">{first.model}</span>
+          </Badge>
+        )}
+        <Badge variant="outline" className="ml-auto tabular-nums">
+          {settled ? <CheckCircle2 /> : <Loader2 className="animate-spin" />}
+          {done}/{generationIds.length} done
+          {failed > 0 && ` · ${failed} failed`}
+          {cancelled > 0 && ` · ${cancelled} cancelled`}
+        </Badge>
+      </div>
+      {first && <PromptBlock prompt={first.prompt} />}
+      {first && <ParamsRow params={first.params} />}
+      {first && (
+        <ReferenceRow
+          conversationId={conversationId}
+          referenceVersionIds={first.referenceVersionIds}
+        />
+      )}
+      <div className="grid grid-cols-1 gap-2 border-t p-2 sm:grid-cols-2">
+        {generationIds.map((id) => (
+          <MediaCard
+            key={id}
+            conversationId={conversationId}
+            generationId={id}
+            mediaType={mediaType}
+            compact
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 对话内生图/生视频卡片。
+ *
+ * 数据流：卡片状态的唯一数据源是 React Query（GET /conversations/:id/media）；
+ * 锚点（thread item）只带 generationId，状态全从 query 里按 id 取（设计 §前端职责）。
+ * live media_update 由 use-conversation 钩子负责就地更新 + invalidate 该 query，卡片自动刷新。
+ * compact：批量组里的子卡——提示词/参数/参考图由组头统一展示，卡内不再重复。
+ */
+export function MediaCard({
+  conversationId,
+  generationId,
+  mediaType,
+  compact = false,
+}: {
+  conversationId: string;
+  generationId: string;
+  mediaType: "image" | "video";
+  compact?: boolean;
+}) {
+  const { data, isLoading, refetch } = useConversationMedia(conversationId);
 
   const generation = data?.find((g) => g.id === generationId);
 
@@ -67,8 +186,10 @@ export function MediaCard({
 
   return (
     <MediaCardBody
+      conversationId={conversationId}
       generation={generation}
       mediaType={mediaType}
+      compact={compact}
       onAfterRegenerate={() => void refetch()}
     />
   );
@@ -76,12 +197,16 @@ export function MediaCard({
 
 /** 卡片主体：版本切换 / 资产展示 / 重新生成。generation 已确定存在。 */
 function MediaCardBody({
+  conversationId,
   generation,
   mediaType,
+  compact,
   onAfterRegenerate,
 }: {
+  conversationId: string;
   generation: MediaGeneration;
   mediaType: "image" | "video";
+  compact: boolean;
   onAfterRegenerate: () => void;
 }) {
   // versions 按 createdAt desc，versions[0] 为最新版。当前查看的版本索引。
@@ -127,16 +252,26 @@ function MediaCardBody({
   return (
     <div className="overflow-hidden rounded-xl border bg-card">
       {/* 头部（常驻）：工具名 + 模型 + 状态。信息随当前查看的 version 联动。 */}
-      <CardHeader version={version} mediaType={mediaType} />
+      <CardHeader version={version} mediaType={mediaType} compact={compact} />
 
       {/* 资产 / 状态区 */}
       <MediaSurface version={version} mediaType={mediaType} />
 
-      {/* prompt（常驻）：当前版本完整传参，默认折叠 2 行可展开。 */}
-      <PromptBlock prompt={version.prompt} />
+      {!compact && (
+        <>
+          {/* prompt（常驻）：当前版本完整传参，默认折叠 2 行可展开。 */}
+          <PromptBlock prompt={version.prompt} />
 
-      {/* 参考图（仅当前版本有引用时）：调用参数的一部分，缩略展示每张参考图。 */}
-      <ReferenceRow referenceVersionIds={version.referenceVersionIds} />
+          {/* 档位：本版本实际提交的比例 / 清晰度 / 时长等（约束收窄后的真实值）。 */}
+          <ParamsRow params={version.params} />
+
+          {/* 参考图（仅当前版本有引用时）：调用参数的一部分，缩略展示每张参考图。 */}
+          <ReferenceRow
+            conversationId={conversationId}
+            referenceVersionIds={version.referenceVersionIds}
+          />
+        </>
+      )}
 
       {/* 底栏：类型徽标 + 版本切换 + 重新生成 */}
       <div className="flex items-center gap-2 border-t px-3 py-2">
@@ -235,6 +370,7 @@ const STATUS_META: Record<
   generating: { label: "Generating", variant: "secondary", spin: true },
   done: { label: "Done", variant: "outline" },
   failed: { label: "Failed", variant: "destructive" },
+  cancelled: { label: "Cancelled", variant: "outline" },
 };
 
 /**
@@ -245,9 +381,11 @@ const STATUS_META: Record<
 function CardHeader({
   version,
   mediaType,
+  compact,
 }: {
   version: MediaVersion;
   mediaType: "image" | "video";
+  compact: boolean;
 }) {
   const { Icon, tool } = TYPE_META[mediaType];
   const status = STATUS_META[version.status];
@@ -255,13 +393,16 @@ function CardHeader({
     ? Loader2
     : version.status === "failed"
       ? AlertCircle
-      : CheckCircle2;
+      : version.status === "cancelled"
+        ? Ban
+        : CheckCircle2;
 
   return (
     <div className="flex items-center gap-2 border-b px-3 py-2">
       <Icon className="size-4 shrink-0 text-muted-foreground" />
-      <span className="font-mono text-xs text-foreground">{tool}</span>
-      {version.model && (
+      {/* 批量子卡：工具名与模型已在组头，这里只留状态 */}
+      {!compact && <span className="font-mono text-xs text-foreground">{tool}</span>}
+      {!compact && version.model && (
         // shrink（覆盖 Badge 基础类的 shrink-0）+ min-w-0 + 内层 truncate：
         // 窄屏（手机）下长模型名截断省略，不把状态徽标挤出卡片
         <Badge variant="outline" className="min-w-0 shrink font-mono">
@@ -310,11 +451,55 @@ function PromptBlock({ prompt }: { prompt: string }) {
   );
 }
 
+/** 档位展示顺序：画幅 → 清晰度 → 时长 → 音频，其余按原顺序排在后面。 */
+const PARAM_ORDER = ["aspect_ratio", "resolution", "duration", "with_audio"];
+
+/** 档位取值的展示文本：时长补单位、布尔维度写成人话，其余原样（16:9 / 2K / 16x9）。 */
+function paramText(key: string, value: string): string {
+  if (key === "duration") return value === "-1" ? "Auto length" : `${value}s`;
+  if (key === "with_audio") return value === "true" ? "Audio on" : "No audio";
+  if (key === "background") return `${value} background`;
+  if (key === "quality") return `${value} quality`;
+  return value;
+}
+
+/**
+ * 档位区（调用参数的一部分）：本版本实际提交给 aigc 的比例 / 清晰度 / 时长等。
+ * 拼接产物与旧数据没有档位（null / 空对象）时整行不出。
+ */
+function ParamsRow({ params }: { params: Record<string, string> | null }) {
+  const entries = Object.entries(params ?? {}).sort(([a], [b]) => {
+    const ia = PARAM_ORDER.indexOf(a);
+    const ib = PARAM_ORDER.indexOf(b);
+    return (ia === -1 ? PARAM_ORDER.length : ia) - (ib === -1 ? PARAM_ORDER.length : ib);
+  });
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="flex items-center gap-2 border-t px-3 py-2.5">
+      <span className="shrink-0 text-xs font-medium text-foreground">Settings</span>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {entries.map(([key, value]) => (
+          <Badge key={key} variant="secondary" className="font-mono">
+            {paramText(key, value)}
+          </Badge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
 /**
  * 参考图区（调用参数的一部分）：当前版本引用了图片时展示一行小缩略图。
  * 引用的必是 type=image 的版本（后端校验），故每张都用 <img>。悬停 title 显示 versionId。
  */
-function ReferenceRow({ referenceVersionIds }: { referenceVersionIds: string[] }) {
+function ReferenceRow({
+  conversationId,
+  referenceVersionIds,
+}: {
+  conversationId: string;
+  referenceVersionIds: string[];
+}) {
   if (referenceVersionIds.length === 0) return null;
 
   return (
@@ -322,34 +507,39 @@ function ReferenceRow({ referenceVersionIds }: { referenceVersionIds: string[] }
       <span className="shrink-0 text-xs font-medium text-foreground">Reference</span>
       <div className="flex flex-wrap items-center gap-1.5">
         {referenceVersionIds.map((id) => (
-          <ReferenceThumb key={id} versionId={id} />
+          <ReferenceThumb key={id} conversationId={conversationId} versionId={id} />
         ))}
       </div>
     </div>
   );
 }
 
-/** 单张参考图缩略：复用 fetchMediaAssetBlob 取 blob → objectURL。28px 方块，加载中 shimmer。 */
-function ReferenceThumb({ versionId }: { versionId: string }) {
+/**
+ * 单张参考图缩略：复用 fetchMediaAssetBlob 取 blob → objectURL。28px 方块，加载中 shimmer。
+ *
+ * 参考图常常和本卡同一批生成、此刻还没完成：那时去拉资产只会拿到 409，重试 3 次就放弃，
+ * 之后参考图完成了也不会再拉，只能刷新。所以按会话媒体列表里的状态（media_update 实时更新）
+ * 等它 done 再拉；列表里找不到该版本（引用了别的会话的图）时直接拉，同以前。
+ */
+function ReferenceThumb({
+  conversationId,
+  versionId,
+}: {
+  conversationId: string;
+  versionId: string;
+}) {
+  const { data: media } = useConversationMedia(conversationId);
+  const ref = media
+    ?.flatMap((g) => g.versions)
+    .find((v) => v.id === versionId);
   const { data: blob } = useQuery({
     queryKey: ["media-asset", versionId],
     queryFn: () => fetchMediaAssetBlob(versionId),
     staleTime: Infinity, // 同一 version 资产不可变
     refetchOnWindowFocus: false,
+    enabled: media !== undefined && (!ref || ref.status === "done"),
   });
-
-  // blob → objectURL（渲染期 useMemo 派生，不在 effect 里 setState）；revoke 只在真正卸载时做，
-  // 据 ref 取最新 url，避免 Strict Mode memo 双跑误伤正在显示的 URL（见 media-card AssetSurface 注）。
-  const url = useMemo(() => (blob ? URL.createObjectURL(blob) : null), [blob]);
-  const urlRef = useRef<string | null>(null);
-  useEffect(() => {
-    urlRef.current = url;
-  }, [url]);
-  useEffect(() => {
-    return () => {
-      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-    };
-  }, []);
+  const url = useObjectUrl(blob);
 
   if (!url) {
     return <Skeleton className="size-7 rounded-md" />;
@@ -380,6 +570,9 @@ function MediaSurface({
   }
   if (version.status === "failed") {
     return <FailedSurface error={version.error} />;
+  }
+  if (version.status === "cancelled") {
+    return <CancelledSurface />;
   }
   return <AssetSurface key={version.id} versionId={version.id} mediaType={mediaType} />;
 }
@@ -429,6 +622,16 @@ function FailedSurface({ error }: { error: string | null }) {
   );
 }
 
+/** 已取消（用户停止 / aigc 侧取消）：中性弱化，不用危险色——这不是错误。 */
+function CancelledSurface() {
+  return (
+    <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 bg-muted px-4 text-center">
+      <Ban className="size-5 text-muted-foreground" />
+      <p className="text-sm font-medium text-muted-foreground">Generation cancelled</p>
+    </div>
+  );
+}
+
 /** 完成：fetch 带 token 的二进制资产 → blob objectURL → <img>/<video>。cleanup 时 revoke。 */
 function AssetSurface({
   versionId,
@@ -444,22 +647,8 @@ function AssetSurface({
     refetchOnWindowFocus: false,
   });
 
-  // blob → objectURL。渲染期用 useMemo 派生（set-state-in-effect 是 error 级，不能在 effect 里 setUrl）。
-  // 一个 AssetSurface 只服务单个 versionId（版本切换会换 key → 整卡卸载重建），故同一实例内 blob 稳定、
-  // URL 只在挂载时创建一次。useMemo 不在渲染期 revoke（在渲染期 revoke 会被 Strict Mode 的 memo 双跑
-  // 误伤当前 URL，导致 <img> 解码失败 naturalWidth=0）；revoke 只在真正卸载时做。
-  const url = useMemo(() => (blob ? URL.createObjectURL(blob) : null), [blob]);
-  // 把最新 url 同步进 ref（在 effect 里写，不在渲染期写 ref），卸载时据此 revoke——
-  // 只在组件真正销毁时回收一次，绝不动正在显示的 URL。
-  const urlRef = useRef<string | null>(null);
-  useEffect(() => {
-    urlRef.current = url;
-  }, [url]);
-  useEffect(() => {
-    return () => {
-      if (urlRef.current) URL.revokeObjectURL(urlRef.current);
-    };
-  }, []);
+  // 一个 AssetSurface 只服务单个 versionId（版本切换会换 key → 整卡卸载重建）；吊销时机见 useObjectUrl
+  const url = useObjectUrl(blob);
 
   if (isLoading || !url) {
     return <Skeleton className="aspect-video w-full rounded-none" />;

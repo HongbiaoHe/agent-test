@@ -137,6 +137,9 @@ export class MediaProcessor extends WorkerHost {
         metadata: { versionId, generationId: generation.id },
       });
       await this.media.markSubmitted(versionId, taskId, config);
+      // 提交的 HTTP 调用期间被停止：cancelByConversation 那一刻本版本还没有 task_id，只发了 abort。
+      // aigc 没有取消接口，那单会照常跑完，但我们不再采纳——走 catch 判 cancelled，也不排对账。
+      if (signal.aborted) throw new Error('用户已停止');
       // 回调是 best-effort，配一条兜底轮询；到终态或轮满即止。
       // 它同时兜住一个窄窗口：回调比上面这行落库更快到达时按 task_id 反查不到版本、
       // 那次回调会被丢弃，30 秒后的第一轮对账会把结果补回来。
@@ -162,6 +165,7 @@ export class MediaProcessor extends WorkerHost {
         generation.conversationId,
         type,
         message,
+        signal.aborted ? 'cancelled' : 'failed',
       );
     } finally {
       dispose();
@@ -251,7 +255,7 @@ export class MediaProcessor extends WorkerHost {
         timeoutMs,
         opts.signal,
       );
-      const url = await this.media.publicAssetUrl(id, v.filePath!);
+      const url = await this.refUrl(v);
       if (!url) {
         throw new Error(
           '参考图无法提供给 aigc：没有公网地址。请先跑 `pnpm tunnel` 开隧道，或配置 PUBLIC_BASE_URL',
@@ -260,6 +264,27 @@ export class MediaProcessor extends WorkerHost {
       refs.push({ type: 'image', role, url });
     }
     return refs;
+  }
+
+  /**
+   * 参考图给 aigc 的地址：优先我方签名公网地址（有隧道 / 配了 PUBLIC_BASE_URL 时，行为与以前一致）；
+   * 没有公网基址时，参考图若本身就是 aigc 生成的（有 task_id），直接用 aigc 自己的产物地址——
+   * 那是 aigc 转存后的永久链接，aigc 当然下得到。本地开发不开隧道时，「先出图再拿它当参考图」
+   * 这条最常见的链路就靠它（2026-10-18 实测：没隧道时这类任务全部判失败）。
+   * 两者都没有（非 aigc 产物、又没公网地址）返回 null，由调用方报错。
+   */
+  private async refUrl(v: {
+    id: string;
+    filePath: string | null;
+    providerTaskId: string | null;
+  }): Promise<string | null> {
+    if (v.filePath) {
+      const own = await this.media.publicAssetUrl(v.id, v.filePath);
+      if (own) return own;
+    }
+    if (!v.providerTaskId) return null;
+    const task = await this.aigc.getTask(v.providerTaskId);
+    return task.output_data?.image_url ?? null;
   }
 
   /**
@@ -310,7 +335,11 @@ export class MediaProcessor extends WorkerHost {
     pollIntervalMs: number,
     timeoutMs: number,
     signal?: AbortSignal,
-  ): Promise<{ id: string; filePath: string | null }> {
+  ): Promise<{
+    id: string;
+    filePath: string | null;
+    providerTaskId: string | null;
+  }> {
     const deadline = Date.now() + timeoutMs;
 
     while (true) {
@@ -330,7 +359,7 @@ export class MediaProcessor extends WorkerHost {
         }
         return v;
       }
-      if (v.status === 'failed') {
+      if (v.status === 'failed' || v.status === 'cancelled') {
         throw new Error(`参考图未能就绪：${refId} ${v.status}`);
       }
       // queued / generating：继续等待
