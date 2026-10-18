@@ -434,7 +434,7 @@ describe('MediaService – cancelByConversation（停止功能）', () => {
 
   const gen = { type: 'image' };
 
-  it('queued 版本：移除 job + 置 failed(用户已停止) + 推流', async () => {
+  it('queued 版本：移除 job + 置 cancelled(用户已停止) + 推流', async () => {
     const remove = jest.fn();
     getJob.mockResolvedValue({ remove });
     findManyVersions.mockResolvedValue([
@@ -448,7 +448,7 @@ describe('MediaService – cancelByConversation（停止功能）', () => {
       expect.objectContaining({
         where: { id: 'v1' },
         data: expect.objectContaining({
-          status: 'failed',
+          status: 'cancelled',
           error: '用户已停止',
         }),
       }),
@@ -456,7 +456,10 @@ describe('MediaService – cancelByConversation（停止功能）', () => {
     expect(mockStream.publish).toHaveBeenCalledWith(
       'conv-1',
       expect.objectContaining({
-        payload: expect.objectContaining({ versionId: 'v1', status: 'failed' }),
+        payload: expect.objectContaining({
+          versionId: 'v1',
+          status: 'cancelled',
+        }),
       }),
     );
   });
@@ -486,5 +489,136 @@ describe('MediaService – cancelByConversation（停止功能）', () => {
 
     expect(signal.aborted).toBe(true);
     expect(updateVersion).not.toHaveBeenCalled();
+  });
+});
+
+describe('MediaService.createAgentGenerations', () => {
+  let service: MediaService;
+  const prepareAgentGeneration = jest.fn();
+  const config = {
+    channel: 'google',
+    model: 'veo-3.1',
+    params: { aspect_ratio: '16:9', duration: '8', resolution: '1080p' },
+  };
+
+  beforeEach(async () => {
+    const module = await Test.createTestingModule({
+      providers: [
+        MediaService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: StreamService, useValue: mockStream },
+        { provide: getQueueToken('media-gen'), useValue: mockQueue },
+        { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        {
+          provide: AigcService,
+          useValue: { ...mockAigc, prepareAgentGeneration },
+        },
+        { provide: PublicUrlService, useValue: mockPublicUrl },
+      ],
+    }).compile();
+    service = module.get(MediaService);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  it('count 越界 → issues，不查目录也不建库', async () => {
+    for (const count of [0, 11, 1.5]) {
+      const r = await service.createAgentGenerations('c', 'u', 'image', {
+        prompt: 'p',
+        count,
+      });
+      expect(r).toMatchObject({ ok: false, issues: [{ field: 'count' }] });
+    }
+    expect(prepareAgentGeneration).not.toHaveBeenCalled();
+    expect(mockPrisma.mediaGeneration.create).not.toHaveBeenCalled();
+  });
+
+  it('目录校验不通过 → 原样返回 issues，不建库不入队', async () => {
+    const issues = [{ field: 'params.duration', message: 'x' }];
+    prepareAgentGeneration.mockResolvedValue({ ok: false, issues });
+    const r = await service.createAgentGenerations('c', 'u', 'video', {
+      prompt: 'p',
+      model: 'veo-3.1',
+      params: { duration: '4' },
+      referenceVersionIds: ['r1'],
+      count: 1,
+    });
+    expect(r).toEqual({ ok: false, issues });
+    expect(prepareAgentGeneration).toHaveBeenCalledWith('video', {
+      model: 'veo-3.1',
+      channel: undefined,
+      params: { duration: '4' },
+      prompt: 'p',
+      referenceCount: 1,
+    });
+    expect(mockPrisma.mediaGeneration.create).not.toHaveBeenCalled();
+    expect(mockQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('通过 → 按 count 建 N 个独立生成位，模型取校验后的 config', async () => {
+    prepareAgentGeneration.mockResolvedValue({ ok: true, config });
+    mockAigc.resolveConfig.mockResolvedValue(config);
+    let n = 0;
+    mockPrisma.mediaGeneration.create.mockImplementation(() => {
+      n++;
+      return Promise.resolve({
+        id: `gen-${n}`,
+        conversationId: 'c',
+        type: 'video',
+        versions: [{ id: `ver-${n}` }],
+      });
+    });
+
+    const r = await service.createAgentGenerations('c', 'u', 'video', {
+      prompt: 'p',
+      count: 3,
+    });
+
+    expect(r).toEqual({
+      ok: true,
+      config,
+      generations: [
+        { generationId: 'gen-1', versionId: 'ver-1' },
+        { generationId: 'gen-2', versionId: 'ver-2' },
+        { generationId: 'gen-3', versionId: 'ver-3' },
+      ],
+    });
+    expect(mockAigc.resolveConfig).toHaveBeenCalledWith('video', config);
+    expect(mockQueue.add).toHaveBeenCalledTimes(3);
+    expect(mockStream.publish).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('MediaService.scheduleReconcile', () => {
+  it('前 6 轮 10s，之后 30s', async () => {
+    const module = await Test.createTestingModule({
+      providers: [
+        MediaService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: StreamService, useValue: mockStream },
+        { provide: getQueueToken('media-gen'), useValue: mockQueue },
+        { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: AigcService, useValue: mockAigc },
+        { provide: PublicUrlService, useValue: mockPublicUrl },
+      ],
+    }).compile();
+    const service = module.get(MediaService);
+    mockQueue.add.mockClear();
+
+    await service.scheduleReconcile('v1', 6);
+    await service.scheduleReconcile('v1', 7);
+
+    expect(mockQueue.add).toHaveBeenNthCalledWith(
+      1,
+      'poll',
+      { versionId: 'v1', attempt: 6 },
+      expect.objectContaining({ delay: 10_000 }),
+    );
+    expect(mockQueue.add).toHaveBeenNthCalledWith(
+      2,
+      'poll',
+      { versionId: 'v1', attempt: 7 },
+      expect.objectContaining({ delay: 30_000 }),
+    );
   });
 });

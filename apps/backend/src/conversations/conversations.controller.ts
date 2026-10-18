@@ -42,14 +42,14 @@ export class ConversationsController {
     return this.conversations.findOne(id, user.tenantId);
   }
 
-  /** 置顶 / 取消置顶。 */
+  /** 置顶 / 取消置顶、重命名（只改传了的字段）。 */
   @Patch(':id')
   update(
     @Param('id') id: string,
     @Body() dto: UpdateConversationDto,
     @CurrentUser() user: AuthUser,
   ) {
-    return this.conversations.setPinned(id, user.tenantId, dto.pinned);
+    return this.conversations.update(id, user.tenantId, dto);
   }
 
   /** 删除（软删除；运行中的先停止）。 */

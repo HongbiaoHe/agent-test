@@ -1,6 +1,8 @@
 /**
  * createMediaTools 单元测试。
- * - 工具调用返回含 generationId/versionId 的 queued JSON
+ * - list_media_models 透传目录
+ * - generate_* 以正确类型/参数调 createAgentGenerations，返回 queued + generations
+ * - 校验不通过 → invalid_params + issues（不 throw，交回模型改参）
  * - prompt 超过 2000 字符被 zod schema 拒绝
  * - BusinessException → 返回 error JSON（不上抛）；普通 Error → 继续上抛
  */
@@ -12,109 +14,116 @@ import { MediaService } from './media.service';
 
 describe('createMediaTools', () => {
   const ctx = { conversationId: 'conv-1', userId: 'user-1' };
+  const okResult = {
+    ok: true,
+    config: {
+      channel: 'google',
+      model: 'nano-banana-pro',
+      params: { aspect_ratio: '1:1', resolution: '1K' },
+    },
+    generations: [
+      { generationId: 'gen-1', versionId: 'ver-1' },
+      { generationId: 'gen-2', versionId: 'ver-2' },
+    ],
+  };
 
-  function buildSvc() {
-    return {
-      createGeneration: jest
+  function buildSvc(createAgentGenerations: jest.Mock) {
+    const svc = {
+      createAgentGenerations,
+      agentModelCatalog: jest
         .fn()
-        .mockResolvedValue({ generationId: 'gen-1', versionId: 'ver-1' }),
-    } as unknown as MediaService;
+        .mockResolvedValue({ type: 'image', note: 'n', models: [] }),
+    };
+    // cast-at-injection：其余代码照常拿到 MediaService 类型（CLAUDE.md §8）
+    return svc as unknown as MediaService & typeof svc;
   }
 
-  it('generate_image 返回 queued JSON 含 ids，并以 image 类型调 createGeneration', async () => {
-    const svc = buildSvc();
-    const [imageTool] = createMediaTools(svc, ctx);
+  function tools(svc: MediaService) {
+    const [list, image, video] = createMediaTools(svc, ctx);
+    return { list, image, video };
+  }
 
-    const out = await imageTool.invoke({ prompt: '一只猫' });
+  it('list_media_models 透传 agentModelCatalog(type)', async () => {
+    const svc = buildSvc(jest.fn());
+    const out = await tools(svc).list.invoke({ type: 'image' });
+    expect(JSON.parse(out)).toEqual({ type: 'image', note: 'n', models: [] });
+    expect(svc.agentModelCatalog).toHaveBeenCalledWith('image');
+  });
+
+  it('generate_image：透传模型/参数/数量，返回 queued + generations', async () => {
+    const svc = buildSvc(jest.fn().mockResolvedValue(okResult));
+    const out = await tools(svc).image.invoke({
+      prompt: '一只猫',
+      model: 'nano-banana-pro',
+      params: { aspect_ratio: '1:1' },
+      referenceVersionIds: ['ref-1'],
+      count: 2,
+    });
 
     expect(JSON.parse(out)).toEqual({
-      generationId: 'gen-1',
-      versionId: 'ver-1',
       status: 'queued',
+      model: 'nano-banana-pro',
+      channel: 'google',
+      params: { aspect_ratio: '1:1', resolution: '1K' },
+      generations: okResult.generations,
     });
-    expect(svc.createGeneration).toHaveBeenCalledWith(
+    expect(svc.createAgentGenerations).toHaveBeenCalledWith(
       'conv-1',
       'user-1',
       'image',
-      '一只猫',
-      undefined,
+      {
+        prompt: '一只猫',
+        model: 'nano-banana-pro',
+        params: { aspect_ratio: '1:1' },
+        referenceVersionIds: ['ref-1'],
+        count: 2,
+      },
     );
   });
 
-  it('generate_video 以 video 类型调 createGeneration', async () => {
-    const svc = buildSvc();
-    const [, videoTool] = createMediaTools(svc, ctx);
-
-    await videoTool.invoke({ prompt: '海浪' });
-
-    expect(svc.createGeneration).toHaveBeenCalledWith(
+  it('generate_video：count 缺省为 1，类型为 video', async () => {
+    const svc = buildSvc(jest.fn().mockResolvedValue(okResult));
+    await tools(svc).video.invoke({ prompt: '海浪' });
+    expect(svc.createAgentGenerations).toHaveBeenCalledWith(
       'conv-1',
       'user-1',
       'video',
-      '海浪',
-      undefined,
+      { prompt: '海浪', count: 1 },
     );
   });
 
-  it('prompt 超过 2000 字符被 schema 拒绝（不调 createGeneration）', async () => {
-    const svc = buildSvc();
-    const [imageTool] = createMediaTools(svc, ctx);
-
-    await expect(
-      imageTool.invoke({ prompt: 'x'.repeat(2001) }),
-    ).rejects.toThrow();
-    expect(svc.createGeneration).not.toHaveBeenCalled();
-  });
-
-  it('referenceVersionIds 透传给 createGeneration（图生图多张）', async () => {
-    const svc = buildSvc();
-    const [imageTool] = createMediaTools(svc, ctx);
-
-    await imageTool.invoke({
-      prompt: '改图',
-      referenceVersionIds: ['ref-1', 'ref-2'],
+  it('校验不通过 → invalid_params + issues（不 throw）', async () => {
+    const issues = [
+      {
+        field: 'params.duration',
+        value: '4',
+        message: 'resolution=1080p/4k时 veo-3.1 的 duration 只能取 8',
+        allowed: ['8'],
+      },
+    ];
+    const svc = buildSvc(jest.fn().mockResolvedValue({ ok: false, issues }));
+    const out = await tools(svc).video.invoke({
+      prompt: 'p',
+      model: 'veo-3.1',
+      params: { resolution: '1080p', duration: '4' },
     });
-
-    expect(svc.createGeneration).toHaveBeenCalledWith(
-      'conv-1',
-      'user-1',
-      'image',
-      '改图',
-      ['ref-1', 'ref-2'],
-    );
+    const parsed = JSON.parse(out);
+    expect(parsed.error).toBe('invalid_params');
+    expect(parsed.issues).toEqual(issues);
+    expect(parsed.hint).toContain('list_media_models');
   });
 
-  it('referenceVersionIds 超过 4 张被 schema 拒绝（不调 createGeneration）', async () => {
-    const svc = buildSvc();
-    const [imageTool] = createMediaTools(svc, ctx);
-
+  it('prompt 超过 2000 字符被 schema 拒绝（不调服务）', async () => {
+    const svc = buildSvc(jest.fn());
     await expect(
-      imageTool.invoke({
-        prompt: 'p',
-        referenceVersionIds: ['1', '2', '3', '4', '5'],
-      }),
+      tools(svc).image.invoke({ prompt: 'x'.repeat(2001) }),
     ).rejects.toThrow();
-    expect(svc.createGeneration).not.toHaveBeenCalled();
+    expect(svc.createAgentGenerations).not.toHaveBeenCalled();
   });
 
-  it('referenceVersionIds 可选（不传时正常调用，第 5 参为 undefined）', async () => {
-    const svc = buildSvc();
-    const [imageTool] = createMediaTools(svc, ctx);
-
-    await imageTool.invoke({ prompt: '一只猫' });
-
-    expect(svc.createGeneration).toHaveBeenCalledWith(
-      'conv-1',
-      'user-1',
-      'image',
-      '一只猫',
-      undefined,
-    );
-  });
-
-  it('generate_image：createGeneration 抛 BusinessException 时工具返回含 error 的 JSON（不 throw）', async () => {
-    const svc = {
-      createGeneration: jest
+  it('BusinessException（参考图非法）→ 返回 error + hint JSON（不 throw）', async () => {
+    const svc = buildSvc(
+      jest
         .fn()
         .mockRejectedValue(
           new BusinessException(
@@ -122,46 +131,20 @@ describe('createMediaTools', () => {
             HttpStatus.BAD_REQUEST,
           ),
         ),
-    } as unknown as MediaService;
-    const [imageTool] = createMediaTools(svc, ctx);
-
-    // 不应 throw，应返回 JSON 字符串
-    const out = await imageTool.invoke({ prompt: '测试' });
-    const parsed = JSON.parse(out);
+    );
+    const parsed = JSON.parse(
+      await tools(svc).image.invoke({ prompt: '测试' }),
+    );
     expect(parsed).toHaveProperty('error');
-    expect(parsed).toHaveProperty('hint');
     expect(parsed.hint).toContain('versionId');
   });
 
-  it('generate_image：createGeneration 抛普通 Error 时仍 throw', async () => {
-    const svc = {
-      createGeneration: jest
-        .fn()
-        .mockRejectedValue(new Error('db connection failed')),
-    } as unknown as MediaService;
-    const [imageTool] = createMediaTools(svc, ctx);
-
-    await expect(imageTool.invoke({ prompt: '测试' })).rejects.toThrow(
+  it('普通 Error 仍 throw', async () => {
+    const svc = buildSvc(
+      jest.fn().mockRejectedValue(new Error('db connection failed')),
+    );
+    await expect(tools(svc).video.invoke({ prompt: '测试' })).rejects.toThrow(
       'db connection failed',
     );
-  });
-
-  it('generate_video：createGeneration 抛 BusinessException 时工具返回含 error 的 JSON（不 throw）', async () => {
-    const svc = {
-      createGeneration: jest
-        .fn()
-        .mockRejectedValue(
-          new BusinessException(
-            ErrorCodes.MEDIA_REF_INVALID,
-            HttpStatus.BAD_REQUEST,
-          ),
-        ),
-    } as unknown as MediaService;
-    const [, videoTool] = createMediaTools(svc, ctx);
-
-    const out = await videoTool.invoke({ prompt: '测试视频' });
-    const parsed = JSON.parse(out);
-    expect(parsed).toHaveProperty('error');
-    expect(parsed).toHaveProperty('hint');
   });
 });

@@ -6,6 +6,7 @@ import { Queue } from 'bullmq';
 import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
 import { AigcService } from '../aigc/aigc.service';
 import { PublicUrlService } from '../aigc/public-url.service';
+import type { AgentParamIssue } from '../aigc/aigc.agent';
 import type { AigcMediaConfig, AigcTask } from '../aigc/aigc.types';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
@@ -26,9 +27,20 @@ export function mediaDataDir(): string {
   return process.env.MEDIA_DATA_DIR ?? join(process.cwd(), 'data', 'media');
 }
 
-/** 回调对账（poll）的间隔与最多轮数：30s × 60 ≈ 30 分钟，够 4k 视频跑完。 */
+/**
+ * 回调对账（poll）的间隔与最多轮数：前 6 轮 10s（本地没开隧道时回调到不了，图片多在一分钟内出结果，
+ * 早些查到对话里就早些显示），之后 30s；共 60 轮 ≈ 28 分钟，够 4k 视频跑完。
+ */
+export const RECONCILE_FAST_INTERVAL_MS = 10_000;
+export const RECONCILE_FAST_ATTEMPTS = 6;
 export const RECONCILE_INTERVAL_MS = 30_000;
 export const RECONCILE_MAX_ATTEMPTS = 60;
+
+/** 终态里的失败类：failed = 生成失败；cancelled = 用户停止 / aigc 侧取消。 */
+export type MediaSettleStatus = 'failed' | 'cancelled';
+
+/** agent 一次最多批量生成几个（需求：上限 10，默认 1）。 */
+export const MEDIA_BATCH_MAX = 10;
 
 /** 未完成状态：只有它们能被回调/对账推向终态（幂等的判据）。 */
 export const MEDIA_OPEN_STATUSES = ['queued', 'generating'];
@@ -118,6 +130,73 @@ export class MediaService {
     );
 
     return { generationId: generation.id, versionId: version.id };
+  }
+
+  /**
+   * 对话 agent 的生成入口：先按目录严格校验（模型/档位/提示词/参考图张数），
+   * 不合法直接把 issues 交回调用方（工具会原样回给模型改参重试），一行库都不建；
+   * 合法则按 count 建 N 个独立生成位（各自一张卡、一条队列 job、各自推流）。
+   * 参考图归属不合法时 createGeneration 抛 MEDIA_REF_INVALID（工具层兜住转成错误结果）。
+   */
+  async createAgentGenerations(
+    conversationId: string,
+    userId: string,
+    type: MediaType,
+    input: {
+      prompt: string;
+      model?: string;
+      channel?: string;
+      params?: Record<string, string>;
+      referenceVersionIds?: string[];
+      count: number;
+    },
+  ): Promise<
+    | { ok: false; issues: AgentParamIssue[] }
+    | {
+        ok: true;
+        config: AigcMediaConfig;
+        generations: { generationId: string; versionId: string }[];
+      }
+  > {
+    if (
+      !Number.isInteger(input.count) ||
+      input.count < 1 ||
+      input.count > MEDIA_BATCH_MAX
+    ) {
+      return {
+        ok: false,
+        issues: [
+          {
+            field: 'count',
+            value: String(input.count),
+            message: `count 必须是 1–${MEDIA_BATCH_MAX} 的整数`,
+          },
+        ],
+      };
+    }
+    const prepared = await this.aigc.prepareAgentGeneration(type, {
+      model: input.model,
+      channel: input.channel,
+      params: input.params,
+      prompt: input.prompt,
+      referenceCount: input.referenceVersionIds?.length ?? 0,
+    });
+    if (!prepared.ok) return prepared;
+
+    const generations: { generationId: string; versionId: string }[] = [];
+    for (let i = 0; i < input.count; i++) {
+      generations.push(
+        await this.createGeneration(
+          conversationId,
+          userId,
+          type,
+          input.prompt,
+          input.referenceVersionIds,
+          prepared.config,
+        ),
+      );
+    }
+    return { ok: true, config: prepared.config, generations };
   }
 
   /**
@@ -316,7 +395,7 @@ export class MediaService {
             await this.prisma.mediaVersion.update({
               where: { id: v.id },
               data: {
-                status: 'failed',
+                status: 'cancelled',
                 error: '用户已停止',
                 completedAt: new Date(),
               },
@@ -326,7 +405,7 @@ export class MediaService {
               v.generationId,
               v.id,
               v.generation.type as MediaType,
-              'failed',
+              'cancelled',
               '用户已停止',
             );
             continue;
@@ -349,6 +428,7 @@ export class MediaService {
           conversationId,
           v.generation.type as MediaType,
           '用户已停止',
+          'cancelled',
         );
       }
     }
@@ -430,6 +510,7 @@ export class MediaService {
         version.generation.conversationId,
         type,
         reason,
+        task.status,
       );
     }
     return 'pending';
@@ -462,32 +543,43 @@ export class MediaService {
       { versionId, attempt },
       {
         jobId: `poll:${versionId}:${attempt}`,
-        delay: RECONCILE_INTERVAL_MS,
+        delay:
+          attempt <= RECONCILE_FAST_ATTEMPTS
+            ? RECONCILE_FAST_INTERVAL_MS
+            : RECONCILE_INTERVAL_MS,
         removeOnComplete: true,
       },
     );
   }
 
-  /** 落 failed + 推流（带 open 状态条件，重复回调不会覆盖已终结的版本）。 */
+  /**
+   * 落 failed / cancelled + 推流（带 open 状态条件，重复回调不会覆盖已终结的版本）。
+   * cancelled 只用于用户停止与 aigc 侧取消，前端据此显示「已取消」而不是「失败」。
+   */
   async settleFailed(
     versionId: string,
     generationId: string,
     conversationId: string,
     type: MediaType,
     error: string,
+    status: MediaSettleStatus = 'failed',
   ): Promise<'applied' | 'ignored'> {
     const changed = await this.prisma.mediaVersion.updateMany({
       where: { id: versionId, status: { in: MEDIA_OPEN_STATUSES } },
-      data: { status: 'failed', error, completedAt: new Date() },
+      data: { status, error, completedAt: new Date() },
     });
     if (changed.count === 0) return 'ignored';
-    this.logger.error(`media 生成失败 versionId=${versionId} ${error}`);
+    if (status === 'cancelled') {
+      this.logger.log(`media 生成已取消 versionId=${versionId} ${error}`);
+    } else {
+      this.logger.error(`media 生成失败 versionId=${versionId} ${error}`);
+    }
     await this.publishUpdate(
       conversationId,
       generationId,
       versionId,
       type,
-      'failed',
+      status,
       error,
     );
     return 'applied';
@@ -563,6 +655,11 @@ export class MediaService {
         );
       }
     }
+  }
+
+  /** 给对话 agent 看的模型目录（list_media_models）。 */
+  agentModelCatalog(type: MediaType) {
+    return this.aigc.agentCatalog(type);
   }
 
   /**

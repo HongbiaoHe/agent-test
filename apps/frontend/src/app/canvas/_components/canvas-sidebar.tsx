@@ -6,7 +6,7 @@ import {
   useQueryClient,
   type InfiniteData,
 } from "@tanstack/react-query";
-import { Loader2, Plus, Pencil } from "lucide-react";
+import { Loader2, Pencil, Pin, PinOff, Plus } from "lucide-react";
 import { useRouter } from "next/navigation";
 import { useEffect, useRef, useState } from "react";
 
@@ -25,6 +25,7 @@ import {
   CANVAS_STATUS_DOT,
   CANVAS_STATUS_DOT_FALLBACK,
 } from "../_lib/canvas-status";
+import { useCanvasPin } from "../_hooks/use-canvas-pin";
 
 /** 分页缓存结构（useInfiniteQuery pages）：与 listCanvases 返回一致 */
 type CanvasPage = { items: CanvasListItem[]; nextCursor: string | null };
@@ -101,6 +102,8 @@ export function CanvasSidebar({
     },
     onSettled: () => void qc.invalidateQueries({ queryKey: ["canvas-list"] }),
   });
+
+  const pinMut = useCanvasPin();
 
   // 内联重命名的本地态；finishRef 防止 Esc/Enter 与随后的 blur 重复触发
   const [editingId, setEditingId] = useState<string | null>(null);
@@ -181,21 +184,45 @@ export function CanvasSidebar({
                   onClick={() => go(c.id)}
                   onDoubleClick={() => startEdit(c)}
                   className={cn(
-                    "flex w-full items-center gap-2 rounded-md py-2 pl-2.5 pr-8 text-left text-sm transition-colors hover:bg-accent",
+                    "flex w-full items-center gap-2 rounded-md py-2 pl-2.5 pr-14 text-left text-sm transition-colors hover:bg-accent",
                     c.id === activeId && "bg-accent",
                   )}
                 >
                   {dot}
+                  {c.pinnedAt && (
+                    <Pin
+                      aria-label="Pinned"
+                      className="size-3 shrink-0 text-muted-foreground"
+                    />
+                  )}
                   <span className="truncate">{c.title}</span>
                 </button>
-                <button
-                  onClick={() => startEdit(c)}
-                  aria-label="Rename"
-                  title="Rename"
-                  className="absolute right-1 top-1/2 flex size-6 -translate-y-1/2 items-center justify-center rounded text-muted-foreground opacity-0 transition-opacity hover:bg-background hover:text-foreground focus-visible:opacity-100 group-hover:opacity-100"
-                >
-                  <Pencil className="size-3.5" />
-                </button>
+                {/* 行内操作（置顶 / 重命名）：悬停或键盘聚焦时出现，触屏常显 */}
+                <div className="absolute right-1 top-1/2 flex -translate-y-1/2 items-center opacity-0 transition-opacity focus-within:opacity-100 group-hover:opacity-100 [@media(pointer:coarse)]:opacity-100">
+                  <button
+                    onClick={() =>
+                      pinMut.mutate({ id: c.id, pinned: !c.pinnedAt })
+                    }
+                    // 带上画布名：所在浮动面板的标题栏还有个「Pin panel」，读屏要能区分
+                    aria-label={`${c.pinnedAt ? "Unpin" : "Pin"} ${c.title}`}
+                    title={c.pinnedAt ? "Unpin" : "Pin"}
+                    className="flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground"
+                  >
+                    {c.pinnedAt ? (
+                      <PinOff className="size-3.5" />
+                    ) : (
+                      <Pin className="size-3.5" />
+                    )}
+                  </button>
+                  <button
+                    onClick={() => startEdit(c)}
+                    aria-label={`Rename ${c.title}`}
+                    title="Rename"
+                    className="flex size-6 items-center justify-center rounded text-muted-foreground hover:bg-background hover:text-foreground"
+                  >
+                    <Pencil className="size-3.5" />
+                  </button>
+                </div>
               </div>
             );
           })}

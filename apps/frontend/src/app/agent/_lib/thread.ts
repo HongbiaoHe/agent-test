@@ -1,5 +1,10 @@
 import type { Todo } from "@/components/agent/todo-list";
-import type { Conversation, ConversationMessage } from "@/lib/api";
+import type {
+  Conversation,
+  ConversationMessage,
+  MediaGeneration,
+  MediaStatus,
+} from "@/lib/api";
 
 export type Decision = "approve" | "reject" | "edit" | "respond";
 
@@ -28,6 +33,8 @@ export type ThreadItem =
   | {
       kind: "tool";
       id: string;
+      /** 后端 tool_call id（旧历史没有）：tool_start 合并、tool_end 配对都按它 */
+      callId?: string;
       name: string;
       args: unknown;
       result?: string;
@@ -38,7 +45,8 @@ export type ThreadItem =
   // 生图/生视频卡片：由 generate_image/generate_video 的 tool_end 在工具 chip **之后**追加。
   // tool chip 本身保留（与 read_file 一样进工具组、参数可见），卡片只承载 generationId 锚点；
   // 卡片状态一律从 React Query（GET /conversations/:id/media）读。
-  | { kind: "media"; id: string; generationId: string; mediaType: "image" | "video" }
+  // 一次调用可批量生成（count>1）：同一次调用的 N 个生成位放进一个 item，渲染成一组网格。
+  | { kind: "media"; id: string; generationIds: string[]; mediaType: "image" | "video" }
   // 网页预览卡片：agent 调 preview_page 成功后（tool_end）在工具 chip 之后追加，可再次打开预览。
   // 只存「预览什么」——预览地址带短期令牌/会话 id，打开时现签，不进 thread 状态。
   | { kind: "preview"; id: string; spec: PreviewSpec };
@@ -196,49 +204,57 @@ export function reduce(input: ThreadState, ev: NormalizedEvent): ThreadState {
     }
     case "tool_start": {
       const calls =
-        (ev.payload?.tool_calls as { name: string; args: unknown }[]) ?? [];
+        (ev.payload?.tool_calls as { id?: string; name: string; args: unknown }[]) ?? [];
       for (const c of calls) {
         // write_todos 由 plan_update 的「任务计划」卡呈现，且 deepagents 用 Command 更新 state、
         // 不发 tool_end，渲染成 chip 会永远卡在「调用中」，故跳过。
         if (c.name === "write_todos") continue;
-        items.push({ kind: "tool", id: id(), name: c.name, args: c.args, done: false });
+        // 审批（HITL）续跑时中间件会把同一个调用改写参数后再发一次 tool_start（id 不变）：
+        // 合并进已有 chip、换成最终参数，而不是再插一个永远等不到 tool_end 的 chip
+        const existing = c.id
+          ? items.findIndex((it) => it.kind === "tool" && it.callId === c.id)
+          : -1;
+        if (existing >= 0) {
+          const it = items[existing];
+          if (it.kind === "tool") items[existing] = { ...it, args: c.args };
+          continue;
+        }
+        items.push({ kind: "tool", id: id(), callId: c.id, name: c.name, args: c.args, done: false });
       }
       return { ...state, items, nextId };
     }
     case "tool_end": {
       const name = ev.payload?.name;
+      const callId = ev.payload?.toolCallId;
       // 先按普通工具收尾：找到对应 chip 标记 done + 填结果（generate_* 也走这步——
       // chip 保留进工具组、参数可见，与 read_file 一致，推翻了早前「原位替换成 media」的决议）。
+      // 有 toolCallId 按它精确配对；旧历史没有，退回「同名、最近一个未完成」。
       for (let i = items.length - 1; i >= 0; i--) {
         const it = items[i];
-        if (it.kind === "tool" && it.name === name && !it.done) {
+        const match =
+          typeof callId === "string" && it.kind === "tool" && it.callId
+            ? it.callId === callId
+            : it.kind === "tool" && it.name === name;
+        if (match && it.kind === "tool" && !it.done) {
           items[i] = { ...it, result: stringifyContent(ev.payload?.content), done: true };
           break;
         }
       }
-      // 生图/生视频：LangChain 把工具返回值序列化为 JSON 字符串，content 形如
-      // '{"generationId":"...","versionId":"...","status":"queued"}'。解析出 generationId 后，
+      // 生图/生视频：解析工具返回的 generationId 列表（见 parseMediaGenerationIds），
       // 在工具 chip **之后**追加一条 kind:'media' 卡片锚点（不替换 chip）。
+      // 参数校验失败（invalid_params）的结果没有 generations，只留 chip，错误在 chip 详情里可见。
       const mediaType =
         name === "generate_image" ? "image" : name === "generate_video" ? "video" : null;
       if (mediaType) {
-        let generationId: string | null = null;
-        try {
-          const parsed = JSON.parse(String(ev.payload?.content ?? ""));
-          if (parsed && typeof parsed.generationId === "string") {
-            generationId = parsed.generationId;
-          }
-        } catch {
-          // 解析失败：仅保留上面的 chip 收尾，不追加卡片
-        }
+        const generationIds = parseMediaGenerationIds(ev.payload?.content);
         // 防重复：同 generationId 的卡片只插一次。历史重放经 base 折叠出卡片后，若 live
         // tool_end 又携同一 generationId 抵达（foldLive 把 base+实时增量过同一 reducer），
         // 这里据已存在的 media item 去重，避免双卡。
-        const exists =
-          generationId != null &&
-          items.some((it) => it.kind === "media" && it.generationId === generationId);
-        if (generationId && !exists) {
-          items.push({ kind: "media", id: id(), generationId, mediaType });
+        const exists = items.some(
+          (it) => it.kind === "media" && it.generationIds.some((g) => generationIds.includes(g)),
+        );
+        if (generationIds.length > 0 && !exists) {
+          items.push({ kind: "media", id: id(), generationIds, mediaType });
         }
       }
       if (name === "preview_page") {
@@ -301,6 +317,12 @@ export function buildBaseState(conv: Conversation): ThreadState {
   }
   // 落库的思考都是收口后的完整块（后端在思考结束时才落一行），历史里不存在「还在流」的思考
   state = sealReasoning(state);
+  // 审批/提问面板以服务端会话状态为准：决策只经 socket 提交、不落 messages 表，历史里 control_request
+  // 之后要等到本轮 result 才会被清掉——答完后 agent 续跑期间刷新，会把已答过的问题再弹一次
+  // （倒计时到点还会自动重提，后端 CAS 会拒，但面板本身就不该出现）。
+  if (conv.status !== "waiting_approval") {
+    state = { ...state, approval: null, status: conv.status };
+  }
   // 会话已终态时收尾未完成的工具 chip，避免历史也卡「调用中」。
   // waiting_approval 不收尾——send_email 此时确实在等审批。
   if (
@@ -327,3 +349,57 @@ export function foldLive(
 }
 
 export const emptyState = EMPTY;
+
+/**
+ * 从 generate_image / generate_video 的工具返回（LangChain 序列化的 JSON 字符串）里取 generationId 列表。
+ * 两种形状：现行 `{"status":"queued","generations":[{"generationId":…,"versionId":…}],…}`；
+ * 旧会话历史里的 `{"generationId":…,"versionId":…,"status":"queued"}`。解析失败 / 校验失败返回 []。
+ */
+export function parseMediaGenerationIds(content: unknown): string[] {
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(String(content ?? ""));
+  } catch {
+    return [];
+  }
+  if (typeof parsed !== "object" || parsed === null) return [];
+  if ("generations" in parsed && Array.isArray(parsed.generations)) {
+    return parsed.generations.flatMap((g: unknown) =>
+      typeof g === "object" && g !== null && "generationId" in g && typeof g.generationId === "string"
+        ? [g.generationId]
+        : [],
+    );
+  }
+  if ("generationId" in parsed && typeof parsed.generationId === "string") {
+    return [parsed.generationId];
+  }
+  return [];
+}
+
+const MEDIA_STATUSES: readonly MediaStatus[] = ["queued", "generating", "done", "failed", "cancelled"];
+
+function isMediaStatus(v: unknown): v is MediaStatus {
+  return typeof v === "string" && (MEDIA_STATUSES as readonly string[]).includes(v);
+}
+
+/**
+ * 把一条 media_update（{ generationId, versionId, status, error? }）就地写进会话媒体列表。
+ * 认不出的事件 / 列表里还没有的版本（刚建的生成位，等 refetch 补齐）原样返回。
+ */
+export function applyMediaUpdate(list: MediaGeneration[], payload: unknown): MediaGeneration[] {
+  if (typeof payload !== "object" || payload === null) return list;
+  if (!("versionId" in payload) || typeof payload.versionId !== "string") return list;
+  if (!("status" in payload) || !isMediaStatus(payload.status)) return list;
+  const { versionId, status } = payload;
+  const error = "error" in payload && typeof payload.error === "string" ? payload.error : null;
+  let hit = false;
+  const next = list.map((g) => ({
+    ...g,
+    versions: g.versions.map((v) => {
+      if (v.id !== versionId) return v;
+      hit = true;
+      return { ...v, status, error };
+    }),
+  }));
+  return hit ? next : list;
+}

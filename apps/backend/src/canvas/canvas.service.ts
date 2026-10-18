@@ -164,14 +164,27 @@ export class CanvasService {
     tenantId: string,
     opts: { cursor?: string; limit?: number } = {},
   ): Promise<{
-    items: { id: string; title: string; status: string; updatedAt: Date }[];
+    items: {
+      id: string;
+      title: string;
+      status: string;
+      updatedAt: Date;
+      pinnedAt: Date | null;
+    }[];
     nextCursor: string | null;
   }> {
     const limit = Math.min(Math.max(opts.limit ?? 30, 1), 100);
     const rows = await this.prisma.canvasSession.findMany({
       where: { tenantId },
-      orderBy: [{ updatedAt: 'desc' }, { id: 'desc' }],
-      select: { id: true, title: true, status: true, updatedAt: true },
+      // 置顶的在前（按置顶时刻倒序；MySQL 降序时 NULL 排最后），其余按最近更新；id 兜底保证顺序唯一（cursor 分页要求）
+      orderBy: [{ pinnedAt: 'desc' }, { updatedAt: 'desc' }, { id: 'desc' }],
+      select: {
+        id: true,
+        title: true,
+        status: true,
+        updatedAt: true,
+        pinnedAt: true,
+      },
       take: limit + 1,
       ...(opts.cursor ? { cursor: { id: opts.cursor }, skip: 1 } : {}),
     });
@@ -182,17 +195,38 @@ export class CanvasService {
     };
   }
 
-  /** 重命名画布（仅改标题）。空白标题拒绝；归属经 assertOwner 校验。 */
-  async rename(id: string, title: string, tenantId: string) {
+  /**
+   * 重命名 / 置顶：只改传了的字段。空白标题拒绝；归属经 assertOwner 校验。
+   * 只置顶时保留原 updatedAt：列表的「最近更新」时间与排序反映的是画布内容的变化，
+   * 点一下置顶不该让它显示成「just now」（Prisma 的 @updatedAt 显式给值时以给的为准）。
+   */
+  async update(
+    id: string,
+    tenantId: string,
+    patch: { title?: string; pinned?: boolean },
+  ) {
     await this.assertOwner(id, tenantId);
-    const trimmed = title.trim();
-    if (!trimmed) {
+    const title = patch.title?.trim();
+    if (patch.title !== undefined && !title) {
       throw new BusinessException(ErrorCodes.CANVAS_TITLE_EMPTY);
     }
+    const keepUpdatedAt =
+      title === undefined
+        ? await this.prisma.canvasSession.findUnique({
+            where: { id },
+            select: { updatedAt: true },
+          })
+        : null;
     return this.prisma.canvasSession.update({
       where: { id },
-      data: { title: trimmed },
-      select: { id: true, title: true },
+      data: {
+        ...(title !== undefined && { title }),
+        ...(patch.pinned !== undefined && {
+          pinnedAt: patch.pinned ? new Date() : null,
+        }),
+        ...(keepUpdatedAt && { updatedAt: keepUpdatedAt.updatedAt }),
+      },
+      select: { id: true, title: true, pinnedAt: true },
     });
   }
 

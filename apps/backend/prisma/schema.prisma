@@ -63,6 +63,8 @@ model Conversation {
   // 思考深度档位（auto/off/on/low/medium/high）；为空 = auto（跟随模型默认）。
   // 各家能力不对等（deepseek 仅开关、gemini 支持分级），映射见 agent/thinking-level.ts
   thinkingLevel String?
+  // 用户重命名的标题；NULL = 未命名，侧栏/顶栏回退显示 goal（首条消息）
+  title     String?   @db.VarChar(200)
   // 侧栏置顶时刻；NULL = 未置顶。置顶的排在前面，按置顶时刻倒序
   pinnedAt  DateTime?
   // 软删除时刻；非 NULL = 已删除：列表 / 详情 / 订阅 / 续聊都不再可见，数据留库可恢复
@@ -148,6 +150,8 @@ model MediaVersion {
 model CanvasSession {
   id       String  @id @default(cuid())
   title    String  @default("未命名画布")
+  // 列表置顶时刻；NULL = 未置顶。置顶的排在前面，按置顶时刻倒序
+  pinnedAt DateTime?
   status   String  @default("idle") // idle | queued | running | waiting_approval | done | failed | stopped
   model    String? // 本会话 agent 模型；空则 worker 回退默认
   // 思考深度档位（auto|off|on|low|medium|high）；空 = 跟随模型默认。

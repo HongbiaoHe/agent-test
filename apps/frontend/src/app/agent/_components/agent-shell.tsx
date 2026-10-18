@@ -8,9 +8,11 @@ import { useCallback, useState } from "react";
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import {
   appendMessage,
+  type ConversationListItem,
   createEmptyConversation,
   deleteConversation,
   listConversations,
+  renameConversation,
   setConversationPinned,
   stopConversation,
 } from "@/lib/api";
@@ -24,6 +26,7 @@ import {
   SitePreviewDialog,
 } from "./site-preview";
 import { useConversation } from "../_hooks/use-conversation";
+import { conversationTitle } from "../_lib/conversation-title";
 import { useIsDesktop } from "../_hooks/use-is-desktop";
 import { useModelPreference } from "../_hooks/use-model-preference";
 import { useThinkingPreference } from "../_hooks/use-thinking-preference";
@@ -100,6 +103,17 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
       setConversationPinned(id, pinned),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["conversations"] }),
   });
+  // 乐观更新：侧栏/顶栏立刻显示新名字，不等 refetch；失败时 onSettled 的重拉会还原
+  const renameMut = useMutation({
+    mutationFn: ({ id, title }: { id: string; title: string }) =>
+      renameConversation(id, title),
+    onMutate: ({ id, title }) => {
+      qc.setQueryData<ConversationListItem[]>(["conversations"], (prev) =>
+        prev?.map((c) => (c.id === id ? { ...c, title: title.trim() || null } : c)),
+      );
+    },
+    onSettled: () => qc.invalidateQueries({ queryKey: ["conversations"] }),
+  });
   // 删掉的是当前打开的会话 → 回到新会话页（旧 URL 已经 404）
   const deleteMut = useMutation({
     mutationFn: deleteConversation,
@@ -153,15 +167,15 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
     : undefined;
 
   const activeConv = conversations.find((c) => c.id === conversationId);
-  // 空会话（idle，goal 尚未回填）与新会话页统一显示 "New conversation"
+  // 重命名的标题优先；空会话（idle，goal 尚未回填）与新会话页统一显示 "New conversation"
   const title =
-    conversationId && activeConv?.goal.trim()
-      ? activeConv.goal
-      : "New conversation";
+    conversationId && activeConv ? conversationTitle(activeConv) : "New conversation";
 
-  const filtered = search.trim()
+  // 搜索同时匹配自定义标题与首条消息：改过名的会话用原话也能搜到
+  const needle = search.trim().toLowerCase();
+  const filtered = needle
     ? conversations.filter((c) =>
-        c.goal.toLowerCase().includes(search.trim().toLowerCase()),
+        [c.title ?? "", c.goal].some((s) => s.toLowerCase().includes(needle)),
       )
     : conversations;
 
@@ -174,6 +188,7 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
     onSelect: selectConversation,
     onNewChat: newChat,
     onTogglePin: (id: string, pinned: boolean) => pinMut.mutate({ id, pinned }),
+    onRename: (id: string, title: string) => renameMut.mutate({ id, title }),
     onDelete: (id: string) => deleteMut.mutate(id),
     userEmail,
     theme,

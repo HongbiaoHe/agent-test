@@ -26,6 +26,7 @@ import {
 } from "@/components/ui/tooltip";
 
 import { ConversationItem } from "./conversation-item";
+import { conversationTitle } from "../_lib/conversation-title";
 import { ThemeToggle } from "./theme-toggle";
 import type { ThemeSetting } from "../_hooks/use-theme";
 
@@ -38,6 +39,7 @@ export type SidebarProps = {
   onSelect: (id: string) => void;
   onNewChat: () => void;
   onTogglePin: (id: string, pinned: boolean) => void;
+  onRename: (id: string, title: string) => void;
   onDelete: (id: string) => void;
   userEmail: string;
   theme?: ThemeSetting;
@@ -54,6 +56,7 @@ export function SidebarContent({
   onSelect,
   onNewChat,
   onTogglePin,
+  onRename,
   onDelete,
   userEmail,
   theme,
@@ -72,6 +75,7 @@ export function SidebarContent({
       active={c.id === activeId}
       onSelect={onSelect}
       onTogglePin={onTogglePin}
+      onRename={onRename}
       onRequestDelete={setPendingDelete}
     />
   );
@@ -186,7 +190,7 @@ export function SidebarContent({
             <AlertDialogDescription>
               {/* 标题可能是很长的无空格 URL：最多两行、任意处断行，避免撑破弹窗 */}
               <span className="line-clamp-2 break-all font-medium text-foreground">
-                {pendingDelete?.goal.trim() || "New conversation"}
+                {pendingDelete ? conversationTitle(pendingDelete) : ""}
               </span>
               It will be removed from your list. If it is still running, it
               will be stopped first.

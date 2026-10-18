@@ -191,6 +191,29 @@ describe('MediaService.applyTaskResult', () => {
     );
   });
 
+  it('aigc 侧 cancelled → 落 cancelled 并推 cancelled', async () => {
+    findFirst.mockResolvedValue(version);
+    updateMany.mockResolvedValue({ count: 1 });
+
+    expect(
+      await service.applyTaskResult({ task_id: 't-1', status: 'cancelled' }),
+    ).toBe('applied');
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'cancelled',
+          error: '任务 cancelled',
+        }),
+      }),
+    );
+    expect(publish).toHaveBeenCalledWith(
+      'canvas-1',
+      expect.objectContaining({
+        payload: expect.objectContaining({ status: 'cancelled' }),
+      }),
+    );
+  });
+
   it('已终结的版本不再被回调改写（重复投递幂等）', async () => {
     findFirst.mockResolvedValue({ ...version, status: 'done' });
     const r = await service.applyTaskResult({

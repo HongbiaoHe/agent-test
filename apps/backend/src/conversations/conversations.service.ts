@@ -197,6 +197,7 @@ export class ConversationsService {
       select: {
         id: true,
         goal: true,
+        title: true,
         status: true,
         createdAt: true,
         pinnedAt: true,
@@ -204,13 +205,25 @@ export class ConversationsService {
     });
   }
 
-  /** 置顶 / 取消置顶。 */
-  async setPinned(id: string, tenantId: string, pinned: boolean) {
+  /**
+   * 置顶 / 取消置顶、重命名：只改传了的字段。
+   * title 空串 = 清除自定义标题（存 NULL），界面回退显示 goal。
+   */
+  async update(
+    id: string,
+    tenantId: string,
+    patch: { pinned?: boolean; title?: string },
+  ) {
     await this.assertConversationOwner(id, tenantId);
     return this.prisma.conversation.update({
       where: { id },
-      data: { pinnedAt: pinned ? new Date() : null },
-      select: { id: true, pinnedAt: true },
+      data: {
+        ...(patch.pinned !== undefined && {
+          pinnedAt: patch.pinned ? new Date() : null,
+        }),
+        ...(patch.title !== undefined && { title: patch.title.trim() || null }),
+      },
+      select: { id: true, pinnedAt: true, title: true },
     });
   }
 

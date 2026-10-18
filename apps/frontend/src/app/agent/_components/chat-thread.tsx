@@ -26,7 +26,7 @@ import type { Approval, ThreadItem } from "../_lib/thread";
 import { ApprovalPanel } from "./approval-panel";
 import { isAskUserApproval, QuestionPanel } from "./question-panel";
 import { ChatMessage } from "./chat-message";
-import { MediaCard } from "./media-card";
+import { MediaGroup } from "./media-card";
 import { ModelSwitcher } from "./model-switcher";
 import { PreviewCard } from "./preview-card";
 import { ReasoningBlock } from "./reasoning-block";
@@ -273,9 +273,9 @@ export function ChatThread({
                   ) : r.item.kind === "media" ? (
                     // 媒体卡片与助手内容同列左对齐，conversationId 必有（卡片只在已有会话里出现）。
                     <div key={r.item.id}>
-                      <MediaCard
+                      <MediaGroup
                         conversationId={conversationId as string}
-                        generationId={r.item.generationId}
+                        generationIds={r.item.generationIds}
                         mediaType={r.item.mediaType}
                       />
                     </div>

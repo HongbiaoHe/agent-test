@@ -68,6 +68,8 @@ export interface ConversationMessage {
 export interface Conversation {
   id: string;
   goal: string;
+  /** 用户重命名的标题；null = 未命名（界面回退显示 goal） */
+  title: string | null;
   status: string;
   messages: ConversationMessage[];
 }
@@ -76,6 +78,8 @@ export interface Conversation {
 export interface ConversationListItem {
   id: string;
   goal: string;
+  /** 用户重命名的标题；null = 未命名（界面回退显示 goal） */
+  title: string | null;
   status: string;
   createdAt: string;
   /** 置顶时刻；null = 未置顶 */
@@ -141,6 +145,17 @@ export function setConversationPinned(
   return request(`/conversations/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ pinned }),
+  });
+}
+
+/** 重命名会话；空串 = 清除自定义标题，回退显示首条消息。 */
+export function renameConversation(
+  id: string,
+  title: string,
+): Promise<{ id: string; title: string | null }> {
+  return request(`/conversations/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ title }),
   });
 }
 
@@ -340,13 +355,18 @@ export function keepAlivePreview(id: string): Promise<{ ok: true }> {
 // ——— 生图/生视频 媒体 ———
 
 export type MediaType = "image" | "video";
-export type MediaStatus = "queued" | "generating" | "done" | "failed";
+/** cancelled = 用户停止 / aigc 侧取消（与生成失败分开展示）。 */
+export type MediaStatus = "queued" | "generating" | "done" | "failed" | "cancelled";
 
 /** 一次生成尝试（版本）。重新生成在同一 generation 下叠新 version，旧版永不删除。 */
 export interface MediaVersion {
   id: string;
   prompt: string;
   model: string;
+  /** aigc 渠道；本地拼接产物为 null。 */
+  channel: string | null;
+  /** 实际提交的档位（aspect_ratio / resolution / duration / with_audio …）；拼接产物为 null。 */
+  params: Record<string, string> | null;
   status: MediaStatus;
   error: string | null;
   createdAt: string;
@@ -485,6 +505,8 @@ export interface CanvasListItem {
   title: string;
   status: string;
   updatedAt: string;
+  /** 置顶时刻；null = 未置顶（列表里置顶的排在前面） */
+  pinnedAt: string | null;
 }
 
 export interface CanvasMessage {
@@ -546,6 +568,17 @@ export function renameCanvas(
   return request(`/canvas/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ title }),
+  });
+}
+
+/** 画布列表置顶 / 取消置顶（不改「最近更新」时间）。 */
+export function setCanvasPinned(
+  id: string,
+  pinned: boolean,
+): Promise<{ id: string; title: string; pinnedAt: string | null }> {
+  return request(`/canvas/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ pinned }),
   });
 }
 
