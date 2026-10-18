@@ -11,10 +11,10 @@ import {
   type ThinkingLevel,
   thinkingLevelLabel,
   thinkingLevelsFor,
-} from "../_lib/models";
+} from "@/lib/thinking-level";
 
 /**
- * 思考深度切换器：紧凑下拉，紧邻模型切换器。
+ * 思考深度切换器：紧凑下拉，紧邻模型切换器（画布与 Spark agent 共用）。
  *
  * 可选档位**按当前模型动态给**——DeepSeek 只有开/关，Gemini 才有低/中/高（后端实测：OpenAI 风格
  * 的 reasoningEffort 对 DeepSeek 无效）。不给点了没反应的假选项，所以这里依赖 model prop。
@@ -22,16 +22,19 @@ import {
  * 浮层用 Popover（Portal + 碰撞避让）：输入框工具栏会随宽度换行，本切换器有时在模型切换器
  * 右侧、有时换到第二行最左，手写的 absolute 定位总会在某种布局下被聊天栏裁掉。
  */
-export function CanvasThinkingSwitcher({
+export function ThinkingSwitcher({
   model,
   value,
   onChange,
   disabled,
+  className,
 }: {
   model: string;
   value: ThinkingLevel;
   onChange: (level: ThinkingLevel) => void;
   disabled?: boolean;
+  /** 触发按钮的尺寸微调（各输入框工具条的按钮高度不同） */
+  className?: string;
 }) {
   const [open, setOpen] = useState(false);
   const options = thinkingLevelsFor(model);
@@ -46,7 +49,10 @@ export function CanvasThinkingSwitcher({
             variant="ghost"
             size="sm"
             aria-label="Thinking depth"
-            className="h-8 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground data-popup-open:bg-accent data-popup-open:text-foreground"
+            className={cn(
+              "h-8 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground data-popup-open:bg-accent data-popup-open:text-foreground",
+              className,
+            )}
           />
         }
       >

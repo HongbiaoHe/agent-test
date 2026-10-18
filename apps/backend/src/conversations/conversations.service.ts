@@ -43,18 +43,26 @@ export class ConversationsService {
     tenantId: string,
     userId: string,
     model?: string,
+    thinkingLevel?: string,
   ) {
     // goal 为空 → 创建 idle 空会话（先建会话再进入）：不落首条消息、不入队，
     // 等首条 appendMessage 时再置 queued 并回填 goal。
     if (!goal?.trim()) {
       const conv = await this.prisma.conversation.create({
-        data: { goal: '', status: 'idle', tenantId, userId, model },
+        data: {
+          goal: '',
+          status: 'idle',
+          tenantId,
+          userId,
+          model,
+          thinkingLevel,
+        },
       });
       return { conversationId: conv.id };
     }
     await this.assertKnownCommand(goal, userId);
     const conv = await this.prisma.conversation.create({
-      data: { goal, status: 'queued', tenantId, userId, model },
+      data: { goal, status: 'queued', tenantId, userId, model, thinkingLevel },
     });
     // 把首轮目标落成 user message（seq 0），与追加轮统一；worker 每轮从 DB 重放完整对话历史
     await this.prisma.message.create({
@@ -80,14 +88,15 @@ export class ConversationsService {
     tenantId: string,
     userId: string,
     model?: string,
+    thinkingLevel?: string,
   ) {
     if (!content?.trim()) {
       throw new BusinessException(ErrorCodes.CONVERSATION_GOAL_EMPTY);
     }
     await this.assertKnownCommand(content, userId);
-    // 租户隔离：只能往自己租户的会话追加
+    // 租户隔离：只能往自己租户的会话追加（已删除的视同不存在）
     const conv = await this.prisma.conversation.findFirst({
-      where: { id, tenantId },
+      where: { id, tenantId, deletedAt: null },
       select: { id: true, status: true, goal: true },
     });
     if (!conv) {
@@ -108,13 +117,14 @@ export class ConversationsService {
 
     // 状态重置为 queued（必须）：上一轮若是 stopped 终态，不重置会让新 job 撞 worker 的
     // CAS 门（where status != 'stopped'）被误判「排队期间被停止」——一次停止永久封死会话。
-    // 顺带把本轮选定的模型落到会话上（含审批 resume / 超时兜底都复用同一模型）；
+    // 顺带把本轮选定的模型与思考档位落到会话上（含审批 resume / 超时兜底都复用同一设置）；
     // 空会话（idle 创建、goal 为空）首条消息回填 goal 作为侧栏标题。
     await this.prisma.conversation.update({
       where: { id },
       data: {
         status: 'queued',
         ...(model ? { model } : {}),
+        ...(thinkingLevel ? { thinkingLevel } : {}),
         ...(conv.goal.trim() ? {} : { goal: content }),
       },
     });
@@ -178,19 +188,49 @@ export class ConversationsService {
     return { stopped: aborted || cas.count > 0 };
   }
 
-  /** 列出当前租户的会话（SSR 列表用）。 */
+  /** 列出当前租户未删除的会话：置顶的在前（按置顶时刻倒序），其余按创建时间倒序。 */
   async list(tenantId: string) {
     return this.prisma.conversation.findMany({
-      where: { tenantId },
-      orderBy: { createdAt: 'desc' },
-      select: { id: true, goal: true, status: true, createdAt: true },
+      where: { tenantId, deletedAt: null },
+      // MySQL 降序时 NULL 排最后：未置顶的自然落到置顶之后
+      orderBy: [{ pinnedAt: 'desc' }, { createdAt: 'desc' }],
+      select: {
+        id: true,
+        goal: true,
+        status: true,
+        createdAt: true,
+        pinnedAt: true,
+      },
     });
+  }
+
+  /** 置顶 / 取消置顶。 */
+  async setPinned(id: string, tenantId: string, pinned: boolean) {
+    await this.assertConversationOwner(id, tenantId);
+    return this.prisma.conversation.update({
+      where: { id },
+      data: { pinnedAt: pinned ? new Date() : null },
+      select: { id: true, pinnedAt: true },
+    });
+  }
+
+  /**
+   * 软删除：先按「停止」收尾（运行中 / 排队 / 审批中的一并停掉，媒体任务取消），再打删除标记。
+   * 之后列表、详情、订阅、续聊都当它不存在；消息等数据留库，可人工恢复。
+   */
+  async remove(id: string, tenantId: string) {
+    await this.stop(id, tenantId);
+    await this.prisma.conversation.update({
+      where: { id },
+      data: { deletedAt: new Date() },
+    });
+    return { deleted: true };
   }
 
   /** 按 tenantId 过滤，保证只能查到自己租户的会话（多租户隔离）。 */
   async findOne(id: string, tenantId: string) {
     const conv = await this.prisma.conversation.findFirst({
-      where: { id, tenantId },
+      where: { id, tenantId, deletedAt: null },
       include: { messages: { orderBy: { seq: 'asc' } } },
     });
     if (!conv) {
@@ -212,7 +252,7 @@ export class ConversationsService {
     tenantId: string,
   ): Promise<string> {
     const conv = await this.prisma.conversation.findFirst({
-      where: { id, tenantId },
+      where: { id, tenantId, deletedAt: null },
       select: { id: true, userId: true },
     });
     if (!conv) {

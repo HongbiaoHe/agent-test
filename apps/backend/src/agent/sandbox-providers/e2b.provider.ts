@@ -21,6 +21,7 @@ import { E2BSandbox } from './e2b-sandbox';
 import { egressSignature, type SandboxNetwork, toE2bEgress } from './network';
 import type {
   ConnectedSandbox,
+  PortUpstream,
   SandboxLifecycle,
   SandboxListing,
   SandboxProvider,
@@ -109,6 +110,25 @@ export const e2bProvider: SandboxProvider = {
   ): Promise<void> {
     // 整体替换（不合并）：open 传空对象即清空全部规则（实测 updateNetwork({}) 立即恢复联网）
     await Sandbox.updateNetwork(listing.id, toE2bEgress(network));
+  },
+
+  /**
+   * 端口公网地址 = getHost(port)；关闭公网访问时每个请求都要带 e2b-traffic-access-token 头
+   * （官方文档 docs.e2b.dev/network/restrict-public-access：只支持请求头），令牌只有
+   * connect/create 的响应里有。对运行中沙箱 connect 只会延长、不会缩短到期时间（SDK 注释）。
+   */
+  async portUpstream(sandboxId: string, port: number): Promise<PortUpstream> {
+    const sbx = await Sandbox.connect(sandboxId);
+    const headers: Record<string, string> = {};
+    if (sbx.trafficAccessToken) {
+      headers['e2b-traffic-access-token'] = sbx.trafficAccessToken;
+    }
+    return { origin: `https://${sbx.getHost(port)}`, headers };
+  },
+
+  /** E2B 的超时是绝对时长：把到期时间重设为「现在 + 用户设置的闲置时长」。 */
+  async keepAlive(sandboxId: string, lifecycle: SandboxLifecycle) {
+    await Sandbox.setTimeout(sandboxId, idleMs(lifecycle));
   },
 
   async inspectPublicTraffic(listing: SandboxListing): Promise<boolean> {

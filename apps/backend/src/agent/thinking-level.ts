@@ -48,7 +48,7 @@ function bareModelName(model: string): string {
 }
 
 /** 思考深度档位。auto = 不传任何参数，完全跟随模型默认。 */
-export const CANVAS_THINKING_LEVELS = [
+export const THINKING_LEVELS = [
   'auto',
   'off',
   'on',
@@ -57,7 +57,14 @@ export const CANVAS_THINKING_LEVELS = [
   'high',
 ] as const;
 
-export type CanvasThinkingLevel = (typeof CANVAS_THINKING_LEVELS)[number];
+export type ThinkingLevel = (typeof THINKING_LEVELS)[number];
+
+/** DB 里存的是自由字符串（旧行/手改可能超出白名单）→ 收窄成档位，非法值按 null（跟随模型默认）。 */
+export function asThinkingLevel(v: string | null): ThinkingLevel | null {
+  return THINKING_LEVELS.includes(v as ThinkingLevel)
+    ? (v as ThinkingLevel)
+    : null;
+}
 
 /** DeepSeek 走 `deepseek:` 前缀；其余（含裸 `gemini-*`）按 google-genai 处理，与 factory 的解析一致。 */
 function isDeepSeek(model: string): boolean {
@@ -68,7 +75,7 @@ function isDeepSeek(model: string): boolean {
  * 该模型真正支持的档位（前端据此渲染可选项，后端据此做回落）。
  * 顺序即 UI 展示顺序。
  */
-export function thinkingLevelsFor(model: string): CanvasThinkingLevel[] {
+export function thinkingLevelsFor(model: string): ThinkingLevel[] {
   if (isDeepSeek(model)) return ['auto', 'off', 'on'];
   // Gemini：分级全模型可用，off 只给实测支持关闭的那几个
   return GEMINI_CAN_DISABLE_THINKING.has(bareModelName(model))
@@ -79,7 +86,7 @@ export function thinkingLevelsFor(model: string): CanvasThinkingLevel[] {
 /** 档位在该模型上是否有效。 */
 export function supportsThinkingLevel(
   model: string,
-  level: CanvasThinkingLevel,
+  level: ThinkingLevel,
 ): boolean {
   return thinkingLevelsFor(model).includes(level);
 }
@@ -92,7 +99,7 @@ export function supportsThinkingLevel(
  */
 export function thinkingModelParams(
   model: string,
-  level: CanvasThinkingLevel | null | undefined,
+  level: ThinkingLevel | null | undefined,
 ): Record<string, unknown> {
   const lv = level && supportsThinkingLevel(model, level) ? level : 'auto';
 

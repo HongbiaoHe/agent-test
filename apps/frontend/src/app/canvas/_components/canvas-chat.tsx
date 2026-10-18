@@ -19,6 +19,7 @@ import {
 import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
+import { ThinkingSwitcher } from "@/components/agent/thinking-switcher";
 import { ErrorNotice } from "@/components/chat/error-notice";
 import { JumpToLatest } from "@/components/chat/jump-to-latest";
 import { useChatScroll } from "@/components/chat/use-chat-scroll";
@@ -40,7 +41,6 @@ import { CanvasApprovalSwitcher } from "./approval-switcher";
 import { Markdown } from "./markdown";
 import { CanvasModelSwitcher } from "./model-switcher";
 import { CanvasThinkingIndicator } from "./thinking-indicator";
-import { CanvasThinkingSwitcher } from "./thinking-switcher";
 import {
   CANVAS_SKILLS_KEY,
   useCanvasSkills,
@@ -876,7 +876,7 @@ export function CanvasChat({
                 onChange={changeModel}
                 disabled={busy}
               />
-              <CanvasThinkingSwitcher
+              <ThinkingSwitcher
                 model={model}
                 value={thinking}
                 onChange={setThinking}

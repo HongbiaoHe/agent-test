@@ -1,3 +1,4 @@
+import { isBaseMessage } from '@langchain/core/messages';
 import { Command } from '@langchain/langgraph';
 import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
@@ -7,11 +8,18 @@ import { buildAgent } from '../agent/agent.factory';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
 import { getUserSandbox, uploadSkillsToSandbox } from '../agent/sandbox';
 import { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
-import { normalize, RawEvent } from '../agent/event-normalizer';
+import {
+  extractThinkingBlocks,
+  normalize,
+  RawEvent,
+} from '../agent/event-normalizer';
+import { ReasoningCollector } from '../agent/reasoning-parts';
+import { asThinkingLevel } from '../agent/thinking-level';
 import { parseCommand } from '../commands/parse-command';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
 import { createMediaTools } from '../media/media.tools';
+import { createPreviewPageTool } from '../agent/tools/preview-page.tool';
 import { PrismaService } from '../prisma/prisma.service';
 import { absolutizeRefPaths } from '../skills/skill-files';
 import type { SkillDef } from '../skills/skills.service';
@@ -122,8 +130,8 @@ export class AgentProcessor extends WorkerHost {
         });
       }
 
-      // ②.5 加载技能：起沙箱后、调 LLM 前把技能写入沙箱盘（/skills/<name>/...），
-      // deepagents skills 中间件随后扫 /skills/ 才能读到。上传失败只告警不中断
+      // ②.5 加载技能：起沙箱后、调 LLM 前把技能写入沙箱盘（${skillsDir}/<name>/...），
+      // deepagents skills 中间件随后扫 skillsDir 才能读到。上传失败只告警不中断
       // （沙箱仍可执行命令/读写文件，仅本轮无技能）。无沙箱 → 不提供技能（设计：无沙箱=无技能）。
       if (sandbox) {
         try {
@@ -161,7 +169,11 @@ export class AgentProcessor extends WorkerHost {
         }
         runName = lastLabel || runName;
         input = { messages };
-        systemPromptExtra = await this.buildSkillPrompt(conv.userId, messages);
+        systemPromptExtra = await this.buildSkillPrompt(
+          conv.userId,
+          messages,
+          sandbox?.skillsDir,
+        );
         const mediaInventory = await this.buildMediaInventory(
           conversationId,
           conv.userId,
@@ -177,16 +189,22 @@ export class AgentProcessor extends WorkerHost {
       const activePlan = await this.buildActivePlan(conversationId);
 
       // ③ 装配：media 工具闭包注入——conversationId/userId 由 worker 上下文提供，不经模型传递（无注入风险）
-      const extraTools = createMediaTools(this.media, {
-        conversationId,
-        userId: conv.userId,
-      });
+      // 网页预览工具只在有沙箱时注入：没有沙箱就没有可预览的工作区文件
+      const extraTools = [
+        ...createMediaTools(this.media, {
+          conversationId,
+          userId: conv.userId,
+        }),
+        ...(sandbox ? [createPreviewPageTool(sandbox)] : []),
+      ];
       const agent = await buildAgent({
         checkpointer: this.checkpointer,
         systemPromptExtra,
         model: conv.model ?? undefined,
+        thinkingLevel: asThinkingLevel(conv.thinkingLevel),
         defaultBackend,
         hasSandbox: !!sandbox,
+        workspace: sandbox?.visibleRoot,
         extraTools,
       });
 
@@ -205,6 +223,32 @@ export class AgentProcessor extends WorkerHost {
 
       // resume 续跑时从已有消息数接着排 seq
       let seq = await this.prisma.message.count({ where: { conversationId } });
+      // 思考按「源消息」归集：一条 AIMessage 一块、一块落一行（规则见 reasoning-parts.ts）。
+      // 逐个增量落库会让表随字数膨胀，且刷新后要靠前端再拼回去。priorIds = run 开始前 checkpoint
+      // 里就有的消息（审批 resume 时 updates 流会把它们整批回放），其思考已在上一段落过库，必须排掉。
+      const reasoning = new ReasoningCollector(
+        await this.priorMessageIds(agent, config),
+      );
+      /** 收口：把本段新产生的思考按源消息各落一行。时机 = 思考之后的第一个其它事件或本轮结束。 */
+      const flushReasoning = async () => {
+        for (const part of reasoning.drain()) {
+          await this.persist(
+            conversationId,
+            { type: 'reasoning', payload: part },
+            seq++,
+          );
+        }
+      };
+      /** 收下一块思考并推流（null = collector 判定该丢：历史重放 / 同轮回显 / 空文本）。 */
+      const pushReasoning = async (
+        part: { sourceId: string; text: string } | null,
+      ) => {
+        if (!part) return;
+        await this.stream.publish(conversationId, {
+          type: 'reasoning',
+          payload: part,
+        });
+      };
       // 逐字 token 实时推流但不逐条落库（否则每条 token 一行、表爆炸）；改为按助手文本段累积，
       // 在遇到边界（工具调用/结果/计划/审批）或流结束时，把累积文本收口成一条完整 message：
       // 推流 + 落库都用「用户实际看到的累积文本」，从而 live 与刷新恢复一致、结尾不再被更短的聚合覆盖。
@@ -219,8 +263,28 @@ export class AgentProcessor extends WorkerHost {
       };
       for await (const chunk of stream) {
         const [ns, mode, data] = chunk as [string[], string, unknown];
+        // Gemini 的思考正文只能从 updates 拿（messages 流会把它丢掉，见
+        // extractThinkingBlocks 注释）。整段一次给出，非流式。
+        if (mode === 'updates') {
+          for (const part of extractThinkingBlocks(data)) {
+            await pushReasoning(reasoning.takeBlock(part.id, part.text));
+          }
+        }
         const raw = normalize(ns, mode, data);
         if (!raw) continue;
+        // DeepSeek 的思考经 messages 流逐块增量到达
+        if (raw.type === 'reasoning') {
+          const p = raw.payload as { text?: string; sourceId?: string };
+          await pushReasoning(
+            reasoning.appendDelta(
+              String(p.sourceId ?? ''),
+              String(p.text ?? ''),
+            ),
+          );
+          continue;
+        }
+        // 思考之后的第一个事件即代表这段思考已结束 → 先收口落库，保证 seq 顺序在前
+        await flushReasoning();
         if (raw.type === 'token') {
           buf += String((raw.payload as { text?: string }).text ?? '');
           await this.stream.publish(conversationId, raw);
@@ -240,6 +304,7 @@ export class AgentProcessor extends WorkerHost {
         await this.stream.publish(conversationId, raw);
         await this.persist(conversationId, raw, seq++);
       }
+      await flushReasoning();
       await flush(); // 流自然结束、末段文本无后继事件触发时收尾
 
       // 流结束后检测审批中断（state.tasks 是 LangGraph 内部概念，勿与业务表混淆）
@@ -328,6 +393,32 @@ export class AgentProcessor extends WorkerHost {
     } finally {
       dispose();
     }
+  }
+
+  /**
+   * run 开始前 checkpoint 里已有的消息 id（同 canvas.processor.priorMessageIds）。
+   * 读不到就返回空集：功能降级为不排除，绝不因此让整轮跑挂掉。
+   */
+  private async priorMessageIds(
+    agent: { getState(config: unknown): Promise<unknown> },
+    config: unknown,
+  ): Promise<Set<string>> {
+    const ids = new Set<string>();
+    try {
+      const state = (await agent.getState(config)) as {
+        values?: { messages?: unknown[] };
+      };
+      const msgs = state?.values?.messages;
+      if (!Array.isArray(msgs)) return ids;
+      for (const m of msgs) {
+        if (isBaseMessage(m) && m.id) ids.add(m.id);
+      }
+    } catch {
+      this.logger.warn(
+        'priorMessageIds 读取 checkpoint 失败，本轮不排除历史思考',
+      );
+    }
+    return ids;
   }
 
   /**
@@ -432,7 +523,7 @@ export class AgentProcessor extends WorkerHost {
    * 多轮续跑时，上一轮 read_file 读到的 SKILL.md 不会回到上下文里：loadHistory 只重放
    * user/assistant 文本消息，read_file 的调用与结果落在 tool_start/tool_end（见 ROLE_BY_TYPE）
    * 被排除，且 deepagents 跑完一轮不在 state 保留对话消息。于是每个后续轮次模型都缺少已激活
-   * 技能的 SKILL.md，只能反复 read_file 同一个 /skills/<name>/SKILL.md（用户观察到的「重复读取」）。
+   * 技能的 SKILL.md，只能反复 read_file 同一个 SKILL.md（用户观察到的「重复读取」）。
    *
    * 这里：若本会话在**之前的轮次**已通过 /command 激活了某技能（即最近一次能解析到已知技能的
    * /command 不是本轮当前请求），就把该技能的 SKILL.md 全文注入系统提示，并显式告知无需再
@@ -443,6 +534,8 @@ export class AgentProcessor extends WorkerHost {
   private async buildSkillPrompt(
     userId: string,
     messages: { role: string; content: string }[],
+    /** 沙箱技能库目录（GuardedSandbox.skillsDir）；无沙箱时沿用默认 /skills 表述 */
+    skillsDir = '/skills',
   ): Promise<string> {
     const users = messages.filter((m) => m.role === 'user');
     if (users.length === 0) return '';
@@ -463,11 +556,11 @@ export class AgentProcessor extends WorkerHost {
 
     const skillMd = active.files['SKILL.md'];
     if (!skillMd) return '';
-    const content = absolutizeRefPaths(active.name, skillMd);
+    const content = absolutizeRefPaths(active.name, skillMd, skillsDir);
     return (
       `\n\n## 已加载技能：${active.name}（SKILL.md 已提供，请勿重复读取）\n` +
       `本会话在之前的轮次已通过 \`/${active.name}\` 激活该技能，其 SKILL.md 全文见下。` +
-      `请直接据此继续，**不要再 read_file 读取 \`/skills/${active.name}/SKILL.md\`**；` +
+      `请直接据此继续，**不要再 read_file 读取 \`${skillsDir}/${active.name}/SKILL.md\`**；` +
       `仅当需要其引用的 references/ 子技能等子文件时，才按需 read_file 那些子文件。\n\n` +
       `<skill name="${active.name}">\n${content}\n</skill>`
     );

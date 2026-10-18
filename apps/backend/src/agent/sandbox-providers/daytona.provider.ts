@@ -192,6 +192,32 @@ export const daytonaProvider: SandboxProvider = {
     );
   },
 
+  /**
+   * 标准预览链接 `https://{port}-{sandboxId}.{proxyDomain}` + 私有令牌头（官方文档：
+   * x-daytona-preview-token）。不用签名地址：签名地址默认 60s 过期且令牌在域名里，反代要的是
+   * 长期可用的上游；顺带用 X-Daytona-Skip-Preview-Warning 跳过浏览器首访的警告拦截页。
+   * getPreviewLink 在端口未开放时会自动开放（SDK 注释）。
+   */
+  async portUpstream(sandboxId: string, port: number) {
+    const sb = await new Daytona().get(sandboxId);
+    const link = await sb.getPreviewLink(port);
+    return {
+      origin: new URL(link.url).origin,
+      headers: {
+        'x-daytona-preview-token': link.token,
+        'X-Daytona-Skip-Preview-Warning': 'true',
+      },
+    };
+  },
+
+  /**
+   * Daytona 按「最后活跃时间 + 闲置间隔」自动停机；SDK 的 refreshActivity 正是为
+   * 「用户还在用、但沙箱里没有 API 活动」准备的（SDK 注释）。闲置间隔已由 lifecycle 配在沙箱上。
+   */
+  async keepAlive(sandboxId: string) {
+    await (await new Daytona().get(sandboxId)).refreshActivity();
+  },
+
   desktop: {
     /**
      * GuardedSandbox 不暴露 computerUse/getSignedPreviewUrl，须走 SDK 原生对象（client.get(id)）。

@@ -15,7 +15,7 @@ import { cn } from "@/lib/utils";
  * 值得让人看清楚每一档到底意味着什么，而不是猜一个开关的语义。
  *
  * 浮层用 Popover（Portal + 碰撞避让）：工具栏会随宽度换行，手写 absolute 定位在某种布局下
- * 必然被聊天栏裁掉（见 CanvasThinkingSwitcher）。
+ * 必然被聊天栏裁掉（见 ThinkingSwitcher）。
  */
 const OPTIONS: {
   value: CanvasApprovalMode;

@@ -1180,6 +1180,255 @@ describe('AgentProcessor 流式聚合落库', () => {
   });
 });
 
+/**
+ * 思考深度与思考过程：档位从会话传给 buildAgent；思考按源消息归集成一块落库（不再逐个增量落一行），
+ * DeepSeek 走 messages 流增量、Gemini 走 updates 流整块，审批 resume 回放的旧思考要排掉。
+ */
+describe('AgentProcessor 思考深度与思考过程', () => {
+  const thinkingChunk = (id: string, reasoning: string) =>
+    new AIMessageChunk({
+      id,
+      content: '',
+      additional_kwargs: { reasoning_content: reasoning },
+    });
+  const geminiMsg = (id: string, thinking: string, text: string) =>
+    new AIMessageChunk({
+      id,
+      content: [
+        { type: 'thinking', thinking },
+        { type: 'text', text },
+      ],
+    });
+
+  /** 跑一轮：返回落库行、推流事件与 buildAgent 收到的参数。 */
+  async function runWith(opts: {
+    chunks: unknown[];
+    conv?: Record<string, unknown>;
+    priorIds?: string[];
+    kind?: 'run' | 'resume';
+  }) {
+    const created: { type: string; content: unknown; seq: number }[] = [];
+    const prisma = {
+      conversation: {
+        update: jest.fn().mockResolvedValue(makeConv(opts.conv)),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(makeConv(opts.conv)),
+      },
+      message: {
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(0),
+        create: jest.fn(
+          (arg: { data: { type: string; content: unknown; seq: number } }) => {
+            created.push({
+              type: arg.data.type,
+              content: arg.data.content,
+              seq: arg.data.seq,
+            });
+            return Promise.resolve({});
+          },
+        ),
+      },
+    } as unknown as PrismaService;
+    const published: { type: string; payload: unknown }[] = [];
+    const streamSvc = {
+      publish: jest.fn(
+        (_c: string, raw: { type: string; payload: unknown }) => {
+          published.push({ type: raw.type, payload: raw.payload });
+          return Promise.resolve(undefined);
+        },
+      ),
+    } as unknown as StreamService;
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([] as SkillDef[]),
+      getFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as SkillsService;
+    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+    const priorMessages = (opts.priorIds ?? []).map(
+      (id) => new AIMessageChunk({ id, content: '' }),
+    );
+    const fakeAgent = {
+      stream: jest.fn(async () =>
+        (async function* () {
+          for (const c of opts.chunks) yield c;
+        })(),
+      ),
+      getState: jest.fn(async () => ({
+        values: { messages: priorMessages },
+        tasks: [],
+      })),
+    };
+    let buildOpts: { thinkingLevel?: unknown } | undefined;
+    (buildAgent as jest.Mock).mockImplementation(
+      (o: { thinkingLevel?: unknown }) => {
+        buildOpts = o;
+        return fakeAgent;
+      },
+    );
+    const proc = new AgentProcessor(
+      prisma,
+      streamSvc,
+      skills,
+      {},
+      queue,
+      makeMediaService(),
+      new AbortRegistry(),
+      sandboxSettingsMock,
+    );
+    await proc.process({
+      data: { conversationId: 'th1', kind: opts.kind ?? 'run' },
+    } as Job<{ conversationId: string; kind: 'run' | 'resume' }>);
+    return { created, published, buildOpts };
+  }
+
+  it('会话上的思考档位原样传给 buildAgent', async () => {
+    const { buildOpts } = await runWith({
+      chunks: [],
+      conv: { model: 'deepseek:deepseek-flash', thinkingLevel: 'on' },
+    });
+    expect(buildOpts?.thinkingLevel).toBe('on');
+  });
+
+  it('DB 里的非法档位按 null（跟随模型默认）传，不让整轮跑挂', async () => {
+    const { buildOpts } = await runWith({
+      chunks: [],
+      conv: { thinkingLevel: 'ultra' },
+    });
+    expect(buildOpts?.thinkingLevel).toBeNull();
+  });
+
+  it('DeepSeek 思考增量逐块推流，但只按源消息落一行完整思考，且排在正文之前', async () => {
+    const { created, published } = await runWith({
+      chunks: [
+        [['agent'], 'messages', [thinkingChunk('ai-1', '先')]],
+        [['agent'], 'messages', [thinkingChunk('ai-1', '想')]],
+        [['agent'], 'messages', [thinkingChunk('ai-1', '想')]],
+        [['agent'], 'messages', [new AIMessageChunk({ content: '答案' })]],
+      ],
+    });
+    // 推流：每个增量各一条，带源消息 id（前端据此并成一块）
+    expect(published.filter((p) => p.type === 'reasoning')).toEqual([
+      { type: 'reasoning', payload: { sourceId: 'ai-1', text: '先' } },
+      { type: 'reasoning', payload: { sourceId: 'ai-1', text: '想' } },
+      { type: 'reasoning', payload: { sourceId: 'ai-1', text: '想' } },
+    ]);
+    // 落库：整段思考一行（重复的短增量不能被吞），且 seq 早于正文 message
+    const rows = created.filter((c) => c.type === 'reasoning');
+    expect(rows).toHaveLength(1);
+    expect(rows[0].content).toEqual({ sourceId: 'ai-1', text: '先想想' });
+    const msg = created.find((c) => c.type === 'message');
+    expect(rows[0].seq).toBeLessThan(msg!.seq);
+  });
+
+  it('Gemini 思考从 updates 整块取出：跨节点回显只推一次、只落一行', async () => {
+    const g = geminiMsg('g-1', '分析一下', '结论');
+    const { created, published } = await runWith({
+      chunks: [
+        [['agent'], 'messages', [new AIMessageChunk({ content: '结论' })]],
+        [[], 'updates', { model_request: { messages: [g] } }],
+        [[], 'updates', { after_model: { messages: [g] } }],
+      ],
+    });
+    expect(published.filter((p) => p.type === 'reasoning')).toEqual([
+      { type: 'reasoning', payload: { sourceId: 'g-1', text: '分析一下' } },
+    ]);
+    const rows = created.filter((c) => c.type === 'reasoning');
+    expect(rows).toEqual([
+      expect.objectContaining({
+        content: { sourceId: 'g-1', text: '分析一下' },
+      }),
+    ]);
+  });
+
+  it('审批 resume 时 checkpoint 回放的旧思考整条丢弃（已在上一段落过库）', async () => {
+    const { created, published } = await runWith({
+      kind: 'resume',
+      priorIds: ['g-old'],
+      chunks: [
+        [
+          [],
+          'updates',
+          { model_request: { messages: [geminiMsg('g-old', '旧思考', '')] } },
+        ],
+      ],
+    });
+    expect(published.some((p) => p.type === 'reasoning')).toBe(false);
+    expect(created.some((c) => c.type === 'reasoning')).toBe(false);
+  });
+});
+
+describe('AgentProcessor 网页预览工具注入', () => {
+  let lastWorkspace: string | undefined;
+
+  /** 跑一轮空流，返回 buildAgent 收到的工具名。 */
+  async function toolNamesWith(sandbox: unknown) {
+    (getUserSandbox as jest.Mock).mockResolvedValueOnce(sandbox);
+    const prisma = {
+      conversation: {
+        update: jest.fn().mockResolvedValue(makeConv()),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(makeConv()),
+      },
+      message: {
+        findMany: jest.fn().mockResolvedValue([]),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(0),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+    let names: string[] = [];
+    (buildAgent as jest.Mock).mockImplementation(
+      (o: { extraTools?: { name: string }[]; workspace?: string }) => {
+        names = (o.extraTools ?? []).map((t) => t.name);
+        lastWorkspace = o.workspace;
+        return {
+          stream: jest.fn(async () => (async function* () {})()),
+          getState: jest.fn(async () => ({ tasks: [] })),
+        };
+      },
+    );
+    const proc = new AgentProcessor(
+      prisma,
+      {
+        publish: jest.fn().mockResolvedValue(undefined),
+      } as unknown as StreamService,
+      {
+        effectiveSkillsFor: jest.fn().mockResolvedValue([] as SkillDef[]),
+        getFor: jest.fn().mockResolvedValue(undefined),
+      } as unknown as SkillsService,
+      {},
+      { add: jest.fn().mockResolvedValue({}) } as unknown as Queue,
+      makeMediaService(),
+      new AbortRegistry(),
+      sandboxSettingsMock,
+    );
+    await proc.process({
+      data: { conversationId: 'pv1', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+    return names;
+  }
+
+  it('有沙箱 → 媒体工具之外再注入 preview_page', async () => {
+    expect(await toolNamesWith({ id: 'sbx-1' })).toEqual([
+      'generate_image',
+      'generate_video',
+      'preview_page',
+    ]);
+  });
+
+  it('有沙箱 → buildAgent 收到沙箱的工作区路径（系统提示与技能库目录据此生成）', async () => {
+    await toolNamesWith({ id: 'sbx-1', visibleRoot: '/workspace' });
+    expect(lastWorkspace).toBe('/workspace');
+  });
+
+  it('无沙箱 → 不注入 preview_page（没有可预览的工作区文件）', async () => {
+    expect(await toolNamesWith(null)).toEqual([
+      'generate_image',
+      'generate_video',
+    ]);
+  });
+});
+
 describe('AgentProcessor 主动停止', () => {
   const makeDeps = () => {
     const prisma = {
