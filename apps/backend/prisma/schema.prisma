@@ -132,6 +132,9 @@ model MediaVersion {
   // 参考图：引用本会话此前生成的图片版本 id 数组（图生图多张 / 视频取首张作首帧）。
   // 用 Json 存数组：版本数 ≤4、只整体读写、不需要按元素查询，Json 比关联表更简单（YAGNI）。
   referenceVersionIds Json? // string[] | null
+  // aigc 产物的永久 CDN 地址（output_data.image_url / video_url），前端直接从 CDN 取。
+  // 与 filePath 二选一：aigc 产物只存 url，本地 ffmpeg 拼接产物只存 filePath。
+  url          String?         @db.Text
   filePath     String? // MEDIA_DATA_DIR 下相对路径，如 <versionId>.png / .mp4
   error        String?         @db.Text
   createdAt    DateTime        @default(now())

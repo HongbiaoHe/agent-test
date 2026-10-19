@@ -1,12 +1,12 @@
 /**
  * aigc 回调收尾的单元测试（MediaService.applyTaskResult + 纯函数）。
  *
- * 覆盖：completed 时转存产物并置 done、failed 时把渠道原码原话落库、重复回调被状态条件挡掉、
+ * 覆盖：completed 时只存 CDN 地址并置 done（不再落盘）、failed 时把渠道原码原话落库、重复回调被状态条件挡掉、
  * 以及签名/扩展名/Json 参数这几个边界纯函数。
  */
 import { getQueueToken } from '@nestjs/bullmq';
 import { Test } from '@nestjs/testing';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, readdirSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
@@ -133,13 +133,10 @@ describe('MediaService.applyTaskResult', () => {
     generation: { type: 'image', conversationId: 'canvas-1' },
   };
 
-  it('completed：下载产物落盘 → done + 推流', async () => {
+  it('completed：只存 CDN 地址 → done + 推流，不下载不落盘', async () => {
     findFirst.mockResolvedValue(version);
     updateMany.mockResolvedValue({ count: 1 });
-    const bytes = Buffer.from('PNGDATA');
-    jest
-      .spyOn(global, 'fetch')
-      .mockResolvedValue(new Response(bytes, { status: 200 }));
+    const fetchSpy = jest.spyOn(global, 'fetch');
 
     const r = await service.applyTaskResult({
       task_id: 't-1',
@@ -148,13 +145,19 @@ describe('MediaService.applyTaskResult', () => {
     });
 
     expect(r).toBe('applied');
-    expect(readFileSync(join(dir, 'ver-1.png')).toString()).toBe('PNGDATA');
+    expect(fetchSpy).not.toHaveBeenCalled();
+    expect(readdirSync(dir)).toEqual([]);
     expect(updateMany).toHaveBeenCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({
           status: 'done',
-          filePath: 'ver-1.png',
+          url: 'https://gcs/x/out.png',
         }),
+      }),
+    );
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.not.objectContaining({ filePath: expect.anything() }),
       }),
     );
     expect(publish).toHaveBeenCalledWith(
@@ -229,9 +232,6 @@ describe('MediaService.applyTaskResult', () => {
   it('与另一路抢跑时（updateMany 改到 0 行）不推流', async () => {
     findFirst.mockResolvedValue(version);
     updateMany.mockResolvedValue({ count: 0 });
-    jest
-      .spyOn(global, 'fetch')
-      .mockResolvedValue(new Response(Buffer.from('x'), { status: 200 }));
     expect(
       await service.applyTaskResult({
         task_id: 't-1',

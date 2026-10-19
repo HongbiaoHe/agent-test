@@ -399,6 +399,62 @@ describe('MediaService', () => {
       });
     });
   });
+
+  describe('getVersionSource', () => {
+    it('aigc 产物 → 返回 CDN 地址', async () => {
+      mockPrisma.mediaVersion.findUnique.mockResolvedValue({
+        id: 'ver-1',
+        status: 'done',
+        url: 'https://cdn/x.jpg',
+        filePath: null,
+        generation: { userId: 'user-1' },
+      });
+      await expect(
+        service.getVersionSource('ver-1', 'user-1'),
+      ).resolves.toEqual({ url: 'https://cdn/x.jpg' });
+    });
+
+    it('只有本地文件（拼接产物）→ url 为 null，由前端改走 asset 接口', async () => {
+      mockPrisma.mediaVersion.findUnique.mockResolvedValue({
+        id: 'ver-1',
+        status: 'done',
+        url: null,
+        filePath: 'ver-1.mp4',
+        generation: { userId: 'user-1' },
+      });
+      await expect(
+        service.getVersionSource('ver-1', 'user-1'),
+      ).resolves.toEqual({ url: null });
+    });
+
+    it('外部用户 → NOT_FOUND；未完成 → NOT_READY', async () => {
+      mockPrisma.mediaVersion.findUnique.mockResolvedValueOnce({
+        id: 'ver-1',
+        status: 'done',
+        url: 'https://cdn/x.jpg',
+        filePath: null,
+        generation: { userId: 'owner' },
+      });
+      await expect(
+        service.getVersionSource('ver-1', 'attacker'),
+      ).rejects.toMatchObject({
+        errCode: ErrorCodes.MEDIA_VERSION_NOT_FOUND.code,
+      });
+
+      mockPrisma.mediaVersion.findUnique.mockResolvedValueOnce({
+        id: 'ver-1',
+        status: 'generating',
+        url: null,
+        filePath: null,
+        generation: { userId: 'user-1' },
+      });
+      await expect(
+        service.getVersionSource('ver-1', 'user-1'),
+      ).rejects.toMatchObject({
+        errCode: ErrorCodes.MEDIA_ASSET_NOT_READY.code,
+      });
+    });
+  });
 });
 
 describe('MediaService – cancelByConversation（停止功能）', () => {

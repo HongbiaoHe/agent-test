@@ -407,10 +407,21 @@ export function regenerateMedia(
 
 /**
  * 取某版本资产的二进制 Blob（图片/视频）。
- * 注意：asset 路由用 StreamableFile 原样返回二进制（不裹 {code,message,data}），
+ * 先问来源：aigc 产物存的是 CDN 地址（公开、CORS 放行），直接从 CDN 取；
+ * 只有本地文件的（拼接产物 / 未回填的历史版本）再走 asset 路由。
+ * 取 CDN 时不带任何自定义头：CDN 的 preflight 不放行自定义头（如 ngrok-skip-browser-warning）。
+ * asset 路由用 StreamableFile 原样返回二进制（不裹 {code,message,data}），
  * 故不能走 request() 的 JSON 解析路径——这里手动 fetch、带 Authorization、读 Blob。
  */
 export async function fetchMediaAssetBlob(versionId: string): Promise<Blob> {
+  const { url } = await request<{ url: string | null }>(
+    `/media/versions/${versionId}/source`,
+  );
+  if (url) {
+    const cdn = await fetch(url);
+    if (!cdn.ok) throw new Error(`Failed to load asset (${cdn.status})`);
+    return cdn.blob();
+  }
   const res = await fetch(`${API_BASE}/media/versions/${versionId}/asset`, {
     headers: {
       "ngrok-skip-browser-warning": "1",

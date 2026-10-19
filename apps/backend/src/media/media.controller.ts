@@ -46,7 +46,15 @@ export class MediaController {
   }
 
   /**
-   * 二进制流式下载某版本资产。
+   * 某版本资产的来源：`{ url }` 为 aigc 产物的 CDN 地址；为 null 时改走下面的 asset 接口取本地文件。
+   */
+  @Get('media/versions/:id/source')
+  source(@Param('id') versionId: string, @CurrentUser() user: AuthUser) {
+    return this.media.getVersionSource(versionId, user.userId);
+  }
+
+  /**
+   * 二进制流式下载某版本的本地资产（拼接产物 / 未回填 url 的历史版本）。
    * 归属校验后用 StreamableFile 原样响应——ResponseInterceptor 已对 StreamableFile 透传，
    * 不裹 JSON envelope（设计 Issue 10）；前端 fetch+Authorization → blob URL。
    */
