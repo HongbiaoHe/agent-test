@@ -1,6 +1,5 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
-import { mkdir, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Queue } from 'bullmq';
 import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
@@ -277,7 +276,7 @@ export class MediaService {
         v.generation.userId !== userId ||
         v.generation.type !== 'video' ||
         v.status !== 'done' ||
-        !v.filePath
+        (!v.filePath && !v.url)
       ) {
         throw new BusinessException(
           ErrorCodes.MEDIA_REF_INVALID,
@@ -467,19 +466,13 @@ export class MediaService {
           'aigc 报成功但没有产物地址',
         );
       }
-      // 转存到本地资产目录：aigc 的 GCS 链接虽是永久的，但资产读取/鉴权/下载都已围绕
-      // 本地文件建好（见 getVersionAsset），转存后前端与下游引用一行代码都不用改。
-      const bytes = await this.download(url);
-      const fileName = `${version.id}.${extFromUrl(url, type)}`;
-      const dir = mediaDataDir();
-      await mkdir(dir, { recursive: true });
-      await writeFile(join(dir, fileName), bytes);
-
+      // 只存 aigc 的永久 CDN 地址，不转存本地：本地文件不随库走（换 worktree / 机器就丢），
+      // 而 CDN 地址存库即可在任何环境取到。前端经 getVersionSource 拿到它直接从 CDN 取。
       const changed = await this.prisma.mediaVersion.updateMany({
         where: { id: version.id, status: { in: MEDIA_OPEN_STATUSES } },
         data: {
           status: 'done',
-          filePath: fileName,
+          url,
           completedAt: new Date(),
         },
       });
@@ -492,7 +485,7 @@ export class MediaService {
         'done',
       );
       this.logger.log(
-        `media 生成完成 versionId=${version.id} task=${task.task_id} file=${fileName}`,
+        `media 生成完成 versionId=${version.id} task=${task.task_id} url=${url}`,
       );
       return 'applied';
     }
@@ -605,15 +598,6 @@ export class MediaService {
     return base ? `${base}/media/aigc/callback` : undefined;
   }
 
-  /** 下载 aigc 产物。单次请求、失败即抛（外层会落 failed 并推流）。 */
-  private async download(url: string): Promise<Buffer> {
-    const res = await fetch(url, { signal: AbortSignal.timeout(120_000) });
-    if (!res.ok) {
-      throw new Error(`下载产物失败 HTTP ${res.status} ${url}`);
-    }
-    return Buffer.from(await res.arrayBuffer());
-  }
-
   /**
    * 校验参考图版本的「合法性」：每个 id 必须存在、generation.type=image、归属同 userId。
    * status 允许 queued / generating / done（就绪性由 processor 执行时等待）；status=failed 仍拒绝。
@@ -685,23 +669,33 @@ export class MediaService {
   }
 
   /**
-   * 取某版本资产的绝对路径 + MIME（供 controller 流式下载）。
-   * 校验归属：version → generation.userId === userId。未完成（无 filePath）则报 NOT_READY。
+   * 取某版本资产的来源：aigc 产物给 CDN 地址（前端直接从 CDN 取），
+   * 本地拼接产物 / 未回填的历史版本给 null（前端再走 getVersionAsset 拉本地文件）。
+   * 归属与就绪校验同 getVersionAsset。
+   */
+  async getVersionSource(
+    versionId: string,
+    userId: string,
+  ): Promise<{ url: string | null }> {
+    const version = await this.findOwnedVersion(versionId, userId);
+    if (version.status !== 'done' || (!version.url && !version.filePath)) {
+      throw new BusinessException(
+        ErrorCodes.MEDIA_ASSET_NOT_READY,
+        HttpStatus.CONFLICT,
+      );
+    }
+    return { url: version.url };
+  }
+
+  /**
+   * 取某版本本地资产的绝对路径 + MIME（供 controller 流式下载）。
+   * 校验归属：version → generation.userId === userId。没有本地文件（未完成或只有 CDN 地址）则报 NOT_READY。
    */
   async getVersionAsset(
     versionId: string,
     userId: string,
   ): Promise<{ absPath: string; mimeType: string }> {
-    const version = await this.prisma.mediaVersion.findUnique({
-      where: { id: versionId },
-      include: { generation: true },
-    });
-    if (!version || version.generation.userId !== userId) {
-      throw new BusinessException(
-        ErrorCodes.MEDIA_VERSION_NOT_FOUND,
-        HttpStatus.NOT_FOUND,
-      );
-    }
+    const version = await this.findOwnedVersion(versionId, userId);
     if (version.status !== 'done' || !version.filePath) {
       throw new BusinessException(
         ErrorCodes.MEDIA_ASSET_NOT_READY,
@@ -712,6 +706,21 @@ export class MediaService {
       absPath: join(mediaDataDir(), version.filePath),
       mimeType: mimeForFilePath(version.filePath),
     };
+  }
+
+  /** 按 id 取版本并校验归属（不存在与不归属都报 NOT_FOUND，不泄露存在性）。 */
+  private async findOwnedVersion(versionId: string, userId: string) {
+    const version = await this.prisma.mediaVersion.findUnique({
+      where: { id: versionId },
+      include: { generation: true },
+    });
+    if (!version || version.generation.userId !== userId) {
+      throw new BusinessException(
+        ErrorCodes.MEDIA_VERSION_NOT_FOUND,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    return version;
   }
 
   /** 统一推一条 media_update（仅状态变更时调用）。 */

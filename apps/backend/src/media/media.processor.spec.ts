@@ -1,6 +1,9 @@
 /**
- * media.processor 单元测试：waitForRef 等待逻辑（参考图就绪性轮询）。
+ * media.processor 单元测试：waitForRef 等待逻辑（参考图就绪性轮询）、参考图地址、拼接取源。
  */
+import { existsSync, mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { Test } from '@nestjs/testing';
 import type { Job } from 'bullmq';
 import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
@@ -9,6 +12,10 @@ import { MediaService } from './media.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { AigcService } from '../aigc/aigc.service';
+import { concatVideos } from './video-concat';
+
+// 拼接测试不真跑 ffmpeg：只验证喂给它的源文件路径与内容
+jest.mock('./video-concat', () => ({ concatVideos: jest.fn() }));
 
 describe('MediaProcessor.waitForRef', () => {
   const mockPrisma = { mediaVersion: { findUnique: jest.fn() } };
@@ -43,6 +50,31 @@ describe('MediaProcessor.waitForRef', () => {
     const v = await processor.waitForRef('ref-1', 10, 1_000);
     expect(v.id).toBe('ref-1');
     expect(mockPrisma.mediaVersion.findUnique).toHaveBeenCalledTimes(1);
+  });
+
+  it('ref done 且只有 CDN 地址（aigc 产物）→ 视为就绪', async () => {
+    mockPrisma.mediaVersion.findUnique.mockResolvedValue({
+      id: 'ref-1',
+      status: 'done',
+      url: 'https://cdn/ref-1.jpg',
+      filePath: null,
+    });
+
+    const v = await processor.waitForRef('ref-1', 10, 1_000);
+    expect(v.url).toBe('https://cdn/ref-1.jpg');
+  });
+
+  it('ref done 但既无 url 也无 filePath → 抛错', async () => {
+    mockPrisma.mediaVersion.findUnique.mockResolvedValue({
+      id: 'ref-1',
+      status: 'done',
+      url: null,
+      filePath: null,
+    });
+
+    await expect(processor.waitForRef('ref-1', 10, 1_000)).rejects.toThrow(
+      /资产缺失/,
+    );
   });
 
   it('ref generating→done 后继续执行', async () => {
@@ -210,11 +242,13 @@ describe('MediaProcessor 参考图地址', () => {
   const ref: {
     id: string;
     status: string;
-    filePath: string;
+    url: string | null;
+    filePath: string | null;
     providerTaskId: string | null;
   } = {
     id: 'ref-1',
     status: 'done',
+    url: null,
     filePath: 'ref-1.jpg',
     providerTaskId: 'task-ref',
   };
@@ -268,7 +302,28 @@ describe('MediaProcessor 参考图地址', () => {
   const submittedRefs = () =>
     (mockAigc.submit.mock.calls[0][0] as { references: unknown[] }).references;
 
+  it('参考图已存 CDN 地址：直接用它，不签名也不查 aigc', async () => {
+    mockPrisma.mediaVersion.findUnique.mockImplementation(
+      ({ where }: { where: { id: string } }) =>
+        Promise.resolve(
+          where.id === 'v2'
+            ? target
+            : { ...ref, url: 'https://cdn/ref-1.jpg', filePath: null },
+        ),
+    );
+    await processor.process(job);
+    expect(mockMedia.publicAssetUrl).not.toHaveBeenCalled();
+    expect(mockAigc.getTask).not.toHaveBeenCalled();
+    expect(submittedRefs()).toEqual([
+      { type: 'image', role: 'reference', url: 'https://cdn/ref-1.jpg' },
+    ]);
+  });
+
   it('有公网基址：用我方签名地址，不查 aigc', async () => {
+    mockPrisma.mediaVersion.findUnique.mockImplementation(
+      ({ where }: { where: { id: string } }) =>
+        Promise.resolve(where.id === 'v2' ? target : ref),
+    );
     mockMedia.publicAssetUrl.mockResolvedValue('https://tunnel/ref-1.jpg?t=x');
     await processor.process(job);
     expect(mockAigc.getTask).not.toHaveBeenCalled();
@@ -308,6 +363,84 @@ describe('MediaProcessor 参考图地址', () => {
       'image',
       expect.stringContaining('没有公网地址'),
       'failed',
+    );
+  });
+});
+
+describe('MediaProcessor.process（concat）', () => {
+  const version = {
+    id: 'v3',
+    referenceVersionIds: ['a', 'b'],
+    generation: { id: 'g3', conversationId: 'c1', type: 'video' },
+  };
+  const mockPrisma = {
+    mediaVersion: {
+      findUnique: jest.fn().mockResolvedValue(version),
+      findMany: jest.fn().mockResolvedValue([
+        // findMany 顺序故意与 ids 相反：拼接顺序必须按 ids
+        { id: 'b', filePath: 'b.mp4', url: null },
+        { id: 'a', filePath: null, url: 'https://cdn/a.mp4' },
+      ]),
+      update: jest.fn(),
+    },
+  };
+  const mockMedia = { settleFailed: jest.fn() };
+  let processor: MediaProcessor;
+  let dir: string;
+
+  beforeEach(async () => {
+    dir = mkdtempSync(join(tmpdir(), 'media-proc-'));
+    process.env.MEDIA_DATA_DIR = dir;
+    const module = await Test.createTestingModule({
+      providers: [
+        MediaProcessor,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: StreamService, useValue: { publish: jest.fn() } },
+        { provide: AigcService, useValue: {} },
+        { provide: MediaService, useValue: mockMedia },
+        { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+      ],
+    }).compile();
+    processor = module.get(MediaProcessor);
+  });
+
+  afterEach(() => {
+    jest.restoreAllMocks();
+    jest.clearAllMocks();
+    rmSync(dir, { recursive: true, force: true });
+    delete process.env.MEDIA_DATA_DIR;
+  });
+
+  it('只有 CDN 地址的源先下到临时目录，按 ids 顺序拼接，拼完删临时文件', async () => {
+    jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(new Response(Buffer.from('VIDEO-A'), { status: 200 }));
+    let seen: { paths: string[]; first: string } | null = null;
+    jest.mocked(concatVideos).mockImplementation((absPaths: string[]) => {
+      seen = { paths: absPaths, first: readFileSync(absPaths[0]).toString() };
+      return Promise.resolve('copy');
+    });
+
+    const job = { name: 'concat', data: { versionId: 'v3' } } as Job<{
+      versionId: string;
+    }>;
+    await processor.process(job);
+
+    expect(mockMedia.settleFailed).not.toHaveBeenCalled();
+    expect(global.fetch).toHaveBeenCalledWith(
+      'https://cdn/a.mp4',
+      expect.anything(),
+    );
+    expect(seen).not.toBeNull();
+    const { paths, first } = seen!;
+    expect(paths[0]).toMatch(/media-concat-.*[\\/]a\.mp4$/);
+    expect(first).toBe('VIDEO-A');
+    expect(paths[1]).toBe(join(dir, 'b.mp4'));
+    expect(existsSync(paths[0])).toBe(false);
+    expect(mockPrisma.mediaVersion.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'done', filePath: 'v3.mp4' }),
+      }),
     );
   });
 });

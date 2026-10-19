@@ -1,6 +1,7 @@
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
-import { mkdir } from 'node:fs/promises';
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Job } from 'bullmq';
 import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
@@ -11,6 +12,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { concatVideos } from './video-concat';
 import {
+  extFromUrl,
   mediaDataDir,
   MediaService,
   MediaType,
@@ -190,29 +192,41 @@ export class MediaProcessor extends WorkerHost {
 
     const rows = await this.prisma.mediaVersion.findMany({
       where: { id: { in: ids } },
-      select: { id: true, filePath: true },
+      select: { id: true, filePath: true, url: true },
     });
-    const byId = new Map(rows.map((r) => [r.id, r.filePath]));
+    const byId = new Map(rows.map((r) => [r.id, r]));
     const dir = mediaDataDir();
-    // 按 ids 的顺序取，不用 findMany 的返回顺序（那是数据库给的，不保证）
-    const absPaths = ids.map((id) => {
-      const f = byId.get(id);
-      if (!f) throw new Error(`拼接源资产缺失：${id}`);
-      return join(dir, f);
-    });
+    // aigc 产物只有 CDN 地址：先下到临时目录给 ffmpeg 读，拼完连目录一起删
+    const tmp = await mkdtemp(join(tmpdir(), 'media-concat-'));
+    try {
+      // 按 ids 的顺序取，不用 findMany 的返回顺序（那是数据库给的，不保证）
+      const absPaths: string[] = [];
+      for (const id of ids) {
+        const src = byId.get(id);
+        if (src?.filePath) {
+          absPaths.push(join(dir, src.filePath));
+        } else if (src?.url) {
+          absPaths.push(await downloadTo(src.url, tmp, id, signal));
+        } else {
+          throw new Error(`拼接源资产缺失：${id}`);
+        }
+      }
 
-    await mkdir(dir, { recursive: true });
-    const fileName = `${versionId}.mp4`;
-    const mode = await concatVideos(
-      absPaths,
-      join(dir, fileName),
-      join(dir, `${versionId}.concat.txt`),
-      signal,
-    );
-    this.logger.log(
-      `ffmpeg 拼接 ${ids.length} 段（${mode}）versionId=${versionId}`,
-    );
-    return fileName;
+      await mkdir(dir, { recursive: true });
+      const fileName = `${versionId}.mp4`;
+      const mode = await concatVideos(
+        absPaths,
+        join(dir, fileName),
+        join(dir, `${versionId}.concat.txt`),
+        signal,
+      );
+      this.logger.log(
+        `ffmpeg 拼接 ${ids.length} 段（${mode}）versionId=${versionId}`,
+      );
+      return fileName;
+    } finally {
+      await rm(tmp, { recursive: true, force: true });
+    }
   }
 
   /**
@@ -267,17 +281,18 @@ export class MediaProcessor extends WorkerHost {
   }
 
   /**
-   * 参考图给 aigc 的地址：优先我方签名公网地址（有隧道 / 配了 PUBLIC_BASE_URL 时，行为与以前一致）；
-   * 没有公网基址时，参考图若本身就是 aigc 生成的（有 task_id），直接用 aigc 自己的产物地址——
-   * 那是 aigc 转存后的永久链接，aigc 当然下得到。本地开发不开隧道时，「先出图再拿它当参考图」
-   * 这条最常见的链路就靠它（2026-10-18 实测：没隧道时这类任务全部判失败）。
-   * 两者都没有（非 aigc 产物、又没公网地址）返回 null，由调用方报错。
+   * 参考图给 aigc 的地址：已存 CDN 地址（aigc 产物）就直接用——那是 aigc 自己的永久链接，
+   * aigc 当然下得到，也不需要隧道。只有本地文件的版本（未回填的历史数据）用我方签名公网地址；
+   * 仍没有公网基址时，有 task_id 的再向 aigc 查一次产物地址（2026-10-18 实测：没隧道时靠它）。
+   * 都没有返回 null，由调用方报错。
    */
   private async refUrl(v: {
     id: string;
+    url: string | null;
     filePath: string | null;
     providerTaskId: string | null;
   }): Promise<string | null> {
+    if (v.url) return v.url;
     if (v.filePath) {
       const own = await this.media.publicAssetUrl(v.id, v.filePath);
       if (own) return own;
@@ -337,6 +352,7 @@ export class MediaProcessor extends WorkerHost {
     signal?: AbortSignal,
   ): Promise<{
     id: string;
+    url: string | null;
     filePath: string | null;
     providerTaskId: string | null;
   }> {
@@ -352,9 +368,9 @@ export class MediaProcessor extends WorkerHost {
         throw new Error(`参考图版本不存在（versionId=${refId}）`);
       }
       if (v.status === 'done') {
-        if (!v.filePath) {
+        if (!v.url && !v.filePath) {
           throw new Error(
-            `参考图版本资产缺失（versionId=${refId} 无 filePath）`,
+            `参考图版本资产缺失（versionId=${refId} 无 url 与 filePath）`,
           );
         }
         return v;
@@ -390,4 +406,20 @@ export class MediaProcessor extends WorkerHost {
 /** 简单异步等待（用于轮询间隔；慢路径沙箱外逻辑，直接 setTimeout 即可）。 */
 function sleep(ms: number): Promise<void> {
   return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+/** 把一段 CDN 资产下到 dir（文件名 <id>.<ext>），返回绝对路径。失败即抛（外层落 failed）。 */
+async function downloadTo(
+  url: string,
+  dir: string,
+  id: string,
+  signal: AbortSignal,
+): Promise<string> {
+  const res = await fetch(url, {
+    signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
+  });
+  if (!res.ok) throw new Error(`下载拼接源失败 HTTP ${res.status} ${url}`);
+  const absPath = join(dir, `${id}.${extFromUrl(url, 'video')}`);
+  await writeFile(absPath, Buffer.from(await res.arrayBuffer()));
+  return absPath;
 }
