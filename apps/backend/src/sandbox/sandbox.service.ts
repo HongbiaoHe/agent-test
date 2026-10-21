@@ -4,6 +4,7 @@ import {
   type FilePreview,
   findUserSandbox,
   getSandboxProviderInfo,
+  getUserSandbox,
   isSandboxConfigured,
   listDir,
   listWorkspaceFiles,
@@ -48,6 +49,10 @@ export interface SandboxStatus {
   autoStopMinutes?: number | null;
   /** 停机后自动删除间隔（分钟，负=禁用）——前端据 updatedAt 计算删除倒计时 */
   autoDeleteMinutes?: number | null;
+  /** 规格：vCPU 数 / 内存 MB / 磁盘 GB（取不到为 null，如 E2B 不报磁盘） */
+  cpuCount?: number | null;
+  memoryMB?: number | null;
+  diskGB?: number | null;
   /** 工作区产物文件（仅 started 时返回；停机态为 null，不唤醒沙箱） */
   files?: { path: string }[] | null;
 }
@@ -95,6 +100,9 @@ export class SandboxStatusService {
         // E2B 的 list 结果不含闲置时长，回退用户设置（Daytona 取远端实际值）
         autoStopMinutes: sb.autoStopInterval ?? config.lifecycle.idleMinutes,
         autoDeleteMinutes: sb.autoDeleteInterval ?? null,
+        cpuCount: sb.cpuCount ?? null,
+        memoryMB: sb.memoryMB ?? null,
+        diskGB: sb.diskGB ?? null,
         files: null,
       };
 
@@ -113,6 +121,26 @@ export class SandboxStatusService {
       this.logger.warn(`沙箱状态查询失败 userId=${userId}: ${String(e)}`);
       return { exists: false };
     }
+  }
+
+  /**
+   * 主动开机（POST /sandbox/start）：与 worker 同一入口 getUserSandbox——停机 / 暂停的拉起，
+   * 还没有沙箱的新建（带上用户的网络设置），运行中的只是续期。返回开机后的状态。
+   * 失败（提供方异常、启动超时）向上抛，由全局过滤器回错，前端按钮据此提示。
+   */
+  async start(userId: string): Promise<SandboxStatus> {
+    const config = await this.settings.resolve(userId);
+    if (!isSandboxConfigured(config.provider)) {
+      throw new BusinessException(
+        ErrorCodes.SANDBOX_PROVIDER_NOT_CONFIGURED,
+        HttpStatus.CONFLICT,
+      );
+    }
+    await getUserSandbox(userId, config);
+    // getUserSandbox 返回即已连上（运行中）；E2B 的 list() 在恢复后的一瞬间仍报 paused
+    // （2026-10-21 实测：开机返回 stopped，紧接着再查才是 started），这里以连上为准
+    const status = await this.status(userId);
+    return status.exists ? { ...status, state: 'started' } : status;
   }
 
   /**

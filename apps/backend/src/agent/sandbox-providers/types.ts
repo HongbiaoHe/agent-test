@@ -28,6 +28,10 @@ export interface SandboxListing {
   egress?: string;
   /** 端口公网地址当前是否免鉴权（list 结果里有就带上；E2B 没有，见 inspectPublicTraffic） */
   publicTraffic?: boolean;
+  /** 规格（list 结果自带，不需连沙箱）：vCPU 数、内存 MB、磁盘 GB（E2B 的 list 不含磁盘） */
+  cpuCount?: number;
+  memoryMB?: number;
+  diskGB?: number;
 }
 
 /**

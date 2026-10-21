@@ -1,7 +1,7 @@
 import { AIMessage } from '@langchain/core/messages';
 import type { UsageMetadata } from '@langchain/core/messages';
 import { extractUsages, groupByModel, sumCalls } from './token-usage';
-import type { CanvasTokenCall } from './canvas.types';
+import type { TokenCall } from './token-usage';
 
 const aiMsg = (
   id: string,
@@ -207,7 +207,7 @@ const call = (
   input: number,
   output: number,
   cacheRead = 0,
-): CanvasTokenCall => ({
+): TokenCall => ({
   id: `${model}-${input}-${output}`,
   model,
   input,
@@ -235,7 +235,7 @@ describe('sumCalls', () => {
 
   it('Gemini 口径：total 大于 input+output 时把差额记为思考量', () => {
     // 实测 gemini-3.5-flash：in=16 out=742 total=1911 → 思考 1153
-    const gemini: CanvasTokenCall = {
+    const gemini: TokenCall = {
       id: 'g1',
       model: 'gemini-3.5-flash',
       input: 16,

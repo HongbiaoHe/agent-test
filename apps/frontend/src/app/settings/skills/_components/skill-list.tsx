@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Loader2, PackageOpen, RefreshCw, Trash2 } from "lucide-react";
+import { Loader2, PackageOpen, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { useState } from "react";
 
 import { Badge } from "@/components/ui/badge";
@@ -26,25 +26,25 @@ import {
 } from "@/lib/api";
 
 import { SkillDetailSheet, skillDetailKey } from "./skill-detail-sheet";
+import { KIND_LABEL } from "./skill-kind";
 
 export const SKILLS_QUERY_KEY = ["skills"] as const;
 
-export type SourceFilter = "all" | "builtin" | "github";
+export type SourceFilter = "all" | SkillKind;
 
-const KIND_LABEL: Record<SkillKind, string> = {
-  builtin: "Built-in",
-  github: "GitHub",
-};
-/** 分组顺序与页面 Tabs（All / Built-in / GitHub）保持一致 */
-const KIND_ORDER: SkillKind[] = ["builtin", "github"];
+/** 分组顺序与页面 Tabs（All / Built-in / GitHub / Custom）保持一致 */
+const KIND_ORDER: SkillKind[] = ["builtin", "github", "custom"];
 
-/** 技能列表：搜索过滤 / 来源筛选 / 分类（Built-in/GitHub）分组 / 启停 / 删除 / 更新 / 详情。 */
+/** 技能列表：搜索过滤 / 来源筛选 / 分类（Built-in/GitHub/Custom）分组 / 启停 / 删除 / 更新 / 编辑 / 详情。 */
 export function SkillList({
   search,
   source,
+  onEdit,
 }: {
   search: string;
   source: SourceFilter;
+  /** 编辑某个手写技能（由页面打开编辑器） */
+  onEdit: (name: string) => void;
 }) {
   const [detailName, setDetailName] = useState<string | null>(null);
 
@@ -83,7 +83,7 @@ export function SkillList({
         <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
           <PackageOpen className="size-6 text-muted-foreground" />
           <p className="text-sm text-muted-foreground">
-            No skills yet — install one from the form above.
+            No skills yet — install one from GitHub or write your own.
           </p>
         </CardContent>
       </Card>
@@ -92,8 +92,7 @@ export function SkillList({
 
   const q = search.trim().toLowerCase();
   const filtered = skills.filter((s) => {
-    if (source === "builtin" && s.kind !== "builtin") return false;
-    if (source === "github" && s.kind !== "github") return false;
+    if (source !== "all" && s.kind !== source) return false;
     if (!q) return true;
     return (
       s.name.toLowerCase().includes(q) ||
@@ -138,6 +137,7 @@ export function SkillList({
                   key={skill.name}
                   skill={skill}
                   onOpenDetail={() => setDetailName(skill.name)}
+                  onEdit={() => onEdit(skill.name)}
                 />
               ))}
           </div>
@@ -148,13 +148,15 @@ export function SkillList({
   );
 }
 
-/** 单条技能卡片：名称、描述（截断）、来源徽章、更新（GitHub）、启停开关、删除（带确认）。 */
+/** 单条技能卡片：名称、描述（截断）、来源徽章、更新（GitHub）/ 编辑（手写）、启停开关、删除（带确认）。 */
 function SkillCard({
   skill,
   onOpenDetail,
+  onEdit,
 }: {
   skill: SkillInfo;
   onOpenDetail: () => void;
+  onEdit: () => void;
 }) {
   const qc = useQueryClient();
   const isBuiltin = skill.kind === "builtin";
@@ -222,7 +224,7 @@ function SkillCard({
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-semibold">{skill.name}</span>
             <Badge variant={isBuiltin ? "secondary" : "outline"}>
-              {isBuiltin ? "Built-in" : "GitHub"}
+              {KIND_LABEL[skill.kind]}
             </Badge>
           </div>
           <p className="line-clamp-2 text-sm text-muted-foreground">
@@ -241,26 +243,45 @@ function SkillCard({
             className="flex shrink-0 items-center gap-3"
             onClick={(e) => e.stopPropagation()}
           >
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <Button
-                    variant="ghost"
-                    size="icon-sm"
-                    aria-label="Update skill"
-                    disabled={updateMut.isPending}
-                    onClick={() => updateMut.mutate()}
-                  />
-                }
-              >
-                {updateMut.isPending ? (
-                  <Loader2 className="animate-spin" />
-                ) : (
-                  <RefreshCw />
-                )}
-              </TooltipTrigger>
-              <TooltipContent>Reinstall from source</TooltipContent>
-            </Tooltip>
+            {/* 手写技能可编辑；GitHub 安装的只能从源重装（就地改了会被重装覆盖） */}
+            {skill.kind === "custom" ? (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="Edit skill"
+                      onClick={onEdit}
+                    />
+                  }
+                >
+                  <Pencil />
+                </TooltipTrigger>
+                <TooltipContent>Edit</TooltipContent>
+              </Tooltip>
+            ) : (
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <Button
+                      variant="ghost"
+                      size="icon-sm"
+                      aria-label="Update skill"
+                      disabled={updateMut.isPending}
+                      onClick={() => updateMut.mutate()}
+                    />
+                  }
+                >
+                  {updateMut.isPending ? (
+                    <Loader2 className="animate-spin" />
+                  ) : (
+                    <RefreshCw />
+                  )}
+                </TooltipTrigger>
+                <TooltipContent>Reinstall from source</TooltipContent>
+              </Tooltip>
+            )}
 
             <Switch
               aria-label={skill.enabled ? "Disable skill" : "Enable skill"}

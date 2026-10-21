@@ -3,7 +3,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useEffectEvent, useMemo, useState } from "react";
 
-import { getConversation, type MediaGeneration } from "@/lib/api";
+import {
+  getConversation,
+  type MediaGeneration,
+  type MessageAttachment,
+} from "@/lib/api";
 import { respondControl, subscribeConversation } from "@/lib/socket";
 
 import {
@@ -49,9 +53,13 @@ export function useConversation(
   //    liveEvents 只承载「基底快照之后」的新增事件，refetch 后必须重置以免与新基底重复。
   const resetKey = `${conversationId ?? ""}:${query.dataUpdatedAt}`;
   const [trackedKey, setTrackedKey] = useState(resetKey);
+  // 会话累计 token：历史基底（GET /conversations/:id 的 totalTokens）+ token_usage 事件覆盖（同画布）。
+  // 与 liveEvents 一起随基底重置：切会话不残留旧值、刷新不归零。
+  const [tokens, setTokens] = useState(query.data?.totalTokens ?? 0);
   if (trackedKey !== resetKey) {
     setTrackedKey(resetKey);
     setLiveEvents([]);
+    setTokens(query.data?.totalTokens ?? 0);
   }
   // 2) 服务端状态变化：据此初始化 in-flight（仅在 status 真正变化时触发一次）
   const [syncedStatus, setSyncedStatus] = useState(serverStatus);
@@ -83,6 +91,15 @@ export function useConversation(
           void queryClient.invalidateQueries({ queryKey: key });
           return;
         }
+        // token 用量：只更新累计数并让详情报表失效（弹窗开着才会真去重拉），不进 thread
+        if (e.type === "token_usage") {
+          const p = (e.payload ?? {}) as { cumulativeTotal?: unknown };
+          if (typeof p.cumulativeTotal === "number") setTokens(p.cumulativeTotal);
+          void queryClient.invalidateQueries({
+            queryKey: ["conversation-token-usage", conversationId],
+          });
+          return;
+        }
         setLiveEvents((prev) => [
           ...prev,
           { type: e.type, payload: (e.payload ?? {}) as Record<string, unknown> },
@@ -111,10 +128,10 @@ export function useConversation(
   const derived = useMemo(() => foldLive(base, liveEvents), [base, liveEvents]);
 
   /** 追加一轮：乐观插入用户气泡（用户消息不走 socket，故本地补一条）。 */
-  function pushUserMessage(text: string) {
+  function pushUserMessage(text: string, attachments: MessageAttachment[] = []) {
     setLiveEvents((prev) => [
       ...prev,
-      { type: "message", role: "user", payload: { text } },
+      { type: "message", role: "user", payload: { text, attachments } },
     ]);
     setPending(true);
   }
@@ -139,6 +156,8 @@ export function useConversation(
     approval: derived.approval,
     status,
     busy: pending || derived.approval != null,
+    /** 会话累计 token（顶栏徽标） */
+    tokens,
     isLoading: !!conversationId && query.isLoading,
     pushUserMessage,
     markRunning: () => setPending(true),

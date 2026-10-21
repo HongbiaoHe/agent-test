@@ -1,6 +1,7 @@
 import {
   agentDerivedDims,
   describeConstraint,
+  NO_REFERENCES,
   resolveAgentModel,
   toAgentCatalog,
   validateAgentRequest,
@@ -95,8 +96,11 @@ const channels: AigcChannel[] = [
   { channel: 'kie', models: [gpt] },
 ];
 
+/** 参考素材计数：图 / 视频 / 音频 */
+const refs = (image: number, video = 0, audio = 0) => ({ image, video, audio });
+
 describe('validateAgentRequest', () => {
-  const base = { prompt: 'p', referenceCount: 0, derived: {} };
+  const base = { prompt: 'p', referenceCounts: NO_REFERENCES, derived: {} };
 
   it('全部合法 → ok，未传的必填维度补第一个取值', () => {
     const r = validateAgentRequest(veo, {
@@ -167,10 +171,10 @@ describe('validateAgentRequest', () => {
   });
 
   it('constraints 依赖 derived：带参考图时 veo 只能 8 秒', () => {
-    const derived = agentDerivedDims('video', 'veo-3.1', 1);
+    const derived = agentDerivedDims('video', 'veo-3.1', refs(1));
     const r = validateAgentRequest(veo, {
       prompt: 'p',
-      referenceCount: 1,
+      referenceCounts: refs(1),
       derived,
       params: { duration: '6' },
     });
@@ -182,7 +186,7 @@ describe('validateAgentRequest', () => {
   it('forbid：显式传被禁维度报错；无条件 forbid 的说明为「任何情况下」', () => {
     const r = validateAgentRequest(minimax, {
       ...base,
-      derived: agentDerivedDims('video', 'minimax-h3', 0),
+      derived: agentDerivedDims('video', 'minimax-h3', NO_REFERENCES),
       params: { with_audio: 'true' },
     });
     expect(r.ok).toBe(false);
@@ -194,7 +198,7 @@ describe('validateAgentRequest', () => {
   it('提示词超长、参考图超量 → 报错', () => {
     const r = validateAgentRequest(veo, {
       prompt: 'x'.repeat(101),
-      referenceCount: 4,
+      referenceCounts: refs(4),
       derived: {},
       params: {},
     });
@@ -209,12 +213,64 @@ describe('validateAgentRequest', () => {
   it('不支持参考图的模型传参考图 → 报错', () => {
     const r = validateAgentRequest(gpt, {
       ...base,
-      referenceCount: 1,
+      referenceCounts: refs(1),
       params: {},
     });
     expect(r.ok).toBe(false);
     if (r.ok) return;
     expect(r.issues[0].message).toContain('不支持参考图');
+  });
+
+  it('参考视频 / 音频按各自上限校验：不支持的类型报错，图片不受影响', () => {
+    const seedance = aigcModelSchema.parse({
+      model_alias: 'seedance-2',
+      type: 'video',
+      image_input_number: 9,
+      video_input_number: 3,
+      audio_input_number: 3,
+    });
+    expect(
+      validateAgentRequest(seedance, {
+        ...base,
+        referenceCounts: refs(2, 3, 1),
+        params: {},
+      }).ok,
+    ).toBe(true);
+
+    const over = validateAgentRequest(seedance, {
+      ...base,
+      referenceCounts: refs(1, 4, 0),
+      params: {},
+    });
+    expect(over.ok).toBe(false);
+    if (over.ok) return;
+    expect(over.issues).toHaveLength(1);
+    expect(over.issues[0].message).toContain('最多 3 个参考视频，传了 4 个');
+
+    // veo 只收图：带一段音频即报「不支持参考音频」
+    const veoAudio = validateAgentRequest(veo, {
+      ...base,
+      referenceCounts: refs(1, 0, 1),
+      params: {},
+    });
+    expect(veoAudio.ok).toBe(false);
+    if (veoAudio.ok) return;
+    expect(veoAudio.issues[0].message).toContain('不支持参考音频');
+  });
+});
+
+describe('agentDerivedDims', () => {
+  it('按类型推出 input_has_*：只有图挂首帧（i2v-only 模型），视频 / 音频恒为 reference', () => {
+    expect(agentDerivedDims('video', 'seedance-2', refs(0, 1, 1))).toEqual({
+      input_has_image: 'no',
+      input_has_video: 'yes',
+      input_has_audio: 'yes',
+      input_has_frame_control: 'no',
+    });
+    expect(
+      agentDerivedDims('video', 'seedance-1.5-pro', refs(1))
+        .input_has_frame_control,
+    ).toBe('yes');
   });
 });
 

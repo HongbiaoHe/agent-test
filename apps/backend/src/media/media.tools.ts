@@ -51,12 +51,14 @@ const generateSchema = z.object({
     .describe(
       '档位参数，值必须取自 list_media_models 里该模型的 values（模型没有的维度不要传）。不传的必填项自动取第一个值',
     ),
+  // 上限放宽到各类型上限之和量级：越界交给服务端按模型逐类回可改正的错误，而不是 zod 抛异常
   referenceVersionIds: z
     .array(z.string())
-    .max(14)
+    .max(50)
     .optional()
     .describe(
-      '参考图：引用本会话此前生成且已完成的图片版本 id（工具结果里的 versionId）。张数不能超过该模型的 maxReferenceImages',
+      '参考素材：本会话此前生成或用户上传的图片 / 视频 / 音频版本 id（工具结果或资产清单里的 versionId，可混放，按类型自动识别）。' +
+        '各类型数量不能超过该模型的 maxReferenceImages / maxReferenceVideos / maxReferenceAudios（没有该字段 = 不支持该类型）；生图只收图片',
     ),
   // 同 params：越界交给服务端回可改正的错误，而不是 zod 抛异常
   count: z
@@ -100,7 +102,7 @@ export function createMediaTools(svc: MediaService, ctx: MediaToolContext) {
     {
       name: 'list_media_models',
       description:
-        '查询当前可用的生图 / 生视频模型及每个模型支持的参数（画幅比例、清晰度、时长、音频、背景等可选值，参考图张数上限，提示词长度上限，参数之间的约束规则 rules，以及用途提示 hint）。' +
+        '查询当前可用的生图 / 生视频模型及每个模型支持的参数（画幅比例、清晰度、时长、音频、背景等可选值，参考图 / 参考视频 / 参考音频数量上限，提示词长度上限，参数之间的约束规则 rules，以及用途提示 hint）。' +
         '用于在生成前推荐模型或确认用户指定的模型/参数是否可用。目录可能随时增减模型，以本工具返回为准。',
       schema: z.object({
         type: z.enum(['image', 'video']).describe('image 生图 / video 生视频'),
@@ -146,7 +148,7 @@ export function createMediaTools(svc: MediaService, ctx: MediaToolContext) {
     {
       name: 'generate_image',
       description:
-        `根据提示词生成图像（异步，可批量）。可用 referenceVersionIds 引用此前生成的图片做图生图（工具结果里的 versionId 即引用键）。\n` +
+        `根据提示词生成图像（异步，可批量）。可用 referenceVersionIds 引用此前生成或用户上传的图片做图生图（versionId 即引用键）。\n` +
         discipline('图像'),
       schema: generateSchema,
     },
@@ -157,7 +159,8 @@ export function createMediaTools(svc: MediaService, ctx: MediaToolContext) {
     {
       name: 'generate_video',
       description:
-        `根据提示词生成视频（异步长任务，可批量）。可用 referenceVersionIds 引用此前生成的图片作为参考图（部分模型把第一张当首帧）。\n` +
+        `根据提示词生成视频（异步长任务，可批量）。可用 referenceVersionIds 引用此前生成或用户上传的图片作参考图（部分模型把第一张当首帧），` +
+        `部分模型还能引用视频 / 音频作参考（见 list_media_models 的 maxReferenceVideos / maxReferenceAudios）。\n` +
         discipline('视频'),
       schema: generateSchema,
     },

@@ -42,6 +42,12 @@ export class ConversationsController {
     return this.conversations.findOne(id, user.tenantId);
   }
 
+  /** token 用量报表：会话总计 + 按模型 + 按轮（每轮含每次模型调用明细）。 */
+  @Get(':id/token-usage')
+  tokenUsage(@Param('id') id: string, @CurrentUser() user: AuthUser) {
+    return this.conversations.tokenReport(id, user.tenantId);
+  }
+
   /** 置顶 / 取消置顶、重命名（只改传了的字段）。 */
   @Patch(':id')
   update(
@@ -72,11 +78,12 @@ export class ConversationsController {
   ) {
     return this.conversations.appendMessage(
       id,
-      dto.content,
+      dto.content ?? '',
       user.tenantId,
       user.userId,
       dto.model,
       dto.thinkingLevel,
+      dto.attachmentVersionIds ?? [],
     );
   }
 

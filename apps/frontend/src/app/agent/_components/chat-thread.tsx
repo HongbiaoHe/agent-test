@@ -5,6 +5,7 @@ import {
   ArrowUp,
   Loader,
   PanelLeft,
+  Paperclip,
   Plus,
   Slash,
   Sparkles,
@@ -13,19 +14,31 @@ import {
 import { useRef, useState } from "react";
 
 import { ThinkingSwitcher } from "@/components/agent/thinking-switcher";
+import { TokenUsageDialog } from "@/components/agent/token-usage-dialog";
+import { Badge } from "@/components/ui/badge";
 import { JumpToLatest } from "@/components/chat/jump-to-latest";
 import { useChatScroll } from "@/components/chat/use-chat-scroll";
 import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
-import { type SkillKind, listCommands } from "@/lib/api";
+import {
+  getConversationTokenUsage,
+  type MessageAttachment,
+  type SkillKind,
+  listCommands,
+} from "@/lib/api";
 import type { ThinkingLevel } from "@/lib/thinking-level";
+import { cn } from "@/lib/utils";
 
+import { useAttachments } from "../_hooks/use-attachments";
+import { ATTACHMENT_ACCEPT } from "../_lib/attachments";
+import { modelDisplayName } from "../_lib/models";
 import type { Approval, ThreadItem } from "../_lib/thread";
 import { ApprovalPanel } from "./approval-panel";
 import { isAskUserApproval, QuestionPanel } from "./question-panel";
 import { ChatMessage } from "./chat-message";
+import { ComposerAttachments } from "./composer-attachments";
 import { MediaGroup } from "./media-card";
 import { ModelSwitcher } from "./model-switcher";
 import { PreviewCard } from "./preview-card";
@@ -40,8 +53,9 @@ import { ToolGroup } from "./tool-group";
 const CMD_KIND_LABEL: Record<SkillKind, string> = {
   builtin: "Built-in",
   github: "GitHub",
+  custom: "Custom",
 };
-const CMD_KIND_ORDER: SkillKind[] = ["builtin", "github"];
+const CMD_KIND_ORDER: SkillKind[] = ["builtin", "github", "custom"];
 
 export function ChatThread({
   title,
@@ -64,6 +78,7 @@ export function ChatThread({
   thinkingLevel,
   onThinkingLevelChange,
   onOpenSidebar,
+  tokens,
 }: {
   title: string;
   conversationId: string | null;
@@ -79,7 +94,8 @@ export function ChatThread({
   onOpenDetail: (id: string) => void;
   /** 审批决策回传：decisions 顺序对应 actionRequests（由 ApprovalPanel 组装） */
   onDecide: (decisions: unknown[]) => void;
-  onSend: (text: string) => void;
+  /** 发送：正文 + 已传好的附件（带附件时正文可为空） */
+  onSend: (text: string, attachments: MessageAttachment[]) => void;
   onStop: () => void;
   /** 停止指令请求中（HTTP 在途）：按钮转圈并禁用，防重复点击 */
   stopping: boolean;
@@ -89,10 +105,23 @@ export function ChatThread({
   thinkingLevel: ThinkingLevel;
   onThinkingLevelChange: (level: ThinkingLevel) => void;
   onOpenSidebar: () => void;
+  /** 会话累计 token（顶栏徽标，点开看详情） */
+  tokens: number;
 }) {
+  const [usageOpen, setUsageOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  // 输入框附件：选中即上传；在传的、传失败的都会挡住发送（失败的要先移除）
+  const attachments = useAttachments(conversationId);
+  const [dragging, setDragging] = useState(false);
+  const attachmentsBlocked =
+    attachments.uploading || attachments.items.some((it) => it.status === "error");
+  const canSend =
+    !busy &&
+    !attachmentsBlocked &&
+    (draft.trim().length > 0 || attachments.ready.length > 0);
   // 滚动编排：发送后把这条消息顶到视口顶部，回复在其下方生长而视图不动；
   // 底部留白只缩不涨；跟随底部默认关，只由「回到最新」按钮开启。
   const { contentRef, spacerRef, atLatest, armAnchor, jumpToLatest } =
@@ -131,11 +160,32 @@ export function ChatThread({
   }
 
   function submit() {
-    const text = draft.trim();
-    if (!text || busy) return;
+    if (!canSend) return;
     armAnchor();
-    onSend(text);
+    onSend(draft.trim(), attachments.ready);
     setDraft("");
+    attachments.clear();
+  }
+
+  /** 粘贴：剪贴板里有文件（截图、复制的图片）就当附件收下，不往输入框里贴 */
+  function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    if (busy || e.clipboardData.files.length === 0) return;
+    e.preventDefault();
+    attachments.add(e.clipboardData.files);
+  }
+
+  /** 拖拽文件进输入框：只认带文件的拖拽（拖一段文字进来照常） */
+  function onDragOver(e: React.DragEvent<HTMLDivElement>) {
+    if (busy || !e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    setDragging(true);
+  }
+
+  function onDrop(e: React.DragEvent<HTMLDivElement>) {
+    setDragging(false);
+    if (busy || e.dataTransfer.files.length === 0) return;
+    e.preventDefault();
+    attachments.add(e.dataTransfer.files);
   }
 
   function pickCommand(name: string) {
@@ -215,8 +265,29 @@ export function ChatThread({
           </h1>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
+          {/* token 用量：点开看按模型 / 每轮 / 每次调用 + 缓存命中率（与画布同一个弹窗） */}
+          {conversationId && (
+            <Badge
+              variant="secondary"
+              render={<button type="button" />}
+              className="cursor-pointer tabular-nums hover:bg-accent"
+              title="Total tokens for this conversation (click for the breakdown)"
+              onClick={() => setUsageOpen(true)}
+            >
+              {tokens.toLocaleString()} tokens
+            </Badge>
+          )}
           <SandboxStatusButton />
         </div>
+        {conversationId && (
+          <TokenUsageDialog
+            open={usageOpen}
+            onOpenChange={setUsageOpen}
+            queryKey={["conversation-token-usage", conversationId]}
+            queryFn={() => getConversationTokenUsage(conversationId)}
+            modelLabel={modelDisplayName}
+          />
+        )}
       </header>
 
       {/* 消息流。外层 relative 只为给「回到最新」按钮定位——它必须在滚动视口之外，
@@ -359,20 +430,55 @@ export function ChatThread({
               ))}
             </div>
           )}
-          <div className="rounded-2xl border bg-card shadow-sm transition-colors focus-within:border-ring">
+          <div
+            onDragOver={onDragOver}
+            onDragLeave={() => setDragging(false)}
+            onDrop={onDrop}
+            className={cn(
+              "rounded-2xl border bg-card shadow-sm transition-colors focus-within:border-ring",
+              dragging && "border-ring bg-accent",
+            )}
+          >
+            <ComposerAttachments
+              items={attachments.items}
+              onRemove={attachments.remove}
+            />
             <Textarea
               ref={inputRef}
               rows={1}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onKeyDown}
+              onPaste={onPaste}
               placeholder={busy ? "Agent is on the case…" : "Message the agent… (try typing /)"}
               // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
               className="max-h-40 min-h-0 resize-none border-0 bg-transparent px-4 pt-3.5 pb-1.5 text-base shadow-none focus-visible:border-0 focus-visible:ring-0 md:text-sm dark:bg-transparent"
             />
-            {/* 工具条：左侧模型切换 + 思考深度，右侧发送 */}
+            {/* 工具条：左侧附件 + 模型切换 + 思考深度，右侧发送 */}
             <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
               <div className="flex min-w-0 items-center gap-1">
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label="Attach files"
+                  title="Attach images, videos or audio"
+                  disabled={busy}
+                  onClick={() => fileInputRef.current?.click()}
+                >
+                  <Paperclip />
+                </Button>
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  accept={ATTACHMENT_ACCEPT}
+                  className="hidden"
+                  onChange={(e) => {
+                    if (e.target.files) attachments.add(e.target.files);
+                    // 清空值：同一个文件移除后还能再选一次
+                    e.target.value = "";
+                  }}
+                />
                 <ModelSwitcher
                   value={model}
                   onChange={onModelChange}
@@ -406,7 +512,7 @@ export function ChatThread({
                 <Button
                   size="icon-sm"
                   aria-label="Send"
-                  disabled={!draft.trim()}
+                  disabled={!canSend}
                   onClick={submit}
                   className="rounded-lg"
                 >

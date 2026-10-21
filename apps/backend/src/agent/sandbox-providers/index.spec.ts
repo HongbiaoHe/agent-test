@@ -9,7 +9,7 @@ jest.mock('./e2b-sandbox', () => ({ E2BSandbox: class {} }));
 
 import type { SandboxInfo } from 'e2b';
 import { getSandboxProvider } from './index';
-import { toListing } from './e2b.provider';
+import { e2bTemplate, toListing } from './e2b.provider';
 
 describe('getSandboxProvider', () => {
   const ORIG = process.env.SANDBOX_PROVIDER;
@@ -88,15 +88,37 @@ describe('E2B toListing', () => {
     envdVersion: '0.1',
   });
 
-  it('running → started；不带网络字段（list 结果不含网络信息，缺省 = 未知）', () => {
+  it('running → started；带规格（cpu/内存）；不带网络字段（list 结果不含网络信息，缺省 = 未知）', () => {
     expect(toListing(info('running'))).toEqual({
       id: 'sb',
       state: 'started',
       createdAt: '2026-10-14T03:00:00.000Z',
+      cpuCount: 2,
+      memoryMB: 512,
     });
   });
 
   it('paused → stopped', () => {
     expect(toListing(info('paused')).state).toBe('stopped');
+  });
+});
+
+describe('e2bTemplate（新建沙箱用的模板）', () => {
+  const ORIG = process.env.E2B_TEMPLATE;
+  afterEach(() => {
+    if (ORIG === undefined) delete process.env.E2B_TEMPLATE;
+    else process.env.E2B_TEMPLATE = ORIG;
+  });
+
+  it('未设置 / 空白 → base（E2B 默认 2 vCPU / 512 MB）', () => {
+    delete process.env.E2B_TEMPLATE;
+    expect(e2bTemplate()).toBe('base');
+    process.env.E2B_TEMPLATE = '  ';
+    expect(e2bTemplate()).toBe('base');
+  });
+
+  it('设置了 → 用它（去首尾空白）', () => {
+    process.env.E2B_TEMPLATE = ' spark-2c2g ';
+    expect(e2bTemplate()).toBe('spark-2c2g');
   });
 });

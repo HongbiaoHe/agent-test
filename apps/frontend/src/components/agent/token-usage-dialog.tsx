@@ -14,14 +14,13 @@ import {
   DialogTitle,
 } from "@/components/ui/dialog";
 import { Separator } from "@/components/ui/separator";
-import {
-  getCanvasTokenUsage,
-  type CanvasTokenCall,
-  type CanvasTokenModelUsage,
-  type CanvasTokenRun,
-  type CanvasTokenTotals,
+import type {
+  TokenCall,
+  TokenModelUsage,
+  TokenReport,
+  TokenRun,
+  TokenTotals,
 } from "@/lib/api";
-import { canvasModelLabel } from "../_lib/models";
 
 /**
  * token 消耗详情弹窗：会话总结 + 按模型 + 每轮（可展开到每次模型调用）。
@@ -30,20 +29,28 @@ import { canvasModelLabel } from "../_lib/models";
  * 所以缓存命中率 = cacheRead / input，分母不能用 total。
  * 「思考」= total − input − output：Gemini 把思考量只记进 total，单列出来才能让
  * 「输入 + 输出 + 思考 = 合计」成立；DeepSeek 把它算进 output，这一项恒为 0。
- * 数据随 token_usage 事件失效重拉（见 use-canvas），运行期打开也是最新的。
+ * 数据随 token_usage 事件失效重拉（画布见 use-canvas，Spark 见 use-conversation），运行期打开也是最新的。
+ *
+ * 画布与 Spark 对话共用：数据来源（queryKey / queryFn）与模型展示名由调用方给。
  */
 export function TokenUsageDialog({
-  sessionId,
   open,
   onOpenChange,
+  queryKey,
+  queryFn,
+  modelLabel,
 }: {
-  sessionId: string;
   open: boolean;
   onOpenChange: (open: boolean) => void;
+  /** 报表查询 key：token_usage 事件按它失效重拉 */
+  queryKey: readonly unknown[];
+  queryFn: () => Promise<TokenReport>;
+  /** 模型标识 → 展示名 */
+  modelLabel: (model: string) => string;
 }) {
   const { data, isPending, isError, error, refetch, isFetching } = useQuery({
-    queryKey: ["canvas-token-usage", sessionId],
-    queryFn: () => getCanvasTokenUsage(sessionId),
+    queryKey,
+    queryFn,
     enabled: open,
     staleTime: 0,
   });
@@ -95,7 +102,7 @@ export function TokenUsageDialog({
                   </h3>
                   <div className="flex flex-col gap-2">
                     {data.byModel.map((m) => (
-                      <ModelRow key={m.model} usage={m} />
+                      <ModelRow key={m.model} usage={m} modelLabel={modelLabel} />
                     ))}
                   </div>
                 </section>
@@ -106,7 +113,7 @@ export function TokenUsageDialog({
                   </h3>
                   <div className="flex flex-col gap-2">
                     {data.runs.map((run) => (
-                      <RunRow key={run.runId} run={run} />
+                      <RunRow key={run.runId} run={run} modelLabel={modelLabel} />
                     ))}
                   </div>
                 </section>
@@ -124,7 +131,7 @@ function SummaryCard({
   totals,
   refreshing,
 }: {
-  totals: CanvasTokenTotals;
+  totals: TokenTotals;
   refreshing: boolean;
 }) {
   return (
@@ -180,7 +187,7 @@ function CacheRate({
   totals,
   compact,
 }: {
-  totals: CanvasTokenTotals;
+  totals: TokenTotals;
   compact?: boolean;
 }) {
   const rate = totals.input > 0 ? totals.cacheRead / totals.input : null;
@@ -210,12 +217,18 @@ function CacheRate({
 }
 
 /** 按模型一行：模型名 + 调用次数 + 输入/输出/合计 + 命中率条。 */
-function ModelRow({ usage }: { usage: CanvasTokenModelUsage }) {
+function ModelRow({
+  usage,
+  modelLabel,
+}: {
+  usage: TokenModelUsage;
+  modelLabel: (model: string) => string;
+}) {
   return (
     <div className="rounded-lg border border-border p-3">
       <div className="flex items-center justify-between gap-2">
         <span className="truncate text-sm font-medium">
-          {canvasModelLabel(usage.model)}
+          {modelLabel(usage.model)}
         </span>
         <Badge variant="secondary" className="shrink-0 tabular-nums">
           {usage.total.toLocaleString()}
@@ -237,7 +250,13 @@ function ModelRow({ usage }: { usage: CanvasTokenModelUsage }) {
 }
 
 /** 每轮一行：可展开看该轮的按模型合计与每次调用明细。 */
-function RunRow({ run }: { run: CanvasTokenRun }) {
+function RunRow({
+  run,
+  modelLabel,
+}: {
+  run: TokenRun;
+  modelLabel: (model: string) => string;
+}) {
   const [expanded, setExpanded] = useState(false);
   const rate =
     run.totals.input > 0 ? run.totals.cacheRead / run.totals.input : null;
@@ -260,9 +279,11 @@ function RunRow({ run }: { run: CanvasTokenRun }) {
             <span className="truncate text-sm">
               {run.goal || "（续跑，无新目标）"}
             </span>
-            <Badge variant="secondary" className="shrink-0 text-[10px]">
-              {run.status}
-            </Badge>
+            {run.status && (
+              <Badge variant="secondary" className="shrink-0 text-[10px]">
+                {run.status}
+              </Badge>
+            )}
           </div>
           <div className="mt-0.5 flex flex-wrap gap-x-3 text-xs text-muted-foreground tabular-nums">
             <span>{formatTime(run.startedAt)}</span>
@@ -290,7 +311,7 @@ function RunRow({ run }: { run: CanvasTokenRun }) {
                 <div className="mb-3 flex flex-col gap-1 text-xs text-muted-foreground">
                   {run.byModel.map((m) => (
                     <div key={m.model} className="flex justify-between gap-2">
-                      <span className="truncate">{canvasModelLabel(m.model)}</span>
+                      <span className="truncate">{modelLabel(m.model)}</span>
                       <span className="tabular-nums">
                         {m.total.toLocaleString()}（{m.calls} 次）
                       </span>
@@ -298,7 +319,7 @@ function RunRow({ run }: { run: CanvasTokenRun }) {
                   ))}
                 </div>
               )}
-              <CallTable calls={run.calls} />
+              <CallTable calls={run.calls} modelLabel={modelLabel} />
             </>
           )}
         </div>
@@ -308,7 +329,13 @@ function RunRow({ run }: { run: CanvasTokenRun }) {
 }
 
 /** 每次模型调用明细表。 */
-function CallTable({ calls }: { calls: CanvasTokenCall[] }) {
+function CallTable({
+  calls,
+  modelLabel,
+}: {
+  calls: TokenCall[];
+  modelLabel: (model: string) => string;
+}) {
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[28rem] text-xs tabular-nums">
@@ -329,7 +356,7 @@ function CallTable({ calls }: { calls: CanvasTokenCall[] }) {
                 {formatTime(c.at)}
               </td>
               <td className="max-w-[9rem] truncate py-1.5 pr-3">
-                {canvasModelLabel(c.model)}
+                {modelLabel(c.model)}
               </td>
               <td className="py-1.5 pr-3 text-right">{c.input.toLocaleString()}</td>
               <td className="py-1.5 pr-3 text-right">

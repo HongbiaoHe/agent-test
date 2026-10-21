@@ -20,7 +20,7 @@ import {
 } from './canvas.agent.factory';
 import { CanvasService } from './canvas.service';
 import { createCanvasTools } from './canvas.tools';
-import { type CallUsage, extractUsages } from './token-usage';
+import { type CallUsage, extractUsages } from '../agent/token-usage';
 import { planHistoryWindow, stripClearedPlan } from './history-window';
 import { ReasoningCollector } from '../agent/reasoning-parts';
 import { asThinkingLevel } from '../agent/thinking-level';

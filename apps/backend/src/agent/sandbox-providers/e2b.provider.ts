@@ -31,6 +31,13 @@ const idleMs = (lifecycle: SandboxLifecycle) => lifecycle.idleMinutes * 60_000;
 /** base 模板默认用户 `user` 的 home（实测 $HOME=/home/user、whoami=user）。 */
 const E2B_HOME = '/home/user';
 
+/**
+ * 新建沙箱用的模板（懒读 env）：规格（vCPU / 内存）由模板决定，见 scripts/build-e2b-template.ts。
+ * 只影响新建：已有沙箱沿用创建时的模板，不迁移。未设置 = E2B 默认 base（2 vCPU / 512 MB）。
+ */
+export const e2bTemplate = (): string =>
+  process.env.E2B_TEMPLATE?.trim() || 'base';
+
 /** E2B SandboxInfo → 统一 listing（state 映射到 Daytona 口径，见 types.ts）。 */
 export function toListing(info: SandboxInfo): SandboxListing {
   return {
@@ -38,6 +45,9 @@ export function toListing(info: SandboxInfo): SandboxListing {
     // SandboxState 只有 'running' | 'paused' 两态
     state: info.state === 'running' ? 'started' : 'stopped',
     createdAt: info.startedAt.toISOString(),
+    // 规格来自创建时的模板（base = 2 vCPU / 512MB），list 结果自带
+    cpuCount: info.cpuCount,
+    memoryMB: info.memoryMB,
     // 不带 egress / publicTraffic：Sandbox.list 的结果不含网络信息（2026-10-14 实测只有
     // getInfo 才有），缺省即「未知」——出站按需要同步处理，入站由 inspectPublicTraffic 现查
     // 闲置时长不在 SandboxInfo 里（E2B 只有绝对到期时间 endAt），状态接口回退用用户设置
@@ -87,7 +97,7 @@ export const e2bProvider: SandboxProvider = {
     lifecycle: SandboxLifecycle,
     network: SandboxNetwork,
   ): Promise<ConnectedSandbox> {
-    const sbx = await Sandbox.create({
+    const sbx = await Sandbox.create(e2bTemplate(), {
       metadata: { user_id: userId },
       timeoutMs: idleMs(lifecycle),
       lifecycle: { onTimeout: 'pause', autoResume: false },

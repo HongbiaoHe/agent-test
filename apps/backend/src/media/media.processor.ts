@@ -12,6 +12,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { concatVideos } from './video-concat';
 import {
+  asAssetType,
   extFromUrl,
   mediaDataDir,
   MediaService,
@@ -236,9 +237,10 @@ export class MediaProcessor extends WorkerHost {
    * 画布上常是「上游图还在生成，下游已被批准」。变 failed 或超时 → 抛错，让本版本 failed。
    * 顺序与传入 id 一致（提示词里按 `Image 1` / `Image 2` 引用素材时靠的就是这个顺序）。
    *
-   * role 默认 `reference`（参考图），只有 i2v-only 的模型退回 `first_frame`——见 videoRefRole。
-   * 挂 first_frame 时**只取第一张**：上游一次只认一个首帧；挂 reference 时全传，
-   * 超出该模型 image_input_number 的部分由 AigcService.submit 截掉。
+   * 每个引用按它所属 generation 的类型提交（image / video / audio——用户上传的视频、音频也在此列）。
+   * 图片的 role 默认 `reference`，只有 i2v-only 的模型退回 `first_frame`——见 videoRefRole；
+   * 挂 first_frame 时**只取第一张图**：上游一次只认一个首帧。视频 / 音频恒为 `reference`。
+   * 超出该模型各类型上限的部分由 AigcService.submit 截掉。
    */
   private async loadRefUrls(
     referenceVersionIds: unknown,
@@ -253,16 +255,33 @@ export class MediaProcessor extends WorkerHost {
     const all = Array.isArray(referenceVersionIds)
       ? referenceVersionIds.filter((x): x is string => typeof x === 'string')
       : [];
-    const role: AigcReference['role'] =
+    if (all.length === 0) return [];
+    const imageRole: AigcReference['role'] =
       type === 'video' ? videoRefRole(model) : 'reference';
-    const ids = role === 'first_frame' ? all.slice(0, 1) : all;
-    if (ids.length === 0) return [];
+    // 先一次查出各引用的类型，再决定等哪些：first_frame 模式下多出来的图不该被等待、也不该让本版本失败
+    const rows = await this.prisma.mediaVersion.findMany({
+      where: { id: { in: all } },
+      select: { id: true, generation: { select: { type: true } } },
+    });
+    const typeOf = new Map(
+      rows.map((r) => [r.id, asAssetType(r.generation.type) ?? 'image']),
+    );
+    let images = 0;
+    const picked: { id: string; refType: AigcReference['type'] }[] = [];
+    for (const id of all) {
+      const refType = typeOf.get(id) ?? 'image';
+      if (refType === 'image') {
+        if (imageRole === 'first_frame' && images >= 1) continue;
+        images++;
+      }
+      picked.push({ id, refType });
+    }
 
     const pollIntervalMs = opts.pollIntervalMs ?? 5_000;
     const timeoutMs = opts.timeoutMs ?? 5 * 60_000; // 5 分钟
 
     const refs: AigcReference[] = [];
-    for (const id of ids) {
+    for (const { id, refType } of picked) {
       const v = await this.waitForRef(
         id,
         pollIntervalMs,
@@ -275,7 +294,11 @@ export class MediaProcessor extends WorkerHost {
           '参考图无法提供给 aigc：没有公网地址。请先跑 `pnpm tunnel` 开隧道，或配置 PUBLIC_BASE_URL',
         );
       }
-      refs.push({ type: 'image', role, url });
+      refs.push({
+        type: refType,
+        role: refType === 'image' ? imageRole : 'reference',
+        url,
+      });
     }
     return refs;
   }
@@ -299,7 +322,7 @@ export class MediaProcessor extends WorkerHost {
     }
     if (!v.providerTaskId) return null;
     const task = await this.aigc.getTask(v.providerTaskId);
-    return task.output_data?.image_url ?? null;
+    return task.output_data?.image_url ?? task.output_data?.video_url ?? null;
   }
 
   /**

@@ -1,4 +1,5 @@
 import { isBaseMessage } from '@langchain/core/messages';
+import { Prisma } from '@prisma/client';
 import { Command } from '@langchain/langgraph';
 import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
@@ -13,11 +14,16 @@ import {
   normalize,
   RawEvent,
 } from '../agent/event-normalizer';
+import { resolveModelName } from '../agent/models';
 import { ReasoningCollector } from '../agent/reasoning-parts';
+import { type CallUsage, extractUsages } from '../agent/token-usage';
 import { asThinkingLevel } from '../agent/thinking-level';
 import { parseCommand } from '../commands/parse-command';
 import { StreamService } from '../events/stream.service';
+import { userMessageText } from '../conversations/message-content';
 import { MediaService } from '../media/media.service';
+import { UPLOAD_MODEL } from '../media/media-upload.service';
+import { createSyncMediaTool } from '../media/media-sandbox.tool';
 import { createMediaTools } from '../media/media.tools';
 import { createPreviewPageTool } from '../agent/tools/preview-page.tool';
 import { PrismaService } from '../prisma/prisma.service';
@@ -47,6 +53,14 @@ const ROLE_BY_TYPE: Record<string, string> = {
   control_request: 'assistant',
   error: 'assistant',
 };
+
+/** 一轮运行的 token 会计状态（见 prepareUsage）。 */
+interface UsageContext {
+  turnMessageId: string;
+  seen: Set<string>;
+  /** 会话累计（含本轮已记的） */
+  total: number;
+}
 
 @Processor('agent-run')
 export class AgentProcessor extends WorkerHost {
@@ -189,13 +203,16 @@ export class AgentProcessor extends WorkerHost {
       const activePlan = await this.buildActivePlan(conversationId);
 
       // ③ 装配：media 工具闭包注入——conversationId/userId 由 worker 上下文提供，不经模型传递（无注入风险）
-      // 网页预览工具只在有沙箱时注入：没有沙箱就没有可预览的工作区文件
+      // 网页预览、媒体同步工具只在有沙箱时注入：没有沙箱就没有工作区可预览 / 可写入
+      const mediaCtx = { conversationId, userId: conv.userId };
       const extraTools = [
-        ...createMediaTools(this.media, {
-          conversationId,
-          userId: conv.userId,
-        }),
-        ...(sandbox ? [createPreviewPageTool(sandbox)] : []),
+        ...createMediaTools(this.media, mediaCtx),
+        ...(sandbox
+          ? [
+              createPreviewPageTool(sandbox),
+              createSyncMediaTool(this.media, sandbox, mediaCtx),
+            ]
+          : []),
       ];
       const agent = await buildAgent({
         checkpointer: this.checkpointer,
@@ -261,11 +278,19 @@ export class AgentProcessor extends WorkerHost {
         await this.stream.publish(conversationId, msg);
         await this.persist(conversationId, msg, seq++);
       };
+      // token 会计（同画布）：本轮归属的用户消息、已记账的 AIMessage id（跨 run 幂等）、会话累计起点
+      const usage = await this.prepareUsage(conversationId);
+      // provider 没回模型名时（google-genai）的回落值：与 buildAgent 实际装配的模型同一口径
+      const modelName = resolveModelName(conv.model);
       for await (const chunk of stream) {
         const [ns, mode, data] = chunk as [string[], string, unknown];
         // Gemini 的思考正文只能从 updates 拿（messages 流会把它丢掉，见
         // extractThinkingBlocks 注释）。整段一次给出，非流式。
         if (mode === 'updates') {
+          // token 落库：updates 模式的完整 AIMessage 带 usage_metadata（按 message id 去重）
+          for (const call of extractUsages(data, usage.seen, modelName)) {
+            await this.recordUsage(conversationId, usage, call);
+          }
           for (const part of extractThinkingBlocks(data)) {
             await pushReasoning(reasoning.takeBlock(part.id, part.text));
           }
@@ -399,6 +424,91 @@ export class AgentProcessor extends WorkerHost {
    * run 开始前 checkpoint 里已有的消息 id（同 canvas.processor.priorMessageIds）。
    * 读不到就返回空集：功能降级为不排除，绝不因此让整轮跑挂掉。
    */
+  /**
+   * 本轮 token 会计的起点：
+   * - turnMessageId：触发本轮的用户消息（最新一条）。审批 resume 也是续这一轮，报表按它分轮；
+   * - seen：已落库的 AIMessage id。checkpointer 恢复会把历史 AIMessage 重新 emit 到 updates 流，
+   *   只靠 run 内去重拦不住（画布实测过重复记账），用落库的 id 预热；
+   * - total：会话已有累计，token_usage 事件的 cumulativeTotal 因此是会话级口径。
+   * 统计失败不阻断运行：任何一步出错都退化成「从零起、本轮不分轮」。
+   */
+  private async prepareUsage(conversationId: string): Promise<UsageContext> {
+    try {
+      const [turn, rows, agg] = await Promise.all([
+        this.prisma.message.findFirst({
+          where: { conversationId, role: 'user', type: 'message' },
+          orderBy: { seq: 'desc' },
+          select: { id: true },
+        }),
+        this.prisma.conversationTokenUsage.findMany({
+          where: { conversationId, messageId: { not: null } },
+          select: { messageId: true },
+        }),
+        this.prisma.conversationTokenUsage.aggregate({
+          where: { conversationId },
+          _sum: { totalTokens: true },
+        }),
+      ]);
+      return {
+        turnMessageId: turn?.id ?? conversationId,
+        seen: new Set(rows.flatMap((r) => (r.messageId ? [r.messageId] : []))),
+        total: agg._sum.totalTokens ?? 0,
+      };
+    } catch (e) {
+      this.logger.warn(`token 会计初始化失败（本轮照常运行）：${String(e)}`);
+      return { turnMessageId: conversationId, seen: new Set(), total: 0 };
+    }
+  }
+
+  /**
+   * 记一次模型调用的 token：明细落库 + 推 token_usage（会话累计）给前端。
+   * 唯一键冲突（同一 AIMessage 已记过，如并发重放）= 已计入，跳过且不推流；其余失败只记日志。
+   */
+  private async recordUsage(
+    conversationId: string,
+    ctx: UsageContext,
+    call: CallUsage,
+  ): Promise<void> {
+    try {
+      await this.prisma.conversationTokenUsage.create({
+        data: {
+          conversationId,
+          turnMessageId: ctx.turnMessageId,
+          messageId: call.messageId,
+          model: call.model,
+          inputTokens: call.input,
+          outputTokens: call.output,
+          totalTokens: call.total,
+          cacheReadTokens: call.cacheRead,
+          cacheCreationTokens: call.cacheCreation,
+        },
+      });
+    } catch (e) {
+      if (
+        !(
+          e instanceof Prisma.PrismaClientKnownRequestError &&
+          e.code === 'P2002'
+        )
+      ) {
+        this.logger.warn(`token 明细落库失败：${String(e)}`);
+      }
+      return;
+    }
+    ctx.total += call.total;
+    await this.stream.publish(conversationId, {
+      type: 'token_usage',
+      payload: {
+        model: call.model,
+        input: call.input,
+        output: call.output,
+        total: call.total,
+        cacheRead: call.cacheRead,
+        cacheCreation: call.cacheCreation,
+        cumulativeTotal: ctx.total,
+      },
+    });
+  }
+
   private async priorMessageIds(
     agent: { getState(config: unknown): Promise<unknown> },
     config: unknown,
@@ -478,9 +588,13 @@ export class AgentProcessor extends WorkerHost {
           tool_call_id: `synth_${payload.name ?? 'tool'}_${m.seq}`,
         };
       }
+      // 用户消息带附件时，末尾拼一段「[附件]」清单（见 userMessageText）
       return {
         role: m.role,
-        content: (m.content as { text?: string })?.text ?? '',
+        content:
+          m.role === 'user'
+            ? userMessageText(m.content)
+            : ((m.content as { text?: string })?.text ?? ''),
       };
     });
   }
@@ -584,6 +698,10 @@ export class AgentProcessor extends WorkerHost {
       .map((g) => {
         const v = g.versions[0]; // 最新版本（已按 createdAt desc）
         if (!v) return null;
+        // 用户上传的素材：prompt 存的是文件名
+        if (v.model === UPLOAD_MODEL) {
+          return `- versionId=${v.id} [${g.type}][upload] 文件名 ${v.prompt}`;
+        }
         const promptPreview =
           v.prompt.slice(0, 40) + (v.prompt.length > 40 ? '…' : '');
         return `- versionId=${v.id} [${g.type}][${v.status}] ${promptPreview}`;
@@ -593,8 +711,8 @@ export class AgentProcessor extends WorkerHost {
     if (!lines) return '';
 
     return (
-      `\n\n## 本会话已生成的媒体资产（引用参考图必须用此表的 versionId）\n${lines}\n` +
-      `规则：referenceVersionIds 只能填上表或 generate_image 工具结果中的真实 versionId（cuid 格式），禁止自造名称；表中已有的资产不要重复生成。`
+      `\n\n## 本会话的媒体资产（生成的与用户上传的；引用素材必须用此表的 versionId）\n${lines}\n` +
+      `规则：referenceVersionIds 只能填上表或生成工具结果中的真实 versionId（cuid 格式），禁止自造名称；表中已有的资产不要重复生成；[upload] 是用户上传的素材，不能重新生成。`
     );
   }
 

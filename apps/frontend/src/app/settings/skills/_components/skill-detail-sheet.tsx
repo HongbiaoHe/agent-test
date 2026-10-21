@@ -18,6 +18,8 @@ import { getSkillDetail } from "@/lib/api";
 
 import { Markdown } from "@/app/agent/_components/markdown";
 
+import { KIND_LABEL } from "./skill-kind";
+
 /** 详情查询 key（与列表 mutation 的失效联动）。 */
 export const skillDetailKey = (name: string) => ["skill-detail", name] as const;
 
@@ -50,7 +52,7 @@ export function SkillDetailSheet({
             {d && (
               <>
                 <Badge variant={d.kind === "builtin" ? "secondary" : "outline"}>
-                  {d.kind === "builtin" ? "Built-in" : "GitHub"}
+                  {KIND_LABEL[d.kind]}
                 </Badge>
                 {!d.enabled && <Badge variant="destructive">Disabled</Badge>}
               </>
@@ -58,7 +60,11 @@ export function SkillDetailSheet({
           </SheetTitle>
           {d && (
             <SheetDescription className="truncate text-left">
-              {d.kind === "builtin" ? "Ships with the system" : d.source}
+              {d.kind === "builtin"
+                ? "Ships with the system"
+                : d.kind === "custom"
+                  ? "Written by you"
+                  : d.source}
             </SheetDescription>
           )}
         </SheetHeader>

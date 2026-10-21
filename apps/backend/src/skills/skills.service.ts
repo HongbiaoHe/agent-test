@@ -1,7 +1,8 @@
 /**
  * SkillsService — 技能注册表，两层数据源合并：
  *   1. 内置技能（磁盘，SKILLS_DIR）：随代码发布，永久启用。
- *   2. 用户安装技能（SKILLS_DATA_DIR/<userId>/<name>/）：来自 GitHub，存元数据行于 Prisma Skill 表。
+ *   2. 用户技能（SKILLS_DATA_DIR/<userId>/<name>/）：来自 GitHub 安装或用户手写（只有一个 SKILL.md），
+ *      存元数据行于 Prisma Skill 表（source 区分来源）。两者落盘布局一致，运行时链路完全共用。
  *
  * 设计决策：
  * - 同名时用户安装技能 **遮蔽（shadow）** 内置技能，与 npm 局部依赖覆盖全局的惯例一致。
@@ -12,14 +13,26 @@
  *   沿用 command-registry.service.ts:18 的 getter 函数模式。
  */
 
-import { existsSync, readdirSync, readFileSync, statSync } from 'node:fs';
+import {
+  existsSync,
+  mkdirSync,
+  readdirSync,
+  readFileSync,
+  statSync,
+  writeFileSync,
+} from 'node:fs';
 import { join, relative, sep } from 'node:path';
-import { Injectable } from '@nestjs/common';
+import { HttpStatus, Injectable } from '@nestjs/common';
+import { BusinessException } from '../common/errors/business.exception';
+import { ErrorCodes } from '../common/errors/error-code';
 import { PrismaService } from '../prisma/prisma.service';
 import { parseSkillMd } from './skill-parser';
 
-/** 技能分类：内置（随代码发布）或 GitHub 安装。 */
-export type SkillKind = 'builtin' | 'github';
+/** 技能分类：内置（随代码发布）、GitHub 安装、用户手写。 */
+export type SkillKind = 'builtin' | 'github' | 'custom';
+
+/** 手写技能在 Skill.source 上的标记。 */
+export const CUSTOM_SKILL_SOURCE = 'custom';
 
 /** 技能定义：含完整文件内容，供 worker 注入虚拟 FS。 */
 export interface SkillDef {
@@ -35,7 +48,24 @@ export interface SkillDef {
 }
 
 const kindOf = (source: string): SkillKind =>
-  source === 'builtin' ? 'builtin' : 'github';
+  source === 'builtin'
+    ? 'builtin'
+    : source === CUSTOM_SKILL_SOURCE
+      ? 'custom'
+      : 'github';
+
+/**
+ * 拼出手写技能的 SKILL.md：frontmatter（name / description）+ 正文。
+ * description 压成单行——parseSkillMd 按行取 frontmatter 值，换行会把后半截丢掉。
+ */
+export function buildCustomSkillMd(
+  name: string,
+  description: string,
+  body: string,
+): string {
+  const oneLine = description.replace(/\s*\n\s*/g, ' ').trim();
+  return `---\nname: ${name}\ndescription: ${oneLine}\n---\n\n${body.trim()}\n`;
+}
 
 // 惰性求值：测试 beforeEach 赋值的 env 在方法调用时才被读取，避免模块加载时快照旧值。
 // 模式沿用 command-registry.service.ts:18。
@@ -221,20 +251,120 @@ export class SkillsService {
     return all.find((d) => d.name === name);
   }
 
-  /** 技能详情（管理页用，listFor 同语义：含 disabled）。files 只回路径列表，SKILL.md 单独回原文。 */
+  /**
+   * 技能详情（管理页用，listFor 同语义：含 disabled）。files 只回路径列表，SKILL.md 单独回原文；
+   * body 是去掉 frontmatter 的正文（手写技能的编辑表单直接回填它）。
+   */
   async detailFor(
     userId: string,
     name: string,
   ): Promise<
-    (Omit<SkillDef, 'files'> & { files: string[]; skillMd: string }) | undefined
+    | (Omit<SkillDef, 'files'> & {
+        files: string[];
+        skillMd: string;
+        body: string;
+      })
+    | undefined
   > {
     const def = (await this.mergedMapFor(userId)).get(name);
     if (!def) return undefined;
     const { files, ...rest } = def;
+    const skillMd = files['SKILL.md'] ?? '';
     return {
       ...rest,
       files: Object.keys(files).sort(),
-      skillMd: files['SKILL.md'] ?? '',
+      skillMd,
+      body: parseSkillMd(skillMd, name).body,
     };
+  }
+
+  /**
+   * 新建手写技能：名字被内置技能或用户已有技能（GitHub / 手写）占用即拒绝（SKILL_NAME_TAKEN），
+   * 不做遮蔽。写 SKILLS_DATA_DIR/<userId>/<name>/SKILL.md + Skill 行（source=custom），
+   * 落盘布局与 GitHub 安装一致，effectiveSkillsFor / 沙箱注入 / 斜杠命令无需区分。
+   * 字段合法性（name 规则、长度）由 DTO 校验。
+   */
+  async createCustom(
+    userId: string,
+    input: { name: string; description: string; body: string },
+  ): Promise<Omit<SkillDef, 'files'>> {
+    const builtinTaken = scanSkillDir(builtinDir(), 'builtin', true).some(
+      (s) => s.name === input.name,
+    );
+    const owned = await this.prisma.skill.findUnique({
+      where: { userId_name: { userId, name: input.name } },
+    });
+    if (builtinTaken || owned) {
+      throw new BusinessException(
+        ErrorCodes.SKILL_NAME_TAKEN,
+        HttpStatus.CONFLICT,
+      );
+    }
+    this.writeCustomSkillMd(userId, input);
+    const row = await this.prisma.skill.create({
+      data: {
+        userId,
+        name: input.name,
+        description: input.description,
+        source: CUSTOM_SKILL_SOURCE,
+        enabled: true,
+      },
+    });
+    return {
+      name: row.name,
+      description: row.description,
+      kind: 'custom',
+      source: row.source,
+      enabled: row.enabled,
+    };
+  }
+
+  /**
+   * 修改手写技能的说明与正文（名字不可改：它就是 /命令 与目录名）。
+   * 只有 source=custom 的行可改：GitHub 安装的改了会被「重新安装」覆盖，内置的没有 DB 行。
+   */
+  async updateCustom(
+    userId: string,
+    name: string,
+    input: { description: string; body: string },
+  ): Promise<Omit<SkillDef, 'files'>> {
+    const row = await this.prisma.skill.findUnique({
+      where: { userId_name: { userId, name } },
+    });
+    if (!row) {
+      throw new BusinessException(
+        ErrorCodes.SKILL_NOT_FOUND,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    if (row.source !== CUSTOM_SKILL_SOURCE) {
+      throw new BusinessException(ErrorCodes.SKILL_NOT_EDITABLE);
+    }
+    // 用 DB 行的 name 拼路径（同 DELETE），不直接用 URL 参数
+    this.writeCustomSkillMd(userId, { name: row.name, ...input });
+    const updated = await this.prisma.skill.update({
+      where: { userId_name: { userId, name: row.name } },
+      data: { description: input.description },
+    });
+    return {
+      name: updated.name,
+      description: updated.description,
+      kind: 'custom',
+      source: updated.source,
+      enabled: updated.enabled,
+    };
+  }
+
+  private writeCustomSkillMd(
+    userId: string,
+    input: { name: string; description: string; body: string },
+  ): void {
+    const dir = join(dataDir(), userId, input.name);
+    mkdirSync(dir, { recursive: true });
+    writeFileSync(
+      join(dir, 'SKILL.md'),
+      buildCustomSkillMd(input.name, input.description, input.body),
+      'utf8',
+    );
   }
 }

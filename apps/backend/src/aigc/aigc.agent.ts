@@ -60,6 +60,9 @@ export interface AgentModelView {
   hint?: string;
   maxPromptChars?: number;
   maxReferenceImages: number;
+  /** 参考视频 / 音频上限：只有能接的视频模型才带这两个字段（省 token） */
+  maxReferenceVideos?: number;
+  maxReferenceAudios?: number;
   params: Record<string, AgentParamSpec>;
   /** constraints 翻译成的人话规则 */
   rules?: string[];
@@ -134,6 +137,12 @@ export function toAgentCatalog(
         maxReferenceImages: m.image_input_number,
         params,
       };
+      if (m.video_input_number > 0) {
+        view.maxReferenceVideos = m.video_input_number;
+      }
+      if (m.audio_input_number > 0) {
+        view.maxReferenceAudios = m.audio_input_number;
+      }
       if (models.length === 0) view.default = true;
       const hint = MODEL_HINTS[m.model_alias];
       if (hint) view.hint = hint;
@@ -194,22 +203,32 @@ export function resolveAgentModel(
   };
 }
 
+/** 一次生成按类型数的参考素材张数（referenceVersionIds 里图 / 视频 / 音频各几个）。 */
+export type ReferenceCounts = Record<AigcReference['type'], number>;
+
+export const NO_REFERENCES: ReferenceCounts = { image: 0, video: 0, audio: 0 };
+
 /**
- * agent 侧的 derived 维度：按「这次会带几张参考图、以什么 role 提交」推算，
- * 与 MediaProcessor 真提交时的算法一致（视频 i2v-only 模型挂 first_frame）。
+ * agent 侧的 derived 维度：按「这次会带几个参考素材、以什么 role 提交」推算，
+ * 与 MediaProcessor 真提交时的算法一致（视频 i2v-only 模型的图挂 first_frame，视频 / 音频恒为 reference）。
  */
 export function agentDerivedDims(
   type: AigcMediaType,
   model: string,
-  referenceCount: number,
+  counts: ReferenceCounts,
 ): Record<string, string> {
-  const role: AigcReference['role'] =
+  const imageRole: AigcReference['role'] =
     type === 'video' ? videoRefRole(model) : 'reference';
-  const refs: AigcReference[] = Array.from({ length: referenceCount }, () => ({
-    type: 'image',
-    role,
-    url: '',
-  }));
+  const refs: AigcReference[] = [];
+  for (const t of ['image', 'video', 'audio'] as const) {
+    for (let i = 0; i < counts[t]; i++) {
+      refs.push({
+        type: t,
+        role: t === 'image' ? imageRole : 'reference',
+        url: '',
+      });
+    }
+  }
   return derivedDims(refs);
 }
 
@@ -230,7 +249,7 @@ export function validateAgentRequest(
   req: {
     params: Record<string, string>;
     prompt: string;
-    referenceCount: number;
+    referenceCounts: ReferenceCounts;
     derived: Record<string, string>;
   },
 ):
@@ -329,13 +348,20 @@ export function validateAgentRequest(
       message: `提示词 ${req.prompt.length} 字符，超过 ${model.model_alias} 的上限 ${model.max_prompt}`,
     });
   }
-  if (req.referenceCount > model.image_input_number) {
+  const limits: { type: AigcReference['type']; max: number; noun: string }[] = [
+    { type: 'image', max: model.image_input_number, noun: '参考图' },
+    { type: 'video', max: model.video_input_number, noun: '参考视频' },
+    { type: 'audio', max: model.audio_input_number, noun: '参考音频' },
+  ];
+  for (const { type, max, noun } of limits) {
+    const n = req.referenceCounts[type];
+    if (n <= max) continue;
     issues.push({
       field: 'referenceVersionIds',
       message:
-        model.image_input_number === 0
-          ? `${model.model_alias} 不支持参考图`
-          : `${model.model_alias} 最多 ${model.image_input_number} 张参考图，传了 ${req.referenceCount} 张`,
+        max === 0
+          ? `${model.model_alias} 不支持${noun}，请去掉 ${n} 个 ${type} 引用`
+          : `${model.model_alias} 最多 ${max} 个${noun}，传了 ${n} 个`,
     });
   }
 
