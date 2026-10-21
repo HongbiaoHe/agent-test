@@ -24,3 +24,11 @@ export const ALLOWED_MODELS = [
 ] as const;
 
 export type AllowedModel = (typeof ALLOWED_MODELS)[number];
+
+/**
+ * 本次运行实际使用的模型标识：会话设置 → env GOOGLE_GENAI_MODEL → 代码默认。
+ * agent.factory 装配模型与 worker 记 token 明细（provider 没回模型名时的回落值）共用这一个口径。
+ */
+export function resolveModelName(model?: string | null): string {
+  return model ?? process.env.GOOGLE_GENAI_MODEL ?? 'gemini-3.8-flash';
+}

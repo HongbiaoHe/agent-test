@@ -14,6 +14,8 @@ import {
 import { useRef, useState } from "react";
 
 import { ThinkingSwitcher } from "@/components/agent/thinking-switcher";
+import { TokenUsageDialog } from "@/components/agent/token-usage-dialog";
+import { Badge } from "@/components/ui/badge";
 import { JumpToLatest } from "@/components/chat/jump-to-latest";
 import { useChatScroll } from "@/components/chat/use-chat-scroll";
 import { Button } from "@/components/ui/button";
@@ -21,6 +23,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  getConversationTokenUsage,
   type MessageAttachment,
   type SkillKind,
   listCommands,
@@ -30,6 +33,7 @@ import { cn } from "@/lib/utils";
 
 import { useAttachments } from "../_hooks/use-attachments";
 import { ATTACHMENT_ACCEPT } from "../_lib/attachments";
+import { modelDisplayName } from "../_lib/models";
 import type { Approval, ThreadItem } from "../_lib/thread";
 import { ApprovalPanel } from "./approval-panel";
 import { isAskUserApproval, QuestionPanel } from "./question-panel";
@@ -74,6 +78,7 @@ export function ChatThread({
   thinkingLevel,
   onThinkingLevelChange,
   onOpenSidebar,
+  tokens,
 }: {
   title: string;
   conversationId: string | null;
@@ -100,7 +105,10 @@ export function ChatThread({
   thinkingLevel: ThinkingLevel;
   onThinkingLevelChange: (level: ThinkingLevel) => void;
   onOpenSidebar: () => void;
+  /** 会话累计 token（顶栏徽标，点开看详情） */
+  tokens: number;
 }) {
+  const [usageOpen, setUsageOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
   const inputRef = useRef<HTMLTextAreaElement>(null);
@@ -257,8 +265,29 @@ export function ChatThread({
           </h1>
         </div>
         <div className="flex shrink-0 items-center gap-1.5">
+          {/* token 用量：点开看按模型 / 每轮 / 每次调用 + 缓存命中率（与画布同一个弹窗） */}
+          {conversationId && (
+            <Badge
+              variant="secondary"
+              render={<button type="button" />}
+              className="cursor-pointer tabular-nums hover:bg-accent"
+              title="Total tokens for this conversation (click for the breakdown)"
+              onClick={() => setUsageOpen(true)}
+            >
+              {tokens.toLocaleString()} tokens
+            </Badge>
+          )}
           <SandboxStatusButton />
         </div>
+        {conversationId && (
+          <TokenUsageDialog
+            open={usageOpen}
+            onOpenChange={setUsageOpen}
+            queryKey={["conversation-token-usage", conversationId]}
+            queryFn={() => getConversationTokenUsage(conversationId)}
+            modelLabel={modelDisplayName}
+          />
+        )}
       </header>
 
       {/* 消息流。外层 relative 只为给「回到最新」按钮定位——它必须在滚动视口之外，

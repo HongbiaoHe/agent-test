@@ -72,6 +72,8 @@ export interface Conversation {
   title: string | null;
   status: string;
   messages: ConversationMessage[];
+  /** 会话累计 token（顶栏徽标基底；运行期由 token_usage 事件覆盖） */
+  totalTokens: number;
 }
 
 /** 侧栏列表项（GET /conversations，不含 messages）。 */
@@ -117,6 +119,11 @@ export function listCommands(): Promise<CommandInfo[]> {
 
 export function getConversation(id: string): Promise<Conversation> {
   return request(`/conversations/${id}`);
+}
+
+/** Spark 会话的 token 用量报表：总计 + 按模型 + 按轮（一轮 = 一条用户消息）。 */
+export function getConversationTokenUsage(id: string): Promise<TokenReport> {
+  return request(`/conversations/${id}/token-usage`);
 }
 
 /**
@@ -676,11 +683,11 @@ export function getCanvasMessages(id: string): Promise<CanvasMessage[]> {
 }
 
 /**
- * token 用量报表（镜像后端 canvas.types）。
+ * token 用量报表（镜像后端 agent/token-usage，画布与 Spark 对话共用）。
  * 口径：cacheRead / cacheCreation 都是 input 的子集（provider 的 input_tokens 已含缓存部分），
  * 所以缓存命中率 = cacheRead / input。
  */
-export interface CanvasTokenTotals {
+export interface TokenTotals {
   /** 模型调用次数 */
   calls: number;
   input: number;
@@ -692,11 +699,11 @@ export interface CanvasTokenTotals {
   cacheCreation: number;
 }
 
-export interface CanvasTokenModelUsage extends CanvasTokenTotals {
+export interface TokenModelUsage extends TokenTotals {
   model: string;
 }
 
-export interface CanvasTokenCall {
+export interface TokenCall {
   id: string;
   model: string;
   input: number;
@@ -707,23 +714,38 @@ export interface CanvasTokenCall {
   at: string;
 }
 
-export interface CanvasTokenRun {
+/** 一轮的用量（Spark 的一轮 = 一条用户消息；画布另带 run 状态与请求模型）。 */
+export interface TokenRun {
   runId: string;
-  /** 本轮请求的模型；真实调用模型见 byModel / calls */
-  requestedModel: string | null;
-  status: string;
   goal: string;
   startedAt: string;
   endedAt: string | null;
-  totals: CanvasTokenTotals;
-  byModel: CanvasTokenModelUsage[];
-  calls: CanvasTokenCall[];
+  /** 运行状态（仅画布有 Run 记录） */
+  status?: string;
+  totals: TokenTotals;
+  byModel: TokenModelUsage[];
+  calls: TokenCall[];
 }
 
-export interface CanvasTokenReport {
-  totals: CanvasTokenTotals;
-  byModel: CanvasTokenModelUsage[];
+export interface TokenReport {
+  totals: TokenTotals;
+  byModel: TokenModelUsage[];
   /** 按轮倒序（最新一轮在前） */
+  runs: TokenRun[];
+}
+
+// 画布侧沿用的旧名（类型本体即上面的共用定义）
+export type CanvasTokenTotals = TokenTotals;
+export type CanvasTokenModelUsage = TokenModelUsage;
+export type CanvasTokenCall = TokenCall;
+
+export interface CanvasTokenRun extends TokenRun {
+  /** 本轮请求的模型；真实调用模型见 byModel / calls */
+  requestedModel: string | null;
+  status: string;
+}
+
+export interface CanvasTokenReport extends TokenReport {
   runs: CanvasTokenRun[];
 }
 

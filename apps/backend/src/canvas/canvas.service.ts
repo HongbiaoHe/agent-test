@@ -30,7 +30,7 @@ import {
   isCanvasNodeType,
   shortNodeId,
 } from './canvas.types';
-import { groupByModel, sumCalls } from './token-usage';
+import { groupByModel, sumCalls } from '../agent/token-usage';
 
 /**
  * checkpointer 的最小可用面（清空会话只需删 thread）。

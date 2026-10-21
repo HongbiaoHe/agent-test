@@ -1,4 +1,4 @@
-import { userMessageText } from './message-content';
+import { userMessageSummary, userMessageText } from './message-content';
 
 describe('userMessageText（重放给模型的用户消息）', () => {
   it('老消息只有 text：原样返回', () => {
@@ -34,5 +34,21 @@ describe('userMessageText（重放给模型的用户消息）', () => {
   it('形状不对（非对象）→ 空串', () => {
     expect(userMessageText('oops')).toBe('');
     expect(userMessageText(null)).toBe('');
+  });
+});
+
+describe('userMessageSummary（token 报表里的本轮目标）', () => {
+  it('有正文用正文；只有附件列文件名；形状不对为空', () => {
+    expect(userMessageSummary({ text: ' 做成视频 ' })).toBe('做成视频');
+    expect(
+      userMessageSummary({
+        text: '',
+        attachments: [
+          { versionId: 'v1', type: 'image', filename: 'a.png' },
+          { versionId: 'v2', type: 'video', filename: 'b.mp4' },
+        ],
+      }),
+    ).toBe('[a.png, b.mp4]');
+    expect(userMessageSummary(null)).toBe('');
   });
 });

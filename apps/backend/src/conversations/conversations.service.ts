@@ -3,6 +3,12 @@ import { HttpStatus, Inject, Injectable } from '@nestjs/common';
 import { join } from 'node:path';
 import { Queue } from 'bullmq';
 import { AbortRegistry, AGENT_ABORTS } from '../agent/abort-registry';
+import {
+  groupByModel,
+  sumCalls,
+  type TokenCall,
+  type TokenReport,
+} from '../agent/token-usage';
 import { parseCommand } from '../commands/parse-command';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
@@ -13,6 +19,7 @@ import { SkillsService } from '../skills/skills.service';
 import { assertSafeEntryPath } from '../skills/skill-installer';
 import { findUserSandbox, listWorkspaceFiles } from '../agent/sandbox';
 import { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
+import { userMessageSummary } from './message-content';
 
 @Injectable()
 export class ConversationsService {
@@ -272,7 +279,65 @@ export class ConversationsService {
         HttpStatus.NOT_FOUND,
       );
     }
-    return conv;
+    // 会话累计 token：顶栏徽标的基底，运行期由 token_usage 事件的 cumulativeTotal 覆盖
+    const agg = await this.prisma.conversationTokenUsage.aggregate({
+      where: { conversationId: id },
+      _sum: { totalTokens: true },
+    });
+    return { ...conv, totalTokens: agg._sum.totalTokens ?? 0 };
+  }
+
+  /**
+   * token 用量报表（GET /conversations/:id/token-usage）：会话总计 + 按模型 + 按轮（含每次调用明细）。
+   * 同画布口径（三层合计都由同一批明细行现算，必然自洽）；一轮 = 触发它的用户消息，
+   * 目标文本取那条消息，起止取本轮首末次调用。缓存命中率交给前端算（cacheRead / input）。
+   */
+  async tokenReport(id: string, tenantId: string): Promise<TokenReport> {
+    await this.assertConversationOwner(id, tenantId);
+    const rows = await this.prisma.conversationTokenUsage.findMany({
+      where: { conversationId: id },
+      orderBy: { createdAt: 'asc' },
+    });
+    const calls: TokenCall[] = rows.map((r) => ({
+      id: r.id,
+      model: r.model,
+      input: r.inputTokens,
+      output: r.outputTokens,
+      total: r.totalTokens,
+      cacheRead: r.cacheReadTokens,
+      cacheCreation: r.cacheCreationTokens,
+      at: r.createdAt.toISOString(),
+    }));
+    // 按轮归组（Map 保持首次出现顺序 = 时间正序）
+    const byTurn = new Map<string, TokenCall[]>();
+    rows.forEach((r, i) => {
+      const list = byTurn.get(r.turnMessageId);
+      if (list) list.push(calls[i]);
+      else byTurn.set(r.turnMessageId, [calls[i]]);
+    });
+    const turnMessages = await this.prisma.message.findMany({
+      where: { id: { in: [...byTurn.keys()] }, conversationId: id },
+      select: { id: true, content: true },
+    });
+    const goalOf = new Map(
+      turnMessages.map((m) => [m.id, userMessageSummary(m.content)]),
+    );
+
+    return {
+      totals: sumCalls(calls),
+      byModel: groupByModel(calls),
+      runs: [...byTurn]
+        .map(([turnId, turnCalls]) => ({
+          runId: turnId,
+          goal: goalOf.get(turnId) ?? '',
+          startedAt: turnCalls[0].at,
+          endedAt: turnCalls[turnCalls.length - 1].at,
+          totals: sumCalls(turnCalls),
+          byModel: groupByModel(turnCalls),
+          calls: turnCalls,
+        }))
+        .reverse(),
+    };
   }
 
   /**

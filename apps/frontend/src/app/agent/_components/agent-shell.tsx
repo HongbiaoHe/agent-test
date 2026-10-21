@@ -247,6 +247,7 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
           thinkingLevel={thinkingLevel}
           onThinkingLevelChange={setThinkingLevel}
           onOpenSidebar={() => setSidebarOpen(true)}
+          tokens={thread.tokens}
         />
 
         {panelOpen && selectedTool && (

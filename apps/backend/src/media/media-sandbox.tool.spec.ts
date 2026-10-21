@@ -95,7 +95,12 @@ describe('sync_media_to_sandbox', () => {
         errors: [],
       });
       const r = await run(['v2']);
-      expect(fetchSpy).not.toHaveBeenCalled();
+      // 只看业务请求：.env 开着 LangSmith 追踪时，工具调用会在后台请求 api.smith.langchain.com，
+      // 也会被全局 fetch spy 记到（异步、时有时无），与「本地文件不走网络」无关
+      const businessFetches = fetchSpy.mock.calls.filter(
+        ([url]: [unknown]) => !String(url).includes('smith.langchain.com'),
+      );
+      expect(businessFetches).toEqual([]);
       expect(r.synced[0].path).toBe('/workspace/media/v2/video.mp4');
       expect([...uploaded[0][1]]).toEqual([1, 2]);
     } finally {

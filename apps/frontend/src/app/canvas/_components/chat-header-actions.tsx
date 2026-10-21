@@ -3,10 +3,12 @@
 import { Eraser, Loader2 } from "lucide-react";
 import { useState } from "react";
 
+import { TokenUsageDialog } from "@/components/agent/token-usage-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { getCanvasTokenUsage } from "@/lib/api";
 
-import { TokenUsageDialog } from "./token-usage-dialog";
+import { canvasModelLabel } from "../_lib/models";
 
 /**
  * 对话面板标题栏右侧的业务操作：token 用量徽标 + 清空会话记录。
@@ -64,9 +66,11 @@ export function ChatHeaderActions({
       </Button>
       {sessionId && (
         <TokenUsageDialog
-          sessionId={sessionId}
           open={usageOpen}
           onOpenChange={setUsageOpen}
+          queryKey={["canvas-token-usage", sessionId]}
+          queryFn={() => getCanvasTokenUsage(sessionId)}
+          modelLabel={canvasModelLabel}
         />
       )}
     </>

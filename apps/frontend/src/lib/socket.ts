@@ -17,7 +17,9 @@ export type ConversationEventType =
   | "result"
   | "error"
   // 媒体生成状态变更（不落 messages 表，仅实时下发）；前端据此 invalidate media query。
-  | "media_update";
+  | "media_update"
+  // 单次模型调用 token 用量（不落 messages 表）；payload.cumulativeTotal = 会话累计
+  | "token_usage";
 
 export interface ConversationEvent {
   seq: string;

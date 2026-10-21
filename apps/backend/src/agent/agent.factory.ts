@@ -4,6 +4,7 @@ import { createMiddleware } from 'langchain';
 import { z } from 'zod';
 import { injectActivePlan, injectSkillReadPolicy } from './plan-injection';
 import { type ThinkingLevel, thinkingModelParams } from './thinking-level';
+import { resolveModelName } from './models';
 import { askUserTool } from './tools/ask-user.tool';
 import { getWeatherTool } from './tools/get-weather.tool';
 import { sendEmailTool } from './tools/send-email.tool';
@@ -147,7 +148,7 @@ function resolveChatModel(
   model?: string,
   thinkingLevel?: ThinkingLevel | null,
 ) {
-  const name = model ?? process.env.GOOGLE_GENAI_MODEL ?? 'gemini-3.8-flash';
+  const name = resolveModelName(model);
   // 思考深度按模型能力映射成各家参数（deepseek 只有开关、gemini 支持分级，见 thinking-level.ts）
   const thinking = thinkingModelParams(name, thinkingLevel);
   if (name.includes(':')) return initChatModel(name, thinking);

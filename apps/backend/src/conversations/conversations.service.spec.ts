@@ -531,3 +531,113 @@ describe('ConversationsService – 置顶与删除', () => {
     }
   });
 });
+
+describe('ConversationsService – token 报表', () => {
+  const at = (s: number) => new Date(Date.UTC(2026, 9, 21, 9, 0, s));
+  const row = (
+    id: string,
+    turnMessageId: string,
+    model: string,
+    input: number,
+    output: number,
+    total: number,
+    cacheRead: number,
+    s: number,
+  ) => ({
+    id,
+    conversationId: 'conv-1',
+    turnMessageId,
+    messageId: `ai-${id}`,
+    model,
+    inputTokens: input,
+    outputTokens: output,
+    totalTokens: total,
+    cacheReadTokens: cacheRead,
+    cacheCreationTokens: 0,
+    createdAt: at(s),
+  });
+  const prisma = {
+    conversation: {
+      findFirst: jest.fn().mockResolvedValue({ id: 'conv-1', userId: 'u1' }),
+    },
+    conversationTokenUsage: {
+      findMany: jest
+        .fn()
+        .mockResolvedValue([
+          row('1', 'turn-a', 'gemini', 100, 10, 150, 0, 1),
+          row('2', 'turn-a', 'gemini', 200, 20, 220, 80, 2),
+          row('3', 'turn-b', 'deepseek', 50, 5, 55, 0, 9),
+        ]),
+    },
+    message: {
+      findMany: jest.fn().mockResolvedValue([
+        { id: 'turn-a', content: { text: '做个海报' } },
+        {
+          id: 'turn-b',
+          content: {
+            text: '',
+            attachments: [{ versionId: 'v', type: 'image', filename: 'a.png' }],
+          },
+        },
+      ]),
+    },
+  };
+  let service: ConversationsService;
+
+  beforeEach(async () => {
+    const module = await Test.createTestingModule({
+      providers: [
+        ConversationsService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: SkillsService, useValue: mockSkills },
+        { provide: getQueueToken('agent-run'), useValue: mockQueue },
+        { provide: StreamService, useValue: { publish: jest.fn() } },
+        { provide: MediaService, useValue: {} },
+        { provide: AGENT_ABORTS, useValue: new AbortRegistry() },
+        { provide: SandboxSettingsService, useValue: {} },
+      ],
+    }).compile();
+    service = module.get(ConversationsService);
+  });
+
+  it('总计 / 按模型 / 按轮（最新在前，目标取触发消息，起止取首末次调用）', async () => {
+    const r = await service.tokenReport('conv-1', 'tenant-1');
+
+    expect(r.totals).toMatchObject({
+      calls: 3,
+      input: 350,
+      output: 35,
+      total: 425,
+      cacheRead: 80,
+      // gemini 的 total 含思考：150-110 + 220-220 = 40
+      reasoning: 40,
+    });
+    expect(r.byModel.map((m) => [m.model, m.total])).toEqual([
+      ['gemini', 370],
+      ['deepseek', 55],
+    ]);
+    expect(
+      r.runs.map((run) => [
+        run.runId,
+        run.goal,
+        run.totals.calls,
+        run.startedAt,
+        run.endedAt,
+      ]),
+    ).toEqual([
+      ['turn-b', '[a.png]', 1, at(9).toISOString(), at(9).toISOString()],
+      ['turn-a', '做个海报', 2, at(1).toISOString(), at(2).toISOString()],
+    ]);
+  });
+
+  it('会话不属于当前租户 → CONVERSATION_NOT_FOUND，不查明细', async () => {
+    prisma.conversation.findFirst.mockResolvedValueOnce(null);
+    prisma.conversationTokenUsage.findMany.mockClear();
+    await expect(
+      service.tokenReport('conv-x', 'tenant-1'),
+    ).rejects.toMatchObject({
+      errCode: ErrorCodes.CONVERSATION_NOT_FOUND.code,
+    });
+    expect(prisma.conversationTokenUsage.findMany).not.toHaveBeenCalled();
+  });
+});

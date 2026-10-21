@@ -5,6 +5,7 @@ import {
 } from '@langchain/core/messages';
 // 偏好服务会引入沙箱提供方 SDK（深 ESM 链，jest 加载失败）；偏好已整体 mock，不需要真实提供方
 jest.mock('../agent/sandbox-providers', () => ({}));
+import { AIMessage } from '@langchain/core/messages';
 import type { Job, Queue } from 'bullmq';
 import { buildAgent } from '../agent/agent.factory';
 import { StreamService } from '../events/stream.service';
@@ -1659,5 +1660,119 @@ describe('AgentProcessor 超时按 toolName 分叉', () => {
 
     expect(deps.queue.add).not.toHaveBeenCalled();
     expect(deps.streamSvc.publish).not.toHaveBeenCalled();
+  });
+});
+
+describe('AgentProcessor token 会计', () => {
+  /** 带 usage_metadata 的 AIMessage（updates 流里模型节点回显的完整消息） */
+  const aiWithUsage = (
+    id: string,
+    input: number,
+    output: number,
+    total: number,
+    cacheRead = 0,
+  ) =>
+    new AIMessage({
+      id,
+      content: '',
+      usage_metadata: {
+        input_tokens: input,
+        output_tokens: output,
+        total_tokens: total,
+        input_token_details: { cache_read: cacheRead },
+      },
+      response_metadata: { model_name: 'deepseek-v4-flash' },
+    });
+
+  it('每次模型调用落一行（归到触发本轮的用户消息）并推会话累计；已记账 / 同轮回显的不重复记', async () => {
+    const usageRows: Record<string, unknown>[] = [];
+    const prisma = {
+      conversation: {
+        update: jest.fn().mockResolvedValue(makeConv()),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(makeConv()),
+      },
+      message: {
+        findMany: jest
+          .fn()
+          .mockResolvedValue([
+            { role: 'user', type: 'message', content: { text: 'hi' }, seq: 0 },
+          ]),
+        // 本轮归属：最新一条用户消息；其余 findFirst（活动计划）无数据
+        findFirst: jest.fn(({ where }: { where: { role?: string } }) =>
+          Promise.resolve(where.role === 'user' ? { id: 'm-turn' } : null),
+        ),
+        count: jest.fn().mockResolvedValue(1),
+        create: jest.fn().mockResolvedValue({}),
+      },
+      conversationTokenUsage: {
+        // ai-old 是上一轮已记过的（checkpointer 恢复会把它重新 emit 到 updates 流）
+        findMany: jest.fn().mockResolvedValue([{ messageId: 'ai-old' }]),
+        aggregate: jest.fn().mockResolvedValue({ _sum: { totalTokens: 500 } }),
+        create: jest.fn(({ data }: { data: Record<string, unknown> }) => {
+          usageRows.push(data);
+          return Promise.resolve(data);
+        }),
+      },
+    } as unknown as PrismaService;
+    const publish = jest.fn().mockResolvedValue(undefined);
+
+    const replayed = aiWithUsage('ai-old', 10, 1, 11);
+    const fresh = aiWithUsage('ai-1', 100, 20, 150, 40);
+    const fakeAgent = {
+      stream: jest.fn(async () =>
+        (async function* () {
+          yield [
+            [],
+            'updates',
+            { model_request: { messages: [replayed, fresh] } },
+          ];
+          // 同一条 AIMessage 跨节点回显
+          yield [[], 'updates', { tools: { messages: [fresh] } }];
+        })(),
+      ),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    };
+    (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
+
+    const proc = new AgentProcessor(
+      prisma,
+      { publish } as unknown as StreamService,
+      {
+        effectiveSkillsFor: jest.fn().mockResolvedValue([]),
+        getFor: jest.fn(),
+      } as unknown as SkillsService,
+      {},
+      { add: jest.fn() } as unknown as Queue,
+      makeMediaService(),
+      new AbortRegistry(),
+      sandboxSettingsMock,
+    );
+    await proc.process({
+      data: { conversationId: 'c1', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+
+    expect(usageRows).toEqual([
+      {
+        conversationId: 'c1',
+        turnMessageId: 'm-turn',
+        messageId: 'ai-1',
+        model: 'deepseek-v4-flash',
+        inputTokens: 100,
+        outputTokens: 20,
+        totalTokens: 150,
+        cacheReadTokens: 40,
+        cacheCreationTokens: 0,
+      },
+    ]);
+    const usageEvents = publish.mock.calls
+      .map(
+        (c: unknown[]) =>
+          c[1] as { type: string; payload: { cumulativeTotal: number } },
+      )
+      .filter((e) => e.type === 'token_usage');
+    expect(usageEvents).toHaveLength(1);
+    // 会话级累计：历史 500 + 本次 150
+    expect(usageEvents[0].payload.cumulativeTotal).toBe(650);
   });
 });

@@ -1,14 +1,73 @@
 import { isAIMessage, isBaseMessage } from '@langchain/core/messages';
-import type {
-  CanvasTokenCall,
-  CanvasTokenModelUsage,
-  CanvasTokenTotals,
-} from './canvas.types';
 
 /**
- * 画布 agent 的 token 会计纯逻辑：从流事件抽取每次模型调用的用量（区分缓存命中）+ 合计/分组。
- * 独立于 processor 与 service：两边都要用，且不能碰 deepagents（ESM，jest 跑不动）。
+ * agent 的 token 会计纯逻辑（画布 agent 与 Spark 对话 agent 共用）：从流事件抽取每次模型调用的
+ * 用量（区分缓存命中）+ 合计/分组。独立于 processor 与 service：两边都要用，且不能碰 deepagents
+ * （ESM，jest 跑不动）。
+ *
+ * 口径：cacheRead / cacheCreation 都是 input 的**子集**（provider 的 input_tokens 已含缓存部分），
+ * 因此缓存命中率 = cacheRead / input，不能拿 total 当分母。
  */
+
+/** 一组调用的合计。 */
+export interface TokenTotals {
+  /** 模型调用次数 */
+  calls: number;
+  input: number;
+  output: number;
+  /**
+   * 思考 token = total − input − output。
+   *
+   * Gemini 把思考量只记进 total，既不算进 input 也不算进 output（实测 in=16 / out=742 /
+   * total=1911，差的 1153 就是思考）。不单列这一项，弹窗里「输入 + 输出」就对不上「总计」。
+   * DeepSeek 把 reasoning 计入 output，所以它这一项恒为 0。
+   */
+  reasoning: number;
+  total: number;
+  /** 命中缓存被读取的输入 token（⊆ input） */
+  cacheRead: number;
+  /** 写入缓存的输入 token（⊆ input） */
+  cacheCreation: number;
+}
+
+/** 按模型分组的合计。 */
+export interface TokenModelUsage extends TokenTotals {
+  model: string;
+}
+
+/** 一次模型调用的明细。 */
+export interface TokenCall {
+  id: string;
+  model: string;
+  input: number;
+  output: number;
+  total: number;
+  cacheRead: number;
+  cacheCreation: number;
+  at: string;
+}
+
+/** 一轮的用量：合计 + 按模型 + 每次调用明细（Spark 对话报表用；画布另有带 run 状态的 CanvasTokenRun）。 */
+export interface TokenRun {
+  /** 轮次标识（Spark：触发本轮的用户消息 id） */
+  runId: string;
+  /** 触发本轮的用户目标文本 */
+  goal: string;
+  /** 本轮首 / 末次模型调用时刻 */
+  startedAt: string;
+  endedAt: string;
+  totals: TokenTotals;
+  byModel: TokenModelUsage[];
+  calls: TokenCall[];
+}
+
+/** 会话级 token 报表。 */
+export interface TokenReport {
+  totals: TokenTotals;
+  byModel: TokenModelUsage[];
+  /** 按轮倒序（最新一轮在前） */
+  runs: TokenRun[];
+}
 
 /** 一次模型调用的 token 用量（cacheRead / cacheCreation ⊆ input）。 */
 export interface CallUsage {
@@ -115,13 +174,13 @@ function responseModelName(meta: unknown): string | null {
 }
 
 /** 合计一组调用的 token（calls = 调用次数）。 */
-export function sumCalls(calls: CanvasTokenCall[]): CanvasTokenTotals {
-  return calls.reduce<CanvasTokenTotals>(
+export function sumCalls(calls: TokenCall[]): TokenTotals {
+  return calls.reduce<TokenTotals>(
     (acc, c) => ({
       calls: acc.calls + 1,
       input: acc.input + c.input,
       output: acc.output + c.output,
-      // 思考量没有独立字段，只能由 total 反推（见 CanvasTokenTotals.reasoning）。
+      // 思考量没有独立字段，只能由 total 反推（见 TokenTotals.reasoning）。
       // 逐次算再累加，与直接对合计做减法等价，但对单次异常值更好排查。
       reasoning: acc.reasoning + Math.max(0, c.total - c.input - c.output),
       total: acc.total + c.total,
@@ -141,10 +200,8 @@ export function sumCalls(calls: CanvasTokenCall[]): CanvasTokenTotals {
 }
 
 /** 按模型分组合计，按总量倒序（吃 token 最多的模型在前）。 */
-export function groupByModel(
-  calls: CanvasTokenCall[],
-): CanvasTokenModelUsage[] {
-  const byModel = new Map<string, CanvasTokenCall[]>();
+export function groupByModel(calls: TokenCall[]): TokenModelUsage[] {
+  const byModel = new Map<string, TokenCall[]>();
   for (const c of calls) {
     const list = byModel.get(c.model);
     if (list) list.push(c);

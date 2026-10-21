@@ -32,3 +32,15 @@ export function userMessageText(content: unknown): string {
   );
   return `${text}${text ? '\n\n' : ''}[附件]\n${lines.join('\n')}`;
 }
+
+/**
+ * 用户消息的一行摘要（token 报表里的「本轮目标」）：有正文用正文；只发了附件就列文件名。
+ */
+export function userMessageSummary(content: unknown): string {
+  const parsed = userMessageContentSchema.safeParse(content);
+  if (!parsed.success) return '';
+  const text = parsed.data.text?.trim() ?? '';
+  if (text) return text;
+  const names = (parsed.data.attachments ?? []).map((a) => a.filename);
+  return names.length ? `[${names.join(', ')}]` : '';
+}

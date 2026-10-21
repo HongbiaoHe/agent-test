@@ -6,6 +6,12 @@
  * （物化表 + CanvasOp 日志 + revision）并广播 canvas_patch，前端据此增量更新 react-flow。
  */
 
+import type {
+  TokenCall,
+  TokenModelUsage,
+  TokenTotals,
+} from '../agent/token-usage';
+
 /**
  * 画布 agent 可选模型白名单。画布**独立**维护，不复用现有 agent 的 ALLOWED_MODELS —— 换画布
  * 模型清单不波及主 agent。DTO 校验（后端）+ 前端切换器共用同一份列表（前端在
@@ -211,43 +217,10 @@ export interface CanvasSnapshot {
 // 因此缓存命中率 = cacheRead / input，不能拿 total 当分母。
 // ─────────────────────────────────────────────────────────────────────────────
 
-/** 一组调用的合计。 */
-export interface CanvasTokenTotals {
-  /** 模型调用次数 */
-  calls: number;
-  input: number;
-  output: number;
-  /**
-   * 思考 token = total − input − output。
-   *
-   * Gemini 把思考量只记进 total，既不算进 input 也不算进 output（实测 in=16 / out=742 /
-   * total=1911，差的 1153 就是思考）。不单列这一项，弹窗里「输入 + 输出」就对不上「总计」。
-   * DeepSeek 把 reasoning 计入 output，所以它这一项恒为 0。
-   */
-  reasoning: number;
-  total: number;
-  /** 命中缓存被读取的输入 token（⊆ input） */
-  cacheRead: number;
-  /** 写入缓存的输入 token（⊆ input） */
-  cacheCreation: number;
-}
-
-/** 按模型分组的合计。 */
-export interface CanvasTokenModelUsage extends CanvasTokenTotals {
-  model: string;
-}
-
-/** 一次模型调用的明细。 */
-export interface CanvasTokenCall {
-  id: string;
-  model: string;
-  input: number;
-  output: number;
-  total: number;
-  cacheRead: number;
-  cacheCreation: number;
-  at: string;
-}
+// 类型本体在 agent/token-usage（画布与 Spark 对话共用同一套会计口径），这里保留画布侧的名字
+export type CanvasTokenTotals = TokenTotals;
+export type CanvasTokenModelUsage = TokenModelUsage;
+export type CanvasTokenCall = TokenCall;
 
 /** 一轮运行（CanvasRun）的用量：合计 + 按模型 + 每次调用明细。 */
 export interface CanvasTokenRun {
