@@ -1,11 +1,13 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
   AppWindow,
   Download,
   Loader2,
   Monitor,
+  Power,
+  RefreshCw,
   Server,
   Timer,
   X,
@@ -27,7 +29,12 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { fetchSandboxStatus, sandboxFileRawUrl, type SandboxStatus } from "@/lib/api";
+import {
+  fetchSandboxStatus,
+  sandboxFileRawUrl,
+  type SandboxStatus,
+  startSandbox,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 import { DesktopDialog } from "./desktop-dialog";
@@ -66,6 +73,24 @@ function formatRemain(ms: number): string {
   return `${mm}:${String(ss).padStart(2, "0")}`;
 }
 
+/** 面板打开时详情的刷新间隔。 */
+const DETAIL_REFRESH_MS = 5_000;
+
+/** 规格一行：「2 vCPU · 2 GB RAM · 10 GB disk」；全取不到返回 null（不展示该行）。 */
+function formatResources(data: SandboxStatus): string | null {
+  const parts: string[] = [];
+  if (data.cpuCount) parts.push(`${data.cpuCount} vCPU`);
+  if (data.memoryMB) {
+    parts.push(
+      data.memoryMB >= 1024
+        ? `${+(data.memoryMB / 1024).toFixed(1)} GB RAM`
+        : `${data.memoryMB} MB RAM`,
+    );
+  }
+  if (data.diskGB) parts.push(`${data.diskGB} GB disk`);
+  return parts.length ? parts.join(" · ") : null;
+}
+
 function formatTime(iso: string | null | undefined): string {
   if (!iso) return "—";
   return new Date(iso).toLocaleString();
@@ -100,13 +125,34 @@ export function SandboxStatusButton() {
     data: detail,
     isFetching: detailFetching,
     refetch: refetchDetail,
+    dataUpdatedAt,
+    errorUpdatedAt,
   } = useQuery({
     // 仅刷新状态主体（state/时间戳/倒计时）；文件不再随此查询返回，改由文件树按目录懒加载
     queryKey: ["sandbox-status", "detail"],
     queryFn: () => fetchSandboxStatus(),
     enabled: open,
-    refetchInterval: open ? 5_000 : false,
   });
+  // 刷新调度自己做（不用 refetchInterval）：以「上次请求结束」为锚点，倒计时与真正发请求同一时刻，
+  // 不会出现倒计时归零却迟迟不刷的错位。请求中不计时，结束（成功或失败）后重新起算。
+  const lastSync = Math.max(dataUpdatedAt, errorUpdatedAt);
+  const nextRefreshAt =
+    open && !detailFetching && lastSync > 0 ? lastSync + DETAIL_REFRESH_MS : null;
+  useEffect(() => {
+    if (nextRefreshAt === null) return;
+    const t = setTimeout(
+      () => void refetchDetail(),
+      Math.max(0, nextRefreshAt - Date.now()),
+    );
+    return () => clearTimeout(t);
+  }, [nextRefreshAt, refetchDetail]);
+  const tick = useNow(nextRefreshAt !== null);
+  // 请求期间秒表停走，刚结束那一帧 tick 还是请求前的旧值：取它与 lastSync 的较新者，
+  // 否则会先闪一下「7s」再跳回 4s
+  const refreshInSec =
+    nextRefreshAt === null
+      ? null
+      : Math.max(0, Math.ceil((nextRefreshAt - Math.max(tick, lastSync)) / 1000));
   // 状态徽标优先用详情数据：打开后随详情刷新即时反映最新 state，不再滞后于 15s 心跳
   const tone = toneOf(detail ?? data);
   const running = data?.exists && data.state === "started";
@@ -174,14 +220,27 @@ export function SandboxStatusButton() {
                 <span className={cn("size-1.5 rounded-full", tone.dot)} />
                 {tone.label}
               </Badge>
-              {/* 刷新中（打开瞬间 / 5s 轮询）：旋转指示正在与沙箱同步状态+文件 */}
-              {detailFetching && (
-                <Loader2 className="size-3.5 animate-spin text-muted-foreground" />
-              )}
             </SheetTitle>
             <SheetDescription>
               Each user gets a dedicated sandbox; all conversations share the same workspace.
             </SheetDescription>
+            {/* 刷新倒计时：请求中显示「Refreshing…」，结束后从 5s 倒数到下一次刷新 */}
+            <p
+              className="flex items-center gap-1.5 text-xs text-muted-foreground tabular-nums"
+              aria-live="polite"
+            >
+              {detailFetching ? (
+                <>
+                  <Loader2 className="size-3 animate-spin" />
+                  Refreshing…
+                </>
+              ) : refreshInSec !== null ? (
+                <>
+                  <RefreshCw className="size-3" />
+                  Refreshing in {refreshInSec}s
+                </>
+              ) : null}
+            </p>
           </SheetHeader>
           <div className="flex min-h-0 flex-1">
             {/* 左：状态详情 + 文件树。预览时收窄为定宽侧列（移动端隐藏，腾给预览） */}
@@ -293,11 +352,16 @@ function SandboxDetail({
   }
   if (!data.exists) {
     return (
-      <p className="px-4 py-6 text-sm text-muted-foreground">
-        No sandbox yet. One is created automatically when you send a message that needs execution.
-      </p>
+      <div className="space-y-3 px-4 py-6">
+        <p className="text-sm text-muted-foreground">
+          No sandbox yet. One is created automatically when you send a message that needs execution,
+          or you can start one now.
+        </p>
+        <StartSandboxButton label="Create & start sandbox" />
+      </div>
     );
   }
+  const resources = formatResources(data);
 
   return (
     <div className="space-y-5 px-4 py-4">
@@ -321,6 +385,7 @@ function SandboxDetail({
           <InfoRow label="Provider" value={data.provider === "e2b" ? "E2B" : "Daytona"} />
         )}
         <InfoRow label="ID" value={<code className="font-mono text-xs">{data.id}</code>} />
+        {resources && <InfoRow label="Resources" value={resources} />}
         <InfoRow label="Created" value={formatTime(data.createdAt)} />
         <InfoRow label="Last state change" value={formatTime(data.updatedAt)} />
         {data.autoStopMinutes != null && data.autoStopMinutes > 0 && (
@@ -330,6 +395,9 @@ function SandboxDetail({
           <InfoRow label="Auto-delete" value={`${data.autoDeleteMinutes} min after stop`} />
         )}
       </div>
+
+      {/* 开机：只在非运行态出现（运行中再点没有意义） */}
+      {data.state !== "started" && <StartSandboxButton label="Start sandbox" />}
 
       {/* 图形桌面入口：仅运行中可用（停机沙箱起不了 computerUse，也不应为此唤醒）；
           提供方不支持桌面（E2B）时禁用 */}
@@ -358,12 +426,43 @@ function SandboxDetail({
         {data.state !== "started" ? (
           // 停机态不渲染文件树：列目录会 findUserSandbox 唤醒沙箱，仅查看不应续命
           <p className="text-sm text-muted-foreground">
-            Sandbox is stopped; files will be visible on the next run.
+            Sandbox is stopped; start it to browse files.
           </p>
         ) : (
           <FileTree selected={selectedFile} onSelect={onSelectFile} />
         )}
       </div>
+    </div>
+  );
+}
+
+/**
+ * 主动开机：停机 / 暂停的拉起，没有的新建（POST /sandbox/start）。
+ * 成功后刷新状态查询（心跳与详情共用 ["sandbox-status"] 前缀）；失败由全局 mutation 兜底 toast，
+ * 这里再就地显示一行原因。
+ */
+function StartSandboxButton({ label }: { label: string }) {
+  const qc = useQueryClient();
+  const startMut = useMutation({
+    mutationFn: startSandbox,
+    onSuccess: () => qc.invalidateQueries({ queryKey: ["sandbox-status"] }),
+  });
+  return (
+    <div className="space-y-1.5">
+      <Button
+        size="sm"
+        className="w-full"
+        disabled={startMut.isPending}
+        onClick={() => startMut.mutate()}
+      >
+        {startMut.isPending ? <Loader2 className="animate-spin" /> : <Power />}
+        {startMut.isPending ? "Starting…" : label}
+      </Button>
+      {startMut.isError && (
+        <p className="text-xs text-destructive" role="alert">
+          {startMut.error instanceof Error ? startMut.error.message : "Failed to start sandbox"}
+        </p>
+      )}
     </div>
   );
 }

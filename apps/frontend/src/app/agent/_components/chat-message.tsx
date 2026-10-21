@@ -8,14 +8,25 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { ErrorNotice } from "@/components/chat/error-notice";
-import { listCommands } from "@/lib/api";
+import {
+  listCommands,
+  type MessageAttachment,
+  type SkillKind,
+} from "@/lib/api";
 
 import type { ThreadItem } from "../_lib/thread";
 import { Markdown } from "./markdown";
+import { MessageAttachments } from "./message-attachments";
+
+const CMD_KIND_LABEL: Record<SkillKind, string> = {
+  builtin: "Built-in",
+  github: "GitHub",
+  custom: "Custom",
+};
 
 export function ChatMessage({ item }: { item: ThreadItem }) {
   if (item.kind === "user") {
-    return <UserMessage text={item.text} />;
+    return <UserMessage text={item.text} attachments={item.attachments} />;
   }
 
   // 助手消息不带头像：内容直接靠左，与工具组/媒体卡/审批卡同列对齐
@@ -42,9 +53,15 @@ export function ChatMessage({ item }: { item: ThreadItem }) {
 
 /**
  * 用户消息气泡。若消息以 `/命令` 开头且命中已知命令（与输入框补全同源），
- * 将该命令渲染为高亮 chip，hover 展示其分类（Built-in/GitHub）/ 名称 / 描述。
+ * 将该命令渲染为高亮 chip，hover 展示其分类（Built-in/GitHub/Custom）/ 名称 / 描述。
  */
-function UserMessage({ text }: { text: string }) {
+function UserMessage({
+  text,
+  attachments,
+}: {
+  text: string;
+  attachments: MessageAttachment[];
+}) {
   // 与 ChatThread 的补全共用同一缓存（queryKey 一致，不会重复请求）
   const { data: commands = [] } = useQuery({
     queryKey: ["commands"],
@@ -60,38 +77,42 @@ function UserMessage({ text }: { text: string }) {
 
   return (
     // data-chat-anchor：发送后 useChatScroll 靠它把这条消息顶到视口顶部（取最后一个）
-    <div data-chat-anchor className="flex justify-end">
-      <div className="max-w-[80%] rounded-2xl rounded-br-md bg-muted px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap">
-        {command ? (
-          <>
-            <Tooltip>
-              <TooltipTrigger
-                render={
-                  <span className="cursor-help rounded-md bg-primary px-1.5 py-px align-baseline font-mono text-[0.85em] font-medium text-primary-foreground transition-colors hover:bg-primary/90" />
-                }
-              >
-                /{command.name}
-              </TooltipTrigger>
-              <TooltipContent side="top" align="start" className="max-w-xs">
-                <span className="flex flex-col gap-1 text-left">
-                  <span className="text-[10px] font-medium tracking-wide text-background/60 uppercase">
-                    {command.kind === "builtin" ? "Built-in" : "GitHub"}
+    // 附件在气泡上方右对齐；只发附件时没有文字气泡
+    <div data-chat-anchor className="flex flex-col items-end gap-2">
+      <MessageAttachments attachments={attachments} />
+      {text && (
+        <div className="max-w-[80%] rounded-2xl rounded-br-md bg-muted px-4 py-2.5 text-sm leading-relaxed whitespace-pre-wrap">
+          {command ? (
+            <>
+              <Tooltip>
+                <TooltipTrigger
+                  render={
+                    <span className="cursor-help rounded-md bg-primary px-1.5 py-px align-baseline font-mono text-[0.85em] font-medium text-primary-foreground transition-colors hover:bg-primary/90" />
+                  }
+                >
+                  /{command.name}
+                </TooltipTrigger>
+                <TooltipContent side="top" align="start" className="max-w-xs">
+                  <span className="flex flex-col gap-1 text-left">
+                    <span className="text-[10px] font-medium tracking-wide text-background/60 uppercase">
+                      {CMD_KIND_LABEL[command.kind]}
+                    </span>
+                    <span className="font-mono text-xs font-semibold">
+                      /{command.name}
+                    </span>
+                    <span className="block max-h-48 overflow-y-auto leading-snug text-background/80">
+                      {command.description}
+                    </span>
                   </span>
-                  <span className="font-mono text-xs font-semibold">
-                    /{command.name}
-                  </span>
-                  <span className="block max-h-48 overflow-y-auto leading-snug text-background/80">
-                    {command.description}
-                  </span>
-                </span>
-              </TooltipContent>
-            </Tooltip>
-            {match![2]}
-          </>
-        ) : (
-          text
-        )}
-      </div>
+                </TooltipContent>
+              </Tooltip>
+              {match![2]}
+            </>
+          ) : (
+            text
+          )}
+        </div>
+      )}
     </div>
   );
 }

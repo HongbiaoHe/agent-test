@@ -4,8 +4,10 @@
  * 路由职责：
  *   GET    /skills         → 列出用户所有技能（含 disabled，供管理页）
  *   POST   /skills/install → 从 GitHub 安装技能，幂等（upsert）
- *   PATCH  /skills/:name   → 启用 / 禁用已安装技能
- *   DELETE /skills/:name   → 删除已安装技能（磁盘 + DB）
+ *   POST   /skills/custom  → 新建手写技能（只有一个 SKILL.md，重名拒绝）
+ *   PUT    /skills/custom/:name → 修改手写技能的说明与正文
+ *   PATCH  /skills/:name   → 启用 / 禁用已安装 / 手写技能
+ *   DELETE /skills/:name   → 删除已安装 / 手写技能（磁盘 + DB）
  *
  * 安全注意事项：
  * - DELETE 先按 DB 行查出 name，再用 DB 行的 name 构建路径，
@@ -25,6 +27,7 @@ import {
   Param,
   Patch,
   Post,
+  Put,
   UseGuards,
 } from '@nestjs/common';
 import { CurrentUser } from '../auth/current-user.decorator';
@@ -33,6 +36,10 @@ import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
 import { PrismaService } from '../prisma/prisma.service';
 import { installSkillFromGithub } from './skill-installer';
+import {
+  CreateCustomSkillDto,
+  UpdateCustomSkillDto,
+} from './dto/custom-skill.dto';
 import { InstallSkillDto } from './dto/install-skill.dto';
 import { UpdateSkillDto } from './dto/update-skill.dto';
 import { SkillsService } from './skills.service';
@@ -109,6 +116,25 @@ export class SkillsController {
       source: row.source,
       enabled: row.enabled,
     };
+  }
+
+  /** 新建手写技能（表单：名字 + 说明 + Markdown 正文）。 */
+  @Post('custom')
+  createCustom(
+    @Body() dto: CreateCustomSkillDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.skills.createCustom(user.userId, dto);
+  }
+
+  /** 修改手写技能的说明与正文；GitHub 安装的、内置的不可改。 */
+  @Put('custom/:name')
+  updateCustom(
+    @Param('name') name: string,
+    @Body() dto: UpdateCustomSkillDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.skills.updateCustom(user.userId, name, dto);
   }
 
   /**

@@ -101,8 +101,8 @@ export function listConversations(): Promise<ConversationListItem[]> {
   return request("/conversations");
 }
 
-/** 技能分类：内置（随系统发布）或 GitHub 安装。与后端 SkillKind 对应。 */
-export type SkillKind = "builtin" | "github";
+/** 技能分类：内置（随系统发布）、GitHub 安装、用户手写。与后端 SkillKind 对应。 */
+export type SkillKind = "builtin" | "github" | "custom";
 
 /** /command 可用命令（供输入框 `/` 自动补全）。 */
 export interface CommandInfo {
@@ -119,16 +119,80 @@ export function getConversation(id: string): Promise<Conversation> {
   return request(`/conversations/${id}`);
 }
 
-/** 在已有会话里追加一条用户消息，触发同 thread_id 续跑（多轮）。 */
+/**
+ * 在已有会话里追加一条用户消息，触发同 thread_id 续跑（多轮）。
+ * attachmentVersionIds：随消息发出的上传附件（uploadAttachment 返回的 versionId）；带附件时 content 可为空。
+ */
 export function appendMessage(
   id: string,
   content: string,
   model?: string,
   thinkingLevel?: string,
+  attachmentVersionIds?: string[],
 ): Promise<{ conversationId: string }> {
   return request(`/conversations/${id}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content, model, thinkingLevel }),
+    body: JSON.stringify({ content, model, thinkingLevel, attachmentVersionIds }),
+  });
+}
+
+/** 附件类型：生成只有 image / video，上传多一个 audio（只当生成素材引用）。 */
+export type AttachmentType = "image" | "video" | "audio";
+
+/** 用户消息里的一个附件（后端存进 message.content.attachments，CDN 地址可直接展示）。 */
+export interface MessageAttachment {
+  versionId: string;
+  type: AttachmentType;
+  url: string;
+  filename: string;
+  contentType: string;
+}
+
+/** 上传成功的返回：暂存（staged）资产，随下一条消息的 attachmentVersionIds 发出时才转正。 */
+export interface UploadedAttachment extends MessageAttachment {
+  generationId: string;
+  size: number;
+}
+
+/**
+ * 上传一个附件：文件二进制原样作请求体，经同源路由 /api/uploads/:id 流式转给后端，
+ * 后端再按 aigc 预签名地址 PUT 到 GCS。用 XHR 而不是 fetch：要上传进度（fetch 拿不到）。
+ * 不走 /api-backend：那条路径的 middleware 会把 >10MB 的请求体截断（见路由文件注释）。
+ */
+export function uploadAttachment(
+  conversationId: string,
+  file: File,
+  opts: { onProgress?: (fraction: number) => void; signal?: AbortSignal } = {},
+): Promise<UploadedAttachment> {
+  return new Promise((resolve, reject) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open(
+      "POST",
+      `/api/uploads/${encodeURIComponent(conversationId)}?filename=${encodeURIComponent(file.name)}`,
+    );
+    xhr.setRequestHeader("Content-Type", file.type);
+    xhr.upload.onprogress = (e) => {
+      if (e.lengthComputable) opts.onProgress?.(e.loaded / e.total);
+    };
+    xhr.onload = () => {
+      if (xhr.status === 401) redirectToLogin();
+      let body: ApiEnvelope<UploadedAttachment>;
+      try {
+        body = JSON.parse(xhr.responseText) as ApiEnvelope<UploadedAttachment>;
+      } catch {
+        reject(new Error(`Upload failed (${xhr.status})`));
+        return;
+      }
+      if (body.code !== 0) {
+        reject(new Error(body.message || `Upload failed (${xhr.status})`));
+        return;
+      }
+      resolve(body.data);
+    };
+    xhr.onerror = () => reject(new Error("Upload failed (network error)"));
+    xhr.onabort = () => reject(new DOMException("Upload aborted", "AbortError"));
+    opts.signal?.addEventListener("abort", () => xhr.abort(), { once: true });
+    xhr.send(file);
   });
 }
 
@@ -179,6 +243,10 @@ export interface SandboxStatus {
   updatedAt?: string | null;
   autoStopMinutes?: number | null;
   autoDeleteMinutes?: number | null;
+  /** 规格：vCPU 数 / 内存 MB / 磁盘 GB（取不到为 null，如 E2B 不报磁盘） */
+  cpuCount?: number | null;
+  memoryMB?: number | null;
+  diskGB?: number | null;
   /** 仅 includeFiles 且 started 时返回；其余为 null */
   files?: { path: string }[] | null;
 }
@@ -189,6 +257,11 @@ export interface SandboxStatus {
  */
 export function fetchSandboxStatus(includeFiles = false): Promise<SandboxStatus> {
   return request(`/sandbox/status${includeFiles ? "?files=1" : ""}`);
+}
+
+/** 主动开机：停机的拉起、没有的新建，返回开机后的状态（E2B 秒级，Daytona 可能要几十秒）。 */
+export function startSandbox(): Promise<SandboxStatus> {
+  return request("/sandbox/start", { method: "POST" });
 }
 
 export type SandboxProviderName = "daytona" | "e2b";
@@ -378,7 +451,8 @@ export interface MediaVersion {
 /** 一个生成位 = 对话里的一张媒体卡片。versions 按 createdAt desc（versions[0] 为最新版）。 */
 export interface MediaGeneration {
   id: string;
-  type: MediaType;
+  /** audio 只出现在用户上传的素材上（不会挂成卡片，卡片只渲染生成工具产出的 generationId） */
+  type: MediaType | "audio";
   createdAt: string;
   versions: MediaVersion[];
 }
@@ -916,10 +990,38 @@ export function deleteSkill(name: string): Promise<unknown> {
   });
 }
 
-/** 技能详情（GET /skills/:name）：文件路径列表 + SKILL.md 原文。 */
+/** 技能详情（GET /skills/:name）：文件路径列表 + SKILL.md 原文 + 去掉 frontmatter 的正文。 */
 export interface SkillDetail extends SkillInfo {
   files: string[];
   skillMd: string;
+  body: string;
+}
+
+/** 手写技能的表单内容：说明写进 frontmatter，正文是 SKILL.md 的 Markdown 主体。 */
+export interface CustomSkillInput {
+  description: string;
+  body: string;
+}
+
+/** 新建手写技能（名字被内置 / 已有技能占用时后端拒绝）。 */
+export function createCustomSkill(
+  input: CustomSkillInput & { name: string },
+): Promise<SkillInfo> {
+  return request("/skills/custom", {
+    method: "POST",
+    body: JSON.stringify(input),
+  });
+}
+
+/** 修改手写技能的说明与正文（名字不可改）。 */
+export function updateCustomSkill(
+  name: string,
+  input: CustomSkillInput,
+): Promise<SkillInfo> {
+  return request(`/skills/custom/${encodeURIComponent(name)}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
 }
 
 export function getSkillDetail(name: string): Promise<SkillDetail> {

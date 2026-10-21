@@ -72,11 +72,12 @@ export class ConversationsController {
   ) {
     return this.conversations.appendMessage(
       id,
-      dto.content,
+      dto.content ?? '',
       user.tenantId,
       user.userId,
       dto.model,
       dto.thinkingLevel,
+      dto.attachmentVersionIds ?? [],
     );
   }
 

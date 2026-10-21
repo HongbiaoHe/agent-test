@@ -2,14 +2,19 @@ import {
   Body,
   Controller,
   Get,
+  Headers,
   Param,
   Post,
+  Query,
+  Req,
   StreamableFile,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { createReadStream } from 'node:fs';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { type AuthUser, JwtAuthGuard } from '../auth/jwt-auth.guard';
+import { MediaUploadService } from './media-upload.service';
 import { MediaService } from './media.service';
 import { RegenerateMediaDto } from './dto/regenerate-media.dto';
 
@@ -22,12 +27,42 @@ import { RegenerateMediaDto } from './dto/regenerate-media.dto';
 @Controller()
 @UseGuards(JwtAuthGuard)
 export class MediaController {
-  constructor(private readonly media: MediaService) {}
+  constructor(
+    private readonly media: MediaService,
+    private readonly uploads: MediaUploadService,
+  ) {}
 
   /** 列出会话下全部生成位（含全部版本，desc）。 */
   @Get('conversations/:id/media')
   list(@Param('id') conversationId: string, @CurrentUser() user: AuthUser) {
     return this.media.listForConversation(conversationId, user.userId);
+  }
+
+  /**
+   * 上传一个附件文件：请求体就是文件二进制（不是 multipart），Content-Type / Content-Length
+   * 即文件类型与字节数，原始文件名走 query。后端流式中转到 GCS，返回暂存（staged）的资产，
+   * 随下一条消息的 attachmentVersionIds 发出时才转正。
+   * 非 JSON 的 Content-Type 不会被全局 body parser 消费，req 仍是完整的原始流。
+   */
+  @Post('conversations/:id/uploads')
+  upload(
+    @Param('id') conversationId: string,
+    @Headers('content-type') contentType: string | undefined,
+    @Headers('content-length') contentLength: string | undefined,
+    @Query('filename') filename: string | undefined,
+    @Req() req: Request,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.uploads.upload({
+      conversationId,
+      tenantId: user.tenantId,
+      userId: user.userId,
+      // 去掉 `; charset=...` 之类的参数，白名单按纯 MIME 比对
+      contentType: (contentType ?? '').split(';')[0].trim().toLowerCase(),
+      size: Number(contentLength),
+      filename: cleanFilename(filename),
+      body: req,
+    });
   }
 
   /** 重新生成：同 generation 叠新版本（旧版保留）。prompt 缺省沿用上一版。 */
@@ -69,4 +104,10 @@ export class MediaController {
     );
     return new StreamableFile(createReadStream(absPath), { type: mimeType });
   }
+}
+
+/** 原始文件名只留最后一段（防路径）、去首尾空白、限 255 字；空则给个占位名。 */
+function cleanFilename(raw: string | undefined): string {
+  const base = (raw ?? '').split(/[\\/]/).pop()?.trim() ?? '';
+  return base.slice(0, 255) || 'file';
 }

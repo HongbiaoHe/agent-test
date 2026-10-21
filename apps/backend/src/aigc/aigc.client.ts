@@ -5,9 +5,11 @@ import {
   aigcCreateTaskDataSchema,
   aigcEnvelopeSchema,
   aigcTaskSchema,
+  aigcUploadUrlDataSchema,
   type AigcChannel,
   type AigcMediaType,
   type AigcTask,
+  type AigcUploadUrl,
 } from './aigc.types';
 
 /** 单次 HTTP 调用的硬超时：接单/查询都是短请求，生成本身是异步的。 */
@@ -16,7 +18,7 @@ const REQUEST_TIMEOUT_MS = 30_000;
 /**
  * aigc 生成服务的 HTTP 客户端——整个项目里**唯一**直连 aigc 的地方。
  *
- * 只做三件事：取能力目录、接单、查任务。信封（§2.3）在这里剥掉：`code !== "success"`
+ * 只做四件事：取能力目录、接单、查任务、申请上传地址。信封（§2.3）在这里剥掉：`code !== "success"`
  * 一律抛错（错误码含义见文档 §3），业务层拿到的都是已解析的强类型 data。
  * env 懒读（与原 GoogleMediaClient 一致）：模块加载期不要求配置存在，测试可临时覆盖。
  */
@@ -57,6 +59,23 @@ export class AigcClient {
   async getTask(taskId: string): Promise<AigcTask> {
     const data = await this.call('GET', `/tasks/${taskId}`);
     return aigcTaskSchema.parse(data);
+  }
+
+  /**
+   * 申请文件上传地址（POST /files/upload-url）：限定类型、限定大小、限定时效的预签名地址。
+   * size 必须与随后 PUT 的字节数完全一致（签名锁死了大小）。
+   */
+  async requestUploadUrl(input: {
+    contentType: string;
+    size: number;
+    filename?: string;
+  }): Promise<AigcUploadUrl> {
+    const data = await this.call('POST', '/files/upload-url', {
+      content_type: input.contentType,
+      size: input.size,
+      ...(input.filename ? { filename: input.filename.slice(0, 255) } : {}),
+    });
+    return aigcUploadUrlDataSchema.parse(data);
   }
 
   private async call(

@@ -4,6 +4,7 @@ import type {
   ConversationMessage,
   MediaGeneration,
   MediaStatus,
+  MessageAttachment,
 } from "@/lib/api";
 
 export type Decision = "approve" | "reject" | "edit" | "respond";
@@ -16,7 +17,8 @@ export interface Approval {
 
 /** 对话区按顺序渲染的一条 thread item。 */
 export type ThreadItem =
-  | { kind: "user"; id: string; text: string }
+  /** attachments：随这条消息上传的附件（老消息没有，为空数组） */
+  | { kind: "user"; id: string; text: string; attachments: MessageAttachment[] }
   | { kind: "assistant"; id: string; text: string; streaming: boolean }
   /**
    * 模型思考过程（推理型模型才有）：流式累加，其后第一个其它事件到来即收口（streaming=false）。
@@ -179,10 +181,15 @@ export function reduce(input: ThreadState, ev: NormalizedEvent): ThreadState {
     }
     case "message": {
       const text = String(ev.payload?.text ?? "");
-      if (!text) return state;
       if (ev.role === "user") {
-        items.push({ kind: "user", id: id(), text });
-      } else if (last?.kind === "assistant" && last.streaming) {
+        // 只发附件的消息正文为空，照样成一条气泡
+        const attachments = parseAttachments(ev.payload?.attachments);
+        if (!text && attachments.length === 0) return state;
+        items.push({ kind: "user", id: id(), text, attachments });
+        return { ...state, items, nextId };
+      }
+      if (!text) return state;
+      if (last?.kind === "assistant" && last.streaming) {
         // 之前流式 token 攒出的气泡，用这条完整文本收口。后端送来的 message 文本即累积 token，
         // 二者应一致；防御性地取较长者，绝不让收口把已显示内容缩短（曾因聚合文本更短而「变少」）。
         const finalText = text.length >= last.text.length ? text : last.text;
@@ -304,6 +311,31 @@ function messageToEvent(m: ConversationMessage): NormalizedEvent {
     payload: (m.content ?? {}) as Record<string, unknown>,
     role: m.role,
   };
+}
+
+/** message.content.attachments 是后端落库的 Json，逐项用守卫收窄；形状不对的项丢掉。 */
+function parseAttachments(value: unknown): MessageAttachment[] {
+  if (!Array.isArray(value)) return [];
+  const out: MessageAttachment[] = [];
+  for (const v of value) {
+    if (typeof v !== "object" || v === null) continue;
+    const { versionId, type, url, filename, contentType } = v as Record<string, unknown>;
+    if (
+      typeof versionId === "string" &&
+      (type === "image" || type === "video" || type === "audio") &&
+      typeof url === "string" &&
+      typeof filename === "string"
+    ) {
+      out.push({
+        versionId,
+        type,
+        url,
+        filename,
+        contentType: typeof contentType === "string" ? contentType : "",
+      });
+    }
+  }
+  return out;
 }
 
 /**

@@ -121,6 +121,10 @@ export const daytonaProvider: SandboxProvider = {
           allow,
         }),
         publicTraffic: s.public,
+        // Daytona 的 memory / disk 单位是 GiB
+        cpuCount: s.cpu,
+        memoryMB: s.memory * 1024,
+        diskGB: s.disk,
       });
     }
     return all;

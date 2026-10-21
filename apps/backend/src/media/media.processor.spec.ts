@@ -252,10 +252,20 @@ describe('MediaProcessor 参考图地址', () => {
     filePath: 'ref-1.jpg',
     providerTaskId: 'task-ref',
   };
+  /** 各引用所属 generation 的类型（loadRefUrls 先按它分拣）；没列的默认 image */
+  let refTypes: Record<string, string> = {};
   const mockPrisma = {
     mediaVersion: {
       findUnique: jest.fn(({ where }: { where: { id: string } }) =>
         Promise.resolve(where.id === 'v2' ? target : ref),
+      ),
+      findMany: jest.fn(({ where }: { where: { id: { in: string[] } } }) =>
+        Promise.resolve(
+          where.id.in.map((id) => ({
+            id,
+            generation: { type: refTypes[id] ?? 'image' },
+          })),
+        ),
       ),
       update: jest.fn(),
     },
@@ -294,7 +304,10 @@ describe('MediaProcessor 参考图地址', () => {
     processor = module.get(MediaProcessor);
   });
 
-  afterEach(() => jest.clearAllMocks());
+  afterEach(() => {
+    jest.clearAllMocks();
+    refTypes = {};
+  });
 
   const job = { name: 'generate', data: { versionId: 'v2' } } as Job<{
     versionId: string;
@@ -344,6 +357,57 @@ describe('MediaProcessor 参考图地址', () => {
       },
     ]);
     expect(mockMedia.settleFailed).not.toHaveBeenCalled();
+  });
+
+  it('混合引用：图 / 视频 / 音频各按自己的类型提交，视频与音频恒为 reference', async () => {
+    const videoTarget = {
+      ...target,
+      model: 'seedance-2',
+      channel: 'byteplus',
+      referenceVersionIds: ['img-1', 'vid-1', 'aud-1'],
+      generation: { ...target.generation, type: 'video' },
+    };
+    refTypes = { 'vid-1': 'video', 'aud-1': 'audio' };
+    mockPrisma.mediaVersion.findUnique.mockImplementation(
+      ({ where }: { where: { id: string } }) =>
+        Promise.resolve(
+          where.id === 'v2'
+            ? videoTarget
+            : { ...ref, id: where.id, url: `https://cdn/${where.id}` },
+        ),
+    );
+    await processor.process(job);
+    expect(submittedRefs()).toEqual([
+      { type: 'image', role: 'reference', url: 'https://cdn/img-1' },
+      { type: 'video', role: 'reference', url: 'https://cdn/vid-1' },
+      { type: 'audio', role: 'reference', url: 'https://cdn/aud-1' },
+    ]);
+  });
+
+  it('i2v-only 模型：只取第一张图作首帧，多出的图不等待也不提交', async () => {
+    const i2vTarget = {
+      ...target,
+      model: 'seedance-1.5-pro',
+      channel: 'byteplus',
+      referenceVersionIds: ['img-1', 'img-2'],
+      generation: { ...target.generation, type: 'video' },
+    };
+    mockPrisma.mediaVersion.findUnique.mockImplementation(
+      ({ where }: { where: { id: string } }) =>
+        Promise.resolve(
+          where.id === 'v2'
+            ? i2vTarget
+            : { ...ref, id: where.id, url: `https://cdn/${where.id}` },
+        ),
+    );
+    await processor.process(job);
+    expect(submittedRefs()).toEqual([
+      { type: 'image', role: 'first_frame', url: 'https://cdn/img-1' },
+    ]);
+    const waited = mockPrisma.mediaVersion.findUnique.mock.calls.map(
+      ([arg]) => arg.where.id,
+    );
+    expect(waited).not.toContain('img-2');
   });
 
   it('没有公网基址、参考图也不是 aigc 产物：判失败并说明原因，不提交', async () => {

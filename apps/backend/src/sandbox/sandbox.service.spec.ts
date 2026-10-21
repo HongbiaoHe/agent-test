@@ -15,7 +15,9 @@ const mockStartUserDesktop = jest.fn();
 const mockStopUserDesktop = jest.fn();
 const mockReadRawFile = jest.fn();
 const mockIsSandboxConfigured = jest.fn();
+const mockGetUserSandbox = jest.fn();
 jest.mock('../agent/sandbox', () => ({
+  getUserSandbox: (...args: unknown[]) => mockGetUserSandbox(...args),
   isSandboxConfigured: (...args: unknown[]) => mockIsSandboxConfigured(...args),
   getSandboxProviderInfo: () => ({
     provider: 'daytona',
@@ -64,6 +66,33 @@ describe('SandboxStatusService', () => {
     expect(mockFindUserSandbox).toHaveBeenCalledWith('u1', config);
   });
 
+  it('规格字段：列表带 cpu/内存就透出，取不到的（E2B 无磁盘）为 null', async () => {
+    mockPickUserSandbox.mockResolvedValue({
+      id: 'sb-1',
+      state: 'stopped',
+      cpuCount: 2,
+      memoryMB: 2048,
+    });
+    const r = await service.status('u1');
+    expect([r.cpuCount, r.memoryMB, r.diskGB]).toEqual([2, 2048, null]);
+  });
+
+  it('start：走 getUserSandbox（停机拉起 / 没有则新建，透传完整配置），list 仍滞后报 stopped 时以连上为准', async () => {
+    mockGetUserSandbox.mockResolvedValue({ fake: true });
+    mockPickUserSandbox.mockResolvedValue({ id: 'sb-1', state: 'stopped' });
+    const r = await service.start('u1');
+    expect(mockGetUserSandbox).toHaveBeenCalledWith('u1', config);
+    expect(r).toMatchObject({ exists: true, id: 'sb-1', state: 'started' });
+  });
+
+  it('start：提供方未配置 → SANDBOX_PROVIDER_NOT_CONFIGURED，不触 SDK', async () => {
+    mockIsSandboxConfigured.mockReturnValue(false);
+    await expect(service.start('u1')).rejects.toMatchObject({
+      errCode: ErrorCodes.SANDBOX_PROVIDER_NOT_CONFIGURED.code,
+    });
+    expect(mockGetUserSandbox).not.toHaveBeenCalled();
+  });
+
   it('当前提供方未配置凭据 → exists:false（不触 SDK）', async () => {
     mockIsSandboxConfigured.mockReturnValue(false);
     expect(await service.status('u1')).toEqual({ exists: false });
@@ -83,6 +112,9 @@ describe('SandboxStatusService', () => {
       updatedAt: '2026-06-11T02:00:00Z',
       autoStopInterval: 5,
       autoDeleteInterval: 30,
+      cpuCount: 1,
+      memoryMB: 1024,
+      diskGB: 3,
     });
     mockFindUserSandbox.mockResolvedValue({ fake: true });
     mockListWorkspaceFiles.mockResolvedValue([{ path: 'a.txt' }]);
@@ -99,6 +131,9 @@ describe('SandboxStatusService', () => {
       updatedAt: '2026-06-11T02:00:00Z',
       autoStopMinutes: 5,
       autoDeleteMinutes: 30,
+      cpuCount: 1,
+      memoryMB: 1024,
+      diskGB: 3,
       files: [{ path: 'a.txt' }],
     });
   });

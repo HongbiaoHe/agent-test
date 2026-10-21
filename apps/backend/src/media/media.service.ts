@@ -5,13 +5,18 @@ import { Queue } from 'bullmq';
 import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
 import { AigcService } from '../aigc/aigc.service';
 import { PublicUrlService } from '../aigc/public-url.service';
-import type { AgentParamIssue } from '../aigc/aigc.agent';
+import {
+  NO_REFERENCES,
+  type AgentParamIssue,
+  type ReferenceCounts,
+} from '../aigc/aigc.agent';
 import type { AigcMediaConfig, AigcTask } from '../aigc/aigc.types';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { signAssetToken } from './media-asset-token';
+import { UPLOAD_MODEL, type MediaAssetType } from './media-upload.service';
 
 export type MediaType = 'image' | 'video';
 
@@ -173,12 +178,17 @@ export class MediaService {
         ],
       };
     }
+    // 先校验引用并按类型计数（图 / 视频 / 音频各自对照模型上限）；不合法抛 MEDIA_REF_INVALID
+    const referenceCounts = await this.validateReferences(
+      input.referenceVersionIds,
+      userId,
+    );
     const prepared = await this.aigc.prepareAgentGeneration(type, {
       model: input.model,
       channel: input.channel,
       params: input.params,
       prompt: input.prompt,
-      referenceCount: input.referenceVersionIds?.length ?? 0,
+      referenceCounts,
     });
     if (!prepared.ok) return prepared;
 
@@ -309,6 +319,10 @@ export class MediaService {
     }
 
     const last = generation.versions[0];
+    // 用户上传的文件不是生成出来的，没有「照原样再来一次」可言
+    if (last?.model === UPLOAD_MODEL) {
+      throw new BusinessException(ErrorCodes.MEDIA_NOT_REGENERABLE);
+    }
     // prompt 缺省沿用上一版；无上一版（理论不该发生）则报错而非建空 prompt 版本
     const finalPrompt = prompt ?? last?.prompt;
     if (!finalPrompt) {
@@ -599,16 +613,19 @@ export class MediaService {
   }
 
   /**
-   * 校验参考图版本的「合法性」：每个 id 必须存在、generation.type=image、归属同 userId。
-   * status 允许 queued / generating / done（就绪性由 processor 执行时等待）；status=failed 仍拒绝。
-   * 任一不满足抛 MEDIA_REF_INVALID。空/未传则直接通过（参考图可选）。
-   * 为什么一次 findMany 而非逐个查：减少往返，并用「查到数 < 传入数」捕获「不存在」。
+   * 校验参考素材版本的「合法性」：每个 id 必须存在、generation.type 是 image / video / audio、归属同 userId。
+   * status 允许 queued / generating / done（就绪性由 processor 执行时等待）；failed 与上传未发出的
+   * staged 一律拒绝。任一不满足抛 MEDIA_REF_INVALID。空/未传则直接通过（参考可选）。
+   * 返回按类型的计数，供 agent 侧对照模型的 image/video/audio_input_number 逐类校验。
+   * 为什么一次 findMany 而非逐个查：减少往返，并用「查到数 < 传入数」捕获「不存在」（重复 id 同样会被它拦下）。
    */
   private async validateReferences(
     referenceVersionIds: string[] | undefined,
     userId: string,
-  ): Promise<void> {
-    if (!referenceVersionIds || referenceVersionIds.length === 0) return;
+  ): Promise<ReferenceCounts> {
+    if (!referenceVersionIds || referenceVersionIds.length === 0) {
+      return { ...NO_REFERENCES };
+    }
 
     const found = await this.prisma.mediaVersion.findMany({
       where: { id: { in: referenceVersionIds } },
@@ -628,10 +645,8 @@ export class MediaService {
         v.status === 'queued' ||
         v.status === 'generating' ||
         v.status === 'done';
-      const ok =
-        validStatus &&
-        v.generation.type === 'image' &&
-        v.generation.userId === userId;
+      const assetType = asAssetType(v.generation.type);
+      const ok = validStatus && assetType && v.generation.userId === userId;
       if (!ok) {
         throw new BusinessException(
           ErrorCodes.MEDIA_REF_INVALID,
@@ -639,6 +654,124 @@ export class MediaService {
         );
       }
     }
+    const counts: ReferenceCounts = { ...NO_REFERENCES };
+    for (const v of found) {
+      const assetType = asAssetType(v.generation.type);
+      if (assetType) counts[assetType]++;
+    }
+    return counts;
+  }
+
+  /**
+   * 把一条消息带的附件转正：每个 id 必须是本会话、本人上传且仍是 staged 的版本，
+   * 否则整体拒绝（MEDIA_ATTACHMENT_INVALID），一个都不改。通过则 staged → done，
+   * 从此进资产清单、可被引用。返回按传入顺序的附件摘要，存进用户消息供重放与渲染。
+   */
+  async commitAttachments(
+    conversationId: string,
+    userId: string,
+    versionIds: string[],
+  ): Promise<MessageAttachment[]> {
+    if (versionIds.length === 0) return [];
+    const found = await this.prisma.mediaVersion.findMany({
+      where: {
+        id: { in: versionIds },
+        model: UPLOAD_MODEL,
+        status: 'staged',
+        generation: { conversationId, userId },
+      },
+      include: { generation: true },
+    });
+    if (found.length !== versionIds.length) {
+      throw new BusinessException(ErrorCodes.MEDIA_ATTACHMENT_INVALID);
+    }
+    await this.prisma.mediaVersion.updateMany({
+      where: { id: { in: versionIds }, status: 'staged' },
+      data: { status: 'done' },
+    });
+    const byId = new Map(found.map((v) => [v.id, v]));
+    return versionIds.flatMap((id) => {
+      const v = byId.get(id);
+      const type = v ? asAssetType(v.generation.type) : null;
+      if (!v || !type || !v.url) return [];
+      return [
+        {
+          versionId: v.id,
+          type,
+          url: v.url,
+          filename: v.prompt,
+          contentType: readParams(v.params).contentType ?? '',
+        },
+      ];
+    });
+  }
+
+  /**
+   * 同步进沙箱前的解析（sync_media_to_sandbox 用）：逐个 versionId 查出资产来源。
+   * 只认本会话、本人、已 done 的版本（生成的与上传的都行），有 CDN 地址给 url、只有本地文件
+   * （拼接产物）给 filePath；不满足的单独报原因，不连累其余。
+   * 文件名：上传的用原始文件名（prompt 存的就是它），生成的用 `<type>.<ext>`。
+   */
+  async resolveSandboxSources(
+    conversationId: string,
+    userId: string,
+    versionIds: string[],
+  ): Promise<{
+    sources: {
+      versionId: string;
+      type: MediaAssetType;
+      filename: string;
+      url: string | null;
+      filePath: string | null;
+    }[];
+    errors: { versionId: string; reason: string }[];
+  }> {
+    const found = await this.prisma.mediaVersion.findMany({
+      where: { id: { in: versionIds } },
+      include: { generation: true },
+    });
+    const byId = new Map(found.map((v) => [v.id, v]));
+    const sources: {
+      versionId: string;
+      type: MediaAssetType;
+      filename: string;
+      url: string | null;
+      filePath: string | null;
+    }[] = [];
+    const errors: { versionId: string; reason: string }[] = [];
+    for (const versionId of versionIds) {
+      const v = byId.get(versionId);
+      const type = v ? asAssetType(v.generation.type) : null;
+      if (
+        !v ||
+        !type ||
+        v.generation.conversationId !== conversationId ||
+        v.generation.userId !== userId
+      ) {
+        errors.push({ versionId, reason: '本会话没有这个媒体版本' });
+        continue;
+      }
+      if (v.status !== 'done' || (!v.url && !v.filePath)) {
+        errors.push({
+          versionId,
+          reason: `资产还不可用（status=${v.status}）`,
+        });
+        continue;
+      }
+      // 生成产物只有 image / video（audio 只来自上传），后缀从 CDN 地址或本地文件名里取
+      const filename =
+        v.model === UPLOAD_MODEL
+          ? v.prompt
+          : `${type}.${extFromUrl(v.url ?? v.filePath ?? '', type === 'video' ? 'video' : 'image')}`;
+      sources.push({
+        versionId,
+        type,
+        filename,
+        url: v.url,
+        filePath: v.filePath,
+      });
+    }
+    return { sources, errors };
   }
 
   /** 给对话 agent 看的模型目录（list_media_models）。 */
@@ -652,7 +785,12 @@ export class MediaService {
    */
   async listForConversation(conversationId: string, userId: string) {
     const generations = await this.prisma.mediaGeneration.findMany({
-      where: { conversationId, userId },
+      // 上传了但还没随消息发出的附件（staged）不算会话资产：不进清单、前端也不展示
+      where: {
+        conversationId,
+        userId,
+        versions: { none: { status: 'staged' } },
+      },
       orderBy: { createdAt: 'desc' },
       include: { versions: { orderBy: { createdAt: 'desc' } } },
     });
@@ -737,6 +875,22 @@ export class MediaService {
       payload: { generationId, versionId, type, status, error },
     });
   }
+}
+
+/** 用户消息里存的一个附件（随 content.attachments 落库，worker 重放、前端气泡都读它）。 */
+export interface MessageAttachment {
+  versionId: string;
+  type: MediaAssetType;
+  url: string;
+  filename: string;
+  contentType: string;
+}
+
+/** generation.type 是 String 列，收窄成资产类型；认不出返回 null。 */
+export function asAssetType(value: string): MediaAssetType | null {
+  return value === 'image' || value === 'video' || value === 'audio'
+    ? value
+    : null;
 }
 
 /**

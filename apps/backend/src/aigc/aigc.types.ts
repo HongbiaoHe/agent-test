@@ -93,6 +93,21 @@ export const aigcTaskSchema = z.object({
 
 export type AigcTask = z.infer<typeof aigcTaskSchema>;
 
+/**
+ * 申请上传地址的响应 data（POST /files/upload-url）：拿到后把文件原样 PUT 到 upload_url，
+ * headers 一个不能少、不能改（都在签名覆盖范围内）；传完即可经 url 访问。
+ */
+export const aigcUploadUrlDataSchema = z.object({
+  upload_id: z.string(),
+  upload_url: z.string(),
+  method: z.string(),
+  headers: z.record(z.string(), z.string()),
+  expires_at: z.string(),
+  url: z.string(),
+});
+
+export type AigcUploadUrl = z.infer<typeof aigcUploadUrlDataSchema>;
+
 /** aigc 的统一响应信封（§2.3）：成功恒为 code:"success"。 */
 export const aigcEnvelopeSchema = z.object({
   code: z.string(),

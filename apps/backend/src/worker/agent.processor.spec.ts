@@ -1408,11 +1408,12 @@ describe('AgentProcessor 网页预览工具注入', () => {
     return names;
   }
 
-  it('有沙箱 → 媒体工具之外再注入 preview_page', async () => {
+  it('有沙箱 → 媒体工具之外再注入 preview_page 与 sync_media_to_sandbox', async () => {
     expect(await toolNamesWith({ id: 'sbx-1' })).toEqual([
       'generate_image',
       'generate_video',
       'preview_page',
+      'sync_media_to_sandbox',
     ]);
   });
 
@@ -1421,7 +1422,7 @@ describe('AgentProcessor 网页预览工具注入', () => {
     expect(lastWorkspace).toBe('/workspace');
   });
 
-  it('无沙箱 → 不注入 preview_page（没有可预览的工作区文件）', async () => {
+  it('无沙箱 → 不注入 preview_page / sync_media_to_sandbox（没有工作区）', async () => {
     expect(await toolNamesWith(null)).toEqual([
       'generate_image',
       'generate_video',

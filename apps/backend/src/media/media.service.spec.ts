@@ -26,6 +26,7 @@ const mockPrisma = {
     create: jest.fn(),
     findUnique: jest.fn(),
     findMany: jest.fn(),
+    updateMany: jest.fn(),
   },
 };
 const mockQueue = { add: jest.fn() };
@@ -113,7 +114,163 @@ describe('MediaService', () => {
     });
   });
 
+  describe('commitAttachments（附件随消息转正）', () => {
+    const staged = (id: string, type: string, filename: string) => ({
+      id,
+      prompt: filename,
+      url: `https://cdn/${filename}`,
+      params: { contentType: 'x/y', size: '1', aigcUploadId: 'u' },
+      generation: { type },
+    });
+
+    it('全部合法：staged → done，按传入顺序返回附件摘要', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        staged('v2', 'audio', 'b.mp3'),
+        staged('v1', 'image', 'a.png'),
+      ]);
+      const r = await service.commitAttachments('conv-1', 'user-1', [
+        'v1',
+        'v2',
+      ]);
+      expect(mockPrisma.mediaVersion.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            id: { in: ['v1', 'v2'] },
+            model: 'upload',
+            status: 'staged',
+            generation: { conversationId: 'conv-1', userId: 'user-1' },
+          },
+        }),
+      );
+      expect(mockPrisma.mediaVersion.updateMany).toHaveBeenCalledWith({
+        where: { id: { in: ['v1', 'v2'] }, status: 'staged' },
+        data: { status: 'done' },
+      });
+      expect(r.map((a) => [a.versionId, a.type, a.filename])).toEqual([
+        ['v1', 'image', 'a.png'],
+        ['v2', 'audio', 'b.mp3'],
+      ]);
+    });
+
+    it('有一个不合法（别的会话 / 已发过 / 不存在）→ 整体拒绝，一个都不改', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        staged('v1', 'image', 'a.png'),
+      ]);
+      await expect(
+        service.commitAttachments('conv-1', 'user-1', ['v1', 'v-other']),
+      ).rejects.toMatchObject({
+        errCode: ErrorCodes.MEDIA_ATTACHMENT_INVALID.code,
+      });
+      expect(mockPrisma.mediaVersion.updateMany).not.toHaveBeenCalled();
+    });
+
+    it('没带附件：不查库', async () => {
+      expect(await service.commitAttachments('c', 'u', [])).toEqual([]);
+      expect(mockPrisma.mediaVersion.findMany).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('resolveSandboxSources（同步进沙箱前的解析）', () => {
+    const row = (over: Record<string, unknown>) => ({
+      id: 'v',
+      status: 'done',
+      model: 'seedance-2',
+      prompt: '提示词',
+      url: 'https://cdn/x.mp4',
+      filePath: null,
+      generation: { type: 'video', conversationId: 'conv-1', userId: 'user-1' },
+      ...over,
+    });
+
+    it('上传的用原始文件名、生成的用 <type>.<ext>；别的会话 / 未完成的单独报原因', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        row({ id: 'gen', url: 'https://cdn/out.mp4' }),
+        row({
+          id: 'up',
+          model: 'upload',
+          prompt: 'cat.png',
+          url: 'https://cdn/cat.png',
+          generation: {
+            type: 'image',
+            conversationId: 'conv-1',
+            userId: 'user-1',
+          },
+        }),
+        row({ id: 'busy', status: 'generating', url: null }),
+        row({
+          id: 'foreign',
+          generation: {
+            type: 'video',
+            conversationId: 'conv-2',
+            userId: 'user-1',
+          },
+        }),
+      ]);
+      const r = await service.resolveSandboxSources('conv-1', 'user-1', [
+        'gen',
+        'up',
+        'busy',
+        'foreign',
+        'missing',
+      ]);
+      expect(r.sources).toEqual([
+        {
+          versionId: 'gen',
+          type: 'video',
+          filename: 'video.mp4',
+          url: 'https://cdn/out.mp4',
+          filePath: null,
+        },
+        {
+          versionId: 'up',
+          type: 'image',
+          filename: 'cat.png',
+          url: 'https://cdn/cat.png',
+          filePath: null,
+        },
+      ]);
+      expect(r.errors.map((e) => e.versionId)).toEqual([
+        'busy',
+        'foreign',
+        'missing',
+      ]);
+      expect(r.errors[0].reason).toContain('status=generating');
+    });
+  });
+
+  describe('listForConversation', () => {
+    it('排除还没随消息发出的上传（staged）', async () => {
+      mockPrisma.mediaGeneration.findMany.mockResolvedValue([]);
+      await service.listForConversation('conv-1', 'user-1');
+      expect(mockPrisma.mediaGeneration.findMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: {
+            conversationId: 'conv-1',
+            userId: 'user-1',
+            versions: { none: { status: 'staged' } },
+          },
+        }),
+      );
+    });
+  });
+
   describe('regenerate', () => {
+    it('用户上传的素材不能重新生成 → MEDIA_NOT_REGENERABLE', async () => {
+      mockPrisma.mediaGeneration.findUnique.mockResolvedValue({
+        id: 'gen-up',
+        conversationId: 'conv-1',
+        userId: 'user-1',
+        type: 'image',
+        versions: [{ id: 'ver-up', prompt: 'a.png', model: 'upload' }],
+      });
+      await expect(
+        service.regenerate('gen-up', 'user-1'),
+      ).rejects.toMatchObject({
+        errCode: ErrorCodes.MEDIA_NOT_REGENERABLE.code,
+      });
+      expect(mockPrisma.mediaVersion.create).not.toHaveBeenCalled();
+    });
+
     it('在同 generation 下建新版本（旧版本不动）并沿用上一版 prompt', async () => {
       mockPrisma.mediaGeneration.findUnique.mockResolvedValue({
         id: 'gen-1',
@@ -311,12 +468,26 @@ describe('MediaService', () => {
       expect(mockPrisma.mediaGeneration.create).not.toHaveBeenCalled();
     });
 
-    it('参考版本非 image 类型（video）→ MEDIA_REF_INVALID', async () => {
+    it('参考版本不是 image / video / audio 资产 → MEDIA_REF_INVALID', async () => {
       mockPrisma.mediaVersion.findMany.mockResolvedValue([
         {
           id: 'ref-1',
           status: 'done',
-          generation: { type: 'video', userId: 'user-1' },
+          generation: { type: 'text', userId: 'user-1' },
+        },
+      ]);
+
+      await expect(
+        service.createGeneration('conv-1', 'user-1', 'image', 'p', ['ref-1']),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.MEDIA_REF_INVALID.code });
+    });
+
+    it('上传了还没随消息发出的附件（staged）→ MEDIA_REF_INVALID', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        {
+          id: 'ref-1',
+          status: 'staged',
+          generation: { type: 'image', userId: 'user-1' },
         },
       ]);
 
@@ -592,11 +763,16 @@ describe('MediaService.createAgentGenerations', () => {
   it('目录校验不通过 → 原样返回 issues，不建库不入队', async () => {
     const issues = [{ field: 'params.duration', message: 'x' }];
     prepareAgentGeneration.mockResolvedValue({ ok: false, issues });
+    // 一张图 + 一段上传的视频：按类型计数后交给目录校验
+    mockPrisma.mediaVersion.findMany.mockResolvedValue([
+      { id: 'r1', status: 'done', generation: { type: 'image', userId: 'u' } },
+      { id: 'r2', status: 'done', generation: { type: 'video', userId: 'u' } },
+    ]);
     const r = await service.createAgentGenerations('c', 'u', 'video', {
       prompt: 'p',
       model: 'veo-3.1',
       params: { duration: '4' },
-      referenceVersionIds: ['r1'],
+      referenceVersionIds: ['r1', 'r2'],
       count: 1,
     });
     expect(r).toEqual({ ok: false, issues });
@@ -605,7 +781,7 @@ describe('MediaService.createAgentGenerations', () => {
       channel: undefined,
       params: { duration: '4' },
       prompt: 'p',
-      referenceCount: 1,
+      referenceCounts: { image: 1, video: 1, audio: 0 },
     });
     expect(mockPrisma.mediaGeneration.create).not.toHaveBeenCalled();
     expect(mockQueue.add).not.toHaveBeenCalled();

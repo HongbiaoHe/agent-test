@@ -10,6 +10,7 @@ import {
   ChevronRight,
   Image as ImageIcon,
   Loader2,
+  Music,
   RefreshCw,
   Video as VideoIcon,
   X,
@@ -490,8 +491,8 @@ function ParamsRow({ params }: { params: Record<string, string> | null }) {
 }
 
 /**
- * 参考图区（调用参数的一部分）：当前版本引用了图片时展示一行小缩略图。
- * 引用的必是 type=image 的版本（后端校验），故每张都用 <img>。悬停 title 显示 versionId。
+ * 参考素材区（调用参数的一部分）：当前版本引用了素材时展示一行小缩略图。
+ * 图片用 <img>；视频 / 音频（用户上传的参考素材）只显示类型图标。悬停 title 显示 versionId。
  */
 function ReferenceRow({
   conversationId,
@@ -529,17 +530,31 @@ function ReferenceThumb({
   versionId: string;
 }) {
   const { data: media } = useConversationMedia(conversationId);
-  const ref = media
-    ?.flatMap((g) => g.versions)
-    .find((v) => v.id === versionId);
+  const owner = media?.find((g) => g.versions.some((v) => v.id === versionId));
+  const ref = owner?.versions.find((v) => v.id === versionId);
+  // 视频 / 音频参考不拉资产（整段下载只为一个 28px 方块不值得），列表里找不到的按图片处理（同以前）
+  const isImage = !owner || owner.type === "image";
   const { data: blob } = useQuery({
     queryKey: ["media-asset", versionId],
     queryFn: () => fetchMediaAssetBlob(versionId),
     staleTime: Infinity, // 同一 version 资产不可变
     refetchOnWindowFocus: false,
-    enabled: media !== undefined && (!ref || ref.status === "done"),
+    enabled: isImage && media !== undefined && (!ref || ref.status === "done"),
   });
   const url = useObjectUrl(blob);
+
+  if (!isImage) {
+    const Icon = owner?.type === "audio" ? Music : VideoIcon;
+    return (
+      <span
+        title={versionId}
+        aria-label={owner?.type === "audio" ? "Reference audio" : "Reference video"}
+        className="flex size-7 items-center justify-center rounded-md border bg-muted"
+      >
+        <Icon className="size-3.5 text-muted-foreground" />
+      </span>
+    );
+  }
 
   if (!url) {
     return <Skeleton className="size-7 rounded-md" />;

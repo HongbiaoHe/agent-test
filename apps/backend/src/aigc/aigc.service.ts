@@ -7,6 +7,7 @@ import {
   validateAgentRequest,
   type AgentCatalogView,
   type AgentParamIssue,
+  type ReferenceCounts,
 } from './aigc.agent';
 import {
   buildTaskBody,
@@ -66,7 +67,7 @@ export class AigcService {
       channel?: string;
       params?: Record<string, string>;
       prompt: string;
-      referenceCount: number;
+      referenceCounts: ReferenceCounts;
     },
   ): Promise<
     | { ok: true; config: AigcMediaConfig }
@@ -78,8 +79,8 @@ export class AigcService {
     const checked = validateAgentRequest(model, {
       params: req.params ?? {},
       prompt: req.prompt,
-      referenceCount: req.referenceCount,
-      derived: agentDerivedDims(type, model.model_alias, req.referenceCount),
+      referenceCounts: req.referenceCounts,
+      derived: agentDerivedDims(type, model.model_alias, req.referenceCounts),
     });
     if (!checked.ok) return checked;
     return {
@@ -141,15 +142,21 @@ export class AigcService {
         `aigc 目录里没有模型 ${input.config.channel}/${input.config.model}`,
       );
     }
-    const references = input.references.slice(
-      0,
-      found.model.image_input_number,
+    // 按类型各自截到模型上限（保持原顺序）：图 / 视频 / 音频的上限互相独立
+    const limits: ReferenceCounts = {
+      image: found.model.image_input_number,
+      video: found.model.video_input_number,
+      audio: found.model.audio_input_number,
+    };
+    const used: ReferenceCounts = { image: 0, video: 0, audio: 0 };
+    const references = input.references.filter(
+      (r) => used[r.type]++ < limits[r.type],
     );
     if (references.length < input.references.length) {
       this.logger.warn(
-        `${input.config.model} 只接受 ${found.model.image_input_number} 张参考图，丢掉多余 ${
+        `${input.config.model} 参考素材上限 图${limits.image}/视频${limits.video}/音频${limits.audio}，丢掉多余 ${
           input.references.length - references.length
-        } 张`,
+        } 个`,
       );
     }
     const config: AigcMediaConfig = {

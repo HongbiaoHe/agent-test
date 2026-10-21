@@ -67,6 +67,15 @@ export const ErrorCodes = {
     message: 'Skill directory exceeds 20MB size limit',
   },
   SKILL_NOT_FOUND: { code: 40005, message: 'Skill not found' },
+  SKILL_NAME_TAKEN: {
+    code: 40014,
+    message:
+      'A skill with this name already exists, please choose another name',
+  },
+  SKILL_NOT_EDITABLE: {
+    code: 40015,
+    message: 'Only skills you wrote yourself can be edited',
+  },
   SANDBOX_NOT_FOUND: {
     code: 40006,
     message: 'Session sandbox does not exist or has been reclaimed',
@@ -118,7 +127,29 @@ export const ErrorCodes = {
   MEDIA_REF_INVALID: {
     code: 60004,
     message:
-      'Invalid reference image (must be a successfully generated image version belonging to yourself)',
+      'Invalid reference (must be a generated or uploaded image/video/audio version belonging to yourself)',
+  },
+  MEDIA_UPLOAD_UNSUPPORTED: {
+    code: 60005,
+    message:
+      'Unsupported file type (allowed: JPEG/PNG/WebP images, MP4/MOV videos, MP3/WAV/M4A audio)',
+  },
+  MEDIA_UPLOAD_TOO_LARGE: {
+    code: 60006,
+    message: 'File too large (images ≤ 20MB, videos ≤ 200MB, audio ≤ 50MB)',
+  },
+  MEDIA_UPLOAD_FAILED: {
+    code: 60007,
+    message: 'File upload failed, please try again',
+  },
+  MEDIA_NOT_REGENERABLE: {
+    code: 60009,
+    message: 'Uploaded files cannot be regenerated',
+  },
+  MEDIA_ATTACHMENT_INVALID: {
+    code: 60008,
+    message:
+      'Invalid attachment (must be a file uploaded to this conversation and not yet sent)',
   },
   CANVAS_NOT_FOUND: { code: 70001, message: 'Canvas session not found' },
   CANVAS_GOAL_EMPTY: { code: 70002, message: 'Canvas goal cannot be empty' },

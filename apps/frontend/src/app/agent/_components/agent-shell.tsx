@@ -12,6 +12,7 @@ import {
   createEmptyConversation,
   deleteConversation,
   listConversations,
+  type MessageAttachment,
   renameConversation,
   setConversationPinned,
   stopConversation,
@@ -84,8 +85,20 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
     },
   });
   const appendMut = useMutation({
-    mutationFn: (text: string) =>
-      appendMessage(conversationId as string, text, model, thinkingLevel),
+    mutationFn: ({
+      text,
+      attachments,
+    }: {
+      text: string;
+      attachments: MessageAttachment[];
+    }) =>
+      appendMessage(
+        conversationId as string,
+        text,
+        model,
+        thinkingLevel,
+        attachments.map((a) => a.versionId),
+      ),
     onSuccess: () => qc.invalidateQueries({ queryKey: ["conversations"] }),
   });
   // 主动停止：busy 收尾由后端 result{status:'stopped'} 事件驱动（SSE），这里只发指令。
@@ -135,10 +148,10 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
     stopMut.mutate();
   }
 
-  function handleSend(text: string) {
+  function handleSend(text: string, attachments: MessageAttachment[]) {
     if (!conversationId) return; // 新会话页只有引导按钮，没有输入框
-    thread.pushUserMessage(text);
-    appendMut.mutate(text);
+    thread.pushUserMessage(text, attachments);
+    appendMut.mutate({ text, attachments });
   }
 
   function selectConversation(id: string) {

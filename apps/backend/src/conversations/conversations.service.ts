@@ -81,6 +81,8 @@ export class ConversationsService {
   /**
    * 在已有会话里追加一条用户消息并续跑（多轮对话）。
    * 同一个 thread_id（= 会话 id）+ checkpointer，agent 自动带上历史上下文。
+   * attachmentVersionIds：随消息发出的上传附件，校验通过后转正（staged → done）并存进消息 content；
+   * 带附件时正文可为空。
    */
   async appendMessage(
     id: string,
@@ -89,11 +91,12 @@ export class ConversationsService {
     userId: string,
     model?: string,
     thinkingLevel?: string,
+    attachmentVersionIds: string[] = [],
   ) {
-    if (!content?.trim()) {
+    if (!content?.trim() && attachmentVersionIds.length === 0) {
       throw new BusinessException(ErrorCodes.CONVERSATION_GOAL_EMPTY);
     }
-    await this.assertKnownCommand(content, userId);
+    if (content.trim()) await this.assertKnownCommand(content, userId);
     // 租户隔离：只能往自己租户的会话追加（已删除的视同不存在）
     const conv = await this.prisma.conversation.findFirst({
       where: { id, tenantId, deletedAt: null },
@@ -115,6 +118,17 @@ export class ConversationsService {
       throw new BusinessException(ErrorCodes.CONVERSATION_BUSY);
     }
 
+    // 附件先转正：不合法（非本会话 / 已发过 / 不存在）整条消息拒绝，会话状态不动
+    const attachments = await this.media.commitAttachments(
+      id,
+      userId,
+      attachmentVersionIds,
+    );
+    // 只发附件的首条消息：侧栏标题回退成文件名
+    const goalText = content.trim()
+      ? content
+      : attachments.map((a) => a.filename).join(', ');
+
     // 状态重置为 queued（必须）：上一轮若是 stopped 终态，不重置会让新 job 撞 worker 的
     // CAS 门（where status != 'stopped'）被误判「排队期间被停止」——一次停止永久封死会话。
     // 顺带把本轮选定的模型与思考档位落到会话上（含审批 resume / 超时兜底都复用同一设置）；
@@ -125,7 +139,7 @@ export class ConversationsService {
         status: 'queued',
         ...(model ? { model } : {}),
         ...(thinkingLevel ? { thinkingLevel } : {}),
-        ...(conv.goal.trim() ? {} : { goal: content }),
+        ...(conv.goal.trim() ? {} : { goal: goalText }),
       },
     });
 
@@ -138,13 +152,19 @@ export class ConversationsService {
         conversationId: id,
         role: 'user',
         type: 'message',
-        content: { text: content },
+        content: {
+          text: content,
+          // 展开成对象字面量：interface 没有隐式索引签名，直接塞不进 Prisma 的 Json 入参类型
+          ...(attachments.length > 0
+            ? { attachments: attachments.map((a) => ({ ...a })) }
+            : {}),
+        },
         seq,
       },
     });
 
     // 复用 'run'：worker 用 { messages:[新用户消息] } + 同 thread_id 续跑
-    await this.queue.add('run', { conversationId: id, goal: content });
+    await this.queue.add('run', { conversationId: id, goal: goalText });
     return { conversationId: id };
   }
 

@@ -18,6 +18,7 @@ import { MediaService } from '../media/media.service';
 import { ConversationsService } from './conversations.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SkillsService } from '../skills/skills.service';
+import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
 import { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
 
@@ -102,6 +103,7 @@ describe('ConversationsService – downloadFile 路径校验', () => {
 
 describe('ConversationsService – 空会话创建与续聊', () => {
   let service: ConversationsService;
+  const commitAttachments = jest.fn().mockResolvedValue([]);
 
   beforeEach(async () => {
     const module = await Test.createTestingModule({
@@ -113,7 +115,7 @@ describe('ConversationsService – 空会话创建与续聊', () => {
         { provide: StreamService, useValue: { publish: jest.fn() } },
         {
           provide: MediaService,
-          useValue: { cancelByConversation: jest.fn() },
+          useValue: { cancelByConversation: jest.fn(), commitAttachments },
         },
         { provide: AGENT_ABORTS, useValue: new AbortRegistry() },
         {
@@ -125,7 +127,93 @@ describe('ConversationsService – 空会话创建与续聊', () => {
     service = module.get(ConversationsService);
   });
 
-  afterEach(() => jest.clearAllMocks());
+  afterEach(() => {
+    jest.clearAllMocks();
+    commitAttachments.mockResolvedValue([]);
+  });
+
+  it('只发附件不写字：附件转正并存进消息，空 goal 回退成文件名', async () => {
+    mockPrisma.conversation.findFirst.mockResolvedValue({
+      id: 'conv-1',
+      status: 'idle',
+      goal: '',
+    });
+    mockPrisma.message.count.mockResolvedValue(0);
+    const attachments = [
+      {
+        versionId: 'v1',
+        type: 'image',
+        url: 'https://cdn/a.png',
+        filename: 'a.png',
+        contentType: 'image/png',
+      },
+      {
+        versionId: 'v2',
+        type: 'video',
+        url: 'https://cdn/b.mp4',
+        filename: 'b.mp4',
+        contentType: 'video/mp4',
+      },
+    ];
+    commitAttachments.mockResolvedValue(attachments);
+
+    await service.appendMessage(
+      'conv-1',
+      '',
+      'tenant-1',
+      'u1',
+      undefined,
+      undefined,
+      ['v1', 'v2'],
+    );
+
+    expect(commitAttachments).toHaveBeenCalledWith('conv-1', 'u1', [
+      'v1',
+      'v2',
+    ]);
+    expect(mockPrisma.conversation.update).toHaveBeenCalledWith({
+      where: { id: 'conv-1' },
+      data: expect.objectContaining({ goal: 'a.png, b.mp4' }),
+    });
+    expect(mockPrisma.message.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        role: 'user',
+        content: { text: '', attachments },
+      }),
+    });
+  });
+
+  it('正文与附件都没有 → CONVERSATION_GOAL_EMPTY；附件不合法 → 整条拒绝、会话不动', async () => {
+    await expect(
+      service.appendMessage('conv-1', '  ', 'tenant-1', 'u1'),
+    ).rejects.toMatchObject({
+      errCode: ErrorCodes.CONVERSATION_GOAL_EMPTY.code,
+    });
+
+    mockPrisma.conversation.findFirst.mockResolvedValue({
+      id: 'conv-1',
+      status: 'done',
+      goal: 'g',
+    });
+    commitAttachments.mockRejectedValue(
+      new BusinessException(ErrorCodes.MEDIA_ATTACHMENT_INVALID),
+    );
+    await expect(
+      service.appendMessage(
+        'conv-1',
+        'hi',
+        'tenant-1',
+        'u1',
+        undefined,
+        undefined,
+        ['bad'],
+      ),
+    ).rejects.toMatchObject({
+      errCode: ErrorCodes.MEDIA_ATTACHMENT_INVALID.code,
+    });
+    expect(mockPrisma.conversation.update).not.toHaveBeenCalled();
+    expect(mockQueue.add).not.toHaveBeenCalled();
+  });
 
   it('goal 为空 → 创建 idle 空会话：不落首条消息、不入队', async () => {
     mockPrisma.conversation.create.mockResolvedValue({ id: 'conv-new' });

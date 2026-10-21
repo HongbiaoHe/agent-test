@@ -48,6 +48,12 @@ export class SandboxController {
     return this.sandbox.status(user.userId, files === '1');
   }
 
+  /** 主动开机：停机的拉起、没有的新建，返回开机后的状态（面板「Start sandbox」按钮）。 */
+  @Post('start')
+  start(@CurrentUser() user: AuthUser) {
+    return this.sandbox.start(user.userId);
+  }
+
   /** 列出工作区某目录的直接子项（?path=<相对路径>，缺省=根）——树展开时按需调用。 */
   @Get('dir')
   listDir(@CurrentUser() user: AuthUser, @Query('path') path?: string) {

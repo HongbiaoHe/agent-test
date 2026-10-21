@@ -3,7 +3,11 @@
 import { useQuery, useQueryClient } from "@tanstack/react-query";
 import { useEffect, useEffectEvent, useMemo, useState } from "react";
 
-import { getConversation, type MediaGeneration } from "@/lib/api";
+import {
+  getConversation,
+  type MediaGeneration,
+  type MessageAttachment,
+} from "@/lib/api";
 import { respondControl, subscribeConversation } from "@/lib/socket";
 
 import {
@@ -111,10 +115,10 @@ export function useConversation(
   const derived = useMemo(() => foldLive(base, liveEvents), [base, liveEvents]);
 
   /** 追加一轮：乐观插入用户气泡（用户消息不走 socket，故本地补一条）。 */
-  function pushUserMessage(text: string) {
+  function pushUserMessage(text: string, attachments: MessageAttachment[] = []) {
     setLiveEvents((prev) => [
       ...prev,
-      { type: "message", role: "user", payload: { text } },
+      { type: "message", role: "user", payload: { text, attachments } },
     ]);
     setPending(true);
   }

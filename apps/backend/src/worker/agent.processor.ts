@@ -17,7 +17,10 @@ import { ReasoningCollector } from '../agent/reasoning-parts';
 import { asThinkingLevel } from '../agent/thinking-level';
 import { parseCommand } from '../commands/parse-command';
 import { StreamService } from '../events/stream.service';
+import { userMessageText } from '../conversations/message-content';
 import { MediaService } from '../media/media.service';
+import { UPLOAD_MODEL } from '../media/media-upload.service';
+import { createSyncMediaTool } from '../media/media-sandbox.tool';
 import { createMediaTools } from '../media/media.tools';
 import { createPreviewPageTool } from '../agent/tools/preview-page.tool';
 import { PrismaService } from '../prisma/prisma.service';
@@ -189,13 +192,16 @@ export class AgentProcessor extends WorkerHost {
       const activePlan = await this.buildActivePlan(conversationId);
 
       // ③ 装配：media 工具闭包注入——conversationId/userId 由 worker 上下文提供，不经模型传递（无注入风险）
-      // 网页预览工具只在有沙箱时注入：没有沙箱就没有可预览的工作区文件
+      // 网页预览、媒体同步工具只在有沙箱时注入：没有沙箱就没有工作区可预览 / 可写入
+      const mediaCtx = { conversationId, userId: conv.userId };
       const extraTools = [
-        ...createMediaTools(this.media, {
-          conversationId,
-          userId: conv.userId,
-        }),
-        ...(sandbox ? [createPreviewPageTool(sandbox)] : []),
+        ...createMediaTools(this.media, mediaCtx),
+        ...(sandbox
+          ? [
+              createPreviewPageTool(sandbox),
+              createSyncMediaTool(this.media, sandbox, mediaCtx),
+            ]
+          : []),
       ];
       const agent = await buildAgent({
         checkpointer: this.checkpointer,
@@ -478,9 +484,13 @@ export class AgentProcessor extends WorkerHost {
           tool_call_id: `synth_${payload.name ?? 'tool'}_${m.seq}`,
         };
       }
+      // 用户消息带附件时，末尾拼一段「[附件]」清单（见 userMessageText）
       return {
         role: m.role,
-        content: (m.content as { text?: string })?.text ?? '',
+        content:
+          m.role === 'user'
+            ? userMessageText(m.content)
+            : ((m.content as { text?: string })?.text ?? ''),
       };
     });
   }
@@ -584,6 +594,10 @@ export class AgentProcessor extends WorkerHost {
       .map((g) => {
         const v = g.versions[0]; // 最新版本（已按 createdAt desc）
         if (!v) return null;
+        // 用户上传的素材：prompt 存的是文件名
+        if (v.model === UPLOAD_MODEL) {
+          return `- versionId=${v.id} [${g.type}][upload] 文件名 ${v.prompt}`;
+        }
         const promptPreview =
           v.prompt.slice(0, 40) + (v.prompt.length > 40 ? '…' : '');
         return `- versionId=${v.id} [${g.type}][${v.status}] ${promptPreview}`;
@@ -593,8 +607,8 @@ export class AgentProcessor extends WorkerHost {
     if (!lines) return '';
 
     return (
-      `\n\n## 本会话已生成的媒体资产（引用参考图必须用此表的 versionId）\n${lines}\n` +
-      `规则：referenceVersionIds 只能填上表或 generate_image 工具结果中的真实 versionId（cuid 格式），禁止自造名称；表中已有的资产不要重复生成。`
+      `\n\n## 本会话的媒体资产（生成的与用户上传的；引用素材必须用此表的 versionId）\n${lines}\n` +
+      `规则：referenceVersionIds 只能填上表或生成工具结果中的真实 versionId（cuid 格式），禁止自造名称；表中已有的资产不要重复生成；[upload] 是用户上传的素材，不能重新生成。`
     );
   }
 
