@@ -73,6 +73,15 @@ export class E2BSandbox extends BaseSandbox {
     await this.sbx.setTimeout(this.idleTimeoutMs);
   }
 
+  /**
+   * 轮内心跳（worker 每 30s 调）：不节流，直接续期。模型思考 / 长命令执行期间没有文件
+   * 操作触发 touch，闲置 1 分钟时沙箱会在轮内到期暂停，靠它顶住（见 GuardableSandbox.heartbeat）。
+   */
+  async heartbeat(): Promise<void> {
+    this.lastTouchAt = Date.now();
+    await this.sbx.setTimeout(this.idleTimeoutMs);
+  }
+
   async execute(command: string): Promise<ExecuteResponse> {
     await this.touch();
     // background + wait：只等 shell 退出，不被命令里起的后台服务拖住（见文件头）。

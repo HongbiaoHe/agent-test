@@ -458,6 +458,77 @@ describe('AgentProcessor 多轮重放', () => {
     expect(uploadCalledAt).toBeLessThan(streamCalledAt);
   });
 
+  it('有沙箱时轮内每 30s 心跳续期、轮结束即停：模型思考期间沙箱不会因闲置 1 分钟而暂停', async () => {
+    jest.useFakeTimers();
+    try {
+      const history = [{ role: 'user', content: { text: '想一想' } }];
+      const prisma = {
+        conversation: {
+          update: jest.fn().mockResolvedValue(makeConv()),
+          updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+          findUniqueOrThrow: jest.fn().mockResolvedValue(makeConv()),
+        },
+        message: {
+          findMany: jest.fn().mockResolvedValue(history),
+          findFirst: jest.fn().mockResolvedValue(null),
+          count: jest.fn().mockResolvedValue(history.length),
+          create: jest.fn().mockResolvedValue({}),
+        },
+      } as unknown as PrismaService;
+      const streamSvc = {
+        publish: jest.fn().mockResolvedValue(undefined),
+      } as unknown as StreamService;
+      const skills = {
+        effectiveSkillsFor: jest.fn().mockResolvedValue([]),
+        getFor: jest.fn().mockResolvedValue(undefined),
+      } as unknown as SkillsService;
+      const queue = {
+        add: jest.fn().mockResolvedValue({}),
+      } as unknown as Queue;
+
+      const fakeSandbox = {
+        id: 'sbx-1',
+        heartbeat: jest.fn().mockResolvedValue(undefined),
+      };
+      (getUserSandbox as jest.Mock).mockResolvedValueOnce(fakeSandbox);
+      // 模型「思考」65s 没有任何工具调用：没有文件/命令操作，只有心跳能续期。
+      // 流里一个事件都不产出（yield* [] 只为满足 require-yield）
+      const fakeAgent = {
+        stream: jest.fn(async () =>
+          (async function* () {
+            await new Promise((r) => setTimeout(r, 65_000));
+            yield* [];
+          })(),
+        ),
+        getState: jest.fn(async () => ({ tasks: [] })),
+      };
+      (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
+
+      const proc = new AgentProcessor(
+        prisma,
+        streamSvc,
+        skills,
+        {},
+        queue,
+        makeMediaService(),
+        new AbortRegistry(),
+        sandboxSettingsMock,
+      );
+      const done = proc.process({
+        data: { conversationId: 'c1', kind: 'run' },
+      } as Job<{ conversationId: string; kind: 'run' }>);
+      await jest.advanceTimersByTimeAsync(65_000);
+      await done;
+      expect(fakeSandbox.heartbeat).toHaveBeenCalledTimes(2);
+
+      // 轮已结束：再过一分钟也不再心跳，沙箱按闲置时长正常暂停
+      await jest.advanceTimersByTimeAsync(60_000);
+      expect(fakeSandbox.heartbeat).toHaveBeenCalledTimes(2);
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
   it('无沙箱时不加载技能：uploadSkillsToSandbox 不被调用', async () => {
     const def: SkillDef = {
       name: 'tvc-director',

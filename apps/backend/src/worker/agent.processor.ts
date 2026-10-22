@@ -41,6 +41,11 @@ interface JobData {
 }
 
 const TIMEOUT_MS = Number(process.env.APPROVAL_TIMEOUT_MS ?? 120000);
+/**
+ * 轮内沙箱心跳间隔：须明显短于最小闲置时长（1 分钟），否则模型思考 / 长命令期间沙箱会在
+ * 轮内暂停（E2B 超时是绝对时长，只在文件/命令操作前续期）。轮结束即停，之后按闲置时长正常暂停。
+ */
+const SANDBOX_HEARTBEAT_MS = 30_000;
 /** ask_user 的服务端兜底超时：前端 60s 倒计时是主路径，这里只兜「页面已关」，须给足思考时间 */
 const ASK_USER_TIMEOUT_MS = Number(process.env.ASK_USER_TIMEOUT_MS ?? 600000);
 
@@ -92,6 +97,8 @@ export class AgentProcessor extends WorkerHost {
     const { signal, dispose } = this.aborts.register(conversationId);
     // 流式文本缓冲提升到 try 外：停止收尾（catch 分支）需要 flush 残余文本
     let buf = '';
+    // 轮内沙箱心跳，finally 统一清掉（正常结束 / 失败 / 停止都不能漏）
+    let heartbeat: NodeJS.Timeout | undefined;
     try {
       // CAS 门：排队期间被 stop 端点置为 stopped 的 job 不起跑。
       // 竞态规则：端点 abort() 返回 true ⇒ 由 worker 发 result（此处或流中 catch）；
@@ -142,6 +149,18 @@ export class AgentProcessor extends WorkerHost {
               : '⚠️ 沙箱创建失败，本轮无命令执行与技能能力。',
           },
         });
+      }
+
+      if (sandbox) {
+        const sb = sandbox;
+        heartbeat = setInterval(() => {
+          // 续期失败只记日志：沙箱可能已被外部暂停 / 删除，下一次工具调用会把错误带给模型
+          sb.heartbeat().catch((e: unknown) => {
+            this.logger.warn(
+              `沙箱心跳失败 conversation=${conversationId}: ${String(e)}`,
+            );
+          });
+        }, SANDBOX_HEARTBEAT_MS);
       }
 
       // ②.5 加载技能：起沙箱后、调 LLM 前把技能写入沙箱盘（${skillsDir}/<name>/...），
@@ -416,6 +435,7 @@ export class AgentProcessor extends WorkerHost {
       });
       await this.persist(conversationId, errorEvt, seq);
     } finally {
+      clearInterval(heartbeat);
       dispose();
     }
   }

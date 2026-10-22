@@ -10,11 +10,12 @@ import {
   SandboxNetworkUnsupportedError,
   toDaytonaEgress,
 } from './network';
-import type {
-  ConnectedSandbox,
-  SandboxLifecycle,
-  SandboxListing,
-  SandboxProvider,
+import {
+  type ConnectedSandbox,
+  DEFAULT_SANDBOX_LIFECYCLE,
+  type SandboxLifecycle,
+  type SandboxListing,
+  type SandboxProvider,
 } from './types';
 
 // ─── 验证过的 API 事实 ─────────────────────────────────────────────
@@ -84,6 +85,8 @@ async function syncLifecycle(
 
 export const daytonaProvider: SandboxProvider = {
   name: 'daytona',
+  // 停机后要从镜像冷启动（远慢于 E2B 恢复），沿用 5 分钟
+  lifecycleDefaults: DEFAULT_SANDBOX_LIFECYCLE,
   supportsAutoDelete: true,
   /**
    * 沙箱级出站策略取决于 Daytona 账户等级：Tier 1/2 组织级策略优先、API 直接拒绝

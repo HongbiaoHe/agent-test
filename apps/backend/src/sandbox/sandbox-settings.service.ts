@@ -2,7 +2,6 @@ import { HttpStatus, Injectable, Logger } from '@nestjs/common';
 import type { Prisma } from '@prisma/client';
 import { pickUserSandbox } from '../agent/sandbox';
 import {
-  DEFAULT_SANDBOX_LIFECYCLE,
   DEFAULT_SANDBOX_NETWORK,
   defaultSandboxProviderName,
   getSandboxProvider,
@@ -279,7 +278,8 @@ export class SandboxSettingsService {
         supportsPublicTrafficToggle: p.supportsPublicTrafficToggle,
       })),
       lifecycle: this.effectiveLifecycle(row),
-      lifecycleDefaults: DEFAULT_SANDBOX_LIFECYCLE,
+      lifecycleDefaults: getSandboxProvider(this.effectiveProvider(row))
+        .lifecycleDefaults,
       network: this.effectiveNetwork(row),
       networkDefaults: DEFAULT_SANDBOX_NETWORK,
       currentPublicTraffic: null,
@@ -299,13 +299,15 @@ export class SandboxSettingsService {
       : defaultSandboxProviderName();
   }
 
+  /** 未设置项取**生效提供方**的默认（E2B 闲置 1 分钟、Daytona 5 分钟）。 */
   private effectiveLifecycle(row: StoredSettings | null): SandboxLifecycle {
+    const defaults = getSandboxProvider(
+      this.effectiveProvider(row),
+    ).lifecycleDefaults;
     return {
-      idleMinutes:
-        row?.sandboxIdleMinutes ?? DEFAULT_SANDBOX_LIFECYCLE.idleMinutes,
+      idleMinutes: row?.sandboxIdleMinutes ?? defaults.idleMinutes,
       autoDeleteMinutes:
-        row?.sandboxAutoDeleteMinutes ??
-        DEFAULT_SANDBOX_LIFECYCLE.autoDeleteMinutes,
+        row?.sandboxAutoDeleteMinutes ?? defaults.autoDeleteMinutes,
     };
   }
 
