@@ -89,6 +89,13 @@ describe('E2BSandbox', () => {
     expect(e2b.id).toBe('e2b-1');
   });
 
+  it('heartbeat 不节流：每次都把到期时间重设为「现在 + 闲置时长」', async () => {
+    await e2b.heartbeat();
+    await e2b.heartbeat();
+    expect(sbx.setTimeout).toHaveBeenCalledTimes(2);
+    expect(sbx.setTimeout).toHaveBeenCalledWith(IDLE);
+  });
+
   it('execute 成功：background 模式跑、等 shell 退出；stdout/stderr 合并、exitCode 透传', async () => {
     sbx.commands.run.mockResolvedValue(
       handle({ result: { exitCode: 0, stdout: 'out', stderr: 'warn' } }),

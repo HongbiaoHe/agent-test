@@ -36,8 +36,12 @@ export const PREVIEW_MAX_LIFETIME_MS = 24 * 60 * 60 * 1000;
 export const PREVIEW_IDLE_TTL_S = 2 * 60 * 60;
 /** 上游地址 / 沙箱句柄缓存：提供方 SDK 查询要 0.5~4s，不能每个资源请求都查一遍。 */
 const CACHE_MS = 5 * 60 * 1000;
-/** 续期节流：同一用户 60s 内最多续一次（续期本身就要调提供方 API）。 */
-const KEEPALIVE_THROTTLE_MS = 60_000;
+/**
+ * 续期节流：同一用户 25s 内最多续一次（续期本身就要调提供方 API）。
+ * 须短于前端弹窗心跳（30s），心跳才不会被节流吞掉；而心跳又须短于最小闲置时长（1 分钟），
+ * 否则到期与下一次心跳撞在同一刻，沙箱会在用户看着预览时暂停。
+ */
+const KEEPALIVE_THROTTLE_MS = 25_000;
 
 const key = (id: string) => `preview:${id}`;
 /** 「同一用户的同一内容」→ 会话 id，用来复用会话。 */

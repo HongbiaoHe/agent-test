@@ -94,13 +94,14 @@ export function SitePreviewDialog({
   const [resetting, setResetting] = useState(false);
 
   // 心跳：弹窗开着就算在用。纯前端应用里点来点去可能一个请求都不发，只靠反代流量续期，
-  // 沙箱会在用户操作中途闲置停机（E2B 实测：端口预览流量不会延长到期时间）
+  // 沙箱会在用户操作中途闲置停机（E2B 实测：端口预览流量不会延长到期时间）。
+  // 间隔须短于最小闲置时长（1 分钟），且长于后端节流（25s）
   const grantId = data?.id;
   useEffect(() => {
     if (!grantId) return;
     const timer = setInterval(() => {
       keepAlivePreview(grantId).catch(() => {});
-    }, 60_000);
+    }, 30_000);
     return () => clearInterval(timer);
   }, [grantId]);
 

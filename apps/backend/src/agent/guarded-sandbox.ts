@@ -336,4 +336,9 @@ export class GuardedSandbox {
   async close(): Promise<void> {
     return this.inner.close();
   }
+
+  /** 轮内心跳透传；提供方不需要（Daytona）即 no-op。 */
+  async heartbeat(): Promise<void> {
+    await this.inner.heartbeat?.();
+  }
 }

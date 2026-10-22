@@ -23,6 +23,11 @@ jest.mock('../agent/sandbox-providers', () => ({
   isSandboxProviderName: (v: string) => v === 'daytona' || v === 'e2b',
   getSandboxProvider: (name: string) => ({
     name,
+    // 与真实提供方一致：E2B 闲置 1 分钟、Daytona 5 分钟
+    lifecycleDefaults:
+      name === 'e2b'
+        ? { idleMinutes: 1, autoDeleteMinutes: 10 }
+        : { idleMinutes: 5, autoDeleteMinutes: 10 },
     isConfigured: () => configured[name],
     supportsEgressControl: egressControl[name],
     applyLifecycle,
@@ -103,6 +108,27 @@ describe('SandboxSettingsService', () => {
       lifecycle: { idleMinutes: 5, autoDeleteMinutes: 10 },
       network: OPEN,
     });
+  });
+
+  it('选了 e2b 且未设闲置 → 取 E2B 自己的默认（1 分钟），设置页默认值也随提供方', async () => {
+    findUnique.mockResolvedValue(row({ sandboxProvider: 'e2b' }));
+    expect(await svc.resolve('u1')).toEqual({
+      provider: 'e2b',
+      lifecycle: { idleMinutes: 1, autoDeleteMinutes: 10 },
+      network: OPEN,
+    });
+    mockPickUserSandbox.mockResolvedValue(null);
+    expect(await svc.getSettings('u1')).toMatchObject({
+      current: 'e2b',
+      lifecycle: { idleMinutes: 1, autoDeleteMinutes: 10 },
+      lifecycleDefaults: { idleMinutes: 1, autoDeleteMinutes: 10 },
+    });
+  });
+
+  it('偏好 e2b 但 key 撤了 → 回退 daytona，默认闲置也跟着回到 5 分钟', async () => {
+    configured.e2b = false;
+    findUnique.mockResolvedValue(row({ sandboxProvider: 'e2b' }));
+    expect((await svc.resolve('u1')).lifecycle.idleMinutes).toBe(5);
   });
 
   it('用户设置生效：e2b + 闲置 30 分钟 + 永不删除', async () => {

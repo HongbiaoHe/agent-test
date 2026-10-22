@@ -43,6 +43,13 @@ export type GuardableSandbox = BaseSandbox & {
   start(timeout?: number): Promise<void>;
   stop(): Promise<void>;
   close(): Promise<void>;
+  /**
+   * 一轮 agent 运行期间由 worker 定期调用（30s），把闲置计时推到「现在 + 闲置时长」。
+   * E2B 的超时是绝对时长、只在文件/命令操作前续期：模型思考或长命令执行超过闲置时长，
+   * 沙箱会在轮内暂停、后续工具调用全部失败——闲置 1 分钟时这是常态而非偶发。
+   * 不需要的提供方（Daytona 由服务端按活动计时）不实现。
+   */
+  heartbeat?(): Promise<void>;
 };
 
 /**
@@ -55,7 +62,10 @@ export interface SandboxLifecycle {
   autoDeleteMinutes: number;
 }
 
-/** 未设置时的默认值（与改造前 Daytona 的写死配置一致）。 */
+/**
+ * 未设置时的默认值（与改造前 Daytona 的写死配置一致）。各提供方的实际默认见
+ * SandboxProvider.lifecycleDefaults（E2B 闲置更短）；这里是无提供方上下文时的兜底。
+ */
 export const DEFAULT_SANDBOX_LIFECYCLE: SandboxLifecycle = {
   idleMinutes: 5,
   autoDeleteMinutes: 10,
@@ -76,6 +86,8 @@ export interface ConnectedSandbox {
 
 export interface SandboxProvider {
   readonly name: SandboxProviderName;
+  /** 用户未设置时该提供方的生命周期默认值（设置页展示、resolve 兜底）。 */
+  readonly lifecycleDefaults: SandboxLifecycle;
   /** 是否支持「停机后自动删除」（E2B 暂停态永久保留，不支持） */
   readonly supportsAutoDelete: boolean;
   /**

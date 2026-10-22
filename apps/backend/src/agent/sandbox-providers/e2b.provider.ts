@@ -19,12 +19,13 @@
 import { Sandbox, type SandboxInfo } from 'e2b';
 import { E2BSandbox } from './e2b-sandbox';
 import { egressSignature, type SandboxNetwork, toE2bEgress } from './network';
-import type {
-  ConnectedSandbox,
-  PortUpstream,
-  SandboxLifecycle,
-  SandboxListing,
-  SandboxProvider,
+import {
+  type ConnectedSandbox,
+  DEFAULT_SANDBOX_LIFECYCLE,
+  type PortUpstream,
+  type SandboxLifecycle,
+  type SandboxListing,
+  type SandboxProvider,
 } from './types';
 
 const idleMs = (lifecycle: SandboxLifecycle) => lifecycle.idleMinutes * 60_000;
@@ -60,6 +61,13 @@ function wrap(sbx: Sandbox, lifecycle: SandboxLifecycle): ConnectedSandbox {
 
 export const e2bProvider: SandboxProvider = {
   name: 'e2b',
+  // 闲置 1 分钟即暂停：E2B 按运行时长计费，恢复只要 ~0.6s，暂停态文件又永久保留，
+  // 停得早几乎没有代价（2026-10-22 按本地 166 轮统计，5→1 分钟省约 43% 运行时长）。
+  // 轮内不会因此中断：worker 每 30s 调 heartbeat 续期。autoDelete 对 E2B 无意义，沿用通用值。
+  lifecycleDefaults: {
+    idleMinutes: 1,
+    autoDeleteMinutes: DEFAULT_SANDBOX_LIFECYCLE.autoDeleteMinutes,
+  },
   // 暂停态永久保留，无「停机后删除」
   supportsAutoDelete: false,
   supportsEgressControl: true,

@@ -15,8 +15,8 @@ import type { SandboxLifecycle } from "@/lib/api";
 
 import { useSandboxSettings } from "../_hooks/use-sandbox-settings";
 
-/** 闲置停机/暂停时长预设（后端允许 1–60）。 */
-const IDLE_PRESETS = [5, 10, 15, 30, 60];
+/** 闲置停机/暂停时长预设（后端允许 1–60；E2B 默认 1、Daytona 默认 5）。 */
+const IDLE_PRESETS = [1, 2, 3, 5, 10, 15, 30, 60];
 /** 停机后自动删除预设（后端允许 -1 或 1–10080）。 */
 const AUTO_DELETE_PRESETS = [10, 30, 60, 1440, 10080, -1];
 
