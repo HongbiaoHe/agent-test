@@ -11,7 +11,7 @@ import { Test } from '@nestjs/testing';
 import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
 import { AigcService } from '../aigc/aigc.service';
 import { PublicUrlService } from '../aigc/public-url.service';
-import { MediaService } from './media.service';
+import { asAssetType, MediaService } from './media.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { ErrorCodes } from '../common/errors/error-code';
@@ -818,6 +818,204 @@ describe('MediaService.createAgentGenerations', () => {
     expect(mockAigc.resolveConfig).toHaveBeenCalledWith('video', config);
     expect(mockQueue.add).toHaveBeenCalledTimes(3);
     expect(mockStream.publish).toHaveBeenCalledTimes(3);
+  });
+});
+
+describe('MediaService：配音参考格式 / 克隆音色 / 我的音色', () => {
+  let service: MediaService;
+  const prepareAgentGeneration = jest.fn();
+
+  beforeEach(async () => {
+    const module = await Test.createTestingModule({
+      providers: [
+        MediaService,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: StreamService, useValue: mockStream },
+        { provide: getQueueToken('media-gen'), useValue: mockQueue },
+        { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        {
+          provide: AigcService,
+          useValue: { ...mockAigc, prepareAgentGeneration },
+        },
+        { provide: PublicUrlService, useValue: mockPublicUrl },
+      ],
+    }).compile();
+    service = module.get(MediaService);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  it('asAssetType：voice 按 audio 处理', () => {
+    expect(asAssetType('voice')).toBe('audio');
+    expect(asAssetType('audio')).toBe('audio');
+    expect(asAssetType('nope')).toBeNull();
+  });
+
+  it('配音引用 .m4a 录音 → issues 提示先 clone_voice，不查目录不建库', async () => {
+    mockPrisma.mediaVersion.findMany.mockResolvedValue([
+      {
+        id: 'up-1',
+        status: 'done',
+        model: 'upload',
+        prompt: 'my-voice.m4a',
+        url: 'https://gcs/u/abc.m4a',
+        generation: { type: 'audio', userId: 'u' },
+      },
+    ]);
+    const r = await service.createAgentGenerations('c', 'u', 'audio', {
+      prompt: '你好',
+      referenceVersionIds: ['up-1'],
+      count: 1,
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.issues[0].message).toContain('clone_voice');
+    expect(prepareAgentGeneration).not.toHaveBeenCalled();
+    expect(mockPrisma.mediaGeneration.create).not.toHaveBeenCalled();
+  });
+
+  it('配音引用克隆产物（voice，.wav）→ 正常交给目录校验，按 audio 计数', async () => {
+    prepareAgentGeneration.mockResolvedValue({ ok: false, issues: [] });
+    mockPrisma.mediaVersion.findMany.mockResolvedValue([
+      {
+        id: 'v-1',
+        status: 'done',
+        model: 'voice-replication-2.0',
+        prompt: '示范文案',
+        url: 'https://gcs/t/demo.wav',
+        generation: { type: 'voice', userId: 'u' },
+      },
+    ]);
+    await service.createAgentGenerations('c', 'u', 'audio', {
+      prompt: '你好',
+      model: 'seed-audio-1.0',
+      referenceVersionIds: ['v-1'],
+      count: 1,
+    });
+    expect(prepareAgentGeneration).toHaveBeenCalledWith(
+      'audio',
+      expect.objectContaining({
+        referenceCounts: { image: 0, video: 0, audio: 1 },
+      }),
+    );
+  });
+
+  it('createVoiceClone：固定 byteplus 模型，源录音进 referenceVersionIds，建 voice 生成位', async () => {
+    const config = {
+      channel: 'byteplus',
+      model: 'voice-replication-2.0',
+      params: { language: '0' },
+    };
+    prepareAgentGeneration.mockResolvedValue({ ok: true, config });
+    mockAigc.resolveConfig.mockResolvedValue(config);
+    mockPrisma.mediaVersion.findMany.mockResolvedValue([
+      {
+        id: 'up-1',
+        status: 'done',
+        generation: { type: 'audio', userId: 'u' },
+      },
+    ]);
+    mockPrisma.mediaGeneration.create.mockResolvedValue({
+      id: 'gen-v',
+      conversationId: 'c',
+      type: 'voice',
+      versions: [{ id: 'ver-v' }],
+    });
+
+    const r = await service.createVoiceClone('c', 'u', {
+      sourceVersionId: 'up-1',
+      language: '0',
+      demoText: '今天天气真不错',
+    });
+
+    expect(r).toEqual({
+      ok: true,
+      config,
+      generation: { generationId: 'gen-v', versionId: 'ver-v' },
+    });
+    expect(prepareAgentGeneration).toHaveBeenCalledWith('voice', {
+      model: 'voice-replication-2.0',
+      channel: 'byteplus',
+      params: { language: '0' },
+      prompt: '今天天气真不错',
+      referenceCounts: { image: 0, video: 0, audio: 0 },
+    });
+    expect(mockPrisma.mediaGeneration.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          type: 'voice',
+          versions: {
+            create: expect.objectContaining({
+              prompt: '今天天气真不错',
+              referenceVersionIds: ['up-1'],
+            }),
+          },
+        }),
+      }),
+    );
+  });
+
+  it('createVoiceClone：源素材不是音频、文案太短 → issues，不建库', async () => {
+    prepareAgentGeneration.mockResolvedValue({ ok: true, config: {} });
+    mockPrisma.mediaVersion.findMany.mockResolvedValue([
+      {
+        id: 'img-1',
+        status: 'done',
+        generation: { type: 'image', userId: 'u' },
+      },
+    ]);
+    const r = await service.createVoiceClone('c', 'u', {
+      sourceVersionId: 'img-1',
+      language: '0',
+      demoText: '你好',
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.issues.map((i) => i.field)).toEqual([
+      'sourceVersionId',
+      'demoText',
+    ]);
+    expect(mockPrisma.mediaGeneration.create).not.toHaveBeenCalled();
+  });
+
+  it('listMyVoices：只查本人 done 的 voice，每个生成位取最新版本', async () => {
+    const at = new Date('2026-10-24T08:00:00Z');
+    mockPrisma.mediaVersion.findMany.mockResolvedValue([
+      {
+        id: 'v-new',
+        generationId: 'g-1',
+        prompt: '新版',
+        params: { language: '0' },
+        createdAt: at,
+      },
+      {
+        id: 'v-old',
+        generationId: 'g-1',
+        prompt: '旧版',
+        params: {},
+        createdAt: at,
+      },
+      {
+        id: 'v-2',
+        generationId: 'g-2',
+        prompt: 'hello there',
+        params: { language: '1' },
+        createdAt: at,
+      },
+    ]);
+    const voices = await service.listMyVoices('u');
+    expect(mockPrisma.mediaVersion.findMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: { status: 'done', generation: { userId: 'u', type: 'voice' } },
+      }),
+    );
+    expect(voices.map((v) => v.versionId)).toEqual(['v-new', 'v-2']);
+    expect(voices[0]).toEqual({
+      versionId: 'v-new',
+      demoText: '新版',
+      language: '0',
+      createdAt: at.toISOString(),
+    });
   });
 });
 

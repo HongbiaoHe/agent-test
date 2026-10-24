@@ -13,6 +13,7 @@ import { StreamService } from '../events/stream.service';
 import { concatVideos } from './video-concat';
 import {
   asAssetType,
+  asMediaType,
   extFromUrl,
   mediaDataDir,
   MediaService,
@@ -322,7 +323,12 @@ export class MediaProcessor extends WorkerHost {
     }
     if (!v.providerTaskId) return null;
     const task = await this.aigc.getTask(v.providerTaskId);
-    return task.output_data?.image_url ?? task.output_data?.video_url ?? null;
+    return (
+      task.output_data?.image_url ??
+      task.output_data?.video_url ??
+      task.output_data?.audio_url ??
+      null
+    );
   }
 
   /**
@@ -355,7 +361,7 @@ export class MediaProcessor extends WorkerHost {
         versionId,
         version.generationId,
         version.generation.conversationId,
-        version.generation.type === 'video' ? 'video' : 'image',
+        asMediaType(version.generation.type),
         '生成超时：aigc 长时间未回结果',
       );
       return;

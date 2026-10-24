@@ -18,7 +18,10 @@ import {
 import { z } from 'zod';
 import { GoogleGenAI } from '@google/genai';
 import { ChatGoogleGenerativeAI } from '@langchain/google-genai';
-import { keepsNativeBlocks, stripNonPortableBlocks } from './portable-content';
+import {
+  keepsNativeBlocks,
+  stripNonPortableBlocks,
+} from '../agent/portable-content';
 import {
   CANVAS_SKILLS_PROMPT,
   buildSkillsListingUpdate,

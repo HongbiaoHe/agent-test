@@ -11,6 +11,7 @@ import {
   buildTaskBody,
   defaultConfig,
   derivedDims,
+  inRange,
   sanitizeParams,
   taskPath,
   toCatalog,
@@ -390,5 +391,133 @@ describe('videoRefRole / taskPath', () => {
   it('接单路径按类型', () => {
     expect(taskPath('image')).toBe('/tasks/images');
     expect(taskPath('video')).toBe('/tasks/videos');
+    expect(taskPath('audio')).toBe('/tasks/audios');
+    expect(taskPath('voice')).toBe('/tasks/voices');
+  });
+});
+
+/** 照 dev 目录裁剪的 seed-audio-1.0（2026-10-24 实测 GET /channels?type=audio）。 */
+const seedAudio: AigcModel = {
+  model_alias: 'seed-audio-1.0',
+  type: 'audio',
+  max_prompt: 3000,
+  image_input_number: 1,
+  video_input_number: 0,
+  audio_input_number: 3,
+  params: [
+    {
+      param_type: 'format',
+      input: 'optional',
+      options: [
+        { label: 'MP3', value: 'mp3' },
+        { label: 'WAV', value: 'wav' },
+      ],
+    },
+    {
+      param_type: 'speech_rate',
+      input: 'optional',
+      value_type: 'range',
+      options: [],
+      range: { min: -50, max: 100, step: 1 },
+    },
+    {
+      param_type: 'enable_subtitle',
+      input: 'optional',
+      value_type: 'boolean',
+      options: [],
+    },
+  ],
+  constraints: [],
+};
+
+describe('区间维度（音频）', () => {
+  const speed = {
+    param_type: 'speed',
+    value_type: 'range',
+    options: [],
+    range: { min: 0.5, max: 2, step: 0.1 },
+  };
+
+  it('inRange：区间内且符合步长才算合法（浮点步长有容差）', () => {
+    expect(inRange(speed, '1.2')).toBe(true);
+    expect(inRange(speed, '0.5')).toBe(true);
+    expect(inRange(speed, '2')).toBe(true);
+    expect(inRange(speed, '1.25')).toBe(false);
+    expect(inRange(speed, '2.1')).toBe(false);
+    expect(inRange(speed, 'fast')).toBe(false);
+    expect(inRange(speed, '')).toBe(false);
+  });
+
+  it('sanitizeParams 保留合法的区间值、丢掉越界值与布尔维度', () => {
+    expect(
+      sanitizeParams(seedAudio, {
+        format: 'mp3',
+        speech_rate: '-13',
+        enable_subtitle: 'true',
+      }),
+    ).toEqual({ format: 'mp3', speech_rate: '-13' });
+    expect(sanitizeParams(seedAudio, { speech_rate: '200' })).toEqual({});
+  });
+});
+
+describe('buildTaskBody：音频 / 克隆音色', () => {
+  it('audio：正文是 text_prompt，档位原样传字符串，参考音频进 reference_resources', () => {
+    expect(
+      buildTaskBody({
+        type: 'audio',
+        prompt: '今天天气真不错',
+        config: {
+          channel: 'byteplus',
+          model: 'seed-audio-1.0',
+          params: { format: 'mp3', speech_rate: '-13' },
+        },
+        references: [
+          { type: 'audio', role: 'reference', url: 'https://x/v.wav' },
+        ],
+      }),
+    ).toEqual({
+      text_prompt: '今天天气真不错',
+      channel: 'byteplus',
+      model: 'seed-audio-1.0',
+      format: 'mp3',
+      speech_rate: '-13',
+      reference_resources: [
+        { type: 'audio', role: 'reference', url: 'https://x/v.wav' },
+      ],
+    });
+  });
+
+  it('voice：正文是 demo_text，源录音进 source_audio_url（不出现 reference_resources）', () => {
+    expect(
+      buildTaskBody({
+        type: 'voice',
+        prompt: '你好，这是我的声音',
+        config: {
+          channel: 'byteplus',
+          model: 'voice-replication-2.0',
+          params: { language: '0' },
+        },
+        references: [
+          { type: 'audio', role: 'reference', url: 'https://x/me.m4a' },
+        ],
+      }),
+    ).toEqual({
+      demo_text: '你好，这是我的声音',
+      channel: 'byteplus',
+      model: 'voice-replication-2.0',
+      language: '0',
+      source_audio_url: 'https://x/me.m4a',
+    });
+  });
+
+  it('音频维度不会被图片 / 视频提交（同名维度也不映射）', () => {
+    expect(
+      buildTaskBody({
+        type: 'image',
+        prompt: 'p',
+        config: { channel: 'c', model: 'm', params: { format: 'png' } },
+        references: [],
+      }),
+    ).toEqual({ prompt: 'p', channel: 'c', model: 'm' });
   });
 });

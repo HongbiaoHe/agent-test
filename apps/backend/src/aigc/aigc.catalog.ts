@@ -21,6 +21,27 @@ export function selectableParams(model: AigcModel): AigcModelParam[] {
   );
 }
 
+/** 区间维度（value_type=range 且目录给了区间）：只有音频模型有，对话 agent 的配音会传。 */
+export function rangeParams(model: AigcModel): AigcModelParam[] {
+  return model.params.filter(
+    (p) => p.input !== 'derived' && p.value_type === 'range' && p.range,
+  );
+}
+
+/**
+ * 取值是否落在区间维度内：数值、在 [min,max] 内、且是步长的整数倍（从 min 起算）。
+ * 步长按浮点容差比对：0.01 这类步长做除法会有 1e-15 量级的误差。
+ */
+export function inRange(param: AigcModelParam, value: string): boolean {
+  const range = param.range;
+  if (!range || value.trim() === '') return false;
+  const v = Number(value);
+  if (!Number.isFinite(v) || v < range.min || v > range.max) return false;
+  if (!range.step) return true;
+  const steps = (v - range.min) / range.step;
+  return Math.abs(steps - Math.round(steps)) < 1e-6;
+}
+
 /** 在目录里按 (channel, alias) 找模型；找不到返回 null。 */
 export function findModel(
   channels: readonly AigcChannel[],
@@ -128,6 +149,11 @@ export function sanitizeParams(
     if (valid) chosen[p.param_type] = value;
     else if (p.input === 'required') chosen[p.param_type] = p.options[0].value;
   }
+  // 区间维度：合法就留，不合法丢掉交给渠道缺省（agent 侧已严格校验过，这里只是兜底）
+  for (const p of rangeParams(model)) {
+    const value = requested[p.param_type];
+    if (value !== undefined && inRange(p, value)) chosen[p.param_type] = value;
+  }
 
   for (let pass = 0; pass < 3; pass++) {
     const current = { ...chosen, ...derived };
@@ -211,6 +237,41 @@ const PARAM_FIELDS: Record<
   quality: { field: 'quality', cast: (v) => v },
 };
 
+/**
+ * 音频 / 音色的档位字段（上游 create-audio-task / create-voice-task DTO）：字段名即 param_type，
+ * 取值**一律原样传字符串**（区间维度也是 "-13" 而不是 -13，上游明确要求）。
+ * 单独一张表、只给 audio / voice 用：image / video 的模型若恰好有同名维度（如 format），
+ * 不能因为这里加了映射就开始被提交（白名单多一个字段整单被拒，§5.10 ④）。
+ */
+const AUDIO_PARAM_FIELDS: Record<
+  string,
+  { field: string; cast: (v: string) => string | number | boolean }
+> = Object.fromEntries(
+  [
+    'format',
+    'sample_rate',
+    'speech_rate',
+    'loudness_rate',
+    'pitch_rate',
+    'voice_id',
+    'speed',
+    'volume',
+    'emotion',
+    'bitrate',
+    'audio_channel',
+    'language_boost',
+    'language',
+  ].map((dim) => [dim, { field: dim, cast: (v: string) => v }]),
+);
+
+/** 各类型的正文字段名：audio 是 text_prompt、byteplus voice 是 demo_text（上游 DTO）。 */
+const PROMPT_FIELD: Record<AigcMediaType, string> = {
+  image: 'prompt',
+  video: 'prompt',
+  audio: 'text_prompt',
+  voice: 'demo_text',
+};
+
 export interface AigcGenerationRequest {
   type: AigcMediaType;
   prompt: string;
@@ -225,23 +286,32 @@ export interface AigcGenerationRequest {
  * 拼接单请求体。档位参数不原样铺开——每个维度对应的字段名与类型都要按文档映射
  * （`duration` → `duration_seconds` 且是整数，`with_audio` 是布尔），
  * 认不出的维度直接丢掉：请求体是严格字段白名单，多传一个字段整单就被拒（§5.10 ④）。
+ *
+ * voice（克隆音色）的源录音不走 reference_resources（传了会被白名单拒），
+ * 而是取第一条参考的地址放进独立字段 source_audio_url。
  */
 export function buildTaskBody(
   req: AigcGenerationRequest,
 ): Record<string, unknown> {
   const body: Record<string, unknown> = {
-    prompt: req.prompt,
+    [PROMPT_FIELD[req.type]]: req.prompt,
     channel: req.config.channel,
     model: req.config.model,
   };
+  const fields =
+    req.type === 'audio' || req.type === 'voice'
+      ? AUDIO_PARAM_FIELDS
+      : PARAM_FIELDS;
   for (const [dim, value] of Object.entries(req.config.params)) {
-    const mapped = PARAM_FIELDS[dim];
+    const mapped = fields[dim];
     if (!mapped) continue;
     const cast = mapped.cast(value);
     if (typeof cast === 'number' && !Number.isFinite(cast)) continue;
     body[mapped.field] = cast;
   }
-  if (req.references.length > 0) {
+  if (req.type === 'voice') {
+    if (req.references[0]) body.source_audio_url = req.references[0].url;
+  } else if (req.references.length > 0) {
     body.reference_resources = req.references.map((r) => ({
       type: r.type,
       role: r.role,
@@ -255,7 +325,14 @@ export function buildTaskBody(
   return body;
 }
 
-/** 接单路径：image → /tasks/images，video → /tasks/videos。 */
+const TASK_PATHS: Record<AigcMediaType, string> = {
+  image: '/tasks/images',
+  video: '/tasks/videos',
+  audio: '/tasks/audios',
+  voice: '/tasks/voices',
+};
+
+/** 接单路径：image → /tasks/images，video → /tasks/videos，audio → /tasks/audios，voice → /tasks/voices。 */
 export function taskPath(type: AigcMediaType): string {
-  return type === 'image' ? '/tasks/images' : '/tasks/videos';
+  return TASK_PATHS[type];
 }

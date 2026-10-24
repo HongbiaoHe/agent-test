@@ -3,6 +3,7 @@ import { createDeepAgent, StateBackend } from 'deepagents';
 import { createMiddleware } from 'langchain';
 import { z } from 'zod';
 import { injectActivePlan, injectSkillReadPolicy } from './plan-injection';
+import { keepsNativeBlocks, stripNonPortableBlocks } from './portable-content';
 import { type ThinkingLevel, thinkingModelParams } from './thinking-level';
 import { resolveModelName } from './models';
 import { askUserTool } from './tools/ask-user.tool';
@@ -52,6 +53,11 @@ SKILL.md 只是技能的入口索引，读完它不等于加载完毕。动手�
 5) 工具立即返回 generations（异步生成），告知用户卡片会实时更新进度与结果即可——不要等待、轮询或重复调用；
 6) 用户要求重新生成时同样先确认提示词再调用。
 可用 referenceVersionIds 引用此前生成或用户上传的素材（图生图、视频首帧 / 参考图，部分视频模型还收参考视频 / 音频）；引用键即工具结果或资产清单里的 versionId（cuid 格式），不存在就先生成图片。
+
+## 配音 / 克隆音色
+配音（generate_audio）同样先把要念的文本展示给用户、确认后再调用；只有语音合成，没有音效 / 配乐能力，用户要音效时如实说明。
+克隆音色流程：用户上传一段 10–60 秒的清晰录音 → 和用户确认录音语种与一句 4–80 字的 demo 文案 → 调用 clone_voice → 产物（一段用该音色念 demo 文案的音频）完成后，用 generate_audio（model=seed-audio-1.0，referenceVersionIds=[克隆产物的 versionId]）为任意文本配音。
+用户克隆过的音色在 list_media_models(type=audio) 的 myVoices 里，可跨会话直接复用，不必重复克隆。用户只想「照这段录音的声音念一句」时，也可直接把录音（mp3 / wav）作为 seed-audio-1.0 的参考音频。
 
 ## 用户上传的附件
 用户消息末尾的「[附件]」列出本条消息随附上传的文件（类型、versionId、文件名）。它们可作为生成素材经 referenceVersionIds 引用；你看不到文件内容，不要臆测画面或声音，需要时请用户描述。用户说「这张图 / 这段视频」通常就是指本条消息的附件；只发附件没说要做什么时，先问用户想用它做什么。`;
@@ -233,8 +239,26 @@ export async function buildAgent(
   const backend =
     (opts.defaultBackend as StateBackend | undefined) ?? new StateBackend();
 
-  // 中间件顺序即 recency：计划延续 → 技能必读规则（离模型最近）。
-  const middleware = [planContinuationMiddleware, skillReadPolicyMiddleware];
+  // 内容块净化（与画布同一套，见 portable-content.ts）：非 Gemini 模型收不下 checkpoint 里的
+  // provider 原生块（换过模型的 thinking / functionCall）与工具结果里的 image 块（read_file 读图片），
+  // 会整轮 4xx 且每轮重放、会话永久跑不动。只改发给模型的那一份，不写回 state。
+  const contentSanitizer = keepsNativeBlocks(resolveModelName(opts.model))
+    ? null
+    : createMiddleware({
+        name: 'portableContentMiddleware',
+        wrapModelCall: (request, handler) =>
+          handler({
+            ...request,
+            messages: stripNonPortableBlocks(request.messages),
+          }),
+      });
+
+  // 中间件顺序即 recency：计划延续 → 技能必读规则（离模型最近）；净化排最内层，作用于最终发出的消息。
+  const middleware = [
+    planContinuationMiddleware,
+    skillReadPolicyMiddleware,
+    ...(contentSanitizer ? [contentSanitizer] : []),
+  ];
 
   return createDeepAgent({
     model,

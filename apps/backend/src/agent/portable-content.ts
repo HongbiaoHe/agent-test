@@ -1,6 +1,7 @@
 import {
   AIMessage,
   isAIMessage,
+  ToolMessage,
   type BaseMessage,
 } from '@langchain/core/messages';
 
@@ -21,6 +22,11 @@ import {
  * 处理：**按白名单**而不是黑名单——报错自己给出了对端接受的全集（text / image_url / file），
  * 其余一律剥掉。黑名单每遇到一种新块就要补一次，白名单一次到位。
  * 只改发给模型的那一份（wrapModelCall 不写回 state），checkpoint 与前端展示的思考过程都不受影响。
+ *
+ * 工具结果同理（2026-10-24 Spark 实测）：deepagents 的 read_file 读图片时返回标准内容块
+ * `{ type: 'image', mimeType, data }`，DeepSeek 端报 `unknown variant 'image'`，且这条 ToolMessage
+ * 存进 checkpoint 后每轮重放、会话永久跑不动。工具结果里的非白名单块换成一句文字占位
+ * （而不是直接剥掉）：模型得知道「读到的是张图、只是看不了」，否则会以为文件是空的。
  */
 
 /** OpenAI 兼容端在消息内容里接受的块类型（取自它自己的报错：expected one of …）。 */
@@ -59,9 +65,53 @@ function isPortableBlock(block: unknown): boolean {
  */
 export function stripNonPortableBlocks(messages: BaseMessage[]): BaseMessage[] {
   return messages.map((m) => {
+    if (ToolMessage.isInstance(m)) return placeholderToolBlocks(m);
     if (!isAIMessage(m) || !Array.isArray(m.content)) return m;
     const kept = m.content.filter(isPortableBlock);
     if (kept.length === m.content.length) return m;
     return new AIMessage({ ...m, content: kept.length > 0 ? kept : '' });
+  });
+}
+
+/** 一个对端认不得的块换成的文字说明（图片带上 MIME，让模型知道读到的是什么）。 */
+function placeholderText(block: unknown): string {
+  const type =
+    typeof block === 'object' &&
+    block !== null &&
+    'type' in block &&
+    typeof block.type === 'string'
+      ? block.type
+      : 'unknown';
+  if (type === 'image') {
+    const mime =
+      typeof block === 'object' &&
+      block !== null &&
+      'mimeType' in block &&
+      typeof block.mimeType === 'string'
+        ? block.mimeType
+        : 'image';
+    return `[工具返回了一张图片（${mime}），当前模型无法查看图片，已省略图片内容]`;
+  }
+  return `[工具返回了 ${type} 类型的内容，当前模型无法处理，已省略]`;
+}
+
+/**
+ * 工具结果里的非白名单块换成文字占位。全部变成文字时合并成一个字符串：
+ * 部分 OpenAI 兼容端对 tool 消息只认字符串 content，字符串最稳。
+ * 没有杂块的原样返回同一个对象（同 AI 消息的处理，保持前缀稳定）。
+ */
+function placeholderToolBlocks(m: ToolMessage): BaseMessage {
+  if (!Array.isArray(m.content) || m.content.every(isPortableBlock)) return m;
+  const blocks = m.content.map((b) =>
+    isPortableBlock(b)
+      ? b
+      : { type: 'text' as const, text: placeholderText(b) },
+  );
+  const texts = blocks.flatMap((b) =>
+    b.type === 'text' && typeof b.text === 'string' ? [b.text] : [],
+  );
+  return new ToolMessage({
+    ...m,
+    content: texts.length === blocks.length ? texts.join('\n') : blocks,
   });
 }

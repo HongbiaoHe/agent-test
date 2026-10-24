@@ -434,9 +434,10 @@ export function keepAlivePreview(id: string): Promise<{ ok: true }> {
   return request<{ ok: true }>(`/preview/${id}/keepalive`, { method: "POST" });
 }
 
-// ——— 生图/生视频 媒体 ———
+// ——— 生图/生视频/配音 媒体 ———
 
-export type MediaType = "image" | "video";
+/** audio = 配音（generate_audio）；voice = 克隆音色（clone_voice，产物也是一段音频）。 */
+export type MediaType = "image" | "video" | "audio" | "voice";
 /** cancelled = 用户停止 / aigc 侧取消（与生成失败分开展示）。 */
 export type MediaStatus = "queued" | "generating" | "done" | "failed" | "cancelled";
 
@@ -460,8 +461,8 @@ export interface MediaVersion {
 /** 一个生成位 = 对话里的一张媒体卡片。versions 按 createdAt desc（versions[0] 为最新版）。 */
 export interface MediaGeneration {
   id: string;
-  /** audio 只出现在用户上传的素材上（不会挂成卡片，卡片只渲染生成工具产出的 generationId） */
-  type: MediaType | "audio";
+  /** 用户上传的音频也是 audio（不会挂成卡片，卡片只渲染生成工具产出的 generationId） */
+  type: MediaType;
   createdAt: string;
   versions: MediaVersion[];
 }

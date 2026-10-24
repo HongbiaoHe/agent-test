@@ -27,9 +27,13 @@ describe('createMediaTools', () => {
     ],
   };
 
-  function buildSvc(createAgentGenerations: jest.Mock) {
+  function buildSvc(
+    createAgentGenerations: jest.Mock,
+    createVoiceClone: jest.Mock = jest.fn(),
+  ) {
     const svc = {
       createAgentGenerations,
+      createVoiceClone,
       agentModelCatalog: jest
         .fn()
         .mockResolvedValue({ type: 'image', note: 'n', models: [] }),
@@ -39,15 +43,84 @@ describe('createMediaTools', () => {
   }
 
   function tools(svc: MediaService) {
-    const [list, image, video] = createMediaTools(svc, ctx);
-    return { list, image, video };
+    const [list, image, video, audio, clone] = createMediaTools(svc, ctx);
+    return { list, image, video, audio, clone };
   }
 
-  it('list_media_models 透传 agentModelCatalog(type)', async () => {
+  it('list_media_models 透传 agentModelCatalog(type, userId)', async () => {
     const svc = buildSvc(jest.fn());
     const out = await tools(svc).list.invoke({ type: 'image' });
     expect(JSON.parse(out)).toEqual({ type: 'image', note: 'n', models: [] });
-    expect(svc.agentModelCatalog).toHaveBeenCalledWith('image');
+    expect(svc.agentModelCatalog).toHaveBeenCalledWith('image', 'user-1');
+  });
+
+  it('generate_audio：类型为 audio，透传音频档位与参考音色', async () => {
+    const svc = buildSvc(jest.fn().mockResolvedValue(okResult));
+    await tools(svc).audio.invoke({
+      prompt: '欢迎收听',
+      model: 'seed-audio-1.0',
+      params: { speech_rate: '-13', format: 'mp3' },
+      referenceVersionIds: ['voice-ver'],
+    });
+    expect(svc.createAgentGenerations).toHaveBeenCalledWith(
+      'conv-1',
+      'user-1',
+      'audio',
+      {
+        prompt: '欢迎收听',
+        model: 'seed-audio-1.0',
+        params: { speech_rate: '-13', format: 'mp3' },
+        referenceVersionIds: ['voice-ver'],
+        count: 1,
+      },
+    );
+  });
+
+  it('clone_voice：透传源录音/语言/文案，返回 queued + 单个 generation', async () => {
+    const createVoiceClone = jest.fn().mockResolvedValue({
+      ok: true,
+      config: {
+        channel: 'byteplus',
+        model: 'voice-replication-2.0',
+        params: { language: '0' },
+      },
+      generation: { generationId: 'gen-v', versionId: 'ver-v' },
+    });
+    const svc = buildSvc(jest.fn(), createVoiceClone);
+    const parsed = JSON.parse(
+      await tools(svc).clone.invoke({
+        sourceVersionId: 'upload-1',
+        language: '0',
+        demoText: '今天天气真不错',
+      }),
+    );
+    expect(createVoiceClone).toHaveBeenCalledWith('conv-1', 'user-1', {
+      sourceVersionId: 'upload-1',
+      language: '0',
+      demoText: '今天天气真不错',
+    });
+    expect(parsed.status).toBe('queued');
+    expect(parsed.generations).toEqual([
+      { generationId: 'gen-v', versionId: 'ver-v' },
+    ]);
+    expect(parsed.next).toContain('seed-audio-1.0');
+  });
+
+  it('clone_voice 校验不通过 → invalid_params + issues', async () => {
+    const issues = [{ field: 'demoText', message: 'demo 文案至少 4 个字符' }];
+    const svc = buildSvc(
+      jest.fn(),
+      jest.fn().mockResolvedValue({ ok: false, issues }),
+    );
+    const parsed = JSON.parse(
+      await tools(svc).clone.invoke({
+        sourceVersionId: 'upload-1',
+        language: '0',
+        demoText: '你好',
+      }),
+    );
+    expect(parsed.error).toBe('invalid_params');
+    expect(parsed.issues).toEqual(issues);
   });
 
   it('generate_image：透传模型/参数/数量，返回 queued + generations', async () => {

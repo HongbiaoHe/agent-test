@@ -1,4 +1,10 @@
-import { derivedDims, selectableParams, videoRefRole } from './aigc.catalog';
+import {
+  derivedDims,
+  inRange,
+  rangeParams,
+  selectableParams,
+  videoRefRole,
+} from './aigc.catalog';
 import type {
   AigcChannel,
   AigcConstraint,
@@ -44,12 +50,21 @@ const MODEL_HINTS: Record<string, string> = {
   'veo-3.1': '电影感画面，原生音频；1080p/4k 或带参考图时只能 8 秒',
   'veo-3.1-fast': 'Veo 3.1 快速版；1080p/4k 或带参考图时只能 8 秒',
   'gemini-omni-flash': '快速生成，720p，4–10 秒',
+  'seed-audio-1.0':
+    '配音；可传 1–3 段参考音频照该音色念（如 clone_voice 的产物），或 1 张参考图按画面配旁白（图音不可混传）；中文单次约 400 字内',
+  'minimax-speech-2.8-hd':
+    '配音；17 个预置音色（voice_id 必填），可选情感 emotion 与语言增强；不收参考音频',
 };
 
-/** 一个参数维度在 agent 眼里的样子：是否必填 + 可传的原值。 */
+/**
+ * 一个参数维度在 agent 眼里的样子：是否必填 + 可传的原值（枚举维度给 values，
+ * 区间维度给 range=[min,max] 与 step）。
+ */
 export interface AgentParamSpec {
   required: boolean;
-  values: string[];
+  values?: string[];
+  range?: [number, number];
+  step?: number;
 }
 
 export interface AgentModelView {
@@ -115,7 +130,14 @@ export function describeConstraint(rule: AigcConstraint): string {
   return `${cond}：${effects.join('；')}`;
 }
 
-/** 目录 → 给 agent 看的精简视图（去掉 derived / range 维度与展示用 label，省 token）。 */
+/** 给 agent 的参数说明：区间维度只有音频模型有，只在 audio 目录里讲。 */
+const CATALOG_NOTE =
+  'params 只能传 values 里的原值（如 gpt-image 的画幅写 16x9 而不是 16:9；duration=-1 表示自动）。未传的必填参数取第一个值，可选参数不传则用渠道缺省。';
+const AUDIO_CATALOG_NOTE =
+  CATALOG_NOTE +
+  '带 range 的维度（语速 / 音量 / 音调）传区间内、符合 step 的数值字符串，如 "-13"、"1.2"。';
+
+/** 目录 → 给 agent 看的精简视图（去掉 derived 维度与展示用 label，省 token）。 */
 export function toAgentCatalog(
   type: AigcMediaType,
   channels: readonly AigcChannel[],
@@ -128,6 +150,14 @@ export function toAgentCatalog(
         params[p.param_type] = {
           required: p.input === 'required',
           values: p.options.map((o) => o.value),
+        };
+      }
+      for (const p of rangeParams(m)) {
+        if (!p.range) continue;
+        params[p.param_type] = {
+          required: p.input === 'required',
+          range: [p.range.min, p.range.max],
+          ...(p.range.step ? { step: p.range.step } : {}),
         };
       }
       const view: AgentModelView = {
@@ -155,7 +185,7 @@ export function toAgentCatalog(
   }
   return {
     type,
-    note: 'params 只能传 values 里的原值（如 gpt-image 的画幅写 16x9 而不是 16:9；duration=-1 表示自动）。未传的必填参数取第一个值，可选参数不传则用渠道缺省。',
+    note: type === 'audio' ? AUDIO_CATALOG_NOTE : CATALOG_NOTE,
     models,
   };
 }
@@ -232,6 +262,35 @@ export function agentDerivedDims(
   return derivedDims(refs);
 }
 
+/**
+ * 克隆音色固定用 byteplus 的 voice-replication-2.0：产物是一段「用复刻音色念 demo 文案」的音频，
+ * 拿去给 seed-audio 当参考音色。voice 目录里的 fal minimax-voice-clone 产物是音色 ID（另一套用法、
+ * 每次 $1.5 且 7 天不用即删），本期不用，所以不让 agent 选模型。
+ */
+export const VOICE_CLONE_MODEL = {
+  channel: 'byteplus',
+  model: 'voice-replication-2.0',
+} as const;
+
+/** byteplus 克隆的 demo 文案下限（上游硬限制 4–80 字符；上限取目录 max_prompt）。 */
+export const VOICE_DEMO_MIN_CHARS = 4;
+
+/** audio 任务的参考素材规则（上游接单硬约束）：参考图与参考音频是两种互斥模式，不可混传。 */
+export function audioReferenceIssues(
+  counts: ReferenceCounts,
+): AgentParamIssue[] {
+  if (counts.image > 0 && counts.audio > 0) {
+    return [
+      {
+        field: 'referenceVersionIds',
+        message:
+          '配音的参考图与参考音频不能混传：要仿音色只传音频，要按画面配旁白只传 1 张图',
+      },
+    ];
+  }
+  return [];
+}
+
 function ruleHits(rule: AigcConstraint, current: Record<string, string>) {
   return Object.entries(rule.when).every(([dim, values]) => {
     const v = current[dim];
@@ -257,12 +316,30 @@ export function validateAgentRequest(
   | { ok: false; issues: AgentParamIssue[] } {
   const issues: AgentParamIssue[] = [];
   const dims = selectableParams(model);
+  const ranges = rangeParams(model);
   const derivedNames = new Set(
     model.params.filter((p) => p.input === 'derived').map((p) => p.param_type),
   );
 
   const explicit: Record<string, string> = {};
+  // 区间维度不参与 constraints（目录里的约束只针对枚举维度），校验通过直接并入结果
+  const rangeValues: Record<string, string> = {};
   for (const [dim, value] of Object.entries(req.params)) {
+    const ranged = ranges.find((d) => d.param_type === dim);
+    if (ranged?.range) {
+      if (inRange(ranged, value)) {
+        rangeValues[dim] = value;
+      } else {
+        const { min, max, step } = ranged.range;
+        issues.push({
+          field: `params.${dim}`,
+          value,
+          message: `${model.model_alias} 的 ${dim} 须是 ${min}~${max} 之间${step ? `、步长 ${step} ` : ''}的数值`,
+          allowed: [`${min}~${max}`],
+        });
+      }
+      continue;
+    }
     const p = dims.find((d) => d.param_type === dim);
     if (!p) {
       issues.push({
@@ -271,7 +348,7 @@ export function validateAgentRequest(
         message: derivedNames.has(dim)
           ? `${dim} 由服务端按参考资源自动推导，不能传`
           : `${model.model_alias} 不支持参数 ${dim}`,
-        allowed: dims.map((d) => d.param_type),
+        allowed: [...dims, ...ranges].map((d) => d.param_type),
       });
       continue;
     }
@@ -365,5 +442,7 @@ export function validateAgentRequest(
     });
   }
 
-  return issues.length ? { ok: false, issues } : { ok: true, params: chosen };
+  return issues.length
+    ? { ok: false, issues }
+    : { ok: true, params: { ...chosen, ...rangeValues } };
 }

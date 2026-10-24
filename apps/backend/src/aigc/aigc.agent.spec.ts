@@ -1,5 +1,6 @@
 import {
   agentDerivedDims,
+  audioReferenceIssues,
   describeConstraint,
   NO_REFERENCES,
   resolveAgentModel,
@@ -335,5 +336,89 @@ describe('toAgentCatalog', () => {
     expect(describeConstraint(minimax.constraints[0])).toBe(
       '使用首尾帧：不能传 aspect_ratio',
     );
+  });
+});
+
+/** 夹具取自 2026-10-24 实测 aigc 目录 GET /channels?type=audio（只保留用到的维度）。 */
+const minimaxSpeech = aigcModelSchema.parse({
+  model_alias: 'minimax-speech-2.8-hd',
+  type: 'audio',
+  max_prompt: 10000,
+  params: [
+    {
+      param_type: 'voice_id',
+      input: 'required',
+      options: [
+        { label: '智慧女声', value: 'Wise_Woman' },
+        { label: '沉静女声', value: 'Calm_Woman' },
+      ],
+    },
+    {
+      param_type: 'speed',
+      input: 'optional',
+      value_type: 'range',
+      options: [],
+      range: { min: 0.5, max: 2, step: 0.1 },
+    },
+    {
+      param_type: 'english_normalization',
+      input: 'optional',
+      value_type: 'boolean',
+      options: [],
+    },
+  ],
+});
+
+describe('音频：区间维度与参考规则', () => {
+  const base = { prompt: '你好', referenceCounts: NO_REFERENCES, derived: {} };
+
+  it('合法区间值并入结果，必填 voice_id 自动补第一个', () => {
+    expect(
+      validateAgentRequest(minimaxSpeech, {
+        ...base,
+        params: { speed: '1.2' },
+      }),
+    ).toEqual({ ok: true, params: { voice_id: 'Wise_Woman', speed: '1.2' } });
+  });
+
+  it('区间越界或不合步长 → 报错并给出区间', () => {
+    const r = validateAgentRequest(minimaxSpeech, {
+      ...base,
+      params: { speed: '3' },
+    });
+    expect(r.ok).toBe(false);
+    if (r.ok) return;
+    expect(r.issues[0]).toMatchObject({
+      field: 'params.speed',
+      value: '3',
+      allowed: ['0.5~2'],
+    });
+    expect(r.issues[0].message).toContain('步长 0.1');
+  });
+
+  it('minimax 不收参考音频 → 报错', () => {
+    const r = validateAgentRequest(minimaxSpeech, {
+      ...base,
+      params: {},
+      referenceCounts: refs(0, 0, 1),
+    });
+    expect(r.ok).toBe(false);
+  });
+
+  it('toAgentCatalog：区间维度给 range/step，布尔维度不出现', () => {
+    const view = toAgentCatalog('audio', [
+      { channel: 'fal', models: [minimaxSpeech] },
+    ]);
+    expect(view.models[0].params).toEqual({
+      voice_id: { required: true, values: ['Wise_Woman', 'Calm_Woman'] },
+      speed: { required: false, range: [0.5, 2], step: 0.1 },
+    });
+    expect(view.note).toContain('range');
+  });
+
+  it('audioReferenceIssues：图音混传报错，单类不报', () => {
+    expect(audioReferenceIssues(refs(1, 0, 1))).toHaveLength(1);
+    expect(audioReferenceIssues(refs(0, 0, 3))).toEqual([]);
+    expect(audioReferenceIssues(refs(1))).toEqual([]);
   });
 });

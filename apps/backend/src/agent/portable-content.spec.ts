@@ -99,3 +99,63 @@ describe('stripNonPortableBlocks', () => {
     ]);
   });
 });
+
+describe('stripNonPortableBlocks：工具结果里的图片', () => {
+  /** deepagents read_file 读图片时的返回形状（2026-10-24 Spark 会话实测落库内容）。 */
+  const imageResult = () =>
+    new ToolMessage({
+      content: [{ type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' }],
+      tool_call_id: 'call_1',
+      name: 'read_file',
+    });
+
+  it('image 块换成带 MIME 的文字占位，合并成字符串，保留 tool_call_id / name', () => {
+    const [out] = stripNonPortableBlocks([imageResult()]);
+
+    expect(out.content).toBe(
+      '[工具返回了一张图片（image/png），当前模型无法查看图片，已省略图片内容]',
+    );
+    expect(out).toBeInstanceOf(ToolMessage);
+    expect((out as ToolMessage).tool_call_id).toBe('call_1');
+    expect(out.name).toBe('read_file');
+  });
+
+  it('文字与图片混合：按原顺序合并成一个字符串', () => {
+    const tool = new ToolMessage({
+      content: [
+        { type: 'text', text: '截图如下' },
+        { type: 'image', mimeType: 'image/jpeg', data: 'x' },
+      ],
+      tool_call_id: 'call_2',
+    });
+
+    expect(stripNonPortableBlocks([tool])[0].content).toBe(
+      '截图如下\n[工具返回了一张图片（image/jpeg），当前模型无法查看图片，已省略图片内容]',
+    );
+  });
+
+  it('其它认不得的块同样占位（白名单之外一律处理）', () => {
+    const tool = new ToolMessage({
+      content: [{ type: 'audio', data: 'x' }],
+      tool_call_id: 'call_3',
+    });
+
+    expect(stripNonPortableBlocks([tool])[0].content).toBe(
+      '[工具返回了 audio 类型的内容，当前模型无法处理，已省略]',
+    );
+  });
+
+  it('不改原消息；只有白名单块的工具结果原样返回同一个对象', () => {
+    const original = imageResult();
+    stripNonPortableBlocks([original]);
+    expect(original.content).toEqual([
+      { type: 'image', mimeType: 'image/png', data: 'iVBORw0KGgo=' },
+    ]);
+
+    const textOnly = new ToolMessage({
+      content: [{ type: 'text', text: 'ok' }],
+      tool_call_id: 'call_4',
+    });
+    expect(stripNonPortableBlocks([textOnly])[0]).toBe(textOnly);
+  });
+});

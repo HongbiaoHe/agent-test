@@ -2,9 +2,11 @@ import { Injectable, Logger } from '@nestjs/common';
 import { AigcClient } from './aigc.client';
 import {
   agentDerivedDims,
+  audioReferenceIssues,
   resolveAgentModel,
   toAgentCatalog,
   validateAgentRequest,
+  VOICE_CLONE_MODEL,
   type AgentCatalogView,
   type AgentParamIssue,
   type ReferenceCounts,
@@ -82,7 +84,12 @@ export class AigcService {
       referenceCounts: req.referenceCounts,
       derived: agentDerivedDims(type, model.model_alias, req.referenceCounts),
     });
-    if (!checked.ok) return checked;
+    const extra =
+      type === 'audio' ? audioReferenceIssues(req.referenceCounts) : [];
+    if (!checked.ok) {
+      return { ok: false, issues: [...checked.issues, ...extra] };
+    }
+    if (extra.length) return { ok: false, issues: extra };
     return {
       ok: true,
       config: { channel, model: model.model_alias, params: checked.params },
@@ -149,9 +156,11 @@ export class AigcService {
       audio: found.model.audio_input_number,
     };
     const used: ReferenceCounts = { image: 0, video: 0, audio: 0 };
-    const references = input.references.filter(
-      (r) => used[r.type]++ < limits[r.type],
-    );
+    // voice 的源录音走独立字段 source_audio_url（目录里三个 *_input_number 都是 0），不按上限截
+    const references =
+      input.type === 'voice'
+        ? input.references
+        : input.references.filter((r) => used[r.type]++ < limits[r.type]);
     if (references.length < input.references.length) {
       this.logger.warn(
         `${input.config.model} 参考素材上限 图${limits.image}/视频${limits.video}/音频${limits.audio}，丢掉多余 ${
@@ -192,6 +201,32 @@ export class AigcService {
       )} refs=${refInfo}`,
     );
     return { taskId, config };
+  }
+
+  /**
+   * 克隆音色模型的可选语言与 demo 文案上限（给 agent 看，list_media_models type=audio 里附带）。
+   * 目录里没有这个模型（被下线）时返回 null。
+   */
+  async voiceCloneSpec(): Promise<{
+    languages: { value: string; label: string }[];
+    maxDemoChars?: number;
+  } | null> {
+    const found = findModel(
+      await this.channels('voice'),
+      VOICE_CLONE_MODEL.channel,
+      VOICE_CLONE_MODEL.model,
+    );
+    if (!found) return null;
+    const language = found.model.params.find(
+      (p) => p.param_type === 'language',
+    );
+    return {
+      languages: (language?.options ?? []).map((o) => ({
+        value: o.value,
+        label: o.label,
+      })),
+      maxDemoChars: found.model.max_prompt,
+    };
   }
 
   /** 查任务详情（回调没到时的对账）。 */

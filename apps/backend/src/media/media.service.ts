@@ -7,10 +7,16 @@ import { AigcService } from '../aigc/aigc.service';
 import { PublicUrlService } from '../aigc/public-url.service';
 import {
   NO_REFERENCES,
+  VOICE_CLONE_MODEL,
+  VOICE_DEMO_MIN_CHARS,
   type AgentParamIssue,
   type ReferenceCounts,
 } from '../aigc/aigc.agent';
-import type { AigcMediaConfig, AigcTask } from '../aigc/aigc.types';
+import type {
+  AigcMediaConfig,
+  AigcMediaType,
+  AigcTask,
+} from '../aigc/aigc.types';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
 import { PrismaService } from '../prisma/prisma.service';
@@ -18,7 +24,24 @@ import { StreamService } from '../events/stream.service';
 import { signAssetToken } from './media-asset-token';
 import { UPLOAD_MODEL, type MediaAssetType } from './media-upload.service';
 
-export type MediaType = 'image' | 'video';
+/** 生成类型：与 aigc 任务类型一一对应（audio 配音、voice 克隆音色，产物都是音频文件）。 */
+export type MediaType = AigcMediaType;
+
+/** generation.type 是 String 列，收窄成生成类型；认不出按 image 处理（与历史行为一致）。 */
+export function asMediaType(value: string): MediaType {
+  return value === 'video' || value === 'audio' || value === 'voice'
+    ? value
+    : 'image';
+}
+
+/**
+ * 配音的参考音频不收的格式（上游白名单 wav/mp3/pcm/ogg/opus，按 URL 后缀判定）。
+ * 这两种多见于手机录音，提示 agent 先 clone_voice（克隆收 m4a/aac，产物是 wav）。
+ */
+const UNSUPPORTED_AUDIO_REF_EXTS = new Set(['m4a', 'aac']);
+
+/** 跨会话「我的音色」最多列几条（给 agent 看，按时间倒序）。 */
+export const MY_VOICES_MAX = 20;
 
 /**
  * 资产根目录（懒读 env）：默认 <cwd>/data/media。
@@ -50,14 +73,22 @@ export const MEDIA_BATCH_MAX = 10;
 export const MEDIA_OPEN_STATUSES = ['queued', 'generating'];
 
 /**
- * 产物落盘用的扩展名：aigc 转存后的 GCS 链接自带后缀（.png / .mp4），取它最准；
+ * 产物落盘用的扩展名：aigc 转存后的 GCS 链接自带后缀（.png / .mp4 / .mp3 / .wav），取它最准；
  * 认不出就按类型兜底。
  */
 export function extFromUrl(url: string, type: MediaType): string {
   const match = /\.([a-z0-9]{2,4})(?:$|[?#])/i.exec(url);
   const ext = match?.[1]?.toLowerCase();
-  if (ext && ['png', 'jpg', 'jpeg', 'webp', 'mp4'].includes(ext)) return ext;
-  return type === 'video' ? 'mp4' : 'png';
+  if (
+    ext &&
+    ['png', 'jpg', 'jpeg', 'webp', 'mp4', 'mp3', 'wav', 'ogg', 'flac'].includes(
+      ext,
+    )
+  ) {
+    return ext;
+  }
+  if (type === 'video') return 'mp4';
+  return type === 'audio' || type === 'voice' ? 'mp3' : 'png';
 }
 
 /**
@@ -183,6 +214,12 @@ export class MediaService {
       input.referenceVersionIds,
       userId,
     );
+    if (type === 'audio') {
+      const formatIssues = await this.unsupportedAudioRefIssues(
+        input.referenceVersionIds ?? [],
+      );
+      if (formatIssues.length) return { ok: false, issues: formatIssues };
+    }
     const prepared = await this.aigc.prepareAgentGeneration(type, {
       model: input.model,
       channel: input.channel,
@@ -206,6 +243,134 @@ export class MediaService {
       );
     }
     return { ok: true, config: prepared.config, generations };
+  }
+
+  /**
+   * 对话 agent 的克隆音色入口（clone_voice）：用户上传的一段录音 → byteplus 复刻音色念 demoText，
+   * 产物是一段音频（type=voice），之后作为 seed-audio 的参考音频（referenceVersionIds）给配音用。
+   *
+   * 落库形状与普通生成一致，只是源录音放在 referenceVersionIds（processor 提交时转成 source_audio_url），
+   * 于是排队 / 接单 / 回调 / 对账 / 推流 / 卡片 / 重新生成全部复用。
+   * 校验不过返回 issues（工具原样回给模型改参）；源录音归属不合法时 validateReferences 抛 MEDIA_REF_INVALID。
+   */
+  async createVoiceClone(
+    conversationId: string,
+    userId: string,
+    input: { sourceVersionId: string; language: string; demoText: string },
+  ): Promise<
+    | { ok: false; issues: AgentParamIssue[] }
+    | {
+        ok: true;
+        config: AigcMediaConfig;
+        generation: { generationId: string; versionId: string };
+      }
+  > {
+    const counts = await this.validateReferences(
+      [input.sourceVersionId],
+      userId,
+    );
+    const issues: AgentParamIssue[] = [];
+    if (counts.audio !== 1) {
+      issues.push({
+        field: 'sourceVersionId',
+        value: input.sourceVersionId,
+        message: '源录音必须是用户上传（或此前生成）的音频版本',
+      });
+    }
+    const demoChars = [...input.demoText].length;
+    if (demoChars < VOICE_DEMO_MIN_CHARS) {
+      issues.push({
+        field: 'demoText',
+        message: `demo 文案至少 ${VOICE_DEMO_MIN_CHARS} 个字符，当前 ${demoChars}`,
+      });
+    }
+    // 语言取值、文案上限（目录 max_prompt）由目录严格校验；源录音不计入参考上限（走独立字段）
+    const prepared = await this.aigc.prepareAgentGeneration('voice', {
+      model: VOICE_CLONE_MODEL.model,
+      channel: VOICE_CLONE_MODEL.channel,
+      params: { language: input.language },
+      prompt: input.demoText,
+      referenceCounts: { ...NO_REFERENCES },
+    });
+    if (!prepared.ok) issues.push(...prepared.issues);
+    if (!prepared.ok || issues.length) return { ok: false, issues };
+
+    const generation = await this.createGeneration(
+      conversationId,
+      userId,
+      'voice',
+      input.demoText,
+      [input.sourceVersionId],
+      prepared.config,
+    );
+    return { ok: true, config: prepared.config, generation };
+  }
+
+  /**
+   * 跨会话的「我的音色」：本人已完成的克隆（每个生成位取最新一个 done 版本），按时间倒序。
+   * 只给 agent 看（list_media_models type=audio 附带），引用键就是 versionId。
+   */
+  async listMyVoices(userId: string): Promise<
+    {
+      versionId: string;
+      demoText: string;
+      language?: string;
+      createdAt: string;
+    }[]
+  > {
+    const versions = await this.prisma.mediaVersion.findMany({
+      where: { status: 'done', generation: { userId, type: 'voice' } },
+      orderBy: { createdAt: 'desc' },
+      take: MY_VOICES_MAX * 3,
+    });
+    const seen = new Set<string>();
+    const out: {
+      versionId: string;
+      demoText: string;
+      language?: string;
+      createdAt: string;
+    }[] = [];
+    for (const v of versions) {
+      if (seen.has(v.generationId)) continue;
+      seen.add(v.generationId);
+      out.push({
+        versionId: v.id,
+        demoText: v.prompt,
+        language: readParams(v.params).language,
+        createdAt: v.createdAt.toISOString(),
+      });
+      if (out.length >= MY_VOICES_MAX) break;
+    }
+    return out;
+  }
+
+  /**
+   * 配音参考音频的格式检查：上游按 URL 后缀拒 m4a / aac（接单期 400），在这里先拦下，
+   * 免得先建出一张注定失败的卡片。上传的版本再看一眼原始文件名（prompt 存的就是它）。
+   */
+  private async unsupportedAudioRefIssues(
+    referenceVersionIds: string[],
+  ): Promise<AgentParamIssue[]> {
+    if (referenceVersionIds.length === 0) return [];
+    const found = await this.prisma.mediaVersion.findMany({
+      where: { id: { in: referenceVersionIds } },
+      include: { generation: true },
+    });
+    const issues: AgentParamIssue[] = [];
+    for (const v of found) {
+      if (asAssetType(v.generation.type) !== 'audio') continue;
+      const exts = [v.url ?? '', v.model === UPLOAD_MODEL ? v.prompt : '']
+        .map((s) => /\.([a-z0-9]{2,4})(?:$|[?#])/i.exec(s)?.[1]?.toLowerCase())
+        .filter((e): e is string => !!e);
+      const bad = exts.find((e) => UNSUPPORTED_AUDIO_REF_EXTS.has(e));
+      if (!bad) continue;
+      issues.push({
+        field: 'referenceVersionIds',
+        value: v.id,
+        message: `配音的参考音频不支持 .${bad}：请先用 clone_voice 拿这段录音克隆音色（克隆支持 m4a/aac，产物是 wav），再引用克隆产物；或请用户改传 mp3 / wav`,
+      });
+    }
+    return issues;
   }
 
   /**
@@ -334,7 +499,7 @@ export class MediaService {
     // 模型与档位沿用上一版——「重试」要的就是照原样再来一次。
     // 仍过一遍 resolveConfig：上一版用的模型可能已从 aigc 目录下线，那就回落默认模型。
     const resolved = await this.aigc.resolveConfig(
-      generation.type === 'video' ? 'video' : 'image',
+      asMediaType(generation.type),
       {
         channel: last?.channel ?? undefined,
         model: last?.model,
@@ -468,9 +633,12 @@ export class MediaService {
     }
     if (!MEDIA_OPEN_STATUSES.includes(version.status)) return 'ignored';
 
-    const type = version.generation.type === 'video' ? 'video' : 'image';
+    const type = asMediaType(version.generation.type);
     if (task.status === 'completed') {
-      const url = task.output_data?.image_url ?? task.output_data?.video_url;
+      const url =
+        task.output_data?.image_url ??
+        task.output_data?.video_url ??
+        task.output_data?.audio_url;
       if (!url) {
         return this.settleFailed(
           version.id,
@@ -613,7 +781,7 @@ export class MediaService {
   }
 
   /**
-   * 校验参考素材版本的「合法性」：每个 id 必须存在、generation.type 是 image / video / audio、归属同 userId。
+   * 校验参考素材版本的「合法性」：每个 id 必须存在、generation.type 是 image / video / audio（voice 按 audio 计）、归属同 userId。
    * status 允许 queued / generating / done（就绪性由 processor 执行时等待）；failed 与上传未发出的
    * staged 一律拒绝。任一不满足抛 MEDIA_REF_INVALID。空/未传则直接通过（参考可选）。
    * 返回按类型的计数，供 agent 侧对照模型的 image/video/audio_input_number 逐类校验。
@@ -758,11 +926,11 @@ export class MediaService {
         });
         continue;
       }
-      // 生成产物只有 image / video（audio 只来自上传），后缀从 CDN 地址或本地文件名里取
+      // 生成产物：image / video / audio（配音与克隆音色都按 audio），后缀从 CDN 地址或本地文件名里取
       const filename =
         v.model === UPLOAD_MODEL
           ? v.prompt
-          : `${type}.${extFromUrl(v.url ?? v.filePath ?? '', type === 'video' ? 'video' : 'image')}`;
+          : `${type}.${extFromUrl(v.url ?? v.filePath ?? '', type)}`;
       sources.push({
         versionId,
         type,
@@ -774,9 +942,28 @@ export class MediaService {
     return { sources, errors };
   }
 
-  /** 给对话 agent 看的模型目录（list_media_models）。 */
-  agentModelCatalog(type: MediaType) {
-    return this.aigc.agentCatalog(type);
+  /**
+   * 给对话 agent 看的模型目录（list_media_models）。audio 另附两样：
+   * myVoices（本人克隆过的音色，跨会话可引用）与 voiceClone（clone_voice 可选的语言与文案长度）。
+   */
+  async agentModelCatalog(type: MediaType, userId: string) {
+    const catalog = await this.aigc.agentCatalog(type);
+    if (type !== 'audio') return catalog;
+    const [myVoices, voiceClone] = await Promise.all([
+      this.listMyVoices(userId),
+      this.aigc.voiceCloneSpec(),
+    ]);
+    return {
+      ...catalog,
+      myVoices,
+      myVoicesNote:
+        '用户克隆过的音色：把 versionId 放进 generate_audio 的 referenceVersionIds（model 用 seed-audio-1.0）即可用该音色配音',
+      voiceClone: voiceClone && {
+        ...voiceClone,
+        minDemoChars: VOICE_DEMO_MIN_CHARS,
+        note: 'clone_voice 的 language 传 value；必须与录音实际语种一致（不支持跨语言复刻）',
+      },
+    };
   }
 
   /**
@@ -886,8 +1073,12 @@ export interface MessageAttachment {
   contentType: string;
 }
 
-/** generation.type 是 String 列，收窄成资产类型；认不出返回 null。 */
+/**
+ * generation.type 是 String 列，收窄成资产类型；认不出返回 null。
+ * voice（克隆音色）的产物就是一段音频文件：作参考、同步进沙箱时都按 audio 处理。
+ */
 export function asAssetType(value: string): MediaAssetType | null {
+  if (value === 'voice') return 'audio';
   return value === 'image' || value === 'video' || value === 'audio'
     ? value
     : null;

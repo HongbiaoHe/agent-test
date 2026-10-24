@@ -24,6 +24,11 @@ describe('extFromUrl', () => {
     expect(extFromUrl('https://x/a/b.mp4', 'video')).toBe('mp4');
     expect(extFromUrl('https://x/a/b.jpg?sig=1', 'image')).toBe('jpg');
   });
+  it('音频后缀：取真后缀，认不出兜底 mp3', () => {
+    expect(extFromUrl('https://x/a/b.wav', 'voice')).toBe('wav');
+    expect(extFromUrl('https://x/a/b.mp3?x=1', 'audio')).toBe('mp3');
+    expect(extFromUrl('https://x/a/b', 'audio')).toBe('mp3');
+  });
   it('认不出时按类型兜底', () => {
     expect(extFromUrl('https://x/a/b', 'image')).toBe('png');
     expect(extFromUrl('https://x/a/b', 'video')).toBe('mp4');
@@ -165,6 +170,36 @@ describe('MediaService.applyTaskResult', () => {
       expect.objectContaining({
         type: 'media_update',
         payload: expect.objectContaining({ status: 'done' }),
+      }),
+    );
+  });
+
+  it('completed（voice 克隆）：取 output_data.audio_url，推流类型为 voice', async () => {
+    findFirst.mockResolvedValue({
+      ...version,
+      generation: { type: 'voice', conversationId: 'conv-1' },
+    });
+    updateMany.mockResolvedValue({ count: 1 });
+
+    const r = await service.applyTaskResult({
+      task_id: 't-1',
+      status: 'completed',
+      output_data: { audio_url: 'https://gcs/x/demo.wav' },
+    });
+
+    expect(r).toBe('applied');
+    expect(updateMany).toHaveBeenCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({
+          status: 'done',
+          url: 'https://gcs/x/demo.wav',
+        }),
+      }),
+    );
+    expect(publish).toHaveBeenCalledWith(
+      'conv-1',
+      expect.objectContaining({
+        payload: expect.objectContaining({ type: 'voice', status: 'done' }),
       }),
     );
   });
