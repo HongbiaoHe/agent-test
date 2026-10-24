@@ -3,6 +3,7 @@ import { createDeepAgent, StateBackend } from 'deepagents';
 import { createMiddleware } from 'langchain';
 import { z } from 'zod';
 import { injectActivePlan, injectSkillReadPolicy } from './plan-injection';
+import { keepsNativeBlocks, stripNonPortableBlocks } from './portable-content';
 import { type ThinkingLevel, thinkingModelParams } from './thinking-level';
 import { resolveModelName } from './models';
 import { askUserTool } from './tools/ask-user.tool';
@@ -233,8 +234,26 @@ export async function buildAgent(
   const backend =
     (opts.defaultBackend as StateBackend | undefined) ?? new StateBackend();
 
-  // 中间件顺序即 recency：计划延续 → 技能必读规则（离模型最近）。
-  const middleware = [planContinuationMiddleware, skillReadPolicyMiddleware];
+  // 内容块净化（与画布同一套，见 portable-content.ts）：非 Gemini 模型收不下 checkpoint 里的
+  // provider 原生块（换过模型的 thinking / functionCall）与工具结果里的 image 块（read_file 读图片），
+  // 会整轮 4xx 且每轮重放、会话永久跑不动。只改发给模型的那一份，不写回 state。
+  const contentSanitizer = keepsNativeBlocks(resolveModelName(opts.model))
+    ? null
+    : createMiddleware({
+        name: 'portableContentMiddleware',
+        wrapModelCall: (request, handler) =>
+          handler({
+            ...request,
+            messages: stripNonPortableBlocks(request.messages),
+          }),
+      });
+
+  // 中间件顺序即 recency：计划延续 → 技能必读规则（离模型最近）；净化排最内层，作用于最终发出的消息。
+  const middleware = [
+    planContinuationMiddleware,
+    skillReadPolicyMiddleware,
+    ...(contentSanitizer ? [contentSanitizer] : []),
+  ];
 
   return createDeepAgent({
     model,
