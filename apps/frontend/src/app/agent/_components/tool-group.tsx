@@ -5,6 +5,7 @@ import { useState } from "react";
 
 import { cn } from "@/lib/utils";
 
+import { Elapsed } from "./elapsed";
 import { ToolChip, type ToolItem } from "./tool-chip";
 
 /**
@@ -38,6 +39,11 @@ export function ToolGroup({
 
   const running = tools.some((t) => !t.done);
   const names = tools.map((t) => t.name).join(" · ");
+  // 组耗时 = 第一个开始 → 最后一个结束（墙钟跨度，非各工具之和）；缺时间的旧数据不显示
+  const starts = tools.flatMap((t) => (t.startedAt != null ? [t.startedAt] : []));
+  const ends = tools.flatMap((t) => (t.endedAt != null ? [t.endedAt] : []));
+  const startedAt = starts.length > 0 ? Math.min(...starts) : null;
+  const endedAt = ends.length > 0 ? Math.max(...ends) : null;
 
   return (
     <div>
@@ -60,7 +66,27 @@ export function ToolGroup({
             {names}
           </span>
           <span className="shrink-0 text-[10px] tracking-wide text-muted-foreground uppercase">
-            {running ? "cooking…" : `${tools.length} tools`}
+            {running ? (
+              <>
+                cooking…
+                {startedAt != null && (
+                  <>
+                    {" "}
+                    <Elapsed startedAt={startedAt} />
+                  </>
+                )}
+              </>
+            ) : (
+              <>
+                {tools.length} tools
+                {startedAt != null && endedAt != null && (
+                  <>
+                    {" · "}
+                    <Elapsed startedAt={startedAt} endedAt={endedAt} />
+                  </>
+                )}
+              </>
+            )}
           </span>
           <ChevronDown
             className={cn(

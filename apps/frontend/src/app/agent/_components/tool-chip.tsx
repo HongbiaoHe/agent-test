@@ -20,6 +20,7 @@ import {
 import { cn } from "@/lib/utils";
 
 import type { ThreadItem } from "../_lib/thread";
+import { Elapsed } from "./elapsed";
 
 export type ToolItem = Extract<ThreadItem, { kind: "tool" }>;
 
@@ -86,8 +87,25 @@ export function ToolChip({
           {summary}
         </span>
       )}
+      {/* 耗时常显：进行中「cooking… 5s」，完成后换成执行耗时；没有 tool_end 的（被 result 收尾）仍显示 TOOL */}
       <span className="shrink-0 text-[10px] tracking-wide text-muted-foreground uppercase">
-        {item.done ? "tool" : "cooking…"}
+        {item.done ? (
+          item.startedAt != null && item.endedAt != null ? (
+            <Elapsed startedAt={item.startedAt} endedAt={item.endedAt} />
+          ) : (
+            "tool"
+          )
+        ) : (
+          <>
+            cooking…
+            {item.startedAt != null && (
+              <>
+                {" "}
+                <Elapsed startedAt={item.startedAt} />
+              </>
+            )}
+          </>
+        )}
       </span>
     </button>
   );

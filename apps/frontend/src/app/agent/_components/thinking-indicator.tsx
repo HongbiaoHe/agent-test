@@ -4,6 +4,8 @@ import { useEffect, useState, useSyncExternalStore } from "react";
 
 import { cn } from "@/lib/utils";
 
+import { formatDuration } from "../_lib/time";
+
 // Claude Code 招牌的盲文点阵 spinner 帧（unicode 文本字形，非 emoji）。
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 // 轮换的趣味动词短语，营造「正在动脑」的交互感。
@@ -34,14 +36,22 @@ function usePrefersReducedMotion() {
 
 /**
  * Claude Code 风格的「思考中」指示器：盲文点阵 spinner + 轮换中文动词 + 已用秒数。
- * 由 ChatThread 在整轮 busy 期间保持挂载、用 visible 控显隐：起点在挂载时（= 本轮开始）惰性
- * 记一次，故秒数跨多个空档连续累计、不重置；不可见时返回 null 但保留计时（组件不卸载）。
+ * 由 ChatThread 在整轮 busy 期间保持挂载、用 visible 控显隐，秒数跨多个空档连续累计。
+ * 起点 startedAt = 本轮用户消息的服务端时间：刷新页面后从历史重建，计时不归零；
+ * 读数按「起点 → Date.now()」现算，后台标签页节流后切回来也是准的。
+ * 没有起点（旧数据）时退回挂载时刻。
  * reduced-motion 下不跑点阵/呼吸动画，只保留信息性的秒数走字。
  */
-export function ThinkingIndicator({ visible }: { visible: boolean }) {
+export function ThinkingIndicator({
+  visible,
+  startedAt,
+}: {
+  visible: boolean;
+  startedAt: number | null;
+}) {
   const reduced = usePrefersReducedMotion();
   // 惰性初始化（useState 初始化器里调用 Date.now 是允许的，渲染体内则不行）
-  const [startedAt] = useState(() => Date.now());
+  const [mountedAt] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
 
   useEffect(() => {
@@ -52,10 +62,10 @@ export function ThinkingIndicator({ visible }: { visible: boolean }) {
 
   if (!visible) return null;
 
-  const ms = Math.max(0, now - startedAt);
+  const ms = Math.max(0, now - (startedAt ?? mountedAt));
   const frame = reduced ? FRAMES[0] : FRAMES[Math.floor(ms / 80) % FRAMES.length];
   const word = WORDS[Math.floor(ms / 2600) % WORDS.length];
-  const secs = Math.floor(ms / 1000);
+  const elapsed = formatDuration(ms, true);
 
   return (
     <div className="flex items-center gap-2 text-sm">
@@ -73,7 +83,7 @@ export function ThinkingIndicator({ visible }: { visible: boolean }) {
         {word}
       </span>
       <span aria-hidden className="tabular-nums text-muted-foreground">
-        · {secs}s
+        · {elapsed}
       </span>
     </div>
   );

@@ -102,7 +102,7 @@ export function useConversation(
         }
         setLiveEvents((prev) => [
           ...prev,
-          { type: e.type, payload: (e.payload ?? {}) as Record<string, unknown> },
+          { type: e.type, payload: (e.payload ?? {}) as Record<string, unknown>, at: e.ts },
         ]);
         if (e.type === "result" || e.type === "error") setPending(false);
         if (e.type === "tool_end") {
@@ -127,11 +127,14 @@ export function useConversation(
 
   const derived = useMemo(() => foldLive(base, liveEvents), [base, liveEvents]);
 
-  /** 追加一轮：乐观插入用户气泡（用户消息不走 socket，故本地补一条）。 */
+  /**
+   * 追加一轮：乐观插入用户气泡（用户消息不走 socket，故本地补一条）。
+   * 时间先用本地 now 顶上（本轮计时起点），下次拉历史时换成服务端 createdAt。
+   */
   function pushUserMessage(text: string, attachments: MessageAttachment[] = []) {
     setLiveEvents((prev) => [
       ...prev,
-      { type: "message", role: "user", payload: { text, attachments } },
+      { type: "message", role: "user", payload: { text, attachments }, at: Date.now() },
     ]);
     setPending(true);
   }
@@ -156,6 +159,8 @@ export function useConversation(
     approval: derived.approval,
     status,
     busy: pending || derived.approval != null,
+    /** 进行中这一轮的开始时间（服务端；刷新后从历史重建），思考指示器据此计时 */
+    turnStartedAt: derived.turnStartedAt,
     /** 会话累计 token（顶栏徽标） */
     tokens,
     isLoading: !!conversationId && query.isLoading,

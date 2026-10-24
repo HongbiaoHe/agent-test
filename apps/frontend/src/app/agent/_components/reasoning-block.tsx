@@ -6,6 +6,7 @@ import { useLayoutEffect, useRef, useState } from "react";
 import { cn } from "@/lib/utils";
 
 import type { ThreadItem } from "../_lib/thread";
+import { Elapsed } from "./elapsed";
 
 type ReasoningItem = Extract<ThreadItem, { kind: "reasoning" }>;
 
@@ -48,7 +49,18 @@ export function ReasoningBlock({ item }: { item: ReasoningItem }) {
           <Brain className="size-3.5 shrink-0 text-muted-foreground" />
         )}
         <span className="min-w-0 flex-1 truncate text-muted-foreground">
-          {item.streaming ? "Thinking…" : "Thought process"}
+          {/* 耗时：起点 = 本次模型调用开始，进行中走字、收口后定格；旧数据没有时间只显示文案 */}
+          {item.startedAt == null ? (
+            item.streaming ? "Thinking…" : "Thought process"
+          ) : item.streaming ? (
+            <>
+              Thinking… <Elapsed startedAt={item.startedAt} />
+            </>
+          ) : (
+            <>
+              Thought for <Elapsed startedAt={item.startedAt} endedAt={item.endedAt ?? item.startedAt} />
+            </>
+          )}
         </span>
         <ChevronDown
           className={cn(
