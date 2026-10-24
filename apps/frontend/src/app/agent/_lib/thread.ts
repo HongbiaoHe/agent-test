@@ -15,15 +15,28 @@ export interface Approval {
   reviewConfigs: { actionName: string; allowedDecisions: string[] }[];
 }
 
-/** 对话区按顺序渲染的一条 thread item。 */
+/**
+ * 对话区按顺序渲染的一条 thread item。
+ * 时间字段一律是**服务端**毫秒时间戳（历史取 Message.createdAt，实时取 socket 事件 ts），
+ * 刷新后从历史重建出同样的值；进行中的步骤用「服务端开始时间 → 本地 now」计时，刷新不归零。
+ * 旧数据 / 乐观事件可能缺时间，此时不展示对应时间。
+ */
 export type ThreadItem =
-  /** attachments：随这条消息上传的附件（老消息没有，为空数组） */
-  | { kind: "user"; id: string; text: string; attachments: MessageAttachment[] }
+  /** attachments：随这条消息上传的附件（老消息没有，为空数组）；at = 发送时间 */
+  | {
+      kind: "user";
+      id: string;
+      text: string;
+      attachments: MessageAttachment[];
+      at?: number;
+    }
   | { kind: "assistant"; id: string; text: string; streaming: boolean }
   /**
    * 模型思考过程（推理型模型才有）：流式累加，其后第一个其它事件到来即收口（streaming=false）。
    * sourceId = 产生这段思考的那条 AIMessage id —— 同一 id 的增量并进同一块；
    * 落库前没带 id 的旧行为空串，走「末尾那块」的合并规则。
+   * startedAt = 上一个边界事件的时间（≈ 这次模型调用开始；Gemini 的思考在调用结束后才整块到达，
+   * 不能拿首个增量当起点）；endedAt = 收口时间（思考之后的第一个事件，与后端落库时机一致）。
    */
   | {
       kind: "reasoning";
@@ -31,6 +44,8 @@ export type ThreadItem =
       sourceId: string;
       text: string;
       streaming: boolean;
+      startedAt?: number;
+      endedAt?: number;
     }
   | {
       kind: "tool";
@@ -41,6 +56,10 @@ export type ThreadItem =
       args: unknown;
       result?: string;
       done: boolean;
+      /** tool_start 时间（审批续跑重发 tool_start 时更新为续跑时间，不把等审批算进执行耗时） */
+      startedAt?: number;
+      /** tool_end 时间；没有 tool_end、被 result 收尾的工具没有 */
+      endedAt?: number;
     }
   | { kind: "plan"; id: string; todos: Todo[] }
   | { kind: "error"; id: string; text: string }
@@ -51,7 +70,15 @@ export type ThreadItem =
   | { kind: "media"; id: string; generationIds: string[]; mediaType: "image" | "video" }
   // 网页预览卡片：agent 调 preview_page 成功后（tool_end）在工具 chip 之后追加，可再次打开预览。
   // 只存「预览什么」——预览地址带短期令牌/会话 id，打开时现签，不进 thread 状态。
-  | { kind: "preview"; id: string; spec: PreviewSpec };
+  | { kind: "preview"; id: string; spec: PreviewSpec }
+  // 一轮结束的总耗时（墙钟：用户发送 → result/error，含排队与等审批），由 result/error 追加
+  | {
+      kind: "turn";
+      id: string;
+      startedAt: number;
+      endedAt: number;
+      status: "done" | "stopped" | "failed";
+    };
 
 /**
  * 要预览什么：
@@ -71,6 +98,8 @@ export interface NormalizedEvent {
   type: string; // message | token | reasoning | tool_start | tool_end | plan_update | control_request | result | error
   payload: Record<string, unknown>;
   role?: string; // 仅 DB Message 带（user/assistant/tool）；socket 事件不带
+  /** 服务端时间（ms）：DB 取 createdAt，socket 取 ts；乐观事件用本地时间或不带 */
+  at?: number;
 }
 
 export interface ThreadState {
@@ -78,6 +107,10 @@ export interface ThreadState {
   status: string;
   approval: Approval | null;
   nextId: number;
+  /** 上一个边界事件（token / reasoning 增量之外的事件）的时间：下一块思考的起点 */
+  lastAt: number | null;
+  /** 进行中这一轮的开始时间（用户消息时间）；轮结束清空 */
+  turnStartedAt: number | null;
 }
 
 /**
@@ -125,28 +158,42 @@ const EMPTY: ThreadState = {
   status: "idle",
   approval: null,
   nextId: 0,
+  lastAt: null,
+  turnStartedAt: null,
 };
 
 /**
  * 把仍在流的思考块收口（后端在思考之后的第一个事件处同样收口落库，两边语义一致）。
  * 收**全部**而不只是末尾那块：按 sourceId 归集后，正在流的思考不一定还在队尾。
  */
-function sealReasoning(state: ThreadState): ThreadState {
+function sealReasoning(state: ThreadState, at?: number): ThreadState {
   if (!state.items.some((it) => it.kind === "reasoning" && it.streaming)) {
     return state;
   }
   return {
     ...state,
     items: state.items.map((it) =>
-      it.kind === "reasoning" && it.streaming ? { ...it, streaming: false } : it,
+      it.kind === "reasoning" && it.streaming
+        ? { ...it, streaming: false, endedAt: it.endedAt ?? at }
+        : it,
     ),
   };
 }
 
-/** 纯函数：把一个归一事件折叠进当前 thread 状态。 */
+/**
+ * 纯函数：把一个归一事件折叠进当前 thread 状态。
+ * 顺带推进 lastAt：token / reasoning 增量不算边界（Gemini 的正文 token 先于思考到达，
+ * 算进去会让思考起点变成「正文流完」）；与后端只在边界事件落库的口径一致，live 与刷新同值。
+ */
 export function reduce(input: ThreadState, ev: NormalizedEvent): ThreadState {
+  const next = reduceEvent(input, ev);
+  if (ev.at == null || ev.type === "token" || ev.type === "reasoning") return next;
+  return { ...next, lastAt: ev.at };
+}
+
+function reduceEvent(input: ThreadState, ev: NormalizedEvent): ThreadState {
   // 思考之后的第一个其它事件即代表这段思考结束
-  const state = ev.type === "reasoning" ? input : sealReasoning(input);
+  const state = ev.type === "reasoning" ? input : sealReasoning(input, ev.at);
   const items = state.items.slice();
   const last = items[items.length - 1];
   let nextId = state.nextId;
@@ -167,7 +214,17 @@ export function reduce(input: ThreadState, ev: NormalizedEvent): ThreadState {
       if (prev?.kind === "reasoning") {
         items[at] = { ...prev, text: prev.text + text };
       } else {
-        const block: ThreadItem = { kind: "reasoning", id: id(), sourceId, text, streaming: true };
+        // 历史行（带 role）本身就是收口后落的整块，createdAt 即收口时间；实时增量的块留空，
+        // 等后继事件收口时再填（sealReasoning）。下一行的时间会晚于收口（如文本段落库），不能用它。
+        const block: ThreadItem = {
+          kind: "reasoning",
+          id: id(),
+          sourceId,
+          text,
+          streaming: true,
+          startedAt: state.lastAt ?? ev.at,
+          endedAt: ev.role != null ? ev.at : undefined,
+        };
         // Gemini 的思考只能在模型调用结束后从 updates 整块拿到，此时同一条消息的正文已在流式渲染。
         // 思考属于那段正文之前（与落库 seq 顺序一致），插到正文前面；正文保持 streaming，
         // 随后的 message 事件才能照常收口它（否则会因末尾不是流式正文而再新建一条，正文重复）。
@@ -185,8 +242,8 @@ export function reduce(input: ThreadState, ev: NormalizedEvent): ThreadState {
         // 只发附件的消息正文为空，照样成一条气泡
         const attachments = parseAttachments(ev.payload?.attachments);
         if (!text && attachments.length === 0) return state;
-        items.push({ kind: "user", id: id(), text, attachments });
-        return { ...state, items, nextId };
+        items.push({ kind: "user", id: id(), text, attachments, at: ev.at });
+        return { ...state, items, nextId, turnStartedAt: ev.at ?? null };
       }
       if (!text) return state;
       if (last?.kind === "assistant" && last.streaming) {
@@ -223,10 +280,20 @@ export function reduce(input: ThreadState, ev: NormalizedEvent): ThreadState {
           : -1;
         if (existing >= 0) {
           const it = items[existing];
-          if (it.kind === "tool") items[existing] = { ...it, args: c.args };
+          if (it.kind === "tool") {
+            items[existing] = { ...it, args: c.args, startedAt: ev.at ?? it.startedAt };
+          }
           continue;
         }
-        items.push({ kind: "tool", id: id(), callId: c.id, name: c.name, args: c.args, done: false });
+        items.push({
+          kind: "tool",
+          id: id(),
+          callId: c.id,
+          name: c.name,
+          args: c.args,
+          done: false,
+          startedAt: ev.at,
+        });
       }
       return { ...state, items, nextId };
     }
@@ -243,7 +310,12 @@ export function reduce(input: ThreadState, ev: NormalizedEvent): ThreadState {
             ? it.callId === callId
             : it.kind === "tool" && it.name === name;
         if (match && it.kind === "tool" && !it.done) {
-          items[i] = { ...it, result: stringifyContent(ev.payload?.content), done: true };
+          items[i] = {
+            ...it,
+            result: stringifyContent(ev.payload?.content),
+            done: true,
+            endedAt: ev.at,
+          };
           break;
         }
       }
@@ -293,23 +365,54 @@ export function reduce(input: ThreadState, ev: NormalizedEvent): ThreadState {
       const settled = items.map((it) =>
         it.kind === "tool" && !it.done ? { ...it, done: true } : it,
       );
-      return { ...state, items: settled, status: "done", approval: null };
+      const status = ev.payload?.status === "stopped" ? "stopped" : "done";
+      pushTurn(settled, state.turnStartedAt, ev.at, status, id);
+      return {
+        ...state,
+        items: settled,
+        status: "done",
+        approval: null,
+        nextId,
+        turnStartedAt: null,
+      };
     }
     case "error": {
       const text = String(ev.payload?.message ?? "");
       items.push({ kind: "error", id: id(), text });
-      return { ...state, items, status: "failed", approval: null, nextId };
+      pushTurn(items, state.turnStartedAt, ev.at, "failed", id);
+      return {
+        ...state,
+        items,
+        status: "failed",
+        approval: null,
+        nextId,
+        turnStartedAt: null,
+      };
     }
     default:
       return state;
   }
 }
 
+/** 轮结束：起止时间都在才追加总耗时条（旧数据 / 无对应用户消息的错误不出）。 */
+function pushTurn(
+  items: ThreadItem[],
+  startedAt: number | null,
+  endedAt: number | undefined,
+  status: "done" | "stopped" | "failed",
+  id: () => string,
+) {
+  if (startedAt == null || endedAt == null) return;
+  items.push({ kind: "turn", id: id(), startedAt, endedAt, status });
+}
+
 function messageToEvent(m: ConversationMessage): NormalizedEvent {
+  const at = Date.parse(m.createdAt);
   return {
     type: m.type,
     payload: (m.content ?? {}) as Record<string, unknown>,
     role: m.role,
+    at: Number.isNaN(at) ? undefined : at,
   };
 }
 

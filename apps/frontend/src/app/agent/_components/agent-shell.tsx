@@ -232,6 +232,7 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
           items={thread.items}
           approval={thread.approval}
           busy={busy}
+          turnStartedAt={thread.turnStartedAt}
           isLoading={thread.isLoading}
           isNewChat={!conversationId}
           creating={createMut.isPending}

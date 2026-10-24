@@ -35,10 +35,12 @@ import { useAttachments } from "../_hooks/use-attachments";
 import { ATTACHMENT_ACCEPT } from "../_lib/attachments";
 import { modelDisplayName } from "../_lib/models";
 import type { Approval, ThreadItem } from "../_lib/thread";
+import { isSameDay } from "../_lib/time";
 import { ApprovalPanel } from "./approval-panel";
 import { isAskUserApproval, QuestionPanel } from "./question-panel";
 import { ChatMessage } from "./chat-message";
 import { ComposerAttachments } from "./composer-attachments";
+import { DayDivider } from "./day-divider";
 import { MediaGroup } from "./media-card";
 import { ModelSwitcher } from "./model-switcher";
 import { PreviewCard } from "./preview-card";
@@ -48,6 +50,7 @@ import { TaskPlanPanel } from "./task-plan-panel";
 import { ThinkingIndicator } from "./thinking-indicator";
 import type { ToolItem } from "./tool-chip";
 import { ToolGroup } from "./tool-group";
+import { TurnFooter } from "./turn-footer";
 
 /** `/` 补全面板分组标签与顺序（Built-in 在前，与设置页一致） */
 const CMD_KIND_LABEL: Record<SkillKind, string> = {
@@ -63,6 +66,7 @@ export function ChatThread({
   items,
   approval,
   busy,
+  turnStartedAt,
   isLoading,
   isNewChat,
   creating,
@@ -85,6 +89,8 @@ export function ChatThread({
   items: ThreadItem[];
   approval: Approval | null;
   busy: boolean;
+  /** 进行中这一轮的开始时间（服务端），思考指示器据此计时、刷新不归零 */
+  turnStartedAt: number | null;
   isLoading: boolean;
   isNewChat: boolean;
   /** 创建空会话请求在途（引导页按钮转圈防重复点击） */
@@ -222,11 +228,21 @@ export function ChatThread({
 
   // 把相邻的工具调用收成一组，交给 ToolGroup 渲染（≥2 折叠、单个仍按原 chip）；
   // 其余消息照常一条一条交给 ChatMessage。
+  // 用户消息与上一条用户消息不在同一天时，前面插一条日期分隔线；第一条用户消息前也插，
+  // 但标 first —— 是今天就不显示（全是今天的会话不出分隔线）。
   type Row =
     | { row: "msg"; item: ThreadItem }
-    | { row: "tools"; id: string; tools: ToolItem[] };
+    | { row: "tools"; id: string; tools: ToolItem[] }
+    | { row: "day"; id: string; at: number; first: boolean };
   const rows: Row[] = [];
+  let prevUserAt: number | null = null;
   for (const it of streamItems) {
+    if (it.kind === "user" && it.at != null) {
+      if (prevUserAt == null || !isSameDay(prevUserAt, it.at)) {
+        rows.push({ row: "day", id: `day-${it.id}`, at: it.at, first: prevUserAt == null });
+      }
+      prevUserAt = it.at;
+    }
     const last = rows[rows.length - 1];
     if (it.kind === "tool") {
       if (last?.row === "tools") last.tools.push(it);
@@ -334,7 +350,9 @@ export function ChatThread({
             ) : (
               <>
                 {rows.map((r) =>
-                  r.row === "tools" ? (
+                  r.row === "day" ? (
+                    <DayDivider key={r.id} at={r.at} hideIfToday={r.first} />
+                  ) : r.row === "tools" ? (
                     <ToolGroup
                       key={r.id}
                       tools={r.tools}
@@ -354,11 +372,15 @@ export function ChatThread({
                     <PreviewCard key={r.item.id} spec={r.item.spec} />
                   ) : r.item.kind === "reasoning" ? (
                     <ReasoningBlock key={r.item.id} item={r.item} />
+                  ) : r.item.kind === "turn" ? (
+                    <TurnFooter key={r.item.id} item={r.item} />
                   ) : (
                     <ChatMessage key={r.item.id} item={r.item} />
                   ),
                 )}
-                {busy && <ThinkingIndicator visible={thinkingVisible} />}
+                {busy && (
+                  <ThinkingIndicator visible={thinkingVisible} startedAt={turnStartedAt} />
+                )}
               </>
             )}
           </div>
