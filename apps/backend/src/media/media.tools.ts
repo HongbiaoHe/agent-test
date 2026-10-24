@@ -71,6 +71,69 @@ const generateSchema = z.object({
 
 type GenerateInput = z.infer<typeof generateSchema>;
 
+const audioParam = (desc: string) => z.string().optional().describe(desc);
+
+/**
+ * 配音入参：与图 / 视频共用 prompt / model / channel / referenceVersionIds / count 的语义，
+ * params 换成音频维度——同样写死成显式键而不是 z.record（Gemini 不认 propertyNames，见上），
+ * 这些也正是 aigc.catalog 的 AUDIO_PARAM_FIELDS 会提交的字段（language 是克隆专用，不在这里）。
+ */
+const generateAudioSchema = generateSchema.extend({
+  prompt: z
+    .string()
+    .max(2000)
+    .describe(
+      '要念的文本（已与用户确认）。seed-audio 中文单次约 400 字内，更长请分段多次生成',
+    ),
+  params: z
+    .object({
+      voice_id: audioParam('预置音色（minimax-speech 必填），如 "Calm_Woman"'),
+      emotion: audioParam('情感，如 "happy" / "neutral"'),
+      language_boost: audioParam('语言增强，如 "Chinese" / "English" / "auto"'),
+      format: audioParam('输出格式，如 "mp3" / "wav"'),
+      sample_rate: audioParam('采样率，如 "24000"'),
+      bitrate: audioParam('比特率，如 "128000"'),
+      audio_channel: audioParam('声道："1" 单声道 / "2" 立体声'),
+      speech_rate: audioParam('seed-audio 语速，区间 -50~100，"0" 原速'),
+      loudness_rate: audioParam('seed-audio 音量，区间 -50~100'),
+      pitch_rate: audioParam('音调，区间 -12~12'),
+      speed: audioParam('minimax-speech 语速，区间 0.5~2，"1" 原速'),
+      volume: audioParam('minimax-speech 音量，区间 0.01~10'),
+    })
+    .optional()
+    .describe(
+      '档位参数，值必须取自 list_media_models(type=audio) 里该模型的 values 或 range（模型没有的维度不要传）。不传的必填项自动取第一个值',
+    ),
+  referenceVersionIds: z
+    .array(z.string())
+    .max(10)
+    .optional()
+    .describe(
+      '参考素材（仅 seed-audio-1.0 支持）：1–3 段参考音频 = 照该音色念（克隆音色就传 clone_voice 产物 / myVoices 的 versionId）；或 1 张参考图 = 按画面配旁白。图与音频不可混传',
+    ),
+});
+
+type GenerateAudioInput = z.infer<typeof generateAudioSchema>;
+
+const cloneVoiceSchema = z.object({
+  sourceVersionId: z
+    .string()
+    .describe(
+      '用户上传的录音 versionId（附件或资产清单里的 audio）。要求 10–60 秒、清晰单人说话',
+    ),
+  language: z
+    .string()
+    .describe(
+      '录音的语种（传 list_media_models(type=audio) 里 voiceClone.languages 的 value，如中文 "0"）。必须与录音实际语种一致',
+    ),
+  demoText: z
+    .string()
+    .max(200)
+    .describe(
+      '用复刻音色念的一段示范文案（4–80 字，同录音语种）。产物就是这段音频，之后作参考音色给配音用',
+    ),
+});
+
 /**
  * 触发与禁区话术（设计 §7）：明确「何时用 / 何时不用」，避免模型未经确认就生成。
  * image 与 video 共用，仅替换媒体词。
@@ -90,27 +153,34 @@ function discipline(media: string): string {
  * 构造媒体工具数组，闭包带上会话上下文。
  *
  * - list_media_models：查可用模型与每个模型的档位（尺寸/比例、清晰度、时长、音频、参考图上限等）。
- * - generate_image / generate_video：严格校验后按 count 建 N 个生成位（立即入队，不等生成），
+ * - generate_image / generate_video / generate_audio：严格校验后按 count 建 N 个生成位（立即入队，不等生成），
  *   返回 { status:'queued', model, channel, params, generations:[{generationId,versionId}] }
  *   ——前端按 generations 插卡片锚点，状态经 media_update 事件实时刷新。
  *   校验不通过返回 { error:'invalid_params', issues }，模型据此改参重试。
+ * - clone_voice：用上传录音克隆音色（产物是一段音频），返回形状同上（generations 只有 1 个）。
  */
 export function createMediaTools(svc: MediaService, ctx: MediaToolContext) {
   const listModelsTool = tool(
-    async ({ type }: { type: MediaType }) =>
-      JSON.stringify(await svc.agentModelCatalog(type)),
+    async ({ type }: { type: 'image' | 'video' | 'audio' }) =>
+      JSON.stringify(await svc.agentModelCatalog(type, ctx.userId)),
     {
       name: 'list_media_models',
       description:
-        '查询当前可用的生图 / 生视频模型及每个模型支持的参数（画幅比例、清晰度、时长、音频、背景等可选值，参考图 / 参考视频 / 参考音频数量上限，提示词长度上限，参数之间的约束规则 rules，以及用途提示 hint）。' +
-        '用于在生成前推荐模型或确认用户指定的模型/参数是否可用。目录可能随时增减模型，以本工具返回为准。',
+        '查询当前可用的生图 / 生视频 / 配音模型及每个模型支持的参数（画幅比例、清晰度、时长、音频、背景、音色、语速等可选值或区间，参考图 / 参考视频 / 参考音频数量上限，提示词长度上限，参数之间的约束规则 rules，以及用途提示 hint）。' +
+        'type=audio 时另附 myVoices（用户克隆过的音色，可跨会话引用）与 voiceClone（clone_voice 可选的语言）。' +
+        '用于在生成前推荐模型或确认用户指定的模型/参数是否可用。目录可能随时增减模型，以本工具返回为准。配音只有语音合成，没有音效 / 配乐模型。',
       schema: z.object({
-        type: z.enum(['image', 'video']).describe('image 生图 / video 生视频'),
+        type: z
+          .enum(['image', 'video', 'audio'])
+          .describe('image 生图 / video 生视频 / audio 配音'),
       }),
     },
   );
 
-  const run = async (type: MediaType, input: GenerateInput) => {
+  const run = async (
+    type: MediaType,
+    input: GenerateInput | GenerateAudioInput,
+  ) => {
     try {
       const r = await svc.createAgentGenerations(
         ctx.conversationId,
@@ -166,6 +236,70 @@ export function createMediaTools(svc: MediaService, ctx: MediaToolContext) {
     },
   );
 
+  const generateAudioTool = tool(
+    (input: GenerateAudioInput) => run('audio', input),
+    {
+      name: 'generate_audio',
+      description:
+        `把文本合成为语音（配音，异步，可批量）。只有语音合成，没有音效 / 配乐。` +
+        `要用用户克隆的音色：model 传 seed-audio-1.0，referenceVersionIds 传 clone_voice 产物（或 list_media_models 的 myVoices）的 versionId。` +
+        `minimax-speech-2.8-hd 用预置音色（voice_id），不收参考音频。\n` +
+        discipline('配音'),
+      schema: generateAudioSchema,
+    },
+  );
+
+  const cloneVoiceTool = tool(
+    async (input: z.infer<typeof cloneVoiceSchema>) => {
+      try {
+        const r = await svc.createVoiceClone(
+          ctx.conversationId,
+          ctx.userId,
+          input,
+        );
+        if (!r.ok) {
+          return JSON.stringify({
+            error: 'invalid_params',
+            issues: r.issues,
+            hint: '按 issues 修正后重新调用；可选语言见 list_media_models(type=audio) 的 voiceClone.languages',
+          });
+        }
+        return JSON.stringify({
+          status: 'queued',
+          model: r.config.model,
+          channel: r.config.channel,
+          params: r.config.params,
+          generations: [r.generation],
+          next: '克隆完成后，用 generate_audio（model=seed-audio-1.0，referenceVersionIds=[本次 versionId]）即可用该音色配音',
+        });
+      } catch (e) {
+        if (e instanceof BusinessException) {
+          return JSON.stringify({
+            error: e.getResponse(),
+            hint: '请改用用户上传录音的真实 versionId 后重试',
+          });
+        }
+        throw e;
+      }
+    },
+    {
+      name: 'clone_voice',
+      description:
+        '用用户上传的一段录音克隆音色（异步）：产物是「用复刻音色念 demoText」的一段音频，显示在对话卡片里可试听；' +
+        '之后把它的 versionId 作为 generate_audio（seed-audio-1.0）的 referenceVersionIds，就能用这个音色配任意文本。\n' +
+        '**何时用**：用户上传了录音并明确要求克隆 / 模仿这个声音时。调用前先和用户确认录音语种与 demo 文案（可由你拟一句 4–80 字的话）。\n' +
+        '**要求**：录音 10–60 秒、清晰单人说话；language 必须与录音实际语种一致（不支持跨语言复刻）。' +
+        '用户之前克隆过的音色在 list_media_models(type=audio) 的 myVoices 里，可直接复用，不必重复克隆。',
+      schema: cloneVoiceSchema,
+    },
+  );
+
   // 元组（const 断言只固定字面量形状，不改类型）：解构时各工具保留自己的入参类型
-  return [listModelsTool, generateImageTool, generateVideoTool] as const;
+  return [
+    listModelsTool,
+    generateImageTool,
+    generateVideoTool,
+    generateAudioTool,
+    cloneVoiceTool,
+  ] as const;
 }

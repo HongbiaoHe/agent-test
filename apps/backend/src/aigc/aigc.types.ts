@@ -1,15 +1,19 @@
 import { z } from 'zod';
 
 /**
- * aigc 生成服务的对外类型（本项目只用 image / video 两类）。
+ * aigc 生成服务的对外类型（画布只用 image / video；对话 agent 另用 audio 配音与 voice 克隆音色）。
  *
  * 上游承诺「只增不改」并可能新增字段，所以一律用 zod 解析（未声明的键被剥掉而不是报错），
  * 拿到强类型结果后再往下传——不写 `as`，也不把 unknown 一路带下去（CLAUDE.md §8）。
  * 契约来源：对接文档 §7 能力发现 / §5 任务创建 / §6 任务查询 / §9 回调。
  */
 
-/** 本项目用到的任务类型（aigc 另有 audio / voice，画布不涉及）。 */
-export type AigcMediaType = 'image' | 'video';
+/**
+ * 本项目用到的任务类型。audio = 文本转语音（POST /tasks/audios）；
+ * voice = 克隆音色（POST /tasks/voices，byteplus 产物是「用复刻音色念 demo 文案」的一段音频）。
+ * 画布只涉及 image / video。
+ */
+export type AigcMediaType = 'image' | 'video' | 'audio' | 'voice';
 
 export const aigcParamOptionSchema = z.object({
   label: z.string(),
@@ -19,7 +23,7 @@ export const aigcParamOptionSchema = z.object({
 /**
  * 一个参数维度。`input` 决定要不要传（required / optional / derived——derived 是服务端
  * 按参考资源推导的，压根不是入参）；`value_type` 决定取值来源（select 从 options 里选，
- * range 在区间内取；range 只出现在音频维度，画布用不到，故不渲染也不提交）。
+ * range 在区间内取；range 只出现在音频维度，画布用不到，故不渲染也不提交，只有对话 agent 的配音会用）。
  */
 export const aigcModelParamSchema = z.object({
   param_type: z.string(),
@@ -27,6 +31,10 @@ export const aigcModelParamSchema = z.object({
   input: z.string().optional(),
   value_type: z.string().optional(),
   options: z.array(aigcParamOptionSchema).default([]),
+  /** value_type=range 时的取值区间（如语速 -50~100 步长 1） */
+  range: z
+    .object({ min: z.number(), max: z.number(), step: z.number().optional() })
+    .optional(),
 });
 
 /** 跨维度约束：when 全命中 → allow 收窄各维度取值、forbid 的维度整个不可传。 */
@@ -83,6 +91,8 @@ export const aigcTaskSchema = z.object({
     .object({
       image_url: z.string().optional(),
       video_url: z.string().optional(),
+      // audio 与 byteplus voice 的产物都在这里（GCS 永久地址）
+      audio_url: z.string().optional(),
     })
     .nullish(),
   error_data: z

@@ -4,10 +4,19 @@ import type {
   ConversationMessage,
   MediaGeneration,
   MediaStatus,
+  MediaType,
   MessageAttachment,
 } from "@/lib/api";
 
 export type Decision = "approve" | "reject" | "edit" | "respond";
+
+/** 会产出媒体卡片的工具 → 卡片类型。 */
+const MEDIA_TOOL_TYPES: Record<string, MediaType> = {
+  generate_image: "image",
+  generate_video: "video",
+  generate_audio: "audio",
+  clone_voice: "voice",
+};
 
 /** control_request 事件的 payload（deepagents HITL interrupt 值）。 */
 export interface Approval {
@@ -48,7 +57,7 @@ export type ThreadItem =
   // tool chip 本身保留（与 read_file 一样进工具组、参数可见），卡片只承载 generationId 锚点；
   // 卡片状态一律从 React Query（GET /conversations/:id/media）读。
   // 一次调用可批量生成（count>1）：同一次调用的 N 个生成位放进一个 item，渲染成一组网格。
-  | { kind: "media"; id: string; generationIds: string[]; mediaType: "image" | "video" }
+  | { kind: "media"; id: string; generationIds: string[]; mediaType: MediaType }
   // 网页预览卡片：agent 调 preview_page 成功后（tool_end）在工具 chip 之后追加，可再次打开预览。
   // 只存「预览什么」——预览地址带短期令牌/会话 id，打开时现签，不进 thread 状态。
   | { kind: "preview"; id: string; spec: PreviewSpec };
@@ -247,11 +256,10 @@ export function reduce(input: ThreadState, ev: NormalizedEvent): ThreadState {
           break;
         }
       }
-      // 生图/生视频：解析工具返回的 generationId 列表（见 parseMediaGenerationIds），
+      // 生图/生视频/配音/克隆音色：解析工具返回的 generationId 列表（见 parseMediaGenerationIds），
       // 在工具 chip **之后**追加一条 kind:'media' 卡片锚点（不替换 chip）。
       // 参数校验失败（invalid_params）的结果没有 generations，只留 chip，错误在 chip 详情里可见。
-      const mediaType =
-        name === "generate_image" ? "image" : name === "generate_video" ? "video" : null;
+      const mediaType = typeof name === "string" ? (MEDIA_TOOL_TYPES[name] ?? null) : null;
       if (mediaType) {
         const generationIds = parseMediaGenerationIds(ev.payload?.content);
         // 防重复：同 generationId 的卡片只插一次。历史重放经 base 折叠出卡片后，若 live

@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import {
   AlertCircle,
+  AudioLines,
   Ban,
   CheckCircle2,
   ChevronDown,
@@ -10,6 +11,7 @@ import {
   ChevronRight,
   Image as ImageIcon,
   Loader2,
+  Mic,
   Music,
   RefreshCw,
   Video as VideoIcon,
@@ -26,15 +28,48 @@ import {
   listConversationMedia,
   type MediaGeneration,
   type MediaStatus,
+  type MediaType,
   type MediaVersion,
   regenerateMedia,
 } from "@/lib/api";
 
-/** 类型 → 图标 / 文案 / 工具名。卡片头部、生成中占位与失败态共用。 */
+/** 类型 → 图标 / 文案 / 工具名 / 重新生成输入框提示。卡片头部、生成中占位与失败态共用。 */
 const TYPE_META = {
-  image: { Icon: ImageIcon, label: "Image", tool: "generate_image" },
-  video: { Icon: VideoIcon, label: "Video", tool: "generate_video" },
+  image: {
+    Icon: ImageIcon,
+    label: "Image",
+    tool: "generate_image",
+    placeholder: "Describe the image you want…",
+  },
+  video: {
+    Icon: VideoIcon,
+    label: "Video",
+    tool: "generate_video",
+    placeholder: "Describe the video you want…",
+  },
+  audio: {
+    Icon: AudioLines,
+    label: "Audio",
+    tool: "generate_audio",
+    placeholder: "Text to speak…",
+  },
+  voice: {
+    Icon: Mic,
+    label: "Voice clone",
+    tool: "clone_voice",
+    placeholder: "Demo line spoken in the cloned voice (4–80 chars)…",
+  },
 } as const;
+
+/** 产物是音频（配音 / 克隆音色）：资产区用播放条，不占 16:9 的画面高度。 */
+function isAudioType(mediaType: MediaType): boolean {
+  return mediaType === "audio" || mediaType === "voice";
+}
+
+/** 资产区（占位 / 失败 / 取消 / 加载中）的尺寸：音频一条矮栏，图片视频 16:9。 */
+function surfaceSize(mediaType: MediaType): string {
+  return isAudioType(mediaType) ? "h-20" : "aspect-video";
+}
 
 /** objectURL 引用计数：同一个 URL 此刻被几个已挂载的组件用着。 */
 const objectUrlRefs = new Map<string, number>();
@@ -90,7 +125,7 @@ export function MediaGroup({
 }: {
   conversationId: string;
   generationIds: string[];
-  mediaType: "image" | "video";
+  mediaType: MediaType;
 }) {
   const { data } = useConversationMedia(conversationId);
   if (generationIds.length === 1) {
@@ -173,7 +208,7 @@ export function MediaCard({
 }: {
   conversationId: string;
   generationId: string;
-  mediaType: "image" | "video";
+  mediaType: MediaType;
   compact?: boolean;
 }) {
   const { data, isLoading, refetch } = useConversationMedia(conversationId);
@@ -206,7 +241,7 @@ function MediaCardBody({
 }: {
   conversationId: string;
   generation: MediaGeneration;
-  mediaType: "image" | "video";
+  mediaType: MediaType;
   compact: boolean;
   onAfterRegenerate: () => void;
 }) {
@@ -326,7 +361,7 @@ function MediaCardBody({
             onChange={(e) => setDraft(e.target.value)}
             rows={3}
             maxLength={2000}
-            placeholder="Describe the image you want…"
+            placeholder={TYPE_META[mediaType].placeholder}
             // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
             className="resize-none text-base md:text-sm"
             autoFocus
@@ -385,7 +420,7 @@ function CardHeader({
   compact,
 }: {
   version: MediaVersion;
-  mediaType: "image" | "video";
+  mediaType: MediaType;
   compact: boolean;
 }) {
   const { Icon, tool } = TYPE_META[mediaType];
@@ -544,11 +579,13 @@ function ReferenceThumb({
   const url = useObjectUrl(blob);
 
   if (!isImage) {
-    const Icon = owner?.type === "audio" ? Music : VideoIcon;
+    // voice（克隆音色产物）作参考时就是一段参考音频，和上传的音频一样显示
+    const isAudio = owner?.type === "audio" || owner?.type === "voice";
+    const Icon = isAudio ? Music : VideoIcon;
     return (
       <span
         title={versionId}
-        aria-label={owner?.type === "audio" ? "Reference audio" : "Reference video"}
+        aria-label={isAudio ? "Reference audio" : "Reference video"}
         className="flex size-7 items-center justify-center rounded-md border bg-muted"
       >
         <Icon className="size-3.5 text-muted-foreground" />
@@ -577,17 +614,17 @@ function MediaSurface({
   mediaType,
 }: {
   version: MediaVersion;
-  mediaType: "image" | "video";
+  mediaType: MediaType;
 }) {
   if (version.status === "queued" || version.status === "generating") {
     // prompt 已由卡片的 PromptBlock 常驻展示，这里不再重复一行摘要。
     return <ShimmerPlaceholder mediaType={mediaType} prompt={null} />;
   }
   if (version.status === "failed") {
-    return <FailedSurface error={version.error} />;
+    return <FailedSurface error={version.error} mediaType={mediaType} />;
   }
   if (version.status === "cancelled") {
-    return <CancelledSurface />;
+    return <CancelledSurface mediaType={mediaType} />;
   }
   return <AssetSurface key={version.id} versionId={version.id} mediaType={mediaType} />;
 }
@@ -597,12 +634,14 @@ function ShimmerPlaceholder({
   mediaType,
   prompt,
 }: {
-  mediaType: "image" | "video";
+  mediaType: MediaType;
   prompt: string | null;
 }) {
   const { Icon } = TYPE_META[mediaType];
   return (
-    <div className="relative flex aspect-video w-full flex-col items-center justify-center gap-3 overflow-hidden bg-muted">
+    <div
+      className={`relative flex ${surfaceSize(mediaType)} w-full flex-col items-center justify-center gap-3 overflow-hidden bg-muted`}
+    >
       {/* shimmer：左右扫过的高光渐变。keyframe + 动画类在 globals.css（组件内 <style> 客户端不注入）。 */}
       <span
         className="animate-media-shimmer pointer-events-none absolute inset-0 -translate-x-full"
@@ -626,9 +665,11 @@ function ShimmerPlaceholder({
 }
 
 /** 失败：destructive 边框 + 错误文案。重试由底栏「重新生成」承担（设计 §操作）。 */
-function FailedSurface({ error }: { error: string | null }) {
+function FailedSurface({ error, mediaType }: { error: string | null; mediaType: MediaType }) {
   return (
-    <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 border-2 border-destructive/40 bg-destructive/5 px-4 text-center">
+    <div
+      className={`flex ${surfaceSize(mediaType)} w-full flex-col items-center justify-center gap-2 border-2 border-destructive/40 bg-destructive/5 px-4 text-center`}
+    >
       <p className="text-sm font-medium text-destructive">Generation failed</p>
       <p className="line-clamp-3 text-xs text-muted-foreground">
         {error || "Unknown error. Click “Regenerate” below to retry."}
@@ -638,22 +679,24 @@ function FailedSurface({ error }: { error: string | null }) {
 }
 
 /** 已取消（用户停止 / aigc 侧取消）：中性弱化，不用危险色——这不是错误。 */
-function CancelledSurface() {
+function CancelledSurface({ mediaType }: { mediaType: MediaType }) {
   return (
-    <div className="flex aspect-video w-full flex-col items-center justify-center gap-2 bg-muted px-4 text-center">
+    <div
+      className={`flex ${surfaceSize(mediaType)} w-full flex-col items-center justify-center gap-2 bg-muted px-4 text-center`}
+    >
       <Ban className="size-5 text-muted-foreground" />
       <p className="text-sm font-medium text-muted-foreground">Generation cancelled</p>
     </div>
   );
 }
 
-/** 完成：fetch 带 token 的二进制资产 → blob objectURL → <img>/<video>。cleanup 时 revoke。 */
+/** 完成：fetch 带 token 的二进制资产 → blob objectURL → <img>/<video>/<audio>。cleanup 时 revoke。 */
 function AssetSurface({
   versionId,
   mediaType,
 }: {
   versionId: string;
-  mediaType: "image" | "video";
+  mediaType: MediaType;
 }) {
   const { data: blob, isLoading } = useQuery({
     queryKey: ["media-asset", versionId],
@@ -666,7 +709,15 @@ function AssetSurface({
   const url = useObjectUrl(blob);
 
   if (isLoading || !url) {
-    return <Skeleton className="aspect-video w-full rounded-none" />;
+    return <Skeleton className={`${surfaceSize(mediaType)} w-full rounded-none`} />;
+  }
+
+  if (isAudioType(mediaType)) {
+    return (
+      <div className="flex h-20 items-center bg-muted px-3">
+        <audio src={url} controls preload="metadata" className="w-full" />
+      </div>
+    );
   }
 
   if (mediaType === "video") {
