@@ -63,6 +63,8 @@ export interface ConversationMessage {
   type: string;
   content: unknown;
   seq: number;
+  /** 落库时间（ISO）：消息时间与步骤耗时的服务端时间来源 */
+  createdAt: string;
 }
 
 export interface Conversation {
