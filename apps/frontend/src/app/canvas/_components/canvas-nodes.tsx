@@ -36,6 +36,7 @@ import type {
 import { cn } from "@/lib/utils";
 
 import { useMediaAsset } from "../_hooks/use-media-asset";
+import { placeholderAspect } from "../_lib/aigc-params";
 import { useNodeUpload } from "../_hooks/use-node-upload";
 import {
   CANVAS_NODE_IO,
@@ -471,6 +472,7 @@ function HeroSkeleton({
   state,
   runningLabel = "Generating",
   full,
+  aspect,
 }: {
   kind: "image" | "video" | "audio";
   /** 不传 = 只是资产在途（已 done，正在拉 blob），不必标注 */
@@ -479,17 +481,22 @@ function HeroSkeleton({
   runningLabel?: string;
   /** 骨架就是卡面的全部（在跑时正文不渲染）：四角都要圆 */
   full?: boolean;
+  /** 已知产物画幅（宽 / 高）时按它占位，与空态画框同形，开跑时卡片不跳；不传按类型的常见比例 */
+  aspect?: number;
 }) {
   return (
     <HeroFrame busy full={full}>
       <div
         className={
-          kind === "video"
-            ? "aspect-video"
-            : kind === "audio"
-              ? "h-20"
-              : "aspect-[4/3]"
+          aspect
+            ? undefined
+            : kind === "video"
+              ? "aspect-video"
+              : kind === "audio"
+                ? "h-20"
+                : "aspect-[4/3]"
         }
+        style={aspect ? { aspectRatio: aspect } : undefined}
       />
       {state && <BusyBadge state={state} runningLabel={runningLabel} />}
     </HeroFrame>
@@ -514,6 +521,85 @@ function BusyBadge({
       )}
       {running ? runningLabel : "Queued"}
     </span>
+  );
+}
+
+/**
+ * 还没有产物时的主视觉：先按将来产物的画幅摆出一块空画框（无从得知就 16:9），中间是节点类型图标。
+ * 卡片从一开始就是成品的形状，出图 / 出片时原地接替，不会忽高忽低。
+ */
+function HeroPlaceholder({
+  type,
+  aspect = 16 / 9,
+  full,
+  children,
+}: {
+  type: CanvasNodeType;
+  /** 宽 / 高 */
+  aspect?: number;
+  /** 画框就是卡面的全部（下面没有正文）：四角都要圆 */
+  full?: boolean;
+  /** 图标下方的内容（上传节点的选择按钮） */
+  children?: React.ReactNode;
+}) {
+  const { Icon } = NODE_META[type];
+  return (
+    <HeroFrame full={full}>
+      <div
+        className="flex flex-col items-center justify-center gap-2 bg-muted"
+        style={{ aspectRatio: aspect }}
+      >
+        {/* 淡色只给图标：框里的按钮 / 说明文字要保持正常对比度 */}
+        <Icon className="size-5 text-muted-foreground/60" aria-hidden />
+        {children}
+      </div>
+    </HeroFrame>
+  );
+}
+
+/**
+ * 画框里的一句状态 + 可选按钮（失败 / 取消时的 Retry、可合成时的 Merge）。
+ * 没有产物的卡片只留画框，需要说的话、能按的按钮都收进框里，不在卡片下面另起一行。
+ */
+function HeroNotice({
+  icon,
+  text,
+  tone = "muted",
+  action,
+}: {
+  icon?: React.ReactNode;
+  text?: string;
+  tone?: "muted" | "danger";
+  action?: { label: string; icon: React.ReactNode; onClick: () => void };
+}) {
+  return (
+    <div className="flex flex-col items-center gap-1.5 px-3 text-center">
+      {text && (
+        <span
+          className={cn(
+            "flex items-center gap-1 text-[11px]",
+            tone === "danger" ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          {icon}
+          {text}
+        </span>
+      )}
+      {action && (
+        <Button
+          variant="outline"
+          size="xs"
+          className="nodrag"
+          onClick={(e) => {
+            e.stopPropagation(); // 别顺带把节点选中、弹出编辑面板
+            action.onClick();
+          }}
+        >
+          {action.icon}
+          {action.label}
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -746,6 +832,7 @@ function UploadNode({
         state="generating"
         runningLabel={`Uploading ${Math.round(progress * 100)}%`}
         full
+        aspect={16 / 9}
       />
     );
   } else if (done) {
@@ -811,6 +898,34 @@ function UploadNode({
     status = <StatusLine text={`No ${kind} uploaded yet`} />;
   }
 
+  // 还没文件：16:9 空画框，选择按钮放在框里（整张卡就是拖放区）；下面没有状态条时画框独占卡面
+  const empty = !done && !uploading;
+  if (empty) {
+    hero = (
+      <HeroPlaceholder type={nodeType} full={!status}>
+        {!readOnly && (
+          <div className="flex flex-col items-center gap-1">
+            <Button
+              variant="outline"
+              size="xs"
+              className="nodrag"
+              onClick={(e) => {
+                e.stopPropagation(); // 别顺带把节点选中、弹出编辑面板
+                pick();
+              }}
+            >
+              <Upload className="size-3" aria-hidden />
+              Choose {kind}
+            </Button>
+            <span className="text-[11px] text-muted-foreground">
+              or drop a file here
+            </span>
+          </div>
+        )}
+      </HeroPlaceholder>
+    );
+  }
+
   return (
     <div
       // 拖文件到卡上即上传：只认带文件的拖拽，拖动卡片本身不经过这里
@@ -835,32 +950,14 @@ function UploadNode({
         selected={selected}
         dragging={dragging}
         label={data.label ?? ""}
-        mediaOnly={(done && asset.status === "ready") || uploading}
+        mediaOnly={
+          (done && asset.status === "ready") || uploading || (empty && !status)
+        }
         hero={hero}
         heroActions={heroActions}
         status={status}
         hasSource
-      >
-        {!done && !uploading && !readOnly && (
-          <div className="flex flex-col items-start gap-1">
-            <Button
-              variant="outline"
-              size="xs"
-              className="nodrag"
-              onClick={(e) => {
-                e.stopPropagation(); // 别顺带把节点选中、弹出编辑面板
-                pick();
-              }}
-            >
-              <Upload className="size-3" aria-hidden />
-              Choose {kind}
-            </Button>
-            <span className="text-[11px] text-muted-foreground">
-              or drop a file here
-            </span>
-          </div>
-        )}
-      </NodeShell>
+      />
       <input
         ref={inputRef}
         type="file"
@@ -944,13 +1041,15 @@ function MediaGenNode({
     useContext(CanvasEditorContext);
   const inputs = resolveInputs(data.id);
   // 上游各路这次会不会提交（按所选模型的素材上限算），附件栏据此标序号 / 压淡
-  const { references } = useActiveModel(
+  const { references, resolved } = useActiveModel(
     data.id,
     kind,
     data.mediaChannel,
     data.mediaModel,
     data.mediaParams,
   );
+  // 空态 / 骨架按当前生效的画幅占位（没有画幅这一维或自适应时 16:9）
+  const aspect = placeholderAspect(resolved?.values.aspect_ratio);
   // 提示词是这个节点自己的字段（入边只提供参考图）
   const prompt = data.prompt?.trim() ?? "";
   const title = data.label?.trim() || NODE_META[nodeType].label;
@@ -974,7 +1073,10 @@ function MediaGenNode({
   // 一屏几十张卡各顶三行字，反而看不出哪几张在动。要看内容点开面板。
   const busyNow =
     data.mediaStatus === "generating" || data.mediaStatus === "queued";
-  const mediaOnly = (done && asset.status === "ready") || busyNow;
+  // 没出片的一律只留画框（失败 / 取消的提示与 Retry 收进框里）——提示词点开面板就有
+  const failedNow =
+    data.mediaStatus === "failed" || data.mediaStatus === "cancelled";
+  const mediaOnly = (done && asset.status === "ready") || !done;
 
   let hero: React.ReactNode = null;
   if (done) {
@@ -990,7 +1092,7 @@ function MediaGenNode({
       ) : asset.status === "error" ? (
         <HeroLoadError onRetry={asset.retry} />
       ) : (
-        <HeroSkeleton kind={kind} />
+        <HeroSkeleton kind={kind} aspect={aspect} />
       );
   } else if (
     data.mediaStatus === "generating" ||
@@ -998,7 +1100,45 @@ function MediaGenNode({
   ) {
     // 排队中同样出骨架：队列并发有限，后面的任务要等前面跑完，
     // 不给占位的话这些节点看起来像根本没被触发。两者靠骨架上的角标区分。
-    hero = <HeroSkeleton kind={kind} state={data.mediaStatus} full />;
+    hero = (
+      <HeroSkeleton
+        kind={kind}
+        state={data.mediaStatus}
+        full
+        aspect={aspect}
+      />
+    );
+  } else {
+    // 没出过片（或失败 / 取消）：按当前画幅摆一块空画框；失败 / 取消时框里给一句状态和 Retry
+    const cancelled = data.mediaStatus === "cancelled";
+    hero = (
+      <HeroPlaceholder type={nodeType} aspect={aspect} full>
+        {failedNow && (
+          <HeroNotice
+            // cancelled = 用户停止：不是错误，用中性色，但同样可以重试
+            icon={
+              cancelled ? (
+                <Ban className="size-3" aria-hidden />
+              ) : (
+                <AlertTriangle className="size-3" aria-hidden />
+              )
+            }
+            tone={cancelled ? "muted" : "danger"}
+            text={cancelled ? "Render cancelled" : "Render failed"}
+            action={
+              readOnly || !data.mediaGenerationId
+                ? undefined
+                : {
+                    label: "Retry",
+                    icon: <RotateCcw className="size-3" aria-hidden />,
+                    onClick: () =>
+                      retryMedia(data.mediaGenerationId as string),
+                  }
+            }
+          />
+        )}
+      </HeroPlaceholder>
+    );
   }
 
   const heroActions =
@@ -1016,45 +1156,6 @@ function MediaGenNode({
         />
       </>
     ) : null;
-
-  // 在跑（generating / queued）时整条状态条都不出：骨架的扫光与角标已经说明进度。
-  // 必须**整段跳过**——只删掉那两个分支的话会掉进末尾的 else，
-  // 变成一边转圈一边写着「Ready — ask the agent to render it」。
-  let status: React.ReactNode = null;
-  if (!done && !busyNow) {
-    if (data.mediaStatus === "failed" || data.mediaStatus === "cancelled") {
-      // cancelled = 用户停止：不是错误，用中性色，但同样可以重试
-      const cancelled = data.mediaStatus === "cancelled";
-      status = (
-        <StatusLine
-          icon={
-            cancelled ? (
-              <Ban className="size-3" aria-hidden />
-            ) : (
-              <AlertTriangle className="size-3" aria-hidden />
-            )
-          }
-          tone={cancelled ? "muted" : "danger"}
-          text={cancelled ? "Render cancelled" : "Render failed"}
-          action={
-            readOnly || !data.mediaGenerationId
-              ? undefined
-              : {
-                  label: "Retry",
-                  icon: <RotateCcw className="size-3" aria-hidden />,
-                  onClick: () =>
-                    retryMedia(data.mediaGenerationId as string),
-                }
-          }
-        />
-      );
-    } else if (!prompt) {
-      status = <StatusLine text="Empty prompt — click to write it" />;
-    } else {
-      // 生成入口在面板里（选中节点即浮出）：既能选模型也能直接按 Generate
-      status = <StatusLine text="Ready — pick a model and generate" />;
-    }
-  }
 
   const shell = (
     <NodeShell
@@ -1096,7 +1197,6 @@ function MediaGenNode({
       mediaOnly={mediaOnly}
       hero={hero}
       heroActions={heroActions}
-      status={status}
       footer={<InputSummary inputs={inputs} />}
       hasTarget
       hasSource
@@ -1187,8 +1287,13 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
   const asset = useMediaAsset(done ? d.mediaVersionId : null);
   const busyNow = d.mediaStatus === "generating" || d.mediaStatus === "queued";
   const merged = done && asset.status === "ready";
+  const failedNow = d.mediaStatus === "failed" || d.mediaStatus === "cancelled";
+  // 每段都有着落了才给 Merge：合成要花时间，不在连线的瞬间替用户决定
+  const canMerge = missingClips === 0 && totalClips >= 2;
+  // 还没有能预览的片段：卡面只留空画框（同生成节点），Retry / Merge 收进框里
+  const placeholder = !done && !busyNow && clips.length === 0;
   // 同生成节点：合成完只留成片，合成中只留骨架 + 角标
-  const mediaOnly = merged || busyNow;
+  const mediaOnly = merged || busyNow || placeholder;
 
   const download = () => {
     if (asset.status !== "ready") return;
@@ -1200,12 +1305,37 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
 
   // 合成后放成片；没合成但有上游就放连续预览；都没有就放一块 16:9 的空画框——
   // 先把成片的形状摆出来，连上视频后预览原地接替，卡片不会忽高忽低
+  const cancelled = d.mediaStatus === "cancelled";
+  const retry = {
+    label: "Retry",
+    icon: <RotateCcw className="size-3" aria-hidden />,
+    onClick: () => mergeVideo(d.id),
+  };
+  const merge = {
+    label: "Merge",
+    icon: <Layers className="size-3" aria-hidden />,
+    onClick: () => mergeVideo(d.id),
+  };
   let hero: React.ReactNode = (
-    <HeroFrame>
-      <div className="flex aspect-video items-center justify-center text-muted-foreground/60">
-        <Layers className="size-5" aria-hidden />
-      </div>
-    </HeroFrame>
+    <HeroPlaceholder type="video_concat" full>
+      {failedNow ? (
+        <HeroNotice
+          icon={
+            cancelled ? (
+              <Ban className="size-3" aria-hidden />
+            ) : (
+              <AlertTriangle className="size-3" aria-hidden />
+            )
+          }
+          tone={cancelled ? "muted" : "danger"}
+          text={cancelled ? "Merge cancelled" : "Merge failed"}
+          action={readOnly ? undefined : retry}
+        />
+      ) : (
+        // 上游都还在生成（一段都没出片）也能先按：服务端等齐了再拼
+        canMerge && !readOnly && <HeroNotice action={merge} />
+      )}
+    </HeroPlaceholder>
   );
   if (merged) {
     hero = (
@@ -1241,11 +1371,11 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
     );
   }
 
-  // 在跑时整条状态条都不出（否则会掉进末尾的分支，一边合成一边还给一个 Merge 按钮）
+  // 状态条只跟着片段预览出（预览占着画框，话只能写在下面）；在跑时不出
+  // （否则会掉进末尾的分支，一边合成一边还给一个 Merge 按钮），空画框时话已收进框里
   let status: React.ReactNode = null;
-  if (!done && !busyNow) {
-    if (d.mediaStatus === "failed" || d.mediaStatus === "cancelled") {
-      const cancelled = d.mediaStatus === "cancelled";
+  if (!done && !busyNow && !placeholder) {
+    if (failedNow) {
       status = (
         <StatusLine
           icon={
@@ -1257,15 +1387,7 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
           }
           tone={cancelled ? "muted" : "danger"}
           text={cancelled ? "Merge cancelled" : "Merge failed"}
-          action={
-            readOnly
-              ? undefined
-              : {
-                  label: "Retry",
-                  icon: <RotateCcw className="size-3" aria-hidden />,
-                  onClick: () => mergeVideo(d.id),
-                }
-          }
+          action={readOnly ? undefined : retry}
         />
       );
     } else if (missingClips > 0) {
@@ -1280,7 +1402,6 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
         <StatusLine text={`Connect at least two videos (${totalClips})`} />
       );
     } else {
-      // 每段都有着落了才给 Merge：合成要花时间，不在连线的瞬间替用户决定
       status = (
         <StatusLine
           text={
@@ -1288,15 +1409,7 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
               ? `${totalClips} clips — ${pendingClips} still generating`
               : `${clips.length} clips — hover to preview`
           }
-          action={
-            readOnly
-              ? undefined
-              : {
-                  label: "Merge",
-                  icon: <Layers className="size-3" aria-hidden />,
-                  onClick: () => mergeVideo(d.id),
-                }
-          }
+          action={readOnly ? undefined : merge}
         />
       );
     }

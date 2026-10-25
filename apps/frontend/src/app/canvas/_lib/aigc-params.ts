@@ -189,6 +189,19 @@ export function planReferences(
   };
 }
 
+/**
+ * 节点还没有产物时，主视觉占位按哪个宽高比（宽 / 高）摆：取档位里的画幅（`16:9` / `16x9`），
+ * 自适应（`auto` / `adaptive`）或没有画幅这一维时按 16:9。
+ * 极端比例（如 1:8）夹到 1:2 ～ 4:1：占位只是预告形状，一张 2000px 高的空卡没有意义。
+ */
+export function placeholderAspect(value: string | undefined): number {
+  const m = value?.match(/^(\d+(?:\.\d+)?)\s*[:x]\s*(\d+(?:\.\d+)?)$/);
+  const ratio = m ? Number(m[1]) / Number(m[2]) : 16 / 9;
+  return Number.isFinite(ratio) && ratio > 0
+    ? Math.min(Math.max(ratio, 1 / 2), 4)
+    : 16 / 9;
+}
+
 /** 收窄后的档位 + 此刻的联动限制（面板据此置灰） */
 export interface ResolvedParams {
   /** 实际会提交的取值（可选维度没选 = 不在表里） */
