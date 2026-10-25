@@ -58,6 +58,7 @@ describe('MediaService', () => {
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('media-gen'), useValue: mockQueue },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: getQueueToken('media-poll'), useValue: { add: jest.fn() } },
         { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
         { provide: AigcService, useValue: mockAigc },
         { provide: PublicUrlService, useValue: mockPublicUrl },
@@ -845,6 +846,7 @@ describe('MediaService – cancelByConversation（停止功能）', () => {
           provide: getQueueToken('media-gen'),
           useValue: { add: jest.fn(), getJob },
         },
+        { provide: getQueueToken('media-poll'), useValue: { add: jest.fn() } },
         { provide: MEDIA_ABORTS, useValue: aborts },
         { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
         { provide: AigcService, useValue: mockAigc },
@@ -936,6 +938,7 @@ describe('MediaService – 暂停 / 继续', () => {
         { provide: PrismaService, useValue: prisma },
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('media-gen'), useValue: { add, getJob } },
+        { provide: getQueueToken('media-poll'), useValue: { add: jest.fn() } },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
         { provide: MEDIA_PAUSES, useValue: pauses },
         { provide: AigcService, useValue: mockAigc },
@@ -1073,6 +1076,7 @@ describe('MediaService.createAgentGenerations', () => {
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('media-gen'), useValue: mockQueue },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: getQueueToken('media-poll'), useValue: { add: jest.fn() } },
         { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
         {
           provide: AigcService,
@@ -1171,6 +1175,7 @@ describe('MediaService：配音参考格式 / 克隆音色 / 我的音色', () =
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('media-gen'), useValue: mockQueue },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: getQueueToken('media-poll'), useValue: { add: jest.fn() } },
         { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
         {
           provide: AigcService,
@@ -1358,37 +1363,133 @@ describe('MediaService：配音参考格式 / 克隆音色 / 我的音色', () =
   });
 });
 
-describe('MediaService.scheduleReconcile', () => {
-  it('前 6 轮 10s，之后 30s', async () => {
+describe('MediaService 对账（media-poll 队列）', () => {
+  const pollQueue = { add: jest.fn() };
+  const findUnique = jest.fn();
+  const getTask = jest.fn();
+  let service: MediaService;
+
+  beforeEach(async () => {
     const module = await Test.createTestingModule({
       providers: [
         MediaService,
-        { provide: PrismaService, useValue: mockPrisma },
+        {
+          provide: PrismaService,
+          useValue: {
+            ...mockPrisma,
+            mediaVersion: { ...mockPrisma.mediaVersion, findUnique },
+          },
+        },
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('media-gen'), useValue: mockQueue },
+        { provide: getQueueToken('media-poll'), useValue: pollQueue },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
         { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
-        { provide: AigcService, useValue: mockAigc },
+        { provide: AigcService, useValue: { ...mockAigc, getTask } },
         { provide: PublicUrlService, useValue: mockPublicUrl },
       ],
     }).compile();
-    const service = module.get(MediaService);
-    mockQueue.add.mockClear();
+    service = module.get(MediaService);
+    jest.clearAllMocks();
+  });
 
+  it('对账排在 media-poll，不进生成队列；前 6 轮 10s，之后 30s', async () => {
     await service.scheduleReconcile('v1', 6);
     await service.scheduleReconcile('v1', 7);
 
-    expect(mockQueue.add).toHaveBeenNthCalledWith(
+    // 生成队列的槽位可能全被等上游的下游占着，对账排在那里会永远轮不到
+    expect(mockQueue.add).not.toHaveBeenCalled();
+    expect(pollQueue.add).toHaveBeenNthCalledWith(
       1,
       'poll',
       { versionId: 'v1', attempt: 6 },
       expect.objectContaining({ delay: 10_000 }),
     );
-    expect(mockQueue.add).toHaveBeenNthCalledWith(
+    expect(pollQueue.add).toHaveBeenNthCalledWith(
       2,
       'poll',
       { versionId: 'v1', attempt: 7 },
       expect.objectContaining({ delay: 30_000 }),
     );
+  });
+
+  const open = {
+    id: 'v1',
+    status: 'generating',
+    providerTaskId: 'task-1',
+    generationId: 'g1',
+    generation: { conversationId: 'c1', type: 'image' },
+  };
+
+  it('aigc 还没出结果：排下一轮', async () => {
+    findUnique.mockResolvedValue(open);
+    getTask.mockResolvedValue({ task_id: 'task-1', status: 'processing' });
+    jest.spyOn(service, 'applyTaskResult').mockResolvedValue('pending');
+
+    await service.reconcile('v1', 3);
+
+    expect(pollQueue.add).toHaveBeenCalledWith(
+      'poll',
+      { versionId: 'v1', attempt: 4 },
+      expect.anything(),
+    );
+  });
+
+  it('aigc 已出结果：落库，不再排', async () => {
+    findUnique.mockResolvedValue(open);
+    getTask.mockResolvedValue({ task_id: 'task-1', status: 'success' });
+    const apply = jest
+      .spyOn(service, 'applyTaskResult')
+      .mockResolvedValue('applied');
+
+    await service.reconcile('v1', 1);
+
+    expect(apply).toHaveBeenCalledWith({
+      task_id: 'task-1',
+      status: 'success',
+    });
+    expect(pollQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('查询失败不判死：照样排下一轮', async () => {
+    findUnique.mockResolvedValue(open);
+    getTask.mockRejectedValue(new Error('socket hang up'));
+
+    await service.reconcile('v1', 2);
+
+    expect(pollQueue.add).toHaveBeenCalledWith(
+      'poll',
+      { versionId: 'v1', attempt: 3 },
+      expect.anything(),
+    );
+  });
+
+  it('轮满仍无结果：判超时失败', async () => {
+    findUnique.mockResolvedValue(open);
+    getTask.mockResolvedValue({ task_id: 'task-1', status: 'processing' });
+    jest.spyOn(service, 'applyTaskResult').mockResolvedValue('pending');
+    const settle = jest
+      .spyOn(service, 'settleFailed')
+      .mockResolvedValue('applied');
+
+    await service.reconcile('v1', 60);
+
+    expect(settle).toHaveBeenCalledWith(
+      'v1',
+      'g1',
+      'c1',
+      'image',
+      '生成超时：aigc 长时间未回结果',
+    );
+    expect(pollQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('版本已终结：什么都不做', async () => {
+    findUnique.mockResolvedValue({ ...open, status: 'done' });
+
+    await service.reconcile('v1', 1);
+
+    expect(getTask).not.toHaveBeenCalled();
+    expect(pollQueue.add).not.toHaveBeenCalled();
   });
 });

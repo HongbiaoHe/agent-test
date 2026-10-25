@@ -114,6 +114,8 @@ export class MediaService {
     private readonly prisma: PrismaService,
     private readonly stream: StreamService,
     @InjectQueue('media-gen') private readonly queue: Queue,
+    // 对账单独一条队列：生成队列的槽位可能全被「等上游」的下游占着，对账排在那里会永远轮不到
+    @InjectQueue('media-poll') private readonly pollQueue: Queue,
     @Inject(MEDIA_ABORTS) private readonly aborts: AbortRegistry,
     @Inject(MEDIA_PAUSES) private readonly pauses: AbortRegistry,
     private readonly aigc: AigcService,
@@ -880,7 +882,7 @@ export class MediaService {
    * 所以每个提交出去的任务都配一条兜底轮询，直到终态或轮满。
    */
   async scheduleReconcile(versionId: string, attempt: number): Promise<void> {
-    await this.queue.add(
+    await this.pollQueue.add(
       'poll',
       { versionId, attempt },
       {
@@ -892,6 +894,44 @@ export class MediaService {
         removeOnComplete: true,
       },
     );
+  }
+
+  /**
+   * 对账一轮：去 aigc 查这版的任务结果，到终态就落库；还没出结果就排下一轮，满轮判超时失败。
+   * 由 media-poll 队列的 worker 执行（MediaPollProcessor）；media-gen 里升级前排下的老 poll 任务也走这里。
+   * 单次查询失败（网络抖动等）不判死本版本——继续排下一轮，最坏由轮数封顶收敛。
+   */
+  async reconcile(versionId: string, attempt: number): Promise<void> {
+    const version = await this.prisma.mediaVersion.findUnique({
+      where: { id: versionId },
+      include: { generation: true },
+    });
+    if (!version || !MEDIA_OPEN_STATUSES.includes(version.status)) return;
+    // 还没提交出去（generate job 尚未跑到 submit）：本轮什么都做不了，等下一轮
+    if (version.providerTaskId) {
+      try {
+        const task = await this.aigc.getTask(version.providerTaskId);
+        if ((await this.applyTaskResult(task)) !== 'pending') return;
+      } catch (e) {
+        this.logger.warn(
+          `对账查询失败（第 ${attempt} 轮）versionId=${versionId}：${
+            e instanceof Error ? e.message : String(e)
+          }`,
+        );
+      }
+    }
+
+    if (attempt >= RECONCILE_MAX_ATTEMPTS) {
+      await this.settleFailed(
+        versionId,
+        version.generationId,
+        version.generation.conversationId,
+        asMediaType(version.generation.type),
+        '生成超时：aigc 长时间未回结果',
+      );
+      return;
+    }
+    await this.scheduleReconcile(versionId, attempt + 1);
   }
 
   /**

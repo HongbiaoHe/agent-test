@@ -120,6 +120,7 @@ describe('MediaService.applyTaskResult', () => {
         },
         { provide: StreamService, useValue: { publish } },
         { provide: getQueueToken('media-gen'), useValue: { add: jest.fn() } },
+        { provide: getQueueToken('media-poll'), useValue: { add: jest.fn() } },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
         { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
         { provide: AigcService, useValue: {} },

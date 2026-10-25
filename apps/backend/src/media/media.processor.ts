@@ -26,15 +26,12 @@ import {
 } from './mock-media';
 import {
   asAssetType,
-  asMediaType,
   extFromUrl,
   mediaDataDir,
   MediaService,
   MediaType,
-  MEDIA_OPEN_STATUSES,
   MEDIA_PAUSED,
   readParams,
-  RECONCILE_MAX_ATTEMPTS,
 } from './media.service';
 
 interface MediaJobData {
@@ -84,7 +81,8 @@ export class MediaProcessor extends WorkerHost {
   async process(job: Job<MediaJobData>): Promise<void> {
     // 对账轮询不动状态、不占 abort 句柄，单独一条路径
     if (job.name === 'poll') {
-      await this.reconcile(job.data.versionId, job.data.attempt ?? 1);
+      // 对账已改走 media-poll 队列（MediaPollProcessor）；这里只收升级前排在本队列里的老任务
+      await this.media.reconcile(job.data.versionId, job.data.attempt ?? 1);
       return;
     }
     const { versionId } = job.data;
@@ -547,44 +545,6 @@ export class MediaProcessor extends WorkerHost {
       task.output_data?.audio_url ??
       null
     );
-  }
-
-  /**
-   * 回调兜底对账：查一次 aigc 任务详情，没到终态就再排一轮，轮满判超时失败。
-   *
-   * 单次失败（网络抖动等）不判死本版本——继续排下一轮，最坏由轮数封顶收敛。
-   */
-  private async reconcile(versionId: string, attempt: number): Promise<void> {
-    const version = await this.prisma.mediaVersion.findUnique({
-      where: { id: versionId },
-      include: { generation: true },
-    });
-    if (!version || !MEDIA_OPEN_STATUSES.includes(version.status)) return;
-    // 还没提交出去（generate job 尚未跑到 submit）：本轮什么都做不了，等下一轮
-    if (version.providerTaskId) {
-      try {
-        const task = await this.aigc.getTask(version.providerTaskId);
-        if ((await this.media.applyTaskResult(task)) !== 'pending') return;
-      } catch (e) {
-        this.logger.warn(
-          `对账查询失败（第 ${attempt} 轮）versionId=${versionId}：${
-            e instanceof Error ? e.message : String(e)
-          }`,
-        );
-      }
-    }
-
-    if (attempt >= RECONCILE_MAX_ATTEMPTS) {
-      await this.media.settleFailed(
-        versionId,
-        version.generationId,
-        version.generation.conversationId,
-        asMediaType(version.generation.type),
-        '生成超时：aigc 长时间未回结果',
-      );
-      return;
-    }
-    await this.media.scheduleReconcile(versionId, attempt + 1);
   }
 
   /**
