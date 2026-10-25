@@ -68,6 +68,8 @@ export interface ChatState {
   status: "idle" | "running" | "done" | "failed";
   ask: AskRequest | null;
   nextId: number;
+  /** 本轮附件正在被理解（开跑前）：思考行显示「Reading attachments done/total」；null = 没在读 */
+  reading: { done: number; total: number } | null;
 }
 
 export const emptyChat: ChatState = {
@@ -75,6 +77,7 @@ export const emptyChat: ChatState = {
   status: "idle",
   ask: null,
   nextId: 0,
+  reading: null,
 };
 
 function extractAsk(payload: Record<string, unknown>): AskRequest | null {
@@ -318,6 +321,19 @@ export function reduce(input: ChatState, ev: ChatEvent): ChatState {
       items[idx] = { ...items[idx], kind: "plan", todos } as ChatItem;
       return { ...state, items };
     }
+    case "attachment_analysis": {
+      // 实时进度事件带 status；历史里同 type 的那行是注入给 agent 的正文（只有 text），不展示
+      const { status, done, total } = ev.payload;
+      if (status === "finished") return { ...state, reading: null };
+      if (
+        status === "reading" &&
+        typeof done === "number" &&
+        typeof total === "number"
+      ) {
+        return { ...state, reading: { done, total } };
+      }
+      return state;
+    }
     case "skill_invocation": {
       const name = String(ev.payload.name ?? "");
       if (!name) return state;
@@ -332,7 +348,7 @@ export function reduce(input: ChatState, ev: ChatEvent): ChatState {
         it.kind === "tool" && !it.done ? { ...it, done: true } : it,
       );
       const status = ev.payload.status === "stopped" ? "done" : "done";
-      return { ...state, items, status, ask: null };
+      return { ...state, items, status, ask: null, reading: null };
     }
     case "error": {
       // 终止性事件：收尾未完成的工具卡片 + 清掉任何未决中断（ask），
@@ -351,6 +367,7 @@ export function reduce(input: ChatState, ev: ChatEvent): ChatState {
         ]),
         status: "failed",
         ask: null,
+        reading: null,
       };
     }
     default:

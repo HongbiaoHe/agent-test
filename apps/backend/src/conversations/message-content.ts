@@ -17,6 +17,14 @@ const userMessageContentSchema = z.object({
     .optional(),
 });
 
+/** 用户消息带的附件（老消息 / 没带附件返回空数组） */
+export function messageAttachments(
+  content: unknown,
+): { versionId: string; type: string; filename: string }[] {
+  const parsed = userMessageContentSchema.safeParse(content);
+  return parsed.success ? (parsed.data.attachments ?? []) : [];
+}
+
 /**
  * 重放给模型的用户消息文本：正文 + 末尾一段「[附件]」清单（类型 / versionId / 文件名）。
  * 模型据此知道「这一轮用户给了哪些素材」，可直接把 versionId 填进 referenceVersionIds。

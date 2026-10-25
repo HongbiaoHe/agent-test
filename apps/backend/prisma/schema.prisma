@@ -173,6 +173,8 @@ model MediaVersion {
   mock                Boolean         @default(false)
   createdAt           DateTime        @default(now())
   completedAt         DateTime?
+  // 附件理解结果（发送时自动分析，见 media-analysis 模块）；一个版本至多一份
+  analysis            MediaAnalysis?
 
   @@index([generationId])
   @@index([providerTaskId])
@@ -402,4 +404,25 @@ model Skill {
   updatedAt   DateTime @updatedAt
 
   @@unique([userId, name])
+}
+
+/// 附件理解：用户发送的图片 / 视频 / 音频由视觉模型分析出的结构化描述，按版本一一对应。
+/// 发送时自动分析（media-analyze 队列），canvas agent 开跑前注入摘要，细节经 get_media_analysis 工具按需取。
+/// 同一版本只分析一次：重复发送同一附件直接复用。
+model MediaAnalysis {
+  id           String       @id @default(cuid())
+  versionId    String       @unique
+  version      MediaVersion @relation(fields: [versionId], references: [id], onDelete: Cascade)
+  status       String       @default("pending") // pending | done | failed | skipped
+  // 一句话摘要（注入 agent 上下文与前端展示）
+  summary      String?      @db.Text
+  // 结构化细节（形状随素材类型而变，见 media-analysis.schema.ts），只整体读写
+  detail       Json?
+  // 做分析的模型
+  model        String?
+  error        String?      @db.Text
+  inputTokens  Int          @default(0)
+  outputTokens Int          @default(0)
+  createdAt    DateTime     @default(now())
+  updatedAt    DateTime     @updatedAt
 }

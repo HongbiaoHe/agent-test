@@ -17,6 +17,7 @@ import { CanvasService } from './canvas.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
+import { MediaAnalysisService } from '../media-analysis/media-analysis.service';
 import { BusinessException } from '../common/errors/business.exception';
 import { MediaUploadService } from '../media/media-upload.service';
 import { ErrorCodes } from '../common/errors/error-code';
@@ -86,6 +87,7 @@ describe('CanvasService', () => {
     resumeVersions: jest.fn(),
   };
   const mockUploads = { store: jest.fn() };
+  const mockAnalysis = { enqueue: jest.fn().mockResolvedValue(undefined) };
 
   beforeEach(async () => {
     tx = makeTx();
@@ -101,6 +103,7 @@ describe('CanvasService', () => {
         { provide: getQueueToken('canvas-run'), useValue: mockQueue },
         { provide: MediaService, useValue: mockMedia },
         { provide: MediaUploadService, useValue: mockUploads },
+        { provide: MediaAnalysisService, useValue: mockAnalysis },
         { provide: CANVAS_ABORTS, useValue: new AbortRegistry() },
         { provide: CHECKPOINTER, useValue: mockCheckpointer },
       ],
@@ -514,6 +517,38 @@ describe('CanvasService', () => {
       expect(mockQueue.add).toHaveBeenCalledWith('run', {
         sessionId: 's1',
         goal: 'x.png',
+      });
+    });
+
+    it('发送即为附件投理解任务；投递失败不拦发送', async () => {
+      mockMedia.commitAttachments.mockResolvedValue([
+        {
+          versionId: 'v-a',
+          type: 'image',
+          url: 'https://cdn/x.png',
+          filename: 'x.png',
+          contentType: 'image/png',
+        },
+      ]);
+      mockAnalysis.enqueue.mockRejectedValueOnce(new Error('redis down'));
+
+      await service.appendMessage(
+        's1',
+        '看看这张图',
+        't1',
+        'u1',
+        undefined,
+        undefined,
+        undefined,
+        ['v-a'],
+      );
+
+      expect(mockAnalysis.enqueue).toHaveBeenCalledWith(['v-a']);
+      // 消息照常落库、run 照常入队
+      expect(mockPrisma.canvasMessage.create).toHaveBeenCalled();
+      expect(mockQueue.add).toHaveBeenCalledWith('run', {
+        sessionId: 's1',
+        goal: '看看这张图',
       });
     });
 

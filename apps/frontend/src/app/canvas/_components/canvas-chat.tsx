@@ -866,7 +866,14 @@ export function CanvasChat({
           <CanvasThinkingIndicator
             size={18}
             animation={PHASE_UI[phase].animation}
-            phrases={PHASE_UI[phase].phrases}
+            // 开跑前在读本轮附件：这是确定在做的事，直接报进度，不轮换俏皮话
+            phrases={
+              chat.reading
+                ? [
+                    `Reading attachments ${chat.reading.done}/${chat.reading.total}`,
+                  ]
+                : PHASE_UI[phase].phrases
+            }
           />
         </div>
       )}

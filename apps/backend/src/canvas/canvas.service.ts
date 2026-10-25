@@ -15,6 +15,7 @@ import {
   type UploadedAsset,
   type UploadFileInput,
 } from '../media/media-upload.service';
+import { MediaAnalysisService } from '../media-analysis/media-analysis.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CANVAS_ABORTS } from './canvas.abort';
 import {
@@ -120,6 +121,7 @@ export class CanvasService {
     @InjectQueue('canvas-run') private readonly queue: Queue,
     private readonly media: MediaService,
     private readonly uploads: MediaUploadService,
+    private readonly analysis: MediaAnalysisService,
     @Inject(CANVAS_ABORTS) private readonly aborts: AbortRegistry,
     // 只用到 deleteThread（清空 agent 上下文）；按最小接口注入，避免依赖 RedisSaver 全量类型
     @Inject(CHECKPOINTER)
@@ -851,6 +853,13 @@ export class CanvasService {
       userId,
       attachmentVersionIds,
     );
+    // 附件理解：发送即投分析任务（并发），worker 开跑前等结果再注入给 agent（见 CanvasProcessor）。
+    // 投递失败不拦发送：附件已转正，agent 照样能用它们，只是没有理解结果（开跑时标「分析中」）
+    await this.analysis
+      .enqueue(attachments.map((a) => a.versionId))
+      .catch((e: unknown) =>
+        this.logger.warn(`附件理解投递失败 session=${id}: ${String(e)}`),
+      );
     // 只发附件：本轮目标（token 报表里的 goal）回退成文件名
     const goal = content?.trim()
       ? content
