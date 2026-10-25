@@ -444,6 +444,59 @@ export class CanvasService {
   }
 
   /**
+   * 暂停画布上还没提交给 aigc 的生成（已提交的云端停不下来，计入 skipped）。
+   * 不传 nodeId = 整张画布；传了 = 该节点及其全部下游——下游在等它，一起停才不会干等到超时。
+   */
+  async pauseMedia(
+    id: string,
+    tenantId: string,
+    nodeId?: string,
+  ): Promise<{ paused: number; skipped: number }> {
+    return this.media.pauseVersions(
+      id,
+      await this.mediaScope(id, tenantId, nodeId),
+    );
+  }
+
+  /** 继续已暂停的生成；范围规则同 pauseMedia（单节点 = 它和它的下游一起继续）。 */
+  async resumeMedia(
+    id: string,
+    tenantId: string,
+    nodeId?: string,
+  ): Promise<{ resumed: number }> {
+    return this.media.resumeVersions(
+      id,
+      await this.mediaScope(id, tenantId, nodeId),
+    );
+  }
+
+  /** 暂停 / 继续的作用范围：节点 + 全部下游各自的当前版本；不传 nodeId 返回 undefined（= 整个会话）。 */
+  private async mediaScope(
+    id: string,
+    tenantId: string,
+    nodeId?: string,
+  ): Promise<string[] | undefined> {
+    const snap = await this.snapshot(id, tenantId);
+    if (!nodeId) return undefined;
+    if (!snap.nodes.some((n) => n.id === nodeId)) {
+      throw new BusinessException(ErrorCodes.CANVAS_NODE_NOT_FOUND);
+    }
+    const scope = new Set([nodeId]);
+    for (let grew = true; grew; ) {
+      grew = false;
+      for (const e of snap.edges) {
+        if (scope.has(e.source) && !scope.has(e.target)) {
+          scope.add(e.target);
+          grew = true;
+        }
+      }
+    }
+    return snap.nodes
+      .filter((n) => scope.has(n.id) && n.mediaVersionId)
+      .map((n) => n.mediaVersionId as string);
+  }
+
+  /**
    * 给 agent 工具用的快照（免租户校验）：sessionId 来自可信 worker 上下文（不经模型），无越权风险。
    */
   async agentSnapshot(sessionId: string): Promise<CanvasSnapshot> {

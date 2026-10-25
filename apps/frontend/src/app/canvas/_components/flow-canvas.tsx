@@ -93,6 +93,9 @@ export const CanvasEditorContext = createContext<{
   generateNode: (nodeId: string) => void;
   /** 触发视频拼接（video_concat 卡片上的 Merge） */
   mergeVideo: (nodeId: string) => void;
+  /** 暂停 / 继续某个节点及其下游的生成（卡片悬停操作组；agent 运行中也可用） */
+  pauseMedia: (nodeId: string) => void;
+  resumeMedia: (nodeId: string) => void;
   /** 给上传节点传文件（进度经 opts 回报；失败 reject，由卡片显示）；回新版本 id */
   uploadNodeFile: (
     nodeId: string,
@@ -124,6 +127,8 @@ export const CanvasEditorContext = createContext<{
   retryMedia: () => {},
   generateNode: () => {},
   mergeVideo: () => {},
+  pauseMedia: () => {},
+  resumeMedia: () => {},
   uploadNodeFile: () => Promise.reject(new Error("Canvas not loaded")),
   openConnectMenu: () => {},
   focusNode: () => {},
@@ -355,6 +360,9 @@ interface FlowCanvasProps {
   onGenerateNode: (nodeId: string) => void;
   /** 触发视频拼接（video_concat 卡片上的 Merge） */
   onMergeVideo: (nodeId: string) => void;
+  /** 暂停 / 继续某个节点及其下游的生成 */
+  onPauseMedia: (nodeId: string) => void;
+  onResumeMedia: (nodeId: string) => void;
   /** 给上传节点传文件（上传节点卡片上的选择 / 拖入） */
   onUploadNodeFile: (
     nodeId: string,
@@ -404,6 +412,8 @@ function FlowCanvasInner({
   onRetryMedia,
   onGenerateNode,
   onMergeVideo,
+  onPauseMedia,
+  onResumeMedia,
   onUploadNodeFile,
   loading,
   focusNodeIds,
@@ -700,6 +710,8 @@ function FlowCanvasInner({
       retryMedia: onRetryMedia,
       generateNode: onGenerateNode,
       mergeVideo: onMergeVideo,
+      pauseMedia: onPauseMedia,
+      resumeMedia: onResumeMedia,
       uploadNodeFile: onUploadNodeFile,
       openConnectMenu: (r: ConnectMenuRequest) =>
         openDropAt(r.nodeId, r.direction, r.clientX, r.clientY),
@@ -721,6 +733,8 @@ function FlowCanvasInner({
       onRetryMedia,
       onGenerateNode,
       onMergeVideo,
+      onPauseMedia,
+      onResumeMedia,
       onUploadNodeFile,
       openDropAt,
       focusNodeOnCanvas,

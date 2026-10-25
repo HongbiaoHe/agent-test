@@ -9,6 +9,7 @@ import {
   ImageOff,
   Loader2,
   Music,
+  Pause,
 } from "lucide-react";
 import { useContext, useEffect, useRef } from "react";
 
@@ -322,6 +323,13 @@ function nodeState(s: NodeInputSource): {
       return {
         icon: <Clock className="size-3.5" aria-hidden />,
         text: "Queued",
+        busy: true,
+      };
+    // 暂停中照样是「会提交的上游」：继续后出结果，本节点会等它
+    case "paused":
+      return {
+        icon: <Pause className="size-3.5" aria-hidden />,
+        text: "Paused",
         busy: true,
       };
     case "failed":

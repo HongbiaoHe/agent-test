@@ -61,9 +61,13 @@ export interface NodeInputSource {
   mediaMock: boolean;
 }
 
-/** 上游还在排队 / 生成中：下游可以照常触发，服务端会带上它的版本并等它出结果（同后端 isInFlight）。 */
+/** 上游还在排队 / 生成 / 暂停中：下游可以照常触发，服务端会带上它的版本并等它出结果（同后端 isInFlight）。 */
 export function isInFlight(s: Pick<NodeInputSource, "mediaStatus">): boolean {
-  return s.mediaStatus === "queued" || s.mediaStatus === "generating";
+  return (
+    s.mediaStatus === "queued" ||
+    s.mediaStatus === "generating" ||
+    s.mediaStatus === "paused"
+  );
 }
 
 /** 这一路上游此刻（或在途完成后）给目标提供哪类素材；收不了 / 既没产物也没在生成 → null。 */

@@ -17,6 +17,7 @@ import { CanvasService } from './canvas.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
+import { BusinessException } from '../common/errors/business.exception';
 import { MediaUploadService } from '../media/media-upload.service';
 import { ErrorCodes } from '../common/errors/error-code';
 import type { AddNodeOp, UpdateNodeOp } from './canvas.types';
@@ -81,6 +82,8 @@ describe('CanvasService', () => {
   const mockMedia = {
     cancelByConversation: jest.fn(),
     commitAttachments: jest.fn(),
+    pauseVersions: jest.fn(),
+    resumeVersions: jest.fn(),
   };
   const mockUploads = { store: jest.fn() };
 
@@ -994,6 +997,57 @@ describe('CanvasService', () => {
    * 短 id：注入给模型的画布状态用完整 cuid 的后 6 位（完整 id 会让这段膨胀近 3 倍，而它每次
    * 画布变化都要追加进上下文）。工具侧靠 resolveNodeId 反解，短 id / 完整 id 都要吃。
    */
+  describe('暂停 / 继续的作用范围', () => {
+    // a → b → d，a → c；e 不相连。按节点暂停 = 该节点 + 全部下游各自的当前版本
+    const node = (id: string, mediaVersionId: string | null) => ({
+      id,
+      mediaVersionId,
+    });
+    beforeEach(() => {
+      jest.spyOn(service, 'snapshot').mockResolvedValue({
+        nodes: [
+          node('a', 'va'),
+          node('b', 'vb'),
+          node('c', null), // 没触发过：没有版本，跳过
+          node('d', 'vd'),
+          node('e', 've'),
+        ],
+        edges: [
+          { source: 'a', target: 'b' },
+          { source: 'a', target: 'c' },
+          { source: 'b', target: 'd' },
+        ],
+      } as unknown as Awaited<ReturnType<CanvasService['snapshot']>>);
+      mockMedia.pauseVersions.mockResolvedValue({ paused: 0, skipped: 0 });
+      mockMedia.resumeVersions.mockResolvedValue({ resumed: 0 });
+    });
+
+    it('按节点暂停：连同所有下游，不碰无关节点', async () => {
+      await service.pauseMedia('s1', 't1', 'a');
+      expect(mockMedia.pauseVersions).toHaveBeenCalledWith('s1', [
+        'va',
+        'vb',
+        'vd',
+      ]);
+    });
+
+    it('按节点继续：同样连同下游', async () => {
+      await service.resumeMedia('s1', 't1', 'b');
+      expect(mockMedia.resumeVersions).toHaveBeenCalledWith('s1', ['vb', 'vd']);
+    });
+
+    it('不传节点 = 整张画布', async () => {
+      await service.pauseMedia('s1', 't1');
+      expect(mockMedia.pauseVersions).toHaveBeenCalledWith('s1', undefined);
+    });
+
+    it('节点不存在 → 拒绝', async () => {
+      await expect(service.pauseMedia('s1', 't1', 'ghost')).rejects.toThrow(
+        BusinessException,
+      );
+    });
+  });
+
   describe('短 id 与反解', () => {
     // 同一秒创建的 cuid，前 8 位相同、后 6 位不同 —— 正是不能用前缀、只能用后缀的原因
     const idA = 'cms7n6wca00jjsp0somugi7qu';

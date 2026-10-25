@@ -109,6 +109,8 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
             onRetryMedia={c.retryMedia}
             onGenerateNode={c.generateNode}
             onMergeVideo={c.mergeVideo}
+            onPauseMedia={c.pauseMedia}
+            onResumeMedia={c.resumeMedia}
             onUploadNodeFile={c.uploadNodeFile}
             loading={c.isLoading}
             focusNodeIds={c.focusNodeIds}
@@ -126,6 +128,17 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
             mockMedia={c.mockMedia}
             mockMediaAvailable={c.mockMediaAvailable}
             onMockMediaChange={c.setMockMedia}
+            runningCount={
+              c.canvas.nodes.filter(
+                (n) =>
+                  n.mediaStatus === "queued" || n.mediaStatus === "generating",
+              ).length
+            }
+            pausedCount={
+              c.canvas.nodes.filter((n) => n.mediaStatus === "paused").length
+            }
+            onPauseAll={() => c.pauseMedia()}
+            onResumeAll={() => c.resumeMedia()}
           />
           {/* 骨架屏：盖在画布之上，快照与历史都落地（且至少驻留 500ms）后爆开退场。
               key=sessionId：切画布要从等待态重新走一遍 */}

@@ -43,3 +43,9 @@ export class AbortRegistry {
 export const AGENT_ABORTS = Symbol('AGENT_ABORTS');
 /** DI token：media-gen 注册表（按 versionId） */
 export const MEDIA_ABORTS = Symbol('MEDIA_ABORTS');
+/**
+ * DI token：media-gen 暂停注册表（按 versionId）。worker 只在「还没提交给 aigc」的那段
+ * （等上游参考、等拼接源）注册，abort() 返回 true ⇒ worker 把这版落成 paused；
+ * 返回 false ⇒ 已经提交（或不在跑），暂停不了。
+ */
+export const MEDIA_PAUSES = Symbol('MEDIA_PAUSES');

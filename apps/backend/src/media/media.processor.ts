@@ -4,7 +4,11 @@ import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Job } from 'bullmq';
-import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
+import {
+  AbortRegistry,
+  MEDIA_ABORTS,
+  MEDIA_PAUSES,
+} from '../agent/abort-registry';
 import { AigcService } from '../aigc/aigc.service';
 import { videoRefRole } from '../aigc/aigc.catalog';
 import type { AigcMediaConfig, AigcReference } from '../aigc/aigc.types';
@@ -28,6 +32,7 @@ import {
   MediaService,
   MediaType,
   MEDIA_OPEN_STATUSES,
+  MEDIA_PAUSED,
   readParams,
   RECONCILE_MAX_ATTEMPTS,
 } from './media.service';
@@ -49,6 +54,12 @@ interface MediaJobData {
  *
  * 只在状态变更时推流（generating / done|failed），轮询 tick 不推（避免前端失效风暴，设计 Issue 9）。
  */
+/** 暂停窗口：等待段用 signal（停止或暂停都会打断），到提交 / 本地出片那一刻 close()。 */
+interface PauseGate {
+  signal: AbortSignal;
+  close: () => void;
+}
+
 /** 拼接等待在途源视频的总上限（15 分钟，须小于 lockDuration）。 */
 const CONCAT_SOURCE_WAIT_MS = 15 * 60_000;
 
@@ -65,6 +76,7 @@ export class MediaProcessor extends WorkerHost {
     private readonly aigc: AigcService,
     private readonly media: MediaService,
     @Inject(MEDIA_ABORTS) private readonly aborts: AbortRegistry,
+    @Inject(MEDIA_PAUSES) private readonly pauses: AbortRegistry,
   ) {
     super();
   }
@@ -76,11 +88,15 @@ export class MediaProcessor extends WorkerHost {
       return;
     }
     const { versionId } = job.data;
+    // 暂停窗口：第一时间登记（排队中被拾取的那一瞬，暂停接口移不走 job，就靠它叫停），
+    // 到「提交给 aigc / 开始本地出片」那一刻关掉——之后云端停不下来，暂停不再生效。
+    const pause = this.pauses.register(versionId);
     const version = await this.prisma.mediaVersion.findUnique({
       where: { id: versionId },
       include: { generation: true },
     });
     if (!version) {
+      pause.dispose();
       this.logger.warn(`media 版本不存在，跳过 versionId=${versionId}`);
       return;
     }
@@ -91,6 +107,15 @@ export class MediaProcessor extends WorkerHost {
     // 本 job 里能被打断的是「等上游参考图」与「ffmpeg 拼接」两段循环（每轮检查 signal）；
     // 已经提交给 aigc 的那些由 cancelByConversation 自己判失败（那时没有 worker 攥着它）。
     const { signal, dispose } = this.aborts.register(versionId);
+    const gate: PauseGate = {
+      // 等待段同时听「停止」与「暂停」
+      signal: AbortSignal.any([signal, pause.signal]),
+      close: () => {
+        pause.dispose();
+        // 关窗前已被叫停：不再往下走（发单就要付费）
+        if (pause.signal.aborted) throw new Error('用户已暂停');
+      },
+    };
     try {
       await this.prisma.mediaVersion.update({
         where: { id: versionId },
@@ -111,6 +136,7 @@ export class MediaProcessor extends WorkerHost {
           version.referenceVersionIds,
           versionId,
           signal,
+          gate,
         );
         await this.prisma.mediaVersion.update({
           where: { id: versionId },
@@ -134,6 +160,7 @@ export class MediaProcessor extends WorkerHost {
           generation.id,
           type,
           signal,
+          gate,
         );
         await this.prisma.mediaVersion.update({
           where: { id: versionId },
@@ -163,10 +190,11 @@ export class MediaProcessor extends WorkerHost {
         version.referenceVersionIds,
         type,
         version.model,
-        { signal },
+        { signal: gate.signal },
       );
       // 等参考图期间被停止：不再往 aigc 发单（发了就要付费），走 catch 的「用户已停止」收尾
       if (signal.aborted) throw new Error('用户已停止');
+      gate.close();
 
       // 接单：模型与档位取本版本落库的那份（建版本时已按目录归一），
       // 参考图会让 aigc 侧的 derived 维度变化，故 submit 内部还会再收窄一次并回传实际生效值。
@@ -195,6 +223,12 @@ export class MediaProcessor extends WorkerHost {
         `media 已提交 aigc versionId=${versionId} task=${taskId} ${config.channel}/${config.model}`,
       );
     } catch (e) {
+      // 提交前被暂停（且没被停止）：落 paused，等继续时重新入队
+      if (pause.signal.aborted && !signal.aborted) {
+        await this.media.settlePaused(versionId);
+        this.logger.log(`media 生成已暂停 versionId=${versionId}`);
+        return;
+      }
       // 协作取消统一在此落 failed(用户已停止)；其余按原始报错落 failed
       const message = signal.aborted
         ? '用户已停止'
@@ -216,6 +250,7 @@ export class MediaProcessor extends WorkerHost {
       );
     } finally {
       dispose();
+      pause.dispose();
     }
   }
 
@@ -229,6 +264,7 @@ export class MediaProcessor extends WorkerHost {
     sourceIds: unknown,
     versionId: string,
     signal: AbortSignal,
+    gate: PauseGate,
   ): Promise<string> {
     const ids = Array.isArray(sourceIds)
       ? sourceIds.filter((x): x is string => typeof x === 'string')
@@ -239,18 +275,25 @@ export class MediaProcessor extends WorkerHost {
     // 源可能还在排队 / 生成（画布上一口气触发了整条链）：逐段等到 done。
     // 共用一个截止时间——真实生视频常超过 5 分钟，比参考图的等待放宽，但要留在 lockDuration 内。
     const deadline = Date.now() + CONCAT_SOURCE_WAIT_MS;
-    // aigc 产物只有 CDN 地址：先下到临时目录给 ffmpeg 读，拼完连目录一起删
-    const tmp = await mkdtemp(join(tmpdir(), 'media-concat-'));
-    try {
-      // 按 ids 的顺序取（入边顺序）
-      const absPaths: string[] = [];
-      for (const id of ids) {
-        const src = await this.waitForRef(
+    // 按 ids 的顺序取（入边顺序）；等齐之前都还能暂停
+    const sources: Awaited<ReturnType<MediaProcessor['waitForRef']>>[] = [];
+    for (const id of ids) {
+      sources.push(
+        await this.waitForRef(
           id,
           5_000,
           Math.max(deadline - Date.now(), 0),
-          signal,
-        );
+          gate.signal,
+        ),
+      );
+    }
+    gate.close();
+    // aigc 产物只有 CDN 地址：先下到临时目录给 ffmpeg 读，拼完连目录一起删
+    const tmp = await mkdtemp(join(tmpdir(), 'media-concat-'));
+    try {
+      const absPaths: string[] = [];
+      for (const src of sources) {
+        const id = src.id;
         if (src.filePath) {
           absPaths.push(join(dir, src.filePath));
         } else if (src.url) {
@@ -397,6 +440,7 @@ export class MediaProcessor extends WorkerHost {
     generationId: string,
     type: MediaType,
     signal: AbortSignal,
+    gate: PauseGate,
   ): Promise<{ fileName: string; config: AigcMediaConfig }> {
     if (type !== 'image' && type !== 'video') {
       throw new Error(`测试模式只支持生图 / 生视频（收到 ${type}）`);
@@ -407,8 +451,10 @@ export class MediaProcessor extends WorkerHost {
       version.model,
     );
     for (const ref of picked) {
-      await this.waitForRef(ref.id, 5_000, 5 * 60_000, signal);
+      await this.waitForRef(ref.id, 5_000, 5 * 60_000, gate.signal);
     }
+    // 与真实生成一致：参考齐了就算「已提交」，之后的模拟耗时不能暂停
+    gate.close();
     const { config, kept } = await this.aigc.prepareSubmission({
       type,
       config: {
@@ -557,7 +603,7 @@ export class MediaProcessor extends WorkerHost {
     filePath: string | null;
     providerTaskId: string | null;
   }> {
-    const deadline = Date.now() + timeoutMs;
+    let deadline = Date.now() + timeoutMs;
 
     while (true) {
       // 协作取消：参考图等待最长 5 分钟，停止后不再干等
@@ -579,6 +625,8 @@ export class MediaProcessor extends WorkerHost {
       if (v.status === 'failed' || v.status === 'cancelled') {
         throw new Error(`参考图未能就绪：${refId} ${v.status}`);
       }
+      // 上游被暂停：暂停的时间不算进等待超时，继续后重新计时
+      if (v.status === MEDIA_PAUSED) deadline = Date.now() + timeoutMs;
       // queued / generating：继续等待
       if (Date.now() >= deadline) {
         throw new Error(

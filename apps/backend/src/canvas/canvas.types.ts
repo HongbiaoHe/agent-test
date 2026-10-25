@@ -394,8 +394,11 @@ export type UpstreamNode = Pick<
   'id' | 'type' | 'label' | 'outputs' | 'mediaVersionId' | 'mediaStatus'
 >;
 
-/** 还在路上的版本：已经触发、还没出结果。下游带上它，worker 会等它 done 再提交（MediaProcessor.waitForRef）。 */
-const IN_FLIGHT_STATUSES = new Set(['queued', 'generating']);
+/**
+ * 还在路上的版本：已经触发、还没出结果（含用户暂停的，继续后照常出）。
+ * 下游带上它，worker 会等它 done 再提交（MediaProcessor.waitForRef）。
+ */
+const IN_FLIGHT_STATUSES = new Set(['queued', 'generating', 'paused']);
 
 export function isInFlight(
   n: Pick<UpstreamNode, 'mediaVersionId' | 'mediaStatus'>,

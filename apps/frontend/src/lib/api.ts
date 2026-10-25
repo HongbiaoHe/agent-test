@@ -878,6 +878,31 @@ export function setCanvasFocus(
   });
 }
 
+/**
+ * 暂停画布上还没提交给模型的生成：nodeId = 该节点及其全部下游；不传 = 整张画布。
+ * 已经提交的云端停不下来，计入 skipped（照常完成）。
+ */
+export function pauseCanvasMedia(
+  id: string,
+  nodeId?: string,
+): Promise<{ paused: number; skipped: number }> {
+  return request(`/canvas/${id}/media/pause`, {
+    method: "POST",
+    body: JSON.stringify({ nodeId }),
+  });
+}
+
+/** 继续已暂停的生成（范围规则同 pauseCanvasMedia）。 */
+export function resumeCanvasMedia(
+  id: string,
+  nodeId?: string,
+): Promise<{ resumed: number }> {
+  return request(`/canvas/${id}/media/resume`, {
+    method: "POST",
+    body: JSON.stringify({ nodeId }),
+  });
+}
+
 export function stopCanvas(id: string): Promise<{ stopped: boolean }> {
   return request(`/canvas/${id}/stop`, { method: "POST" });
 }

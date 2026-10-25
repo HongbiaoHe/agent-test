@@ -8,7 +8,11 @@
  */
 import { getQueueToken } from '@nestjs/bullmq';
 import { Test } from '@nestjs/testing';
-import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
+import {
+  AbortRegistry,
+  MEDIA_ABORTS,
+  MEDIA_PAUSES,
+} from '../agent/abort-registry';
 import { AigcService } from '../aigc/aigc.service';
 import { PublicUrlService } from '../aigc/public-url.service';
 import { asAssetType, MediaService } from './media.service';
@@ -54,6 +58,7 @@ describe('MediaService', () => {
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('media-gen'), useValue: mockQueue },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
         { provide: AigcService, useValue: mockAigc },
         { provide: PublicUrlService, useValue: mockPublicUrl },
       ],
@@ -841,6 +846,7 @@ describe('MediaService – cancelByConversation（停止功能）', () => {
           useValue: { add: jest.fn(), getJob },
         },
         { provide: MEDIA_ABORTS, useValue: aborts },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
         { provide: AigcService, useValue: mockAigc },
         { provide: PublicUrlService, useValue: mockPublicUrl },
       ],
@@ -910,6 +916,146 @@ describe('MediaService – cancelByConversation（停止功能）', () => {
   });
 });
 
+describe('MediaService – 暂停 / 继续', () => {
+  let service: MediaService;
+  let pauses: AbortRegistry;
+  const findManyVersions = jest.fn();
+  const updateMany = jest.fn();
+  const getJob = jest.fn();
+  const add = jest.fn();
+
+  beforeEach(async () => {
+    pauses = new AbortRegistry();
+    updateMany.mockResolvedValue({ count: 1 });
+    const prisma = {
+      mediaVersion: { findMany: findManyVersions, updateMany },
+    };
+    const module = await Test.createTestingModule({
+      providers: [
+        MediaService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: StreamService, useValue: mockStream },
+        { provide: getQueueToken('media-gen'), useValue: { add, getJob } },
+        { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: MEDIA_PAUSES, useValue: pauses },
+        { provide: AigcService, useValue: mockAigc },
+        { provide: PublicUrlService, useValue: mockPublicUrl },
+      ],
+    }).compile();
+    service = module.get(MediaService);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  const gen = { type: 'video', conversationId: 'conv-1' };
+  const ver = (id: string, status: string, extra = {}) => ({
+    id,
+    status,
+    generationId: `g-${id}`,
+    providerTaskId: null,
+    model: 'seedance-2',
+    generation: gen,
+    ...extra,
+  });
+
+  it('排队中：移出队列、落 paused 并推流', async () => {
+    const remove = jest.fn();
+    getJob.mockResolvedValue({ remove });
+    findManyVersions.mockResolvedValue([ver('v1', 'queued')]);
+
+    expect(await service.pauseVersions('conv-1')).toEqual({
+      paused: 1,
+      skipped: 0,
+    });
+    expect(remove).toHaveBeenCalled();
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: 'v1', status: 'queued' },
+      data: { status: 'paused' },
+    });
+    expect(mockStream.publish).toHaveBeenCalledWith(
+      'conv-1',
+      expect.objectContaining({
+        payload: expect.objectContaining({ versionId: 'v1', status: 'paused' }),
+      }),
+    );
+  });
+
+  it('worker 还在等上游（没提交）：经暂停注册表叫停，由 worker 收尾', async () => {
+    const { signal } = pauses.register('v2');
+    findManyVersions.mockResolvedValue([ver('v2', 'generating')]);
+
+    expect(await service.pauseVersions('conv-1')).toEqual({
+      paused: 1,
+      skipped: 0,
+    });
+    expect(signal.aborted).toBe(true);
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('已经提交给 aigc / 已过暂停窗口：跳过，照常完成', async () => {
+    findManyVersions.mockResolvedValue([
+      ver('v3', 'generating', { providerTaskId: 'task-1' }),
+      ver('v4', 'generating'), // 没登记暂停窗口（如正在本地出片）
+    ]);
+
+    expect(await service.pauseVersions('conv-1')).toEqual({
+      paused: 0,
+      skipped: 2,
+    });
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('只暂停传入的版本（画布按节点暂停）', async () => {
+    findManyVersions.mockResolvedValue([]);
+    await service.pauseVersions('conv-1', ['v1', 'v2']);
+    expect(findManyVersions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: { in: ['v1', 'v2'] } }),
+        orderBy: { createdAt: 'asc' },
+      }),
+    );
+  });
+
+  it('继续：按创建顺序清掉旧 job、改回 queued、按类型重新入队', async () => {
+    getJob.mockResolvedValueOnce({ remove: jest.fn() }).mockResolvedValue(null);
+    findManyVersions.mockResolvedValue([
+      ver('v1', 'paused'),
+      ver('v2', 'paused', { model: 'ffmpeg-concat' }),
+    ]);
+
+    expect(await service.resumeVersions('conv-1')).toEqual({ resumed: 2 });
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: 'v1', status: 'paused' },
+      data: { status: 'queued' },
+    });
+    expect(add.mock.calls).toEqual([
+      ['generate', { versionId: 'v1' }, { jobId: 'v1' }],
+      ['concat', { versionId: 'v2' }, { jobId: 'v2' }],
+    ]);
+  });
+
+  it('继续时状态已变（被并发改走）：不重复入队', async () => {
+    getJob.mockResolvedValue(null);
+    updateMany.mockResolvedValue({ count: 0 });
+    findManyVersions.mockResolvedValue([ver('v1', 'paused')]);
+
+    expect(await service.resumeVersions('conv-1')).toEqual({ resumed: 0 });
+    expect(add).not.toHaveBeenCalled();
+  });
+
+  it('停止会把暂停中的一并作废', async () => {
+    findManyVersions.mockResolvedValue([ver('v5', 'paused')]);
+    await service.cancelByConversation('conv-1');
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: 'v5', status: 'paused' },
+      data: expect.objectContaining({
+        status: 'cancelled',
+        error: '用户已停止',
+      }),
+    });
+  });
+});
+
 describe('MediaService.createAgentGenerations', () => {
   let service: MediaService;
   const prepareAgentGeneration = jest.fn();
@@ -927,6 +1073,7 @@ describe('MediaService.createAgentGenerations', () => {
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('media-gen'), useValue: mockQueue },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
         {
           provide: AigcService,
           useValue: { ...mockAigc, prepareAgentGeneration },
@@ -1024,6 +1171,7 @@ describe('MediaService：配音参考格式 / 克隆音色 / 我的音色', () =
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('media-gen'), useValue: mockQueue },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
         {
           provide: AigcService,
           useValue: { ...mockAigc, prepareAgentGeneration },
@@ -1219,6 +1367,7 @@ describe('MediaService.scheduleReconcile', () => {
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('media-gen'), useValue: mockQueue },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
         { provide: AigcService, useValue: mockAigc },
         { provide: PublicUrlService, useValue: mockPublicUrl },
       ],

@@ -6,7 +6,11 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Test } from '@nestjs/testing';
 import type { Job } from 'bullmq';
-import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
+import {
+  AbortRegistry,
+  MEDIA_ABORTS,
+  MEDIA_PAUSES,
+} from '../agent/abort-registry';
 import { MediaProcessor } from './media.processor';
 import { MediaService } from './media.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -41,6 +45,7 @@ describe('MediaProcessor.waitForRef', () => {
         { provide: AigcService, useValue: mockAigc },
         { provide: MediaService, useValue: mockMedia },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
       ],
     }).compile();
     processor = module.get(MediaProcessor);
@@ -143,6 +148,24 @@ describe('MediaProcessor.waitForRef', () => {
     );
   });
 
+  it('上游暂停期间不计超时：暂停总时长超过超时也照样等到 done', async () => {
+    const paused = { id: 'ref-1', status: 'paused', filePath: null };
+    mockPrisma.mediaVersion.findUnique
+      .mockResolvedValueOnce(paused)
+      .mockResolvedValueOnce(paused)
+      .mockResolvedValueOnce(paused)
+      .mockResolvedValueOnce(paused)
+      .mockResolvedValueOnce({
+        id: 'ref-1',
+        status: 'done',
+        filePath: 'ref-1.png',
+      });
+
+    // 每轮 20ms × 4 次暂停 = 80ms，超过 50ms 的超时
+    const v = await processor.waitForRef('ref-1', 20, 50);
+    expect(v.id).toBe('ref-1');
+  });
+
   it('ref 不存在 → 抛错', async () => {
     mockPrisma.mediaVersion.findUnique.mockResolvedValue(null);
 
@@ -174,13 +197,16 @@ describe('MediaProcessor.process（generate）', () => {
     markSubmitted: jest.fn(),
     scheduleReconcile: jest.fn(),
     settleFailed: jest.fn(),
+    settlePaused: jest.fn(),
   };
   let aborts: AbortRegistry;
+  let pauses: AbortRegistry;
   let processor: MediaProcessor;
   const submit = jest.fn();
 
   beforeEach(async () => {
     aborts = new AbortRegistry();
+    pauses = new AbortRegistry();
     const module = await Test.createTestingModule({
       providers: [
         MediaProcessor,
@@ -189,6 +215,7 @@ describe('MediaProcessor.process（generate）', () => {
         { provide: AigcService, useValue: { submit } },
         { provide: MediaService, useValue: mockMedia },
         { provide: MEDIA_ABORTS, useValue: aborts },
+        { provide: MEDIA_PAUSES, useValue: pauses },
       ],
     }).compile();
     processor = module.get(MediaProcessor);
@@ -234,6 +261,31 @@ describe('MediaProcessor.process（generate）', () => {
       '用户已停止',
       'cancelled',
     );
+  });
+
+  it('提交前被暂停 → 落 paused，不发单、不判失败', async () => {
+    // 拾取后、等参考的这段里暂停接口到达（findUnique 发生在登记暂停窗口之后）
+    mockPrisma.mediaVersion.findUnique.mockImplementationOnce(() => {
+      expect(pauses.abort('v1')).toBe(true);
+      return Promise.resolve(version);
+    });
+    await processor.process(job);
+    expect(mockMedia.settlePaused).toHaveBeenCalledWith('v1');
+    expect(submit).not.toHaveBeenCalled();
+    expect(mockMedia.settleFailed).not.toHaveBeenCalled();
+  });
+
+  it('已经在提交（窗口已关）→ 暂停不生效，照常提交', async () => {
+    submit.mockImplementation(() => {
+      expect(pauses.abort('v1')).toBe(false); // 云端停不下来，暂停接口据此计入 skipped
+      return Promise.resolve({
+        taskId: 't1',
+        config: { channel: 'google', model: 'nano-banana-pro', params: {} },
+      });
+    });
+    await processor.process(job);
+    expect(mockMedia.markSubmitted).toHaveBeenCalled();
+    expect(mockMedia.settlePaused).not.toHaveBeenCalled();
   });
 });
 
@@ -307,6 +359,7 @@ describe('MediaProcessor 参考图地址', () => {
         { provide: AigcService, useValue: mockAigc },
         { provide: MediaService, useValue: mockMedia },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
       ],
     }).compile();
     processor = module.get(MediaProcessor);
@@ -483,6 +536,7 @@ describe('MediaProcessor.process（concat）', () => {
         { provide: AigcService, useValue: {} },
         { provide: MediaService, useValue: mockMedia },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
       ],
     }).compile();
     processor = module.get(MediaProcessor);
@@ -636,6 +690,7 @@ describe('MediaProcessor.process（mock）', () => {
         { provide: AigcService, useValue: { submit, prepareSubmission } },
         { provide: MediaService, useValue: mockMedia },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
       ],
     }).compile();
     processor = module.get(MediaProcessor);

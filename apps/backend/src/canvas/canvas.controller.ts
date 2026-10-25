@@ -26,6 +26,7 @@ import { CreateCanvasDto } from './dto/create-canvas.dto';
 import { MoveNodeDto } from './dto/move-node.dto';
 import { UpdateCanvasDto } from './dto/update-canvas.dto';
 import { SetFocusDto } from './dto/set-focus.dto';
+import { MediaControlDto } from './dto/media-control.dto';
 
 @Controller('canvas')
 @UseGuards(JwtAuthGuard)
@@ -196,6 +197,26 @@ export class CanvasController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.canvas.mergeVideoNode(id, user.tenantId, user.userId, nodeId);
+  }
+
+  /** 暂停画布上还没提交的生成（顶栏「全部暂停」/ 卡片上的暂停；nodeId = 该节点及其下游）。 */
+  @Post(':id/media/pause')
+  pauseMedia(
+    @Param('id') id: string,
+    @Body() dto: MediaControlDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.canvas.pauseMedia(id, user.tenantId, dto.nodeId);
+  }
+
+  /** 继续已暂停的生成（范围规则同暂停）。 */
+  @Post(':id/media/resume')
+  resumeMedia(
+    @Param('id') id: string,
+    @Body() dto: MediaControlDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.canvas.resumeMedia(id, user.tenantId, dto.nodeId);
   }
 
   @Post(':id/stop')

@@ -1,8 +1,13 @@
 import { InjectQueue } from '@nestjs/bullmq';
 import { HttpStatus, Inject, Injectable, Logger } from '@nestjs/common';
 import { join } from 'node:path';
+import { setTimeout as sleep } from 'node:timers/promises';
 import { Queue } from 'bullmq';
-import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
+import {
+  AbortRegistry,
+  MEDIA_ABORTS,
+  MEDIA_PAUSES,
+} from '../agent/abort-registry';
 import { AigcService } from '../aigc/aigc.service';
 import { PublicUrlService } from '../aigc/public-url.service';
 import {
@@ -72,6 +77,11 @@ export const MEDIA_BATCH_MAX = 10;
 
 /** 未完成状态：只有它们能被回调/对账推向终态（幂等的判据）。 */
 export const MEDIA_OPEN_STATUSES = ['queued', 'generating'];
+/**
+ * 用户暂停：还没提交给 aigc 的版本冻结在这里，继续后重新入队。不算「进行中」（回调 / 对账不收它），
+ * 但作为上游时与进行中同等对待：下游照样能引用它、照样等它（等待不计暂停的时间）。
+ */
+export const MEDIA_PAUSED = 'paused';
 
 /**
  * 产物落盘用的扩展名：aigc 转存后的 GCS 链接自带后缀（.png / .mp4 / .mp3 / .wav），取它最准；
@@ -105,6 +115,7 @@ export class MediaService {
     private readonly stream: StreamService,
     @InjectQueue('media-gen') private readonly queue: Queue,
     @Inject(MEDIA_ABORTS) private readonly aborts: AbortRegistry,
+    @Inject(MEDIA_PAUSES) private readonly pauses: AbortRegistry,
     private readonly aigc: AigcService,
     private readonly publicUrl: PublicUrlService,
   ) {}
@@ -457,10 +468,11 @@ export class MediaService {
         !v ||
         v.generation.userId !== userId ||
         v.generation.type !== 'video' ||
-        // 还在排队 / 生成的源也收（worker 等齐了再拼）；失败 / 取消的、done 了却没文件的拒绝
+        // 还在排队 / 生成 / 暂停的源也收（worker 等齐了再拼）；失败 / 取消的、done 了却没文件的拒绝
         (v.status === 'done'
           ? !v.filePath && !v.url
-          : !MEDIA_OPEN_STATUSES.includes(v.status))
+          : !MEDIA_OPEN_STATUSES.includes(v.status) &&
+            v.status !== MEDIA_PAUSED)
       ) {
         throw new BusinessException(
           ErrorCodes.MEDIA_REF_INVALID,
@@ -571,13 +583,18 @@ export class MediaService {
   async cancelByConversation(conversationId: string): Promise<void> {
     const versions = await this.prisma.mediaVersion.findMany({
       where: {
-        status: { in: ['queued', 'generating'] },
+        status: { in: [...MEDIA_OPEN_STATUSES, MEDIA_PAUSED] },
         generation: { conversationId },
       },
       include: { generation: true },
     });
 
     for (const v of versions) {
+      // 暂停中的没有 job、也没有 worker 攥着：直接作废
+      if (v.status === MEDIA_PAUSED) {
+        await this.markStatus(v, MEDIA_PAUSED, 'cancelled', '用户已停止');
+        continue;
+      }
       if (v.status === 'queued') {
         try {
           const job = await this.queue.getJob(v.id);
@@ -623,6 +640,143 @@ export class MediaService {
         );
       }
     }
+  }
+
+  /**
+   * 暂停本会话里还没提交给 aigc 的生成（versionIds 缺省 = 全部；画布按节点暂停时传节点及其下游的版本）。
+   *
+   * - queued 且还在队列里：移出队列，直接落 paused；
+   * - 已被 worker 拾取、还在等上游 / 等拼接源：经暂停注册表叫停，worker 收尾落 paused；
+   * - 已经提交给 aigc（或正在本地拼接 / 模拟出片）：云端停不下来，跳过，照常完成。
+   * 按创建顺序处理，与继续时的入队顺序一致。
+   */
+  async pauseVersions(
+    conversationId: string,
+    versionIds?: string[],
+  ): Promise<{ paused: number; skipped: number }> {
+    const versions = await this.prisma.mediaVersion.findMany({
+      where: {
+        status: { in: MEDIA_OPEN_STATUSES },
+        generation: { conversationId },
+        ...(versionIds ? { id: { in: versionIds } } : {}),
+      },
+      include: { generation: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    let paused = 0;
+    let skipped = 0;
+    for (const v of versions) {
+      if (v.status === 'queued') {
+        try {
+          const job = await this.queue.getJob(v.id);
+          if (job) {
+            await job.remove();
+            if (await this.markStatus(v, 'queued', MEDIA_PAUSED)) {
+              paused++;
+              continue;
+            }
+          }
+        } catch (e) {
+          // job 刚被拾取为 active 时 remove 会抛错——落到下面交给 worker 收尾
+          this.logger.warn(
+            `media job 移除失败，转 worker 暂停 versionId=${v.id}: ${String(e)}`,
+          );
+        }
+      }
+      if (!v.providerTaskId && this.pauses.abort(v.id)) paused++;
+      else skipped++;
+    }
+    return { paused, skipped };
+  }
+
+  /**
+   * 继续已暂停的生成：按创建顺序重新入队（上游先入队，worker 先拿到上游，等待不会互相卡住）。
+   * versionIds 缺省 = 本会话全部暂停中的版本。
+   */
+  async resumeVersions(
+    conversationId: string,
+    versionIds?: string[],
+  ): Promise<{ resumed: number }> {
+    const versions = await this.prisma.mediaVersion.findMany({
+      where: {
+        status: MEDIA_PAUSED,
+        generation: { conversationId },
+        ...(versionIds ? { id: { in: versionIds } } : {}),
+      },
+      include: { generation: true },
+      orderBy: { createdAt: 'asc' },
+    });
+    let resumed = 0;
+    for (const v of versions) {
+      // 同 jobId 的上一次 job（被暂停时结束的那次）还在队列记录里，不清掉的话新 job 会被去重吞掉
+      await this.removeFinishedJob(v.id);
+      if (!(await this.markStatus(v, MEDIA_PAUSED, 'queued'))) continue;
+      await this.queue.add(
+        v.model === CONCAT_MODEL ? 'concat' : 'generate',
+        { versionId: v.id },
+        { jobId: v.id },
+      );
+      resumed++;
+    }
+    return { resumed };
+  }
+
+  /** worker 在提交前被叫停：落 paused 并推流（只改还在进行中的版本）。 */
+  async settlePaused(versionId: string): Promise<void> {
+    const v = await this.prisma.mediaVersion.findUnique({
+      where: { id: versionId },
+      include: { generation: true },
+    });
+    if (v) await this.markStatus(v, 'generating', MEDIA_PAUSED);
+  }
+
+  /**
+   * 清掉某版本已结束的 job 记录。刚被暂停的那次 job 可能还差一点点才结束（worker 正在收尾），
+   * 这时 remove 会因为 job 仍是 active 而抛错——稍等重试，最多约 2 秒。
+   */
+  private async removeFinishedJob(versionId: string): Promise<void> {
+    for (let i = 0; i < 20; i++) {
+      const job = await this.queue.getJob(versionId);
+      if (!job) return;
+      try {
+        await job.remove();
+        return;
+      } catch {
+        await sleep(100);
+      }
+    }
+    throw new Error(`上一次任务仍在收尾，稍后再试（versionId=${versionId}）`);
+  }
+
+  /** 带前置状态条件改状态（并发安全），改到了才推流。终态（cancelled）顺带记完成时间与原因。 */
+  private async markStatus(
+    v: {
+      id: string;
+      generationId: string;
+      generation: { conversationId: string; type: string };
+    },
+    from: string,
+    to: string,
+    error?: string,
+  ): Promise<boolean> {
+    const terminal = to === 'cancelled';
+    const r = await this.prisma.mediaVersion.updateMany({
+      where: { id: v.id, status: from },
+      data: {
+        status: to,
+        ...(terminal ? { error, completedAt: new Date() } : {}),
+      },
+    });
+    if (r.count === 0) return false;
+    await this.publishUpdate(
+      v.generation.conversationId,
+      v.generationId,
+      v.id,
+      v.generation.type as MediaType,
+      to,
+      error,
+    );
+    return true;
   }
 
   /**
@@ -840,10 +994,11 @@ export class MediaService {
       );
     }
     for (const v of found) {
-      // status=failed 明确拒绝；queued/generating/done 均视为合法（就绪性由 processor 等待）
+      // status=failed 明确拒绝；queued/generating/paused/done 均视为合法（就绪性由 processor 等待）
       const validStatus =
         v.status === 'queued' ||
         v.status === 'generating' ||
+        v.status === MEDIA_PAUSED ||
         v.status === 'done';
       const assetType = asAssetType(v.generation.type);
       const ok = validStatus && assetType && v.generation.userId === userId;

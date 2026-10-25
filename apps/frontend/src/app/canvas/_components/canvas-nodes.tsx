@@ -21,6 +21,8 @@ import {
   Maximize2,
   MessagesSquare,
   Music,
+  Pause,
+  Play,
   RotateCcw,
   Trash2,
   Upload,
@@ -476,7 +478,7 @@ function HeroSkeleton({
 }: {
   kind: "image" | "video" | "audio";
   /** 不传 = 只是资产在途（已 done，正在拉 blob），不必标注 */
-  state?: "generating" | "queued";
+  state?: "generating" | "queued" | "paused";
   /** 「在跑」的措辞：生成说 Generating，拼接说 Merging */
   runningLabel?: string;
   /** 骨架就是卡面的全部（在跑时正文不渲染）：四角都要圆 */
@@ -485,17 +487,19 @@ function HeroSkeleton({
   aspect?: number;
 }) {
   return (
-    <HeroFrame busy full={full}>
+    // 暂停中不扫光：画面静止本身就在说「没在动」，角标再写明是暂停
+    <HeroFrame busy={state !== "paused"} full={full}>
       <div
-        className={
-          aspect
-            ? undefined
-            : kind === "video"
+        className={cn(
+          !aspect &&
+            (kind === "video"
               ? "aspect-video"
               : kind === "audio"
                 ? "h-20"
-                : "aspect-[4/3]"
-        }
+                : "aspect-[4/3]"),
+          // 整卡画框是透明底（扫光自带底色）；暂停不扫光，补上与空态画框一样的弱化底
+          state === "paused" && "bg-muted",
+        )}
         style={aspect ? { aspectRatio: aspect } : undefined}
       />
       {state && <BusyBadge state={state} runningLabel={runningLabel} />}
@@ -503,25 +507,63 @@ function HeroSkeleton({
   );
 }
 
-/** 骨架角上的状态角标：转圈=在跑，钟=在排队。与序列预览的段数角标同一套形态。 */
+/** 骨架角上的状态角标：转圈=在跑，钟=在排队，暂停符=已暂停。与序列预览的段数角标同一套形态。 */
 function BusyBadge({
   state,
   runningLabel,
 }: {
-  state: "generating" | "queued";
+  state: "generating" | "queued" | "paused";
   runningLabel: string;
 }) {
-  const running = state === "generating";
   return (
     <span className="pointer-events-none absolute right-1.5 bottom-1.5 flex items-center gap-1 rounded-full bg-foreground/75 px-1.5 py-0.5 text-[10px] text-background">
-      {running ? (
+      {state === "generating" ? (
         <Loader2 className="size-2.5 animate-spin" aria-hidden />
-      ) : (
+      ) : state === "queued" ? (
         <Clock className="size-2.5" aria-hidden />
+      ) : (
+        <Pause className="size-2.5" aria-hidden />
       )}
-      {running ? runningLabel : "Queued"}
+      {state === "generating"
+        ? runningLabel
+        : state === "queued"
+          ? "Queued"
+          : "Paused"}
     </span>
   );
+}
+
+/**
+ * 卡片悬停操作组里的暂停 / 继续：连同它的下游一起（下游在等它，单独停它只会让下游干等到超时）。
+ * 已提交给模型的停不下来，点了会提示一句。agent 运行中也给——生成多半就是 agent 触发的。
+ */
+function MediaControlButton({
+  nodeId,
+  status,
+}: {
+  nodeId: string;
+  status: string | null;
+}) {
+  const { pauseMedia, resumeMedia } = useContext(CanvasEditorContext);
+  if (status === "queued" || status === "generating") {
+    return (
+      <CanvasToolbarButton
+        label="Pause (with downstream)"
+        icon={<Pause className="size-3.5" />}
+        onClick={() => pauseMedia(nodeId)}
+      />
+    );
+  }
+  if (status === "paused") {
+    return (
+      <CanvasToolbarButton
+        label="Resume (with downstream)"
+        icon={<Play className="size-3.5" />}
+        onClick={() => resumeMedia(nodeId)}
+      />
+    );
+  }
+  return null;
 }
 
 /**
@@ -1108,6 +1150,8 @@ function MediaGenNode({
         aspect={aspect}
       />
     );
+  } else if (data.mediaStatus === "paused") {
+    hero = <HeroSkeleton kind={kind} state="paused" full aspect={aspect} />;
   } else {
     // 没出过片（或失败 / 取消）：按当前画幅摆一块空画框；失败 / 取消时框里给一句状态和 Retry
     const cancelled = data.mediaStatus === "cancelled";
@@ -1141,21 +1185,25 @@ function MediaGenNode({
     );
   }
 
-  const heroActions =
-    asset.status === "ready" ? (
-      <>
-        <CanvasToolbarButton
-          label={kind === "video" ? "Play full size" : "View full size"}
-          icon={<Maximize2 className="size-3.5" />}
-          onClick={() => setZoom(true)}
-        />
-        <CanvasToolbarButton
-          label="Download"
-          icon={<Download className="size-3.5" />}
-          onClick={download}
-        />
-      </>
-    ) : null;
+  const heroActions = (
+    <>
+      <MediaControlButton nodeId={data.id} status={data.mediaStatus} />
+      {asset.status === "ready" && (
+        <>
+          <CanvasToolbarButton
+            label={kind === "video" ? "Play full size" : "View full size"}
+            icon={<Maximize2 className="size-3.5" />}
+            onClick={() => setZoom(true)}
+          />
+          <CanvasToolbarButton
+            label="Download"
+            icon={<Download className="size-3.5" />}
+            onClick={download}
+          />
+        </>
+      )}
+    </>
+  );
 
   const shell = (
     <NodeShell
@@ -1285,7 +1333,11 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
   const title = d.label?.trim() || NODE_META.video_concat.label;
   const done = d.mediaStatus === "done" && !!d.mediaVersionId;
   const asset = useMediaAsset(done ? d.mediaVersionId : null);
-  const busyNow = d.mediaStatus === "generating" || d.mediaStatus === "queued";
+  const busyNow =
+    d.mediaStatus === "generating" ||
+    d.mediaStatus === "queued" ||
+    // 暂停中与在跑同样处理：卡面只留骨架（角标写 Paused），不给 Merge
+    d.mediaStatus === "paused";
   const merged = done && asset.status === "ready";
   const failedNow = d.mediaStatus === "failed" || d.mediaStatus === "cancelled";
   // 每段都有着落了才给 Merge：合成要花时间，不在连线的瞬间替用户决定
@@ -1354,7 +1406,11 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
       ) : (
         <HeroSkeleton kind="video" />
       );
-  } else if (d.mediaStatus === "generating" || d.mediaStatus === "queued") {
+  } else if (
+    d.mediaStatus === "generating" ||
+    d.mediaStatus === "queued" ||
+    d.mediaStatus === "paused"
+  ) {
     hero = (
       <HeroSkeleton
         kind="video"
@@ -1430,20 +1486,23 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
           .map((s) => ({ nodeId: s.nodeId, title: s.title }))}
         hero={hero}
         heroActions={
-          asset.status === "ready" ? (
-            <>
-              <CanvasToolbarButton
-                label="Play full size"
-                icon={<Maximize2 className="size-3.5" />}
-                onClick={() => setZoom(true)}
-              />
-              <CanvasToolbarButton
-                label="Download"
-                icon={<Download className="size-3.5" />}
-                onClick={download}
-              />
-            </>
-          ) : null
+          <>
+            <MediaControlButton nodeId={d.id} status={d.mediaStatus} />
+            {asset.status === "ready" && (
+              <>
+                <CanvasToolbarButton
+                  label="Play full size"
+                  icon={<Maximize2 className="size-3.5" />}
+                  onClick={() => setZoom(true)}
+                />
+                <CanvasToolbarButton
+                  label="Download"
+                  icon={<Download className="size-3.5" />}
+                  onClick={download}
+                />
+              </>
+            )}
+          </>
         }
         status={status}
         footer={<InputSummary inputs={inputs} />}

@@ -18,6 +18,8 @@ import {
   setCanvasFocus,
   setCanvasMockMedia,
   stopCanvas,
+  pauseCanvasMedia,
+  resumeCanvasMedia,
   uploadCanvasNodeFile,
   type CanvasNodeType,
   type CanvasOpInput,
@@ -451,6 +453,40 @@ export function useCanvas(sessionId: string | null) {
   }
 
   /**
+   * 暂停 / 继续生成（不传 nodeId = 整张画布；传了 = 该节点及其下游）。
+   * 卡片状态不用手动改：后端改完状态即推 media_update，快照随之重拉。
+   * 已经提交给模型的停不下来（云端会跑完），提示一句免得以为没生效。
+   */
+  function pauseMedia(nodeId?: string) {
+    if (!sessionId) return;
+    void pauseCanvasMedia(sessionId, nodeId)
+      .then(({ paused, skipped }) => {
+        if (skipped > 0) {
+          toast(
+            paused > 0
+              ? `Paused ${paused} · ${skipped} already submitted will finish`
+              : "Already submitted to the model — it can't be paused",
+          );
+        }
+        void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
+      })
+      .catch((e: unknown) => {
+        toast.error(e instanceof Error ? e.message : "Pause failed");
+      });
+  }
+
+  function resumeMedia(nodeId?: string) {
+    if (!sessionId) return;
+    void resumeCanvasMedia(sessionId, nodeId)
+      .then(() => {
+        void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
+      })
+      .catch((e: unknown) => {
+        toast.error(e instanceof Error ? e.message : "Resume failed");
+      });
+  }
+
+  /**
    * 用节点上选定的模型生成一次（生成节点面板上的 Generate）。
    *
    * 提示词与参考图由服务端按入边收集（与 agent 的 generate_media_node 同一段逻辑），
@@ -595,6 +631,9 @@ export function useCanvas(sessionId: string | null) {
     generateNode,
     /** 触发视频拼接（video_concat 卡片上的 Merge） */
     mergeVideo,
+    /** 暂停 / 继续生成（顶栏的全部暂停 / 继续、卡片上的单节点暂停 / 继续） */
+    pauseMedia,
+    resumeMedia,
     /** 给上传节点传文件（卡片上的选择 / 拖入） */
     uploadNodeFile,
     /** 敏感操作审批模式（会话级，后端已归一化） */

@@ -122,6 +122,10 @@ describe('collectGenerationInputs', () => {
       mediaVersionId: 'v-failed',
       mediaStatus: 'failed',
     }),
+    node('paused', 'image_gen', [], {
+      mediaVersionId: 'v-paused',
+      mediaStatus: 'paused',
+    }),
     node('target', 'video_gen'),
     node('img-target', 'image_gen'),
   ];
@@ -151,6 +155,15 @@ describe('collectGenerationInputs', () => {
       referenceVersionIds: ['v-queued', 'v-img', 'v-generating'],
       referenceCounts: { image: 2, video: 1, audio: 0 },
       pendingInputs: 2,
+      missingInputs: [],
+    });
+  });
+
+  it('暂停中的上游也算在途：带上它的版本，继续后照常出', () => {
+    const edges = [{ source: 'paused', target: 'target' }];
+    expect(collectGenerationInputs(nodes, edges, 'target')).toMatchObject({
+      referenceVersionIds: ['v-paused'],
+      pendingInputs: 1,
       missingInputs: [],
     });
   });
