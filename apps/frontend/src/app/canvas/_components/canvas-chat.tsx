@@ -7,6 +7,7 @@ import {
   Check,
   ChevronDown,
   CircleDot,
+  FlaskConical,
   Loader2,
   MessagesSquare,
   Paperclip,
@@ -457,10 +458,13 @@ function TaskPlanPanel({
 
 function AskPanel({
   ask,
+  mockMedia,
   onAnswer,
   onResolve,
 }: {
   ask: NonNullable<ChatState["ask"]>;
+  /** 画布开着测试模式：生成确认里注明这次不花钱 */
+  mockMedia: boolean;
   onAnswer: (msg: string) => void;
   onResolve: (approve: boolean) => void;
 }) {
@@ -493,6 +497,12 @@ function AskPanel({
             )}
           />
           Agent needs approval
+          {mockMedia && ask.actions.some((a) => a.tool === "generate_media_node") && (
+            <span className="inline-flex items-center gap-1 rounded-full border border-warning/60 bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-foreground">
+              <FlaskConical className="size-3 text-warning" aria-hidden />
+              Mock, no cost
+            </span>
+          )}
           {batch && (
             <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-normal text-muted-foreground">
               {ask.actions.length} actions
@@ -647,6 +657,7 @@ export function CanvasChat({
   onAnswer,
   onResolve,
   onClearPlan,
+  mockMedia = false,
   focusCount,
   onClearFocus,
 }: {
@@ -672,6 +683,8 @@ export function CanvasChat({
   onResolve: (approve: boolean) => void;
   /** 作废当前任务计划（计划面板上的 ×）。 */
   onClearPlan: () => void;
+  /** 画布开着测试模式（Mock）：生成确认卡片上注明不花钱 */
+  mockMedia?: boolean;
   /** 「加入对话」圈定的节点数；>0 时输入框上方提示 agent 只看这些节点 */
   focusCount: number;
   /** 取消圈定，恢复关注整块画布 */
@@ -828,6 +841,7 @@ export function CanvasChat({
             {chat.ask && (
               <AskPanel
                 ask={chat.ask}
+                mockMedia={mockMedia}
                 onAnswer={onAnswer}
                 onResolve={onResolve}
               />

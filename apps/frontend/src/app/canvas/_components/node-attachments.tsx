@@ -5,6 +5,7 @@ import {
   Ban,
   Clock,
   Film,
+  FlaskConical,
   ImageOff,
   Loader2,
   Music,
@@ -229,6 +230,14 @@ function AssetTile({
             {index}
           </span>
         )}
+        {source.mediaMock && (
+          <span
+            aria-hidden
+            className="pointer-events-none absolute top-1 right-1 flex size-4 items-center justify-center rounded-[5px] border border-warning/60 bg-background/90"
+          >
+            <FlaskConical className="size-2.5 text-warning" />
+          </span>
+        )}
         {(video || audio) && (
           <span aria-hidden className={cn(BADGE, "right-1 bottom-1 px-0.5")}>
             {video ? (
@@ -275,6 +284,7 @@ function AssetTile({
             )}
           </span>
           <span className="block text-[11px] text-muted-foreground">
+            {source.mediaMock && "Mock output · "}
             {!fate.used
               ? SKIP_REASON[fate.reason]
               : asset.status === "error"

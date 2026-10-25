@@ -1,5 +1,6 @@
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
+import { BusinessException } from '../common/errors/business.exception';
 import { MediaService } from '../media/media.service';
 import { mediaParamsSchema } from '../media/media.tools';
 import { CanvasService } from './canvas.service';
@@ -9,6 +10,7 @@ import {
   type CanvasApprovalMode,
   collectVideoSources,
   isCanvasNodeType,
+  isInFlight,
   isUploadNodeType,
   shortNodeId,
   UPLOAD_NODE_ASSET,
@@ -27,6 +29,15 @@ export interface CanvasToolContext {
 const RETIRED_NODE_TYPES: Record<string, string> = {
   text: 'text 节点已下线：提示词直接写在 image_gen / video_gen 自己的 prompt 参数上，不需要单独的文本节点，也不需要连线',
 };
+
+/** 报错里点名节点：短 id + 标题（与注入的画布状态同一写法，模型能直接拿去用）。 */
+function describeNodes(
+  nodes: readonly { id: string; label: string | null; type: string }[],
+): string {
+  return nodes
+    .map((n) => `${shortNodeId(n.id)}「${n.label ?? n.type}」`)
+    .join('、');
+}
 
 /**
  * 构造画布操作工具，闭包带上会话上下文。所有结构变更经 CanvasService.applyOp（唯一写入口，
@@ -313,22 +324,54 @@ export function createCanvasTools(
       }
       const inputs = collectGenerationInputs(snap.nodes, snap.edges, node.id);
       const { referenceVersionIds } = inputs;
+      // 上游既没产物、也没在生成：点名让模型先触发它们（在生成的上游会被等待，不用管）
+      if (inputs.missingInputs.length > 0) {
+        return JSON.stringify({
+          error: `上游 ${describeNodes(inputs.missingInputs)} 还没有产物、也没在生成：生成 / 拼接节点先触发它们，上传节点需用户先上传文件，再触发本节点`,
+        });
+      }
+
+      // 真实生成不能拿测试模式的占位素材当参考（MediaService 也会拒，这里先点名是哪几个上游，
+      // 模型下一步就知道要先真实生成它们）
+      if (!snap.mockMedia) {
+        const mockUpstream = snap.edges
+          .filter((e) => e.target === node.id)
+          .map((e) => snap.nodes.find((n) => n.id === e.source))
+          .filter(
+            (n): n is NonNullable<typeof n> =>
+              !!n && n.mediaMock && (n.outputs.length > 0 || isInFlight(n)),
+          );
+        if (mockUpstream.length > 0) {
+          return JSON.stringify({
+            error: `上游 ${describeNodes(mockUpstream)} 是测试模式产出的占位素材，真实生成不能引用：先对它们真实生成，再触发本节点`,
+          });
+        }
+      }
 
       const type = node.type === 'video_gen' ? 'video' : 'image';
-      const { generationId } = await media.createGeneration(
-        ctx.sessionId,
-        ctx.userId,
-        type,
-        prompt,
-        referenceVersionIds.length ? referenceVersionIds : undefined,
-        // 模型取节点上选定的那份（用户在卡片面板里选的，或 agent 用 set_node_model 设的）；
-        // 没选就回落该类型默认模型。
-        {
-          channel: node.mediaChannel ?? undefined,
-          model: node.mediaModel ?? undefined,
-          params: node.mediaParams ?? undefined,
-        },
-      );
+      let generationId: string;
+      try {
+        ({ generationId } = await media.createGeneration(
+          ctx.sessionId,
+          ctx.userId,
+          type,
+          prompt,
+          referenceVersionIds.length ? referenceVersionIds : undefined,
+          // 模型取节点上选定的那份（用户在卡片面板里选的，或 agent 用 set_node_model 设的）；
+          // 没选就回落该类型默认模型。
+          {
+            channel: node.mediaChannel ?? undefined,
+            model: node.mediaModel ?? undefined,
+            params: node.mediaParams ?? undefined,
+          },
+        ));
+      } catch (e) {
+        // 业务拒绝（如环境禁用了测试模式、引用非法）回一句话给模型，而不是抛异常废掉一整轮
+        if (e instanceof BusinessException) {
+          return JSON.stringify({ error: e.getResponse() });
+        }
+        throw e;
+      }
       // 回填 generationId：快照/前端据此显示生成状态与资产
       await canvas.applyOp(ctx.sessionId, 'agent', {
         op: 'update_node',
@@ -339,14 +382,14 @@ export function createCanvasTools(
         generationId,
         status: 'queued',
         references: referenceVersionIds.length,
-        // 明确回报连着但还没产物的上游，模型不会误以为它们参与了生成
-        waitingInputs: inputs.waitingInputs,
+        // 其中还在生成的上游：本节点会等它们出结果再开始，不用重复触发
+        pendingInputs: inputs.pendingInputs,
       });
     },
     {
       name: 'generate_media_node',
       description:
-        '触发某个 image_gen / video_gen 节点的实际生成（异步）。提示词取**该节点自己的 prompt 字段**（用 add_node / update_node 写上去），没写就会报错；模型与档位取节点上设好的那份（要换用 set_node_model，没设过用默认模型）；参考素材取自入边上游已就绪的图片 / 视频 / 音频（生成的与上传的都算，按入边顺序；超出所选模型上限的不会提交）。连着但还没产物的上游不参与，数量在返回值 waitingInputs 里。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
+        '触发某个 image_gen / video_gen 节点的实际生成（异步）。提示词取**该节点自己的 prompt 字段**（用 add_node / update_node 写上去），没写就会报错；模型与档位取节点上设好的那份（要换用 set_node_model，没设过用默认模型）；参考素材取自入边上游的图片 / 视频 / 音频（生成的与上传的都算，按入边顺序；超出所选模型上限的不会提交）。上游还在排队 / 生成中也可以直接触发：本节点会等它们出结果再开始（数量见返回值 pendingInputs）；上游还没触发过（或失败了）会报错，需先触发上游。所以多层工作流可以按「上游先、下游后」的顺序一次全部触发。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
       schema: z.object({ nodeId: z.string() }),
     },
   );
@@ -466,12 +509,21 @@ export function createCanvasTools(
         });
       }
       // 顺序 = 入边顺序，与用户在卡片上看到的预览顺序同源（见 collectVideoSources）
-      const sources = collectVideoSources(snap.nodes, snap.edges, node.id);
+      const { sources, pendingSources, missingSources } = collectVideoSources(
+        snap.nodes,
+        snap.edges,
+        node.id,
+      );
+      if (missingSources.length > 0) {
+        return JSON.stringify({
+          error: `上游视频 ${describeNodes(missingSources)} 还没有产物、也没在生成：生成 / 拼接节点先触发它们，上传节点需用户先上传文件，再触发拼接`,
+        });
+      }
       if (sources.length < 2) {
         return JSON.stringify({
           error:
-            '拼接至少需要两段已生成的视频：请把多个 video_gen（或另一个 video_concat）节点连到它，并确保它们都已生成完成',
-          ready: sources.length,
+            '拼接至少需要两段视频：请把多个 video_gen（或另一个 video_concat）节点连到它并触发它们',
+          clips: sources.length,
         });
       }
 
@@ -489,12 +541,14 @@ export function createCanvasTools(
         generationId,
         status: 'queued',
         clips: sources.length,
+        // 其中还在生成的片段：拼接会等它们都出结果再开始
+        pendingClips: pendingSources,
       });
     },
     {
       name: 'merge_video_node',
       description:
-        '触发某个 video_concat 节点的视频拼接（异步）。把它的**上游视频按入边顺序**接成一条新视频；至少要两段、且都已生成完成。拼接不调用生成模型（本地完成），但产物与生成节点一样是一段视频，可继续连给下游使用。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
+        '触发某个 video_concat 节点的视频拼接（异步）。把它的**上游视频按入边顺序**接成一条新视频；至少要两段。上游视频还在生成中也可以直接触发：会等它们都出结果再拼（数量见返回值 pendingClips）；上游还没触发过（或失败了）会报错，需先触发。拼接不调用生成模型（本地完成），但产物与生成节点一样是一段视频，可继续连给下游使用。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
       schema: z.object({ nodeId: z.string() }),
     },
   );

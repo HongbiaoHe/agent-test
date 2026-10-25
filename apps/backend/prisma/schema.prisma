@@ -168,6 +168,9 @@ model MediaVersion {
   url                 String?         @db.Text
   filePath            String? // MEDIA_DATA_DIR 下相对路径，如 <versionId>.png / .mp4
   error               String?         @db.Text
+  // 画布测试模式（Mock）产出的占位素材：不调 aigc，本地渲染。真实生成不能引用它作参考，
+  // 由它拼出来的成片同样记为 mock（见 MediaService）。
+  mock                Boolean         @default(false)
   createdAt           DateTime        @default(now())
   completedAt         DateTime?
 
@@ -197,8 +200,12 @@ model CanvasSession {
   // 敏感操作的审批模式：review(默认，破坏性/消耗性操作暂停等用户确认) | auto(全自动，不打断)。
   // 存会话上而不是每条消息：这是"这块画布怎么跑"的偏好，跨轮保持。
   approvalMode String?
-  tenantId     String
-  userId       String
+
+  // 测试模式（Mock）：开启时本画布触发的生成不调 aigc，产出本地占位素材（以触发那一刻为准）。
+  // 只在 CANVAS_MOCK_MEDIA_ENABLED 打开的环境可用。
+  mockMedia Boolean @default(false)
+  tenantId  String
+  userId    String
 
   // 乐观并发根版本 = 最新结构 op 的 seq。任一结构变更（增删节点/边、改节点 data）在同一
   // 事务里自增；用户空闲期提交编辑时带上它做 CAS 冲突检测。位置(x/y) LWW 不占此版本。

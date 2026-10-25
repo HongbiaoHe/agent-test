@@ -586,6 +586,8 @@ export interface CanvasNodeDto {
   mediaParams: Record<string, string> | null;
   mediaVersionId: string | null;
   mediaStatus: string | null;
+  /** 最新版本是测试模式（Mock）产出的占位素材 */
+  mediaMock: boolean;
   /** 可供下游消费的输出（服务端派生）。⚠️ patch 里生成节点的这项恒为空，见 canvas-state 的 upsertNode */
   outputs: CanvasNodeOutput[];
 }
@@ -605,6 +607,10 @@ export interface CanvasSnapshot {
   thinkingLevel: string | null;
   /** 敏感操作审批模式（后端已归一化，恒有值） */
   approvalMode: CanvasApprovalMode;
+  /** 测试模式开关：开启时本画布触发的生成走本地占位素材，不调 aigc、不花钱 */
+  mockMedia: boolean;
+  /** 当前环境是否允许测试模式；false 时不显示开关 */
+  mockMediaAvailable: boolean;
   revision: number;
   /** 会话累计 token（后端 run 聚合的持久化口径；实时增量由 token_usage 事件覆盖） */
   totalTokens: number;
@@ -684,6 +690,17 @@ export function renameCanvas(
   return request(`/canvas/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ title }),
+  });
+}
+
+/** 画布测试模式（Mock）开关（不改「最近更新」时间）。环境禁用时开启会被拒。 */
+export function setCanvasMockMedia(
+  id: string,
+  mockMedia: boolean,
+): Promise<{ id: string; mockMedia: boolean }> {
+  return request(`/canvas/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ mockMedia }),
   });
 }
 

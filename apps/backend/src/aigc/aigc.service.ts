@@ -183,18 +183,18 @@ export class AigcService {
   }
 
   /**
-   * 接单：按本次参考资源重算 derived 维度、再收窄档位后提交，返回 task_id 与**实际生效**的档位
-   * （调用方据此落库，好让界面显示的与真提交的一致）。参考资源超过模型上限的部分丢掉。
+   * 提交前的收窄（submit 与画布测试模式共用）：参考素材按类型截到模型上限（保持原顺序），
+   * 再按截后的参考重算 derived 维度、收窄档位。kept 与传入的 references 一一对应：哪些会被提交。
    */
-  async submit(input: {
+  async prepareSubmission(input: {
     type: AigcMediaType;
-    prompt: string;
     config: AigcMediaConfig;
     references: readonly AigcReference[];
-    callbackUrl?: string;
-    metadata?: Record<string, string>;
-    traceId?: string;
-  }): Promise<{ taskId: string; config: AigcMediaConfig }> {
+  }): Promise<{
+    config: AigcMediaConfig;
+    references: AigcReference[];
+    kept: boolean[];
+  }> {
     const channels = await this.channels(input.type);
     const found = findModel(channels, input.config.channel, input.config.model);
     if (!found) {
@@ -210,10 +210,10 @@ export class AigcService {
     };
     const used: ReferenceCounts = { image: 0, video: 0, audio: 0 };
     // voice 的源录音走独立字段 source_audio_url（目录里三个 *_input_number 都是 0），不按上限截
-    const references =
-      input.type === 'voice'
-        ? input.references
-        : input.references.filter((r) => used[r.type]++ < limits[r.type]);
+    const kept = input.references.map(
+      (r) => input.type === 'voice' || used[r.type]++ < limits[r.type],
+    );
+    const references = input.references.filter((_, i) => kept[i]);
     if (references.length < input.references.length) {
       this.logger.warn(
         `${input.config.model} 参考素材上限 图${limits.image}/视频${limits.video}/音频${limits.audio}，丢掉多余 ${
@@ -221,15 +221,35 @@ export class AigcService {
         } 个`,
       );
     }
-    const config: AigcMediaConfig = {
-      channel: found.channel,
-      model: found.model.model_alias,
-      params: sanitizeParams(
-        found.model,
-        input.config.params,
-        derivedDims(references),
-      ),
+    return {
+      config: {
+        channel: found.channel,
+        model: found.model.model_alias,
+        params: sanitizeParams(
+          found.model,
+          input.config.params,
+          derivedDims(references),
+        ),
+      },
+      references,
+      kept,
     };
+  }
+
+  /**
+   * 接单：按本次参考资源重算 derived 维度、再收窄档位后提交，返回 task_id 与**实际生效**的档位
+   * （调用方据此落库，好让界面显示的与真提交的一致）。参考资源超过模型上限的部分丢掉。
+   */
+  async submit(input: {
+    type: AigcMediaType;
+    prompt: string;
+    config: AigcMediaConfig;
+    references: readonly AigcReference[];
+    callbackUrl?: string;
+    metadata?: Record<string, string>;
+    traceId?: string;
+  }): Promise<{ taskId: string; config: AigcMediaConfig }> {
+    const { config, references } = await this.prepareSubmission(input);
     const body = buildTaskBody({
       type: input.type,
       prompt: input.prompt,

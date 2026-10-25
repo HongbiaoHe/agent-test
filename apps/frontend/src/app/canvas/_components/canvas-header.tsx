@@ -1,7 +1,7 @@
 "use client";
 
 import { useMutation, useQueryClient } from "@tanstack/react-query";
-import { ArrowLeft, Lock, Moon, Sun } from "lucide-react";
+import { ArrowLeft, FlaskConical, Lock, Moon, Sun } from "lucide-react";
 import { useTheme } from "next-themes";
 import { useRouter } from "next/navigation";
 import { useRef, useState, useSyncExternalStore } from "react";
@@ -13,6 +13,7 @@ import {
   TooltipTrigger,
 } from "@/components/ui/tooltip";
 import { renameCanvas } from "@/lib/api";
+import { cn } from "@/lib/utils";
 
 import type { SaveState } from "../_hooks/use-canvas";
 import {
@@ -145,6 +146,52 @@ function CanvasTitle({
   );
 }
 
+/**
+ * 测试模式（Mock）开关：紧挨画布名，因为它是「这块画布怎么跑」的设置。
+ * 开启时整枚换成警示色淡底 + 描边——一眼看得出这块画布的生成是模拟的；文字仍用正文色，
+ * 警示色只染图标（琥珀色当文字在浅底上对比度不够）。
+ */
+function MockToggle({
+  on,
+  onChange,
+}: {
+  on: boolean;
+  onChange: (next: boolean) => void;
+}) {
+  return (
+    <Tooltip>
+      <TooltipTrigger
+        render={
+          <button
+            type="button"
+            aria-pressed={on}
+            aria-label={on ? "Mock mode on" : "Mock mode off"}
+            onClick={() => onChange(!on)}
+            className={cn(
+              "flex h-7 shrink-0 items-center gap-1 rounded-full border px-2.5 text-xs font-medium transition-colors duration-150 max-md:h-9",
+              "focus-visible:ring-3 focus-visible:ring-ring/50 focus-visible:outline-none motion-reduce:transition-none",
+              on
+                ? "border-warning/60 bg-warning/15 text-foreground hover:bg-warning/25"
+                : "border-border text-muted-foreground hover:bg-accent hover:text-foreground",
+            )}
+          />
+        }
+      >
+        <FlaskConical
+          className={cn("size-3.5", on && "text-warning")}
+          aria-hidden
+        />
+        Mock
+      </TooltipTrigger>
+      <TooltipContent side="bottom">
+        {on
+          ? "Generations on this canvas are simulated — no cost"
+          : "Turn on to simulate generations without cost"}
+      </TooltipContent>
+    </Tooltip>
+  );
+}
+
 /** agent 运行中的状态胶囊：一颗脉动点 + 一句话 + 只读锁，不用转圈。 */
 function AgentRunningBadge() {
   return (
@@ -188,6 +235,9 @@ export function CanvasHeader({
   title,
   saveStates,
   busy,
+  mockMedia,
+  mockMediaAvailable,
+  onMockMediaChange,
 }: {
   sessionId: string;
   /** 画布标题；快照未落地时为 null，先占位免得岛塌成一个光秃秃的圆 */
@@ -195,6 +245,11 @@ export function CanvasHeader({
   saveStates: Record<string, SaveState>;
   /** agent 运行中：中间浮出运行状态胶囊 */
   busy: boolean;
+  /** 测试模式（Mock）开关 */
+  mockMedia: boolean;
+  /** 当前环境允许测试模式才显示开关 */
+  mockMediaAvailable: boolean;
+  onMockMediaChange: (next: boolean) => void;
 }) {
   const router = useRouter();
 
@@ -214,6 +269,10 @@ export function CanvasHeader({
           />
           <CanvasIslandDivider />
           <CanvasTitle sessionId={sessionId} title={title} />
+          {/* 环境禁用时开关不出现；但画布若仍开着（环境刚被关），照样显示好让人关掉——否则生成会一直被拒 */}
+          {(mockMediaAvailable || mockMedia) && (
+            <MockToggle on={mockMedia} onChange={onMockMediaChange} />
+          )}
         </CanvasIsland>
         <CanvasSaveStatus
           saveStates={saveStates}

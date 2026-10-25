@@ -80,6 +80,8 @@ function upsertNode(
     // update_node 的 patch 不带 media 字段（快照才 JOIN）；保留已有状态，避免闪回 null
     mediaVersionId: node.mediaVersionId ?? nodes[idx].mediaVersionId,
     mediaStatus: node.mediaStatus ?? nodes[idx].mediaStatus,
+    // 同上：没带版本的 patch 也没带 mock 标记，沿用已有值
+    mediaMock: node.mediaVersionId ? node.mediaMock : nodes[idx].mediaMock,
     outputs:
       joinDerived && node.outputs.length === 0
         ? nodes[idx].outputs

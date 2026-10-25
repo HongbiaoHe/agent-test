@@ -8,6 +8,7 @@ import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
 import { StreamService } from '../events/stream.service';
 import { MediaService, readParams } from '../media/media.service';
+import { mockMediaEnabled } from '../media/mock-media';
 import {
   MediaUploadService,
   UPLOAD_CONTENT_TYPES,
@@ -217,12 +218,16 @@ export class CanvasService {
   async update(
     id: string,
     tenantId: string,
-    patch: { title?: string; pinned?: boolean },
+    patch: { title?: string; pinned?: boolean; mockMedia?: boolean },
   ) {
     await this.assertOwner(id, tenantId);
     const title = patch.title?.trim();
     if (patch.title !== undefined && !title) {
       throw new BusinessException(ErrorCodes.CANVAS_TITLE_EMPTY);
+    }
+    // 环境禁用时不让开（关是始终允许的：开着却被禁用的画布要能关掉才能继续真实生成）
+    if (patch.mockMedia && !mockMediaEnabled()) {
+      throw new BusinessException(ErrorCodes.CANVAS_MOCK_DISABLED);
     }
     const keepUpdatedAt =
       title === undefined
@@ -238,9 +243,10 @@ export class CanvasService {
         ...(patch.pinned !== undefined && {
           pinnedAt: patch.pinned ? new Date() : null,
         }),
+        ...(patch.mockMedia !== undefined && { mockMedia: patch.mockMedia }),
         ...(keepUpdatedAt && { updatedAt: keepUpdatedAt.updatedAt }),
       },
-      select: { id: true, title: true, pinnedAt: true },
+      select: { id: true, title: true, pinnedAt: true, mockMedia: true },
     });
   }
 
@@ -273,7 +279,15 @@ export class CanvasService {
         HttpStatus.BAD_REQUEST,
       );
     }
-    const sources = collectVideoSources(snap.nodes, snap.edges, nodeId);
+    const { sources, missingSources } = collectVideoSources(
+      snap.nodes,
+      snap.edges,
+      nodeId,
+    );
+    // 连着的视频既没产物、也没在生成：先生成它（还在生成的可以，worker 等齐了再拼）
+    if (missingSources.length > 0) {
+      throw new BusinessException(ErrorCodes.CANVAS_UPSTREAM_NOT_READY);
+    }
     // 少于两段没什么可拼的；media 层也会再拦一次（那是权威校验）
     if (sources.length < 2) {
       throw new BusinessException(
@@ -327,6 +341,10 @@ export class CanvasService {
       );
     }
     const inputs = collectGenerationInputs(snap.nodes, snap.edges, nodeId);
+    // 上游既没产物、也没在生成：不能少带一路参考就开跑，先生成上游（在生成的会被等待）
+    if (inputs.missingInputs.length > 0) {
+      throw new BusinessException(ErrorCodes.CANVAS_UPSTREAM_NOT_READY);
+    }
     const { generationId } = await this.media.createGeneration(
       id,
       userId,
@@ -578,6 +596,8 @@ export class CanvasService {
       model: session.model,
       thinkingLevel: session.thinkingLevel,
       approvalMode: asApprovalMode(session.approvalMode),
+      mockMedia: session.mockMedia,
+      mockMediaAvailable: mockMediaEnabled(),
       revision: session.revision,
       totalTokens: tokenAgg._sum.totalTokens ?? 0,
       // 圈定的节点里可能有已被删掉的，过滤掉再回给前端，免得画布上标不出来又清不掉
@@ -1182,17 +1202,20 @@ export class CanvasService {
   /** 批量解析生成节点的最新 MediaVersion（generationId → {id,status}）。 */
   private async resolveMedia(
     generationIds: string[],
-  ): Promise<Map<string, { id: string; status: string }>> {
-    const map = new Map<string, { id: string; status: string }>();
+  ): Promise<Map<string, { id: string; status: string; mock: boolean }>> {
+    const map = new Map<
+      string,
+      { id: string; status: string; mock: boolean }
+    >();
     if (generationIds.length === 0) return map;
     const versions = await this.prisma.mediaVersion.findMany({
       where: { generationId: { in: generationIds } },
       orderBy: { createdAt: 'desc' },
-      select: { id: true, generationId: true, status: true },
+      select: { id: true, generationId: true, status: true, mock: true },
     });
     for (const v of versions) {
       if (!map.has(v.generationId)) {
-        map.set(v.generationId, { id: v.id, status: v.status });
+        map.set(v.generationId, { id: v.id, status: v.status, mock: v.mock });
       }
     }
     return map;
@@ -1213,7 +1236,7 @@ export class CanvasService {
       mediaModel: string | null;
       mediaParams: unknown;
     },
-    media?: { id: string; status: string },
+    media?: { id: string; status: string; mock: boolean },
   ): CanvasNodeDto {
     // 库里可能留着已下线的类型（如历史的 text 节点）——调用方在 buildSnapshot 里已把它们
     // 过滤掉，这里的兜底只是类型收窄用，取一个无输入无输出的类型最不会引发误连线。
@@ -1236,6 +1259,7 @@ export class CanvasService {
       mediaParams: n.mediaParams === null ? null : readParams(n.mediaParams),
       mediaVersionId: media?.id ?? null,
       mediaStatus: media?.status ?? null,
+      mediaMock: media?.mock ?? false,
       outputs: deriveOutputs(type, media),
     };
   }

@@ -3,11 +3,11 @@ import type {
   AigcModelParam,
   AigcParamOption,
   CanvasIoType,
-  CanvasNodeOutput,
   CanvasNodeType,
 } from "@/lib/api";
 
-import { CANVAS_NODE_IO } from "./node-io";
+import { CANVAS_NODE_IO, upstreamOutputType } from "./node-io";
+import type { NodeInputSource } from "./node-io";
 
 /**
  * 生成节点档位的纯计算：展示文本、排序，以及按目录 `constraints` 收窄档位。
@@ -97,15 +97,16 @@ export function hasOwnAuto(p: AigcModelParam): boolean {
   return p.options.some((o) => optionText(o) === AUTO);
 }
 
-/** 上游节点的最小形状（resolveInputs 的结果里只用到这一项） */
-interface UpstreamSource {
-  outputs: CanvasNodeOutput[];
-}
+/** 上游节点的最小形状（resolveInputs 的结果里只用到这几项） */
+type UpstreamSource = Pick<
+  NodeInputSource,
+  "nodeType" | "outputs" | "mediaStatus"
+>;
 
 /**
  * 一路上游在这次生成里的去向：
  * - used：会被提交，label 是它在提示词里的叫法（`Image 1` / `Video 1` / `Audio 1`，按类型各自计数）；
- * - pending：还没产物（没生成完 / 没传文件）；
+ * - pending：既没产物、也没在生成（没触发过 / 失败了 / 没传文件）——排队 / 生成中的上游照常提交，服务端会等它；
  * - type：产物类型这个节点不收（历史遗留的非法边）；
  * - frame：首帧模式的视频模型只认第一张图，后面的图不提交；
  * - limit：超出所选模型这类素材的上限。
@@ -147,23 +148,29 @@ export function planReferences(
   let images = 0;
 
   const fates = inputs.map((s): ReferenceFate => {
-    if (s.outputs.length === 0) return { used: false, reason: "pending" };
-    const output = s.outputs.find((o) => accepted.includes(o.type));
-    if (!output) return { used: false, reason: "type" };
-    if (output.type === "image") {
+    const type = upstreamOutputType(s, accepted);
+    if (!type) {
+      // 收不了的类型（不论有没有产物）不算缺；收得了却既没产物也没在生成 → 还没就绪
+      const produces = CANVAS_NODE_IO[s.nodeType].outputs;
+      return {
+        used: false,
+        reason: produces.some((t) => accepted.includes(t)) ? "pending" : "type",
+      };
+    }
+    if (type === "image") {
       if (imageRole === "first_frame" && images >= 1) {
         return { used: false, reason: "frame" };
       }
       images++;
     }
-    if (used[output.type] >= limits[output.type]) {
+    if (used[type] >= limits[type]) {
       return { used: false, reason: "limit" };
     }
-    used[output.type]++;
+    used[type]++;
     return {
       used: true,
-      type: output.type,
-      label: `${TYPE_WORD[output.type]} ${used[output.type]}`,
+      type,
+      label: `${TYPE_WORD[type]} ${used[type]}`,
     };
   });
 

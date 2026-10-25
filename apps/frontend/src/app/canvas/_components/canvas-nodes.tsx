@@ -14,6 +14,7 @@ import {
   Clock,
   Copy,
   Download,
+  FlaskConical,
   Layers,
   Link2,
   Loader2,
@@ -37,8 +38,11 @@ import { cn } from "@/lib/utils";
 import { useMediaAsset } from "../_hooks/use-media-asset";
 import { useNodeUpload } from "../_hooks/use-node-upload";
 import {
+  CANVAS_NODE_IO,
   canConnectNodeTypes,
+  isInFlight,
   UPLOAD_NODE_ASSET,
+  upstreamOutputType,
   type NodeInputSource,
 } from "../_lib/node-io";
 import {
@@ -548,11 +552,14 @@ function HeroMedia({
   kind,
   title,
   onZoom,
+  mock = false,
 }: {
   url: string;
   kind: "image" | "video";
   title: string;
   onZoom: () => void;
+  /** 测试模式产出的占位素材：右下角挂「Mock」角标，免得和真实结果混淆 */
+  mock?: boolean;
 }) {
   // 满宽 + 高度按比例自适应：卡片高度因此**就是**素材的高度，既不留信箱黑边
   // （object-contain 撞上固定 max-height 时竖图两侧会空出灰带），也不裁掉构图
@@ -582,7 +589,18 @@ function HeroMedia({
           className={fill}
         />
       )}
+      {mock && <MockBadge />}
     </HeroFrame>
+  );
+}
+
+/** 「Mock」角标：与标题栏的 Mock 开关同一套警示色语言（淡底描边 + 染色图标、文字正文色）。 */
+function MockBadge() {
+  return (
+    <span className="pointer-events-none absolute right-1.5 bottom-1.5 flex items-center gap-1 rounded-full border border-warning/60 bg-background/90 px-1.5 py-0.5 text-[10px] font-medium text-foreground">
+      <FlaskConical className="size-2.5 text-warning" aria-hidden />
+      Mock
+    </span>
   );
 }
 
@@ -967,6 +985,7 @@ function MediaGenNode({
           kind={kind}
           title={title}
           onZoom={() => setZoom(true)}
+          mock={data.mediaMock}
         />
       ) : asset.status === "error" ? (
         <HeroLoadError onRetry={asset.retry} />
@@ -1151,6 +1170,18 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
   const clips = inputs.flatMap((s) =>
     s.outputs.filter((o) => o.type === "video").map((o) => o.content),
   );
+  // 还在排队 / 生成的上游视频也算一段：可以先按 Merge，服务端等它们出片再拼（同后端 collectVideoSources）
+  const pendingClips = inputs.filter(
+    (s) => isInFlight(s) && upstreamOutputType(s, ["video"]) === "video",
+  ).length;
+  // 连着、却既没产物也没在生成的视频上游：得先生成它们
+  const missingClips = inputs.filter(
+    (s) =>
+      s.outputs.length === 0 &&
+      !isInFlight(s) &&
+      CANVAS_NODE_IO[s.nodeType].outputs.includes("video"),
+  ).length;
+  const totalClips = clips.length + pendingClips;
   const title = d.label?.trim() || NODE_META.video_concat.label;
   const done = d.mediaStatus === "done" && !!d.mediaVersionId;
   const asset = useMediaAsset(done ? d.mediaVersionId : null);
@@ -1183,6 +1214,7 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
         kind="video"
         title={title}
         onZoom={() => setZoom(true)}
+        mock={d.mediaMock}
       />
     );
   } else if (done) {
@@ -1236,15 +1268,26 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
           }
         />
       );
-    } else if (clips.length < 2) {
-      status = (
-        <StatusLine text={`Connect at least two videos (${clips.length})`} />
-      );
-    } else {
-      // 素材齐了才给 Merge：合成要花时间，不在连线的瞬间替用户决定
+    } else if (missingClips > 0) {
+      // 连着却没生成的视频先点出来——此时「至少连两段」会误导（段数可能早就够了）
       status = (
         <StatusLine
-          text={`${clips.length} clips — hover to preview`}
+          text={`Generate ${missingClips} upstream ${missingClips === 1 ? "video" : "videos"} first`}
+        />
+      );
+    } else if (totalClips < 2) {
+      status = (
+        <StatusLine text={`Connect at least two videos (${totalClips})`} />
+      );
+    } else {
+      // 每段都有着落了才给 Merge：合成要花时间，不在连线的瞬间替用户决定
+      status = (
+        <StatusLine
+          text={
+            pendingClips > 0
+              ? `${totalClips} clips — ${pendingClips} still generating`
+              : `${clips.length} clips — hover to preview`
+          }
           action={
             readOnly
               ? undefined
@@ -1270,7 +1313,7 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
         composerMeta={<InputsPill inputs={inputs} />}
         // 拼接节点没有提示词：面板里列的是待合成的视频序列（点一条跳到那个节点）
         clips={inputs
-          .filter((s) => s.outputs.some((o) => o.type === "video"))
+          .filter((s) => upstreamOutputType(s, ["video"]) === "video")
           .map((s) => ({ nodeId: s.nodeId, title: s.title }))}
         hero={hero}
         heroActions={

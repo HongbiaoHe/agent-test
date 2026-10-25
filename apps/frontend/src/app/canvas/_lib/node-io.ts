@@ -57,6 +57,25 @@ export interface NodeInputSource {
   outputs: CanvasNodeOutput[];
   /** 生成节点的媒体状态（queued / generating / done / failed）；还没触发过或非生成节点为 null */
   mediaStatus: string | null;
+  /** 产物是测试模式（Mock）的占位素材 */
+  mediaMock: boolean;
+}
+
+/** 上游还在排队 / 生成中：下游可以照常触发，服务端会带上它的版本并等它出结果（同后端 isInFlight）。 */
+export function isInFlight(s: Pick<NodeInputSource, "mediaStatus">): boolean {
+  return s.mediaStatus === "queued" || s.mediaStatus === "generating";
+}
+
+/** 这一路上游此刻（或在途完成后）给目标提供哪类素材；收不了 / 既没产物也没在生成 → null。 */
+export function upstreamOutputType(
+  s: Pick<NodeInputSource, "nodeType" | "outputs" | "mediaStatus">,
+  accepted: readonly CanvasIoType[],
+): CanvasIoType | null {
+  if (s.outputs.length > 0) {
+    return s.outputs.find((o) => accepted.includes(o.type))?.type ?? null;
+  }
+  if (!isInFlight(s)) return null;
+  return CANVAS_NODE_IO[s.nodeType].outputs.find((t) => accepted.includes(t)) ?? null;
 }
 
 /** 节点类型的缺省名：label 为空时顶上，同时也是各处「这是哪类节点」的措辞来源。 */
@@ -91,5 +110,6 @@ export function resolveNodeInputs(
       title: n.label?.trim() || NODE_TYPE_LABEL[n.type],
       outputs: n.outputs,
       mediaStatus: n.mediaStatus,
+      mediaMock: n.mediaMock,
     }));
 }

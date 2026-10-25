@@ -1,6 +1,8 @@
 import type { CanvasService } from './canvas.service';
 import type { MediaService } from '../media/media.service';
 import { createCanvasTools } from './canvas.tools';
+import { BusinessException } from '../common/errors/business.exception';
+import { ErrorCodes } from '../common/errors/error-code';
 
 /**
  * add_node 的必填参数校验。
@@ -517,5 +519,237 @@ describe('add_node 建时定模型', () => {
         mediaParams: undefined,
       }),
     );
+  });
+});
+
+/**
+ * generate_media_node × 测试模式：画布没开 Mock 时，上游是模拟产物要先点名拦下（不触发生成）；
+ * 开着 Mock 则照常交给 MediaService（它按触发时的开关记 mock）。业务拒绝回一句话，不抛异常。
+ */
+describe('generate_media_node 与测试模式', () => {
+  const upstream = {
+    id: 'cmup000kfmock1',
+    type: 'image_gen',
+    label: '关键帧1',
+    mediaMock: true,
+    outputs: [{ type: 'image', content: 'v-up' }],
+  };
+  const target = {
+    id: 'cmvid00target',
+    type: 'video_gen',
+    prompt: '镜头 1',
+    outputs: [],
+    mediaChannel: null,
+    mediaModel: null,
+    mediaParams: null,
+  };
+
+  function harness(mockMedia: boolean) {
+    const applyOp = jest.fn().mockResolvedValue({ revision: 1 });
+    const createGeneration = jest
+      .fn()
+      .mockResolvedValue({ generationId: 'g-1', versionId: 'v-1' });
+    const tools = createCanvasTools(
+      // cast-at-injection：只用到这几个方法
+      {
+        applyOp,
+        resolveNodeId: jest.fn().mockResolvedValue(target.id),
+        agentSnapshot: jest.fn().mockResolvedValue({
+          mockMedia,
+          nodes: [upstream, target],
+          edges: [{ source: upstream.id, target: target.id }],
+        }),
+      } as unknown as CanvasService,
+      { createGeneration } as unknown as MediaService,
+      { sessionId: 's1', userId: 'u1' },
+    );
+    return {
+      tool: tools.find((t) => t.name === 'generate_media_node')!,
+      createGeneration,
+      applyOp,
+    };
+  }
+
+  it('没开 Mock、上游是模拟产物：点名上游并拒绝，不触发生成', async () => {
+    const { tool, createGeneration, applyOp } = harness(false);
+    const out = await tool.invoke({ nodeId: target.id });
+    expect(createGeneration).not.toHaveBeenCalled();
+    expect(applyOp).not.toHaveBeenCalled();
+    const { error } = JSON.parse(out) as { error: string };
+    expect(error).toContain('关键帧1');
+    expect(error).toContain('mock1');
+  });
+
+  it('开着 Mock：照常触发（是否模拟由 MediaService 按触发时的开关定）', async () => {
+    const { tool, createGeneration } = harness(true);
+    await tool.invoke({ nodeId: target.id });
+    expect(createGeneration).toHaveBeenCalled();
+  });
+
+  it('业务拒绝（如环境禁用了测试模式）：回一句话而不是抛异常', async () => {
+    const { tool, createGeneration } = harness(true);
+    createGeneration.mockRejectedValue(
+      new BusinessException(ErrorCodes.CANVAS_MOCK_DISABLED),
+    );
+    const out = await tool.invoke({ nodeId: target.id });
+    expect(JSON.parse(out)).toMatchObject({
+      error: { code: ErrorCodes.CANVAS_MOCK_DISABLED.code },
+    });
+  });
+});
+
+/**
+ * 上游依赖：画布上一口气触发整条链时，在途（排队 / 生成中）的上游带上它的版本让下游等，
+ * 没触发过的上游直接拒绝——否则下游会少带一路参考就开跑（Mock 验收里实际撞到过）。
+ */
+describe('generate_media_node / merge_video_node 的上游依赖', () => {
+  const inFlight = {
+    id: 'cmimg00flight',
+    type: 'image_gen',
+    label: '关键帧',
+    mediaMock: false,
+    mediaVersionId: 'v-flight',
+    mediaStatus: 'generating',
+    outputs: [],
+  };
+  const never = {
+    id: 'cmimg000never',
+    type: 'image_gen',
+    label: '没触发',
+    mediaMock: false,
+    mediaVersionId: null,
+    mediaStatus: null,
+    outputs: [],
+  };
+  const videoGen = {
+    id: 'cmvid00target',
+    type: 'video_gen',
+    prompt: '镜头 1',
+    outputs: [],
+    mediaChannel: null,
+    mediaModel: null,
+    mediaParams: null,
+  };
+  const clipDone = {
+    id: 'cmclip00done1',
+    type: 'video_gen',
+    label: '片段1',
+    mediaMock: false,
+    mediaVersionId: 'v-c1',
+    mediaStatus: 'done',
+    outputs: [{ type: 'video', content: 'v-c1' }],
+  };
+  const clipQueued = {
+    id: 'cmclip0queue2',
+    type: 'video_gen',
+    label: '片段2',
+    mediaMock: false,
+    mediaVersionId: 'v-c2',
+    mediaStatus: 'queued',
+    outputs: [],
+  };
+  const clipNever = {
+    ...never,
+    id: 'cmclip0never3',
+    type: 'video_gen',
+    label: '片段3',
+  };
+  const concat = { id: 'cmconcat00tgt', type: 'video_concat', outputs: [] };
+
+  function harness(
+    nodes: Record<string, unknown>[],
+    edges: { source: string; target: string }[],
+    targetId: string,
+  ) {
+    const applyOp = jest.fn().mockResolvedValue({ revision: 1 });
+    const createGeneration = jest
+      .fn()
+      .mockResolvedValue({ generationId: 'g-1', versionId: 'v-1' });
+    const createConcat = jest
+      .fn()
+      .mockResolvedValue({ generationId: 'g-2', versionId: 'v-2' });
+    const tools = createCanvasTools(
+      // cast-at-injection：只用到这几个方法
+      {
+        applyOp,
+        resolveNodeId: jest.fn().mockResolvedValue(targetId),
+        agentSnapshot: jest
+          .fn()
+          .mockResolvedValue({ mockMedia: false, nodes, edges }),
+      } as unknown as CanvasService,
+      { createGeneration, createConcat } as unknown as MediaService,
+      { sessionId: 's1', userId: 'u1' },
+    );
+    return {
+      generate: tools.find((t) => t.name === 'generate_media_node')!,
+      merge: tools.find((t) => t.name === 'merge_video_node')!,
+      createGeneration,
+      createConcat,
+      applyOp,
+    };
+  }
+
+  it('上游在生成中：带上它的版本照常触发，并回报 pendingInputs', async () => {
+    const h = harness(
+      [inFlight, videoGen],
+      [{ source: inFlight.id, target: videoGen.id }],
+      videoGen.id,
+    );
+    const out = await h.generate.invoke({ nodeId: videoGen.id });
+    expect(h.createGeneration).toHaveBeenCalledWith(
+      's1',
+      'u1',
+      'video',
+      '镜头 1',
+      ['v-flight'],
+      expect.anything(),
+    );
+    expect(JSON.parse(out)).toMatchObject({ references: 1, pendingInputs: 1 });
+  });
+
+  it('上游没触发过：点名拒绝，不触发也不落 op', async () => {
+    const h = harness(
+      [inFlight, never, videoGen],
+      [
+        { source: inFlight.id, target: videoGen.id },
+        { source: never.id, target: videoGen.id },
+      ],
+      videoGen.id,
+    );
+    const out = await h.generate.invoke({ nodeId: videoGen.id });
+    expect(h.createGeneration).not.toHaveBeenCalled();
+    expect(h.applyOp).not.toHaveBeenCalled();
+    const { error } = JSON.parse(out) as { error: string };
+    expect(error).toContain('没触发');
+    expect(error).toContain('0never');
+  });
+
+  it('拼接：已完成 + 排队中的片段按入边顺序提交，回报 pendingClips', async () => {
+    const h = harness(
+      [clipQueued, clipDone, concat],
+      [
+        { source: clipQueued.id, target: concat.id },
+        { source: clipDone.id, target: concat.id },
+      ],
+      concat.id,
+    );
+    const out = await h.merge.invoke({ nodeId: concat.id });
+    expect(h.createConcat).toHaveBeenCalledWith('s1', 'u1', ['v-c2', 'v-c1']);
+    expect(JSON.parse(out)).toMatchObject({ clips: 2, pendingClips: 1 });
+  });
+
+  it('拼接：有片段没触发过 → 点名拒绝，不拼', async () => {
+    const h = harness(
+      [clipDone, clipQueued, clipNever, concat],
+      [
+        { source: clipDone.id, target: concat.id },
+        { source: clipQueued.id, target: concat.id },
+        { source: clipNever.id, target: concat.id },
+      ],
+      concat.id,
+    );
+    const out = await h.merge.invoke({ nodeId: concat.id });
+    expect(h.createConcat).not.toHaveBeenCalled();
+    expect((JSON.parse(out) as { error: string }).error).toContain('片段3');
   });
 });

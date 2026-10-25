@@ -198,6 +198,8 @@ export interface CanvasNodeDto {
   mediaVersionId: string | null;
   /** 生成节点最新状态：queued|generating|done|failed（JOIN 得出）。 */
   mediaStatus: string | null;
+  /** 最新版本是测试模式（Mock）产出的占位素材（JOIN 得出）。 */
+  mediaMock: boolean;
   /**
    * 该节点当前可供下游消费的输出（派生，不落表）。未就绪时为空数组：
    * 上传节点还没传文件、生成节点未 done 都是 []。
@@ -224,6 +226,10 @@ export interface CanvasSnapshot {
   thinkingLevel: string | null;
   /** 敏感操作审批模式（归一化后，恒有值） */
   approvalMode: CanvasApprovalMode;
+  /** 测试模式开关：开启时本画布触发的生成走本地占位素材，不调 aigc。 */
+  mockMedia: boolean;
+  /** 当前环境是否允许测试模式（CANVAS_MOCK_MEDIA_ENABLED）；false 时前端不显示开关。 */
+  mockMediaAvailable: boolean;
   revision: number;
   /** 会话累计 token（全部 run 的 totalTokens 聚合，持久化口径；实时增量走 token_usage 事件） */
   totalTokens: number;
@@ -382,61 +388,121 @@ export function shortNodeId(id: string): string {
   return id.slice(-SHORT_NODE_ID_LEN);
 }
 
+/** 上游节点里收集素材要用到的字段（快照里的 CanvasNodeDto 天然满足）。 */
+export type UpstreamNode = Pick<
+  CanvasNodeDto,
+  'id' | 'type' | 'label' | 'outputs' | 'mediaVersionId' | 'mediaStatus'
+>;
+
+/** 还在路上的版本：已经触发、还没出结果。下游带上它，worker 会等它 done 再提交（MediaProcessor.waitForRef）。 */
+const IN_FLIGHT_STATUSES = new Set(['queued', 'generating']);
+
+export function isInFlight(
+  n: Pick<UpstreamNode, 'mediaVersionId' | 'mediaStatus'>,
+) {
+  return !!n.mediaVersionId && IN_FLIGHT_STATUSES.has(n.mediaStatus ?? '');
+}
+
 /**
- * 生成节点从**入边**拿到的素材：上游已就绪的 image / video / audio 输出（目标节点收哪些类型
- * 见 CANVAS_NODE_IO）。提示词是节点自己的 prompt 字段，不走入边。agent 工具与用户手动触发
- * 共用这一份，避免两条路各算各的、"agent 生成的和自己点生成的不一样"。
+ * 沿入边（按入边顺序）收集目标节点这次能用的上游素材——生成与拼接共用这一份判断：
+ *  - 已出产物：用产物；
+ *  - 在排队 / 生成中：用它最新的版本，worker 等它 done 再用（于是一批里先后触发上下游也对得上）；
+ *  - 还没触发过 / 失败 / 被取消 / 上传节点没传文件：记进 missing，由调用方拒绝并点名，
+ *    而不是悄悄少带一路参考就开跑（那样出来的东西和画布连线对不上）。
+ * 目标节点不收的类型（历史遗留的非法边）直接忽略。
  */
-export interface CanvasGenerationInputs {
-  /** 参考素材的版本 id，按入边顺序（提示词里的 Image 1 / Image 2 靠的就是这个顺序）。 */
+function collectUpstream<T extends UpstreamNode>(
+  nodes: readonly T[],
+  edges: readonly { source: string; target: string }[],
+  nodeId: string,
+  accepted: readonly CanvasIoType[],
+): { refs: CanvasNodeOutput[]; pending: number; missing: T[] } {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const refs: CanvasNodeOutput[] = [];
+  const missing: T[] = [];
+  let pending = 0;
+  for (const e of edges) {
+    if (e.target !== nodeId) continue;
+    const n = byId.get(e.source);
+    if (!n) continue;
+    if (n.outputs.length > 0) {
+      refs.push(...n.outputs.filter((o) => accepted.includes(o.type)));
+      continue;
+    }
+    // 没产物：它将来会产出的类型这里收不收（收不了的边就不算缺）
+    const type = CANVAS_NODE_IO[n.type].outputs.find((t) =>
+      accepted.includes(t),
+    );
+    if (!type) continue;
+    if (isInFlight(n) && n.mediaVersionId) {
+      refs.push({ type, content: n.mediaVersionId });
+      pending++;
+    } else {
+      missing.push(n);
+    }
+  }
+  return { refs, pending, missing };
+}
+
+/**
+ * 生成节点从**入边**拿到的素材（规则见 collectUpstream）。提示词是节点自己的 prompt 字段，不走入边。
+ * agent 工具与用户手动触发共用这一份，避免两条路各算各的、"agent 生成的和自己点生成的不一样"。
+ */
+export interface CanvasGenerationInputs<
+  T extends UpstreamNode = CanvasNodeDto,
+> {
+  /** 参考素材的版本 id，按入边顺序（提示词里的 Image 1 / Image 2 靠的就是这个顺序）；含还在生成中的上游。 */
   referenceVersionIds: string[];
   /** 同上，按类型计数（给节点设模型时对照模型的各类素材上限）。 */
   referenceCounts: Record<CanvasIoType, number>;
-  /** 连着但还没有产物的上游数（未生成完 / 还没传文件）：这次不参与生成。 */
-  waitingInputs: number;
+  /** 其中还在排队 / 生成中的上游数：worker 会等它们 done。 */
+  pendingInputs: number;
+  /** 连着但既没产物、也没在生成的上游：调用方应拒绝并提示先生成它们。 */
+  missingInputs: T[];
 }
 
-export function collectGenerationInputs(
-  nodes: readonly CanvasNodeDto[],
+export function collectGenerationInputs<T extends UpstreamNode>(
+  nodes: readonly T[],
   edges: readonly { source: string; target: string }[],
   nodeId: string,
-): CanvasGenerationInputs {
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const target = byId.get(nodeId);
+): CanvasGenerationInputs<T> {
+  const target = nodes.find((n) => n.id === nodeId);
   const accepted = target ? CANVAS_NODE_IO[target.type].inputs : [];
-  // 按入边顺序（同 collectVideoSources），与前端附件栏的序号同源
-  const upstream = edges
-    .filter((e) => e.target === nodeId)
-    .map((e) => byId.get(e.source))
-    .filter((n): n is CanvasNodeDto => !!n);
-  const refs = upstream.flatMap((n) =>
-    n.outputs.filter((o) => accepted.includes(o.type)),
+  const { refs, pending, missing } = collectUpstream(
+    nodes,
+    edges,
+    nodeId,
+    accepted,
   );
   const referenceCounts = { image: 0, video: 0, audio: 0 };
   for (const o of refs) referenceCounts[o.type]++;
   return {
     referenceVersionIds: refs.map((o) => o.content),
     referenceCounts,
-    waitingInputs: upstream.filter((n) => n.outputs.length === 0).length,
+    pendingInputs: pending,
+    missingInputs: missing,
   };
 }
 
 /**
- * 按入边顺序收集某个 video_concat 节点的拼接源（上游视频的 MediaVersion.id）。
+ * 按入边顺序收集某个 video_concat 节点的拼接源（上游视频的 MediaVersion.id，规则见 collectUpstream：
+ * 还在生成的也算，worker 等齐了再拼）。
  *
  * 顺序即 edges 的顺序（服务端 createdAt 升序）——它同时决定了用户在卡片上看到的预览顺序
  * 与最终合成的先后，三处必须同源，否则"预览是这样、合出来是那样"。
  * agent 工具与用户手动触发的接口共用这一份，避免两条路各算各的。
  */
-export function collectVideoSources(
-  nodes: readonly { id: string; outputs: readonly CanvasNodeOutput[] }[],
+export function collectVideoSources<T extends UpstreamNode>(
+  nodes: readonly T[],
   edges: readonly { source: string; target: string }[],
   nodeId: string,
-): string[] {
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  return edges
-    .filter((e) => e.target === nodeId)
-    .flatMap((e) => byId.get(e.source)?.outputs ?? [])
-    .filter((o) => o.type === 'video')
-    .map((o) => o.content);
+): { sources: string[]; pendingSources: number; missingSources: T[] } {
+  const { refs, pending, missing } = collectUpstream(nodes, edges, nodeId, [
+    'video',
+  ]);
+  return {
+    sources: refs.map((o) => o.content),
+    pendingSources: pending,
+    missingSources: missing,
+  };
 }

@@ -73,6 +73,7 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
       onAnswer={c.answerAsk}
       onResolve={c.resolveControl}
       onClearPlan={c.clearPlan}
+      mockMedia={c.mockMedia}
       focusCount={c.focusNodeIds.length}
       onClearFocus={() => c.setFocus([])}
     />
@@ -122,6 +123,9 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
             title={c.title}
             saveStates={c.saveStates}
             busy={c.busy}
+            mockMedia={c.mockMedia}
+            mockMediaAvailable={c.mockMediaAvailable}
+            onMockMediaChange={c.setMockMedia}
           />
           {/* 骨架屏：盖在画布之上，快照与历史都落地（且至少驻留 500ms）后爆开退场。
               key=sessionId：切画布要从等待态重新走一遍 */}

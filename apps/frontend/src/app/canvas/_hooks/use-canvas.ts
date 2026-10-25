@@ -16,6 +16,7 @@ import {
   moveCanvasNode,
   regenerateMedia,
   setCanvasFocus,
+  setCanvasMockMedia,
   stopCanvas,
   uploadCanvasNodeFile,
   type CanvasNodeType,
@@ -524,6 +525,24 @@ export function useCanvas(sessionId: string | null) {
       });
   }
 
+  // 测试模式开关的乐观值：不改 react-query 里的快照（那会让画布按旧快照重铺、冲掉之后到达的 patch），
+  // 本地先显示，等快照里的值追上来再交还（render 期同步，规避 effect-setState）
+  const [mockPending, setMockPending] = useState<boolean | null>(null);
+  const serverMock = snapQ.data?.mockMedia ?? false;
+  if (mockPending !== null && serverMock === mockPending) setMockPending(null);
+
+  /** 切换测试模式：立即保存到画布上，之后触发的生成按新值走（已在跑的不受影响）。 */
+  function setMockMedia(on: boolean) {
+    if (!sessionId) return;
+    setMockPending(on);
+    void setCanvasMockMedia(sessionId, on)
+      .then(() => qc.invalidateQueries({ queryKey: ["canvas", sessionId] }))
+      .catch((e: unknown) => {
+        setMockPending(null);
+        toast.error(e instanceof Error ? e.message : "Could not switch Mock mode");
+      });
+  }
+
   /** 保存结账：仅当该节点无其他在途请求时落终态，并在 linger 后自动清除状态。 */
   function settleSave(nodeId: string, state: SaveState, linger: number) {
     inflight.current[nodeId] = Math.max((inflight.current[nodeId] ?? 1) - 1, 0);
@@ -583,5 +602,9 @@ export function useCanvas(sessionId: string | null) {
     /** 「加入对话」圈定的节点 id（空 = 关注整块画布） */
     focusNodeIds: snapQ.data?.focusNodeIds ?? EMPTY_FOCUS,
     setFocus,
+    /** 测试模式（Mock）：当前开关（含乐观值）、环境是否允许、切换 */
+    mockMedia: mockPending ?? serverMock,
+    mockMediaAvailable: snapQ.data?.mockMediaAvailable ?? false,
+    setMockMedia,
   };
 }

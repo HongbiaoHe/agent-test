@@ -28,6 +28,8 @@ const mockPrisma = {
     findMany: jest.fn(),
     updateMany: jest.fn(),
   },
+  // 触发时判定是否走测试模式：查不到画布行 = Spark 会话 / 未开 Mock，恒为真实生成
+  canvasSession: { findUnique: jest.fn().mockResolvedValue(null) },
 };
 const mockQueue = { add: jest.fn() };
 const mockStream = { publish: jest.fn() };
@@ -111,6 +113,195 @@ describe('MediaService', () => {
           }),
         }),
       );
+    });
+  });
+
+  /**
+   * 画布测试模式（Mock）：以触发那一刻的开关为准、环境禁用时拒绝而不是悄悄改走真实生成、
+   * 真实生成不能引用模拟产物、拼接成片继承模拟标记。
+   */
+  describe('测试模式（Mock）', () => {
+    const savedFlag = process.env.CANVAS_MOCK_MEDIA_ENABLED;
+    beforeEach(() => {
+      process.env.CANVAS_MOCK_MEDIA_ENABLED = 'true';
+      mockPrisma.mediaGeneration.create.mockResolvedValue({
+        id: 'gen-1',
+        conversationId: 'canvas-1',
+        type: 'video',
+        versions: [{ id: 'ver-1' }],
+      });
+    });
+    afterEach(() => {
+      process.env.CANVAS_MOCK_MEDIA_ENABLED = savedFlag;
+      mockPrisma.canvasSession.findUnique.mockResolvedValue(null);
+    });
+
+    const ref = (id: string, mock: boolean) => ({
+      id,
+      status: 'done',
+      mock,
+      generation: { type: 'image', userId: 'user-1' },
+    });
+    const versionCreate = () =>
+      expect.objectContaining({
+        data: expect.objectContaining({
+          versions: { create: expect.objectContaining({ mock: true }) },
+        }),
+      });
+
+    it('画布开着 Mock → 版本记为 mock（照常入队，由 worker 走模拟分支）', async () => {
+      mockPrisma.canvasSession.findUnique.mockResolvedValue({
+        mockMedia: true,
+      });
+      await service.createGeneration('canvas-1', 'user-1', 'video', 'p');
+      expect(mockPrisma.mediaGeneration.create).toHaveBeenCalledWith(
+        versionCreate(),
+      );
+      expect(mockQueue.add).toHaveBeenCalledWith(
+        'generate',
+        { versionId: 'ver-1' },
+        { jobId: 'ver-1' },
+      );
+    });
+
+    it('开着 Mock 但环境禁用 → CANVAS_MOCK_DISABLED，不建版本、绝不改走真实生成', async () => {
+      process.env.CANVAS_MOCK_MEDIA_ENABLED = 'false';
+      mockPrisma.canvasSession.findUnique.mockResolvedValue({
+        mockMedia: true,
+      });
+      await expect(
+        service.createGeneration('canvas-1', 'user-1', 'video', 'p'),
+      ).rejects.toMatchObject({
+        errCode: ErrorCodes.CANVAS_MOCK_DISABLED.code,
+      });
+      expect(mockPrisma.mediaGeneration.create).not.toHaveBeenCalled();
+      expect(mockQueue.add).not.toHaveBeenCalled();
+    });
+
+    it('真实生成引用模拟产物 → MEDIA_REF_MOCK，不建版本', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([ref('r1', true)]);
+      await expect(
+        service.createGeneration('canvas-1', 'user-1', 'video', 'p', ['r1']),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.MEDIA_REF_MOCK.code });
+      expect(mockPrisma.mediaGeneration.create).not.toHaveBeenCalled();
+    });
+
+    it('模拟生成引用模拟产物 → 放行', async () => {
+      mockPrisma.canvasSession.findUnique.mockResolvedValue({
+        mockMedia: true,
+      });
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([ref('r1', true)]);
+      await service.createGeneration('canvas-1', 'user-1', 'video', 'p', [
+        'r1',
+      ]);
+      expect(mockPrisma.mediaGeneration.create).toHaveBeenCalledWith(
+        versionCreate(),
+      );
+    });
+
+    it('重试也按此刻的开关：画布开着 Mock → 新版本记为 mock', async () => {
+      mockPrisma.canvasSession.findUnique.mockResolvedValue({
+        mockMedia: true,
+      });
+      mockPrisma.mediaGeneration.findUnique.mockResolvedValue({
+        id: 'gen-1',
+        userId: 'user-1',
+        conversationId: 'canvas-1',
+        type: 'video',
+        versions: [
+          {
+            prompt: 'p',
+            model: 'seedance-2',
+            channel: 'byteplus',
+            params: {},
+            referenceVersionIds: null,
+          },
+        ],
+      });
+      mockPrisma.mediaVersion.create.mockResolvedValue({ id: 'ver-2' });
+      await service.regenerate('gen-1', 'user-1');
+      expect(mockPrisma.mediaVersion.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ mock: true }),
+      });
+    });
+
+    it('拼接源里有模拟产物 → 成片也记为 mock（拼接本身照常执行）', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        {
+          id: 'a',
+          status: 'done',
+          filePath: 'a.mp4',
+          url: null,
+          mock: true,
+          generation: { type: 'video', userId: 'user-1' },
+        },
+        {
+          id: 'b',
+          status: 'done',
+          filePath: null,
+          url: 'https://cdn/b.mp4',
+          mock: false,
+          generation: { type: 'video', userId: 'user-1' },
+        },
+      ]);
+      await service.createConcat('canvas-1', 'user-1', ['a', 'b']);
+      expect(mockPrisma.mediaGeneration.create).toHaveBeenCalledWith(
+        versionCreate(),
+      );
+      expect(mockQueue.add).toHaveBeenCalledWith(
+        'concat',
+        { versionId: 'ver-1' },
+        { jobId: 'ver-1' },
+      );
+    });
+  });
+
+  describe('createConcat 的源状态', () => {
+    const src = (id: string, status: string, filePath: string | null) => ({
+      id,
+      status,
+      filePath,
+      url: null,
+      mock: false,
+      generation: { type: 'video', userId: 'user-1' },
+    });
+
+    it('源还在排队 / 生成：照收（worker 等齐再拼）', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        src('a', 'done', 'a.mp4'),
+        src('b', 'queued', null),
+        src('c', 'generating', null),
+      ]);
+      await service.createConcat('canvas-1', 'user-1', ['a', 'b', 'c']);
+      expect(mockQueue.add).toHaveBeenCalledWith(
+        'concat',
+        { versionId: 'ver-1' },
+        { jobId: 'ver-1' },
+      );
+    });
+
+    it.each(['failed', 'cancelled'])(
+      '源已 %s：拒绝，不入队',
+      async (status) => {
+        mockPrisma.mediaVersion.findMany.mockResolvedValue([
+          src('a', 'done', 'a.mp4'),
+          src('b', status, null),
+        ]);
+        await expect(
+          service.createConcat('canvas-1', 'user-1', ['a', 'b']),
+        ).rejects.toMatchObject({ errCode: ErrorCodes.MEDIA_REF_INVALID.code });
+        expect(mockQueue.add).not.toHaveBeenCalled();
+      },
+    );
+
+    it('done 了却没有文件：拒绝', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        src('a', 'done', 'a.mp4'),
+        src('b', 'done', null),
+      ]);
+      await expect(
+        service.createConcat('canvas-1', 'user-1', ['a', 'b']),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.MEDIA_REF_INVALID.code });
     });
   });
 

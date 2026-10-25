@@ -799,6 +799,28 @@ describe('CanvasService', () => {
       expect(dataOf(1)).toEqual({ pinnedAt: null, updatedAt: updated });
     });
 
+    it('测试模式开关：开 / 关都落库且保留原 updatedAt；环境禁用时拒绝开启、但始终允许关闭', async () => {
+      const saved = process.env.CANVAS_MOCK_MEDIA_ENABLED;
+      try {
+        process.env.CANVAS_MOCK_MEDIA_ENABLED = 'true';
+        await service.update('s1', 't1', { mockMedia: true });
+        expect(dataOf(0)).toEqual({ mockMedia: true, updatedAt: updated });
+
+        process.env.CANVAS_MOCK_MEDIA_ENABLED = 'false';
+        await expect(
+          service.update('s1', 't1', { mockMedia: true }),
+        ).rejects.toMatchObject({
+          errCode: ErrorCodes.CANVAS_MOCK_DISABLED.code,
+        });
+        expect(mockPrisma.canvasSession.update).toHaveBeenCalledTimes(1);
+
+        await service.update('s1', 't1', { mockMedia: false });
+        expect(dataOf(1)).toEqual({ mockMedia: false, updatedAt: updated });
+      } finally {
+        process.env.CANVAS_MOCK_MEDIA_ENABLED = saved;
+      }
+    });
+
     it('重命名去掉首尾空白；不碰置顶，也不保留 updatedAt（改名算一次更新）', async () => {
       await service.update('s1', 't1', { title: '  海报工作流  ' });
       expect(dataOf(0)).toEqual({ title: '海报工作流' });

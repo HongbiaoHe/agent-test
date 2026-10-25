@@ -22,6 +22,7 @@ import { ErrorCodes } from '../common/errors/error-code';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { signAssetToken } from './media-asset-token';
+import { mockMediaEnabled } from './mock-media';
 import { UPLOAD_MODEL, type MediaAssetType } from './media-upload.service';
 
 /** 生成类型：与 aigc 任务类型一一对应（audio 配音、voice 克隆音色，产物都是音频文件）。 */
@@ -124,9 +125,11 @@ export class MediaService {
     // 模型在建版本时就定下来并落库：界面上显示的、真提交给 aigc 的、事后审计看到的是同一份。
     // 节点没配 / 配的模型已下线 → 回落该类型默认模型（aigc 目录第一个）。
     const resolved = await this.aigc.resolveConfig(type, config);
+    // 画布测试模式：以触发这一刻的开关为准（之后切换不影响这一单）
+    const mock = await this.triggerMock(conversationId);
 
     // 入队前先校验参考图：不合法直接抛错，不建任何 DB 行（避免留下脏 generation）。
-    await this.validateReferences(referenceVersionIds, userId);
+    await this.validateReferences(referenceVersionIds, userId, mock);
 
     const generation = await this.prisma.mediaGeneration.create({
       data: {
@@ -140,6 +143,7 @@ export class MediaService {
             channel: resolved.channel,
             params: resolved.params,
             status: 'queued',
+            mock,
             // 无参考时存 null（而非空数组）：list 接口再统一默认 []
             referenceVersionIds: referenceVersionIds ?? undefined,
           },
@@ -394,7 +398,9 @@ export class MediaService {
         HttpStatus.BAD_REQUEST,
       );
     }
-    await this.validateConcatSources(sourceVersionIds, userId);
+    // 拼接是本地 ffmpeg、不花钱，测试模式下照常真实执行；但只要有一段是占位素材，
+    // 拼出来的成片也是占位内容，同样记为 mock（真实生成不能拿它当参考）
+    const { mock } = await this.validateConcatSources(sourceVersionIds, userId);
 
     const generation = await this.prisma.mediaGeneration.create({
       data: {
@@ -407,6 +413,7 @@ export class MediaService {
             prompt: `Concatenate ${sourceVersionIds.length} clips`,
             model: CONCAT_MODEL,
             status: 'queued',
+            mock,
             referenceVersionIds: sourceVersionIds,
           },
         },
@@ -432,13 +439,13 @@ export class MediaService {
   }
 
   /**
-   * 拼接源校验：必须都是**本人**的、**已完成**的、**视频**版本。
-   * 与 validateReferences 分开写：那边只放行 image，且不要求 done（参考图允许边等边生成）。
+   * 拼接源校验：必须都是**本人**的**视频**版本，且已完成或还在排队 / 生成
+   * （在途的由 worker 的 runConcat 逐个等到 done 再拼，与参考图边等边生成同一套）。
    */
   private async validateConcatSources(
     versionIds: string[],
     userId: string,
-  ): Promise<void> {
+  ): Promise<{ mock: boolean }> {
     const versions = await this.prisma.mediaVersion.findMany({
       where: { id: { in: versionIds } },
       include: { generation: true },
@@ -450,8 +457,10 @@ export class MediaService {
         !v ||
         v.generation.userId !== userId ||
         v.generation.type !== 'video' ||
-        v.status !== 'done' ||
-        (!v.filePath && !v.url)
+        // 还在排队 / 生成的源也收（worker 等齐了再拼）；失败 / 取消的、done 了却没文件的拒绝
+        (v.status === 'done'
+          ? !v.filePath && !v.url
+          : !MEDIA_OPEN_STATUSES.includes(v.status))
       ) {
         throw new BusinessException(
           ErrorCodes.MEDIA_REF_INVALID,
@@ -459,6 +468,7 @@ export class MediaService {
         );
       }
     }
+    return { mock: versions.some((v) => v.mock) };
   }
 
   /**
@@ -514,7 +524,9 @@ export class MediaService {
       (Array.isArray(last?.referenceVersionIds)
         ? (last.referenceVersionIds as string[])
         : undefined);
-    await this.validateReferences(finalRefs, userId);
+    // 「重试」也按此刻的测试模式开关来，不沿用上一版是真是假
+    const mock = await this.triggerMock(generation.conversationId);
+    await this.validateReferences(finalRefs, userId, mock);
 
     const version = await this.prisma.mediaVersion.create({
       data: {
@@ -524,6 +536,7 @@ export class MediaService {
         channel: resolved.channel,
         params: resolved.params,
         status: 'queued',
+        mock,
         referenceVersionIds: finalRefs ?? undefined,
       },
     });
@@ -781,6 +794,23 @@ export class MediaService {
   }
 
   /**
+   * 这次触发的生成要不要走测试模式：看这块画布此刻的开关（画布生成以 sessionId 作 conversationId 记账；
+   * Spark 会话查不到画布行，恒为真实生成）。开关开着、但当前环境禁用了测试模式 → 直接拒绝，
+   * 绝不悄悄改走真实生成花钱。
+   */
+  private async triggerMock(conversationId: string): Promise<boolean> {
+    const canvas = await this.prisma.canvasSession.findUnique({
+      where: { id: conversationId },
+      select: { mockMedia: true },
+    });
+    if (!canvas?.mockMedia) return false;
+    if (!mockMediaEnabled()) {
+      throw new BusinessException(ErrorCodes.CANVAS_MOCK_DISABLED);
+    }
+    return true;
+  }
+
+  /**
    * 校验参考素材版本的「合法性」：每个 id 必须存在、generation.type 是 image / video / audio（voice 按 audio 计）、归属同 userId。
    * status 允许 queued / generating / done（就绪性由 processor 执行时等待）；failed 与上传未发出的
    * staged 一律拒绝。任一不满足抛 MEDIA_REF_INVALID。空/未传则直接通过（参考可选）。
@@ -790,6 +820,8 @@ export class MediaService {
   private async validateReferences(
     referenceVersionIds: string[] | undefined,
     userId: string,
+    /** 本次是否模拟生成：真实生成不能拿模拟产物当参考（占位图发给 aigc 照样扣费，出来的东西没法用） */
+    mock = false,
   ): Promise<ReferenceCounts> {
     if (!referenceVersionIds || referenceVersionIds.length === 0) {
       return { ...NO_REFERENCES };
@@ -821,6 +853,12 @@ export class MediaService {
           HttpStatus.BAD_REQUEST,
         );
       }
+    }
+    if (!mock && found.some((v) => v.mock)) {
+      throw new BusinessException(
+        ErrorCodes.MEDIA_REF_MOCK,
+        HttpStatus.BAD_REQUEST,
+      );
     }
     const counts: ReferenceCounts = { ...NO_REFERENCES };
     for (const v of found) {
