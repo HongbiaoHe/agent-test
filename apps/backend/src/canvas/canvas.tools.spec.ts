@@ -1,3 +1,4 @@
+import { AIMessage } from '@langchain/core/messages';
 import type { CanvasService } from './canvas.service';
 import type { MediaService } from '../media/media.service';
 import { createCanvasTools } from './canvas.tools';
@@ -751,5 +752,164 @@ describe('generate_media_node / merge_video_node 的上游依赖', () => {
     const out = await h.merge.invoke({ nodeId: concat.id });
     expect(h.createConcat).not.toHaveBeenCalled();
     expect((JSON.parse(out) as { error: string }).error).toContain('片段3');
+  });
+});
+
+/**
+ * 同一条 AI 消息里一起触发（「全部触发」一步发出）：调用是并行跑的，下游可能先跑到。
+ * 下游要先等同批的直接上游挂上新版本，再收集参考——否则没生成过的上游被当成缺失拒掉，
+ * 生成过的会拿上一版当参考。
+ */
+describe('同一批触发按依赖顺序落地', () => {
+  type FakeNode = {
+    id: string;
+    type: string;
+    label: string;
+    prompt?: string;
+    mediaMock: boolean;
+    mediaVersionId: string | null;
+    mediaStatus: string | null;
+    outputs: { type: string; content: string }[];
+    mediaChannel: null;
+    mediaModel: null;
+    mediaParams: null;
+  };
+  const make = (
+    id: string,
+    type: string,
+    media: Pick<FakeNode, 'mediaVersionId' | 'mediaStatus' | 'outputs'>,
+  ): FakeNode => ({
+    id,
+    type,
+    label: id,
+    prompt: `${id} 提示词`,
+    mediaMock: false,
+    mediaChannel: null,
+    mediaModel: null,
+    mediaParams: null,
+    ...media,
+  });
+
+  function harness(upstreamMedia: Parameters<typeof make>[2]) {
+    const nodes = [
+      make('cmimgupstream', 'image_gen', upstreamMedia),
+      make('cmviddownstrm', 'video_gen', {
+        mediaVersionId: null,
+        mediaStatus: null,
+        outputs: [],
+      }),
+    ];
+    const edges = [{ source: 'cmimgupstream', target: 'cmviddownstrm' }];
+    let seq = 0;
+    const createGeneration = jest.fn((..._args: unknown[]) => {
+      seq++;
+      return Promise.resolve({
+        generationId: `g-${seq}`,
+        versionId: `v-new-${seq}`,
+      });
+    });
+    // update_node 挂上新 generation：节点换成新版本、排队中（快照 JOIN 的效果）
+    const applyOp = jest.fn(
+      (
+        _s: string,
+        _a: string,
+        op: { nodeId: string; mediaGenerationId: string },
+      ) => {
+        const n = nodes.find((x) => x.id === op.nodeId)!;
+        n.mediaVersionId = op.mediaGenerationId.replace('g-', 'v-new-');
+        n.mediaStatus = 'queued';
+        n.outputs = [];
+        return Promise.resolve({ revision: 1 });
+      },
+    );
+    const tools = createCanvasTools(
+      // cast-at-injection：只用到这几个方法
+      {
+        applyOp,
+        resolveNodeId: jest.fn((_s: string, id: string) => Promise.resolve(id)),
+        agentSnapshot: jest.fn(() =>
+          Promise.resolve({
+            mockMedia: false,
+            nodes: nodes.map((n) => ({ ...n, outputs: [...n.outputs] })),
+            edges,
+          }),
+        ),
+      } as unknown as CanvasService,
+      { createGeneration } as unknown as MediaService,
+      { sessionId: 's1', userId: 'u1' },
+    );
+    const generate = tools.find((t) => t.name === 'generate_media_node')!;
+    // ToolNode 传给工具的 config.state：最后一条是发起这批调用的 AI 消息
+    const batchConfig = {
+      state: {
+        messages: [
+          new AIMessage({
+            content: '',
+            tool_calls: [
+              {
+                id: 'c-up',
+                name: 'generate_media_node',
+                args: { nodeId: 'cmimgupstream' },
+              },
+              {
+                id: 'c-down',
+                name: 'generate_media_node',
+                args: { nodeId: 'cmviddownstrm' },
+              },
+            ],
+          }),
+        ],
+      },
+    };
+    const call = (nodeId: string) =>
+      generate
+        .invoke(
+          { nodeId },
+          {
+            ...batchConfig,
+            toolCall: {
+              id: `c-${nodeId}`,
+              name: 'generate_media_node',
+              args: { nodeId },
+            },
+          },
+        )
+        // 带 toolCall 调用时工具回 ToolMessage（与 ToolNode 里一致）
+        .then((msg) => JSON.parse(msg.text) as Record<string, unknown>);
+    return { call, createGeneration };
+  }
+
+  it('上游没生成过：下游先跑也会等上游挂上新版本，再带它的版本触发', async () => {
+    const h = harness({ mediaVersionId: null, mediaStatus: null, outputs: [] });
+    const down = h.call('cmviddownstrm');
+    await new Promise((r) => setTimeout(r, 20)); // 下游先跑到、在等
+    const up = h.call('cmimgupstream');
+    const [d, u] = await Promise.all([down, up]);
+
+    expect(u).toMatchObject({ status: 'queued' });
+    expect(d).toMatchObject({
+      status: 'queued',
+      references: 1,
+      pendingInputs: 1,
+    });
+    // 上游先落库，下游引用的是上游这次的新版本
+    expect(h.createGeneration.mock.calls.map((c) => c[3])).toEqual([
+      'cmimgupstream 提示词',
+      'cmviddownstrm 提示词',
+    ]);
+    expect(h.createGeneration.mock.calls[1][4]).toEqual(['v-new-1']);
+  });
+
+  it('上游生成过（全部重新生成）：下游不会拿到上一版', async () => {
+    const h = harness({
+      mediaVersionId: 'v-old',
+      mediaStatus: 'done',
+      outputs: [{ type: 'image', content: 'v-old' }],
+    });
+    const down = h.call('cmviddownstrm');
+    await new Promise((r) => setTimeout(r, 20));
+    await Promise.all([down, h.call('cmimgupstream')]);
+
+    expect(h.createGeneration.mock.calls[1][4]).toEqual(['v-new-1']);
   });
 });

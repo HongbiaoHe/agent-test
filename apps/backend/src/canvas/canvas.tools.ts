@@ -1,3 +1,4 @@
+import { isAIMessage, isBaseMessage } from '@langchain/core/messages';
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { BusinessException } from '../common/errors/business.exception';
@@ -30,6 +31,45 @@ const RETIRED_NODE_TYPES: Record<string, string> = {
   text: 'text 节点已下线：提示词直接写在 image_gen / video_gen 自己的 prompt 参数上，不需要单独的文本节点，也不需要连线',
 };
 
+/** 触发类工具：同一条 AI 消息里一起调用时要按依赖顺序落地（见 createCanvasTools 的 inBatch）。 */
+const TRIGGER_TOOLS = new Set(['generate_media_node', 'merge_video_node']);
+
+/** 批内下游等上游落地的上限：上游被拒绝执行（审批里点了取消）时不至于一直挂着。 */
+const BATCH_WAIT_MS = 15_000;
+
+/**
+ * 这次工具调用所在的那一批触发：同一条 AI 消息里所有 generate_media_node / merge_video_node
+ * 的 nodeId（模型给的原值，可能是短 id）。ToolNode 把当前 state 放在 config.state 里传给工具，
+ * 最后一条消息就是发起这批调用的 AI 消息。拿不到（单测直调、非图内调用）返回 null。
+ */
+function triggerBatch(
+  config: unknown,
+): { key: string; nodeIds: string[] } | null {
+  if (typeof config !== 'object' || config === null || !('state' in config)) {
+    return null;
+  }
+  const { state } = config;
+  if (
+    typeof state !== 'object' ||
+    state === null ||
+    !('messages' in state) ||
+    !Array.isArray(state.messages)
+  ) {
+    return null;
+  }
+  const last: unknown = state.messages.at(-1);
+  if (!isBaseMessage(last) || !isAIMessage(last)) return null;
+  const calls = (last.tool_calls ?? []).filter((c) =>
+    TRIGGER_TOOLS.has(c.name),
+  );
+  if (calls.length < 2) return null;
+  const nodeIds = calls
+    .map((c): unknown => c.args.nodeId)
+    .filter((id): id is string => typeof id === 'string');
+  // 同批所有调用算出同一个 key（各调用的 id 拼起来），换一批（哪怕节点相同）就是新 key
+  return { key: calls.map((c) => c.id ?? c.name).join('|'), nodeIds };
+}
+
 /** 报错里点名节点：短 id + 标题（与注入的画布状态同一写法，模型能直接拿去用）。 */
 function describeNodes(
   nodes: readonly { id: string; label: string | null; type: string }[],
@@ -57,6 +97,63 @@ export function createCanvasTools(
    * 解析不到（不存在 / 后缀有歧义）返回 null，各工具据此回一条明确错误给模型。
    */
   const resolveId = (id: string) => canvas.resolveNodeId(ctx.sessionId, id);
+
+  /**
+   * 同一批触发里各节点「已落地」的信号（key = 批 key + 完整节点 id）。
+   * 落地 = 这次调用跑完了（成功挂上新版本，或报错不触发），下游据此再去收集参考。
+   */
+  const landed = new Map<string, { done: Promise<void>; land: () => void }>();
+  const landing = (key: string) => {
+    let signal = landed.get(key);
+    if (!signal) {
+      let land = () => {};
+      const done = new Promise<void>((resolve) => (land = resolve));
+      signal = { done, land };
+      landed.set(key, signal);
+    }
+    return signal;
+  };
+
+  /**
+   * 包住触发类工具：同一条 AI 消息里一起调用的生成 / 拼接，在这里排成依赖顺序。
+   *
+   * 这些调用是并行执行的（每个 tool call 一个任务），下游可能先于上游跑到——那时上游还没挂上
+   * 这次的新版本：没生成过会被当成缺上游拒掉，生成过的会拿到上一版当参考（「全部重新生成」时
+   * 引用旧图）。所以下游先等**同批里的直接上游**落地，再照常收集；更上游的由上游自己去等，链式成序。
+   */
+  async function inBatch(
+    config: unknown,
+    nodeId: string,
+    run: () => Promise<string>,
+  ): Promise<string> {
+    const batch = triggerBatch(config);
+    const full = batch ? await resolveId(nodeId) : null;
+    if (!batch || !full) return run();
+    try {
+      const siblings = new Set(
+        (await Promise.all(batch.nodeIds.map(resolveId))).filter(
+          (id): id is string => !!id && id !== full,
+        ),
+      );
+      const snap = await canvas.agentSnapshot(ctx.sessionId);
+      const upstream = snap.edges
+        .filter((e) => e.target === full && siblings.has(e.source))
+        .map((e) => landing(`${batch.key}:${e.source}`).done);
+      if (upstream.length > 0) {
+        let timer: NodeJS.Timeout | undefined;
+        await Promise.race([
+          Promise.all(upstream),
+          new Promise<void>((resolve) => {
+            timer = setTimeout(resolve, BATCH_WAIT_MS);
+          }),
+        ]);
+        clearTimeout(timer);
+      }
+      return await run();
+    } finally {
+      landing(`${batch.key}:${full}`).land();
+    }
+  }
 
   const addNode = tool(
     async ({
@@ -300,96 +397,97 @@ export function createCanvasTools(
   );
 
   const generateMediaNode = tool(
-    async ({ nodeId }) => {
-      const full = await resolveId(nodeId);
-      const snap = await canvas.agentSnapshot(ctx.sessionId);
-      const node = full ? snap.nodes.find((n) => n.id === full) : undefined;
-      if (!node) {
-        return JSON.stringify({ error: '节点不存在', nodeId });
-      }
-      if (node.type !== 'image_gen' && node.type !== 'video_gen') {
-        return JSON.stringify({
-          error: '只有 image_gen / video_gen 节点可触发生成',
-          type: node.type,
-        });
-      }
-      // 提示词是节点自己的字段；入边只提供参考素材（契约见 canvas.types 的 CANVAS_NODE_IO）。
-      // 与用户手动触发（CanvasService.generateMediaNode）共用同一段收集逻辑。
-      const prompt = node.prompt?.trim() ?? '';
-      if (!prompt) {
-        return JSON.stringify({
-          error:
-            '该节点还没有提示词：先用 update_node 把 prompt 写到这个节点上，再触发生成',
-        });
-      }
-      const inputs = collectGenerationInputs(snap.nodes, snap.edges, node.id);
-      const { referenceVersionIds } = inputs;
-      // 上游既没产物、也没在生成：点名让模型先触发它们（在生成的上游会被等待，不用管）
-      if (inputs.missingInputs.length > 0) {
-        return JSON.stringify({
-          error: `上游 ${describeNodes(inputs.missingInputs)} 还没有产物、也没在生成：生成 / 拼接节点先触发它们，上传节点需用户先上传文件，再触发本节点`,
-        });
-      }
-
-      // 真实生成不能拿测试模式的占位素材当参考（MediaService 也会拒，这里先点名是哪几个上游，
-      // 模型下一步就知道要先真实生成它们）
-      if (!snap.mockMedia) {
-        const mockUpstream = snap.edges
-          .filter((e) => e.target === node.id)
-          .map((e) => snap.nodes.find((n) => n.id === e.source))
-          .filter(
-            (n): n is NonNullable<typeof n> =>
-              !!n && n.mediaMock && (n.outputs.length > 0 || isInFlight(n)),
-          );
-        if (mockUpstream.length > 0) {
+    async ({ nodeId }, config) =>
+      inBatch(config, nodeId, async () => {
+        const full = await resolveId(nodeId);
+        const snap = await canvas.agentSnapshot(ctx.sessionId);
+        const node = full ? snap.nodes.find((n) => n.id === full) : undefined;
+        if (!node) {
+          return JSON.stringify({ error: '节点不存在', nodeId });
+        }
+        if (node.type !== 'image_gen' && node.type !== 'video_gen') {
           return JSON.stringify({
-            error: `上游 ${describeNodes(mockUpstream)} 是测试模式产出的占位素材，真实生成不能引用：先对它们真实生成，再触发本节点`,
+            error: '只有 image_gen / video_gen 节点可触发生成',
+            type: node.type,
           });
         }
-      }
-
-      const type = node.type === 'video_gen' ? 'video' : 'image';
-      let generationId: string;
-      try {
-        ({ generationId } = await media.createGeneration(
-          ctx.sessionId,
-          ctx.userId,
-          type,
-          prompt,
-          referenceVersionIds.length ? referenceVersionIds : undefined,
-          // 模型取节点上选定的那份（用户在卡片面板里选的，或 agent 用 set_node_model 设的）；
-          // 没选就回落该类型默认模型。
-          {
-            channel: node.mediaChannel ?? undefined,
-            model: node.mediaModel ?? undefined,
-            params: node.mediaParams ?? undefined,
-          },
-        ));
-      } catch (e) {
-        // 业务拒绝（如环境禁用了测试模式、引用非法）回一句话给模型，而不是抛异常废掉一整轮
-        if (e instanceof BusinessException) {
-          return JSON.stringify({ error: e.getResponse() });
+        // 提示词是节点自己的字段；入边只提供参考素材（契约见 canvas.types 的 CANVAS_NODE_IO）。
+        // 与用户手动触发（CanvasService.generateMediaNode）共用同一段收集逻辑。
+        const prompt = node.prompt?.trim() ?? '';
+        if (!prompt) {
+          return JSON.stringify({
+            error:
+              '该节点还没有提示词：先用 update_node 把 prompt 写到这个节点上，再触发生成',
+          });
         }
-        throw e;
-      }
-      // 回填 generationId：快照/前端据此显示生成状态与资产
-      await canvas.applyOp(ctx.sessionId, 'agent', {
-        op: 'update_node',
-        nodeId: node.id,
-        mediaGenerationId: generationId,
-      });
-      return JSON.stringify({
-        generationId,
-        status: 'queued',
-        references: referenceVersionIds.length,
-        // 其中还在生成的上游：本节点会等它们出结果再开始，不用重复触发
-        pendingInputs: inputs.pendingInputs,
-      });
-    },
+        const inputs = collectGenerationInputs(snap.nodes, snap.edges, node.id);
+        const { referenceVersionIds } = inputs;
+        // 上游既没产物、也没在生成：点名让模型先触发它们（在生成的上游会被等待，不用管）
+        if (inputs.missingInputs.length > 0) {
+          return JSON.stringify({
+            error: `上游 ${describeNodes(inputs.missingInputs)} 还没有产物、也没在生成：生成 / 拼接节点先触发它们，上传节点需用户先上传文件，再触发本节点`,
+          });
+        }
+
+        // 真实生成不能拿测试模式的占位素材当参考（MediaService 也会拒，这里先点名是哪几个上游，
+        // 模型下一步就知道要先真实生成它们）
+        if (!snap.mockMedia) {
+          const mockUpstream = snap.edges
+            .filter((e) => e.target === node.id)
+            .map((e) => snap.nodes.find((n) => n.id === e.source))
+            .filter(
+              (n): n is NonNullable<typeof n> =>
+                !!n && n.mediaMock && (n.outputs.length > 0 || isInFlight(n)),
+            );
+          if (mockUpstream.length > 0) {
+            return JSON.stringify({
+              error: `上游 ${describeNodes(mockUpstream)} 是测试模式产出的占位素材，真实生成不能引用：先对它们真实生成，再触发本节点`,
+            });
+          }
+        }
+
+        const type = node.type === 'video_gen' ? 'video' : 'image';
+        let generationId: string;
+        try {
+          ({ generationId } = await media.createGeneration(
+            ctx.sessionId,
+            ctx.userId,
+            type,
+            prompt,
+            referenceVersionIds.length ? referenceVersionIds : undefined,
+            // 模型取节点上选定的那份（用户在卡片面板里选的，或 agent 用 set_node_model 设的）；
+            // 没选就回落该类型默认模型。
+            {
+              channel: node.mediaChannel ?? undefined,
+              model: node.mediaModel ?? undefined,
+              params: node.mediaParams ?? undefined,
+            },
+          ));
+        } catch (e) {
+          // 业务拒绝（如环境禁用了测试模式、引用非法）回一句话给模型，而不是抛异常废掉一整轮
+          if (e instanceof BusinessException) {
+            return JSON.stringify({ error: e.getResponse() });
+          }
+          throw e;
+        }
+        // 回填 generationId：快照/前端据此显示生成状态与资产
+        await canvas.applyOp(ctx.sessionId, 'agent', {
+          op: 'update_node',
+          nodeId: node.id,
+          mediaGenerationId: generationId,
+        });
+        return JSON.stringify({
+          generationId,
+          status: 'queued',
+          references: referenceVersionIds.length,
+          // 其中还在生成的上游：本节点会等它们出结果再开始，不用重复触发
+          pendingInputs: inputs.pendingInputs,
+        });
+      }),
     {
       name: 'generate_media_node',
       description:
-        '触发某个 image_gen / video_gen 节点的实际生成（异步）。提示词取**该节点自己的 prompt 字段**（用 add_node / update_node 写上去），没写就会报错；模型与档位取节点上设好的那份（要换用 set_node_model，没设过用默认模型）；参考素材取自入边上游的图片 / 视频 / 音频（生成的与上传的都算，按入边顺序；超出所选模型上限的不会提交）。上游还在排队 / 生成中也可以直接触发：本节点会等它们出结果再开始（数量见返回值 pendingInputs）；上游还没触发过（或失败了）会报错，需先触发上游。所以多层工作流可以按「上游先、下游后」的顺序一次全部触发。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
+        '触发某个 image_gen / video_gen 节点的实际生成（异步）。提示词取**该节点自己的 prompt 字段**（用 add_node / update_node 写上去），没写就会报错；模型与档位取节点上设好的那份（要换用 set_node_model，没设过用默认模型）；参考素材取自入边上游的图片 / 视频 / 音频（生成的与上传的都算，按入边顺序；超出所选模型上限的不会提交）。上游还在排队 / 生成中也可以直接触发：本节点会等它们出结果再开始（数量见返回值 pendingInputs）。同一步里一起调用的 generate_media_node / merge_video_node 会自动按连线依赖排序，所以整条多层工作流可以在一步里全部触发；上游既没在同一步触发、之前也没触发过（或失败了）会报错。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
       schema: z.object({ nodeId: z.string() }),
     },
   );
@@ -495,60 +593,61 @@ export function createCanvasTools(
    * 区别是素材全部是**上游视频**、且不调模型（本地 ffmpeg，见 media/video-concat.ts）。
    */
   const mergeVideoNode = tool(
-    async ({ nodeId }) => {
-      const full = await resolveId(nodeId);
-      const snap = await canvas.agentSnapshot(ctx.sessionId);
-      const node = full ? snap.nodes.find((n) => n.id === full) : undefined;
-      if (!node) {
-        return JSON.stringify({ error: '节点不存在', nodeId });
-      }
-      if (node.type !== 'video_concat') {
-        return JSON.stringify({
-          error: '只有 video_concat 节点可触发拼接',
-          type: node.type,
-        });
-      }
-      // 顺序 = 入边顺序，与用户在卡片上看到的预览顺序同源（见 collectVideoSources）
-      const { sources, pendingSources, missingSources } = collectVideoSources(
-        snap.nodes,
-        snap.edges,
-        node.id,
-      );
-      if (missingSources.length > 0) {
-        return JSON.stringify({
-          error: `上游视频 ${describeNodes(missingSources)} 还没有产物、也没在生成：生成 / 拼接节点先触发它们，上传节点需用户先上传文件，再触发拼接`,
-        });
-      }
-      if (sources.length < 2) {
-        return JSON.stringify({
-          error:
-            '拼接至少需要两段视频：请把多个 video_gen（或另一个 video_concat）节点连到它并触发它们',
-          clips: sources.length,
-        });
-      }
+    async ({ nodeId }, config) =>
+      inBatch(config, nodeId, async () => {
+        const full = await resolveId(nodeId);
+        const snap = await canvas.agentSnapshot(ctx.sessionId);
+        const node = full ? snap.nodes.find((n) => n.id === full) : undefined;
+        if (!node) {
+          return JSON.stringify({ error: '节点不存在', nodeId });
+        }
+        if (node.type !== 'video_concat') {
+          return JSON.stringify({
+            error: '只有 video_concat 节点可触发拼接',
+            type: node.type,
+          });
+        }
+        // 顺序 = 入边顺序，与用户在卡片上看到的预览顺序同源（见 collectVideoSources）
+        const { sources, pendingSources, missingSources } = collectVideoSources(
+          snap.nodes,
+          snap.edges,
+          node.id,
+        );
+        if (missingSources.length > 0) {
+          return JSON.stringify({
+            error: `上游视频 ${describeNodes(missingSources)} 还没有产物、也没在生成：生成 / 拼接节点先触发它们，上传节点需用户先上传文件，再触发拼接`,
+          });
+        }
+        if (sources.length < 2) {
+          return JSON.stringify({
+            error:
+              '拼接至少需要两段视频：请把多个 video_gen（或另一个 video_concat）节点连到它并触发它们',
+            clips: sources.length,
+          });
+        }
 
-      const { generationId } = await media.createConcat(
-        ctx.sessionId,
-        ctx.userId,
-        sources,
-      );
-      await canvas.applyOp(ctx.sessionId, 'agent', {
-        op: 'update_node',
-        nodeId: node.id,
-        mediaGenerationId: generationId,
-      });
-      return JSON.stringify({
-        generationId,
-        status: 'queued',
-        clips: sources.length,
-        // 其中还在生成的片段：拼接会等它们都出结果再开始
-        pendingClips: pendingSources,
-      });
-    },
+        const { generationId } = await media.createConcat(
+          ctx.sessionId,
+          ctx.userId,
+          sources,
+        );
+        await canvas.applyOp(ctx.sessionId, 'agent', {
+          op: 'update_node',
+          nodeId: node.id,
+          mediaGenerationId: generationId,
+        });
+        return JSON.stringify({
+          generationId,
+          status: 'queued',
+          clips: sources.length,
+          // 其中还在生成的片段：拼接会等它们都出结果再开始
+          pendingClips: pendingSources,
+        });
+      }),
     {
       name: 'merge_video_node',
       description:
-        '触发某个 video_concat 节点的视频拼接（异步）。把它的**上游视频按入边顺序**接成一条新视频；至少要两段。上游视频还在生成中也可以直接触发：会等它们都出结果再拼（数量见返回值 pendingClips）；上游还没触发过（或失败了）会报错，需先触发。拼接不调用生成模型（本地完成），但产物与生成节点一样是一段视频，可继续连给下游使用。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
+        '触发某个 video_concat 节点的视频拼接（异步）。把它的**上游视频按入边顺序**接成一条新视频；至少要两段。上游视频还在生成中也可以直接触发：会等它们都出结果再拼（数量见返回值 pendingClips）；可与上游的 generate_media_node 在同一步里一起调用（自动按依赖排序）。上游既没在同一步触发、之前也没触发过（或失败了）会报错。拼接不调用生成模型（本地完成），但产物与生成节点一样是一段视频，可继续连给下游使用。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
       schema: z.object({ nodeId: z.string() }),
     },
   );
