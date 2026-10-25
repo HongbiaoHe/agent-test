@@ -1,4 +1,5 @@
 import type { Todo } from "@/components/agent/todo-list";
+import { parseAttachments } from "@/components/attachments/attachments";
 import type {
   Conversation,
   ConversationMessage,
@@ -422,31 +423,6 @@ function messageToEvent(m: ConversationMessage): NormalizedEvent {
     role: m.role,
     at: Number.isNaN(at) ? undefined : at,
   };
-}
-
-/** message.content.attachments 是后端落库的 Json，逐项用守卫收窄；形状不对的项丢掉。 */
-function parseAttachments(value: unknown): MessageAttachment[] {
-  if (!Array.isArray(value)) return [];
-  const out: MessageAttachment[] = [];
-  for (const v of value) {
-    if (typeof v !== "object" || v === null) continue;
-    const { versionId, type, url, filename, contentType } = v as Record<string, unknown>;
-    if (
-      typeof versionId === "string" &&
-      (type === "image" || type === "video" || type === "audio") &&
-      typeof url === "string" &&
-      typeof filename === "string"
-    ) {
-      out.push({
-        versionId,
-        type,
-        url,
-        filename,
-        contentType: typeof contentType === "string" ? contentType : "",
-      });
-    }
-  }
-  return out;
 }
 
 /**

@@ -4,6 +4,7 @@ import { checkpointerProvider } from '../agent/checkpointer.provider';
 import { EventsModule } from '../events/events.module';
 // 有意的模块依赖：canvas 是 media 工具的注入点，耦合收敛在此，canvas.agent.factory 不感知 media
 import { MediaModule } from '../media/media.module';
+import { MediaAnalysisModule } from '../media-analysis/media-analysis.module';
 import { CanvasSkillsModule } from '../canvas-skills/canvas-skills.module';
 import { canvasAbortsProvider } from './canvas.abort';
 import { CanvasController } from './canvas.controller';
@@ -20,6 +21,7 @@ import { CanvasService } from './canvas.service';
     BullModule.registerQueue({ name: 'canvas-run' }),
     EventsModule,
     MediaModule,
+    MediaAnalysisModule,
     CanvasSkillsModule,
   ],
   controllers: [CanvasController],

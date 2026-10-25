@@ -6,16 +6,28 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Test } from '@nestjs/testing';
 import type { Job } from 'bullmq';
-import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
+import {
+  AbortRegistry,
+  MEDIA_ABORTS,
+  MEDIA_PAUSES,
+} from '../agent/abort-registry';
 import { MediaProcessor } from './media.processor';
 import { MediaService } from './media.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { AigcService } from '../aigc/aigc.service';
 import { concatVideos } from './video-concat';
+import { renderMockImage, renderMockVideo } from './mock-media';
 
 // 拼接测试不真跑 ffmpeg：只验证喂给它的源文件路径与内容
 jest.mock('./video-concat', () => ({ concatVideos: jest.fn() }));
+// 模拟生成不真渲染、不真等：只验证喂给渲染的内容与收尾
+jest.mock('./mock-media', (): typeof import('./mock-media') => ({
+  ...jest.requireActual<typeof import('./mock-media')>('./mock-media'),
+  renderMockImage: jest.fn(),
+  renderMockVideo: jest.fn(),
+  abortableSleep: jest.fn().mockResolvedValue(undefined),
+}));
 
 describe('MediaProcessor.waitForRef', () => {
   const mockPrisma = { mediaVersion: { findUnique: jest.fn() } };
@@ -33,6 +45,7 @@ describe('MediaProcessor.waitForRef', () => {
         { provide: AigcService, useValue: mockAigc },
         { provide: MediaService, useValue: mockMedia },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
       ],
     }).compile();
     processor = module.get(MediaProcessor);
@@ -135,6 +148,24 @@ describe('MediaProcessor.waitForRef', () => {
     );
   });
 
+  it('上游暂停期间不计超时：暂停总时长超过超时也照样等到 done', async () => {
+    const paused = { id: 'ref-1', status: 'paused', filePath: null };
+    mockPrisma.mediaVersion.findUnique
+      .mockResolvedValueOnce(paused)
+      .mockResolvedValueOnce(paused)
+      .mockResolvedValueOnce(paused)
+      .mockResolvedValueOnce(paused)
+      .mockResolvedValueOnce({
+        id: 'ref-1',
+        status: 'done',
+        filePath: 'ref-1.png',
+      });
+
+    // 每轮 20ms × 4 次暂停 = 80ms，超过 50ms 的超时
+    const v = await processor.waitForRef('ref-1', 20, 50);
+    expect(v.id).toBe('ref-1');
+  });
+
   it('ref 不存在 → 抛错', async () => {
     mockPrisma.mediaVersion.findUnique.mockResolvedValue(null);
 
@@ -166,13 +197,16 @@ describe('MediaProcessor.process（generate）', () => {
     markSubmitted: jest.fn(),
     scheduleReconcile: jest.fn(),
     settleFailed: jest.fn(),
+    settlePaused: jest.fn(),
   };
   let aborts: AbortRegistry;
+  let pauses: AbortRegistry;
   let processor: MediaProcessor;
   const submit = jest.fn();
 
   beforeEach(async () => {
     aborts = new AbortRegistry();
+    pauses = new AbortRegistry();
     const module = await Test.createTestingModule({
       providers: [
         MediaProcessor,
@@ -181,6 +215,7 @@ describe('MediaProcessor.process（generate）', () => {
         { provide: AigcService, useValue: { submit } },
         { provide: MediaService, useValue: mockMedia },
         { provide: MEDIA_ABORTS, useValue: aborts },
+        { provide: MEDIA_PAUSES, useValue: pauses },
       ],
     }).compile();
     processor = module.get(MediaProcessor);
@@ -226,6 +261,31 @@ describe('MediaProcessor.process（generate）', () => {
       '用户已停止',
       'cancelled',
     );
+  });
+
+  it('提交前被暂停 → 落 paused，不发单、不判失败', async () => {
+    // 拾取后、等参考的这段里暂停接口到达（findUnique 发生在登记暂停窗口之后）
+    mockPrisma.mediaVersion.findUnique.mockImplementationOnce(() => {
+      expect(pauses.abort('v1')).toBe(true);
+      return Promise.resolve(version);
+    });
+    await processor.process(job);
+    expect(mockMedia.settlePaused).toHaveBeenCalledWith('v1');
+    expect(submit).not.toHaveBeenCalled();
+    expect(mockMedia.settleFailed).not.toHaveBeenCalled();
+  });
+
+  it('已经在提交（窗口已关）→ 暂停不生效，照常提交', async () => {
+    submit.mockImplementation(() => {
+      expect(pauses.abort('v1')).toBe(false); // 云端停不下来，暂停接口据此计入 skipped
+      return Promise.resolve({
+        taskId: 't1',
+        config: { channel: 'google', model: 'nano-banana-pro', params: {} },
+      });
+    });
+    await processor.process(job);
+    expect(mockMedia.markSubmitted).toHaveBeenCalled();
+    expect(mockMedia.settlePaused).not.toHaveBeenCalled();
   });
 });
 
@@ -299,6 +359,7 @@ describe('MediaProcessor 参考图地址', () => {
         { provide: AigcService, useValue: mockAigc },
         { provide: MediaService, useValue: mockMedia },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
       ],
     }).compile();
     processor = module.get(MediaProcessor);
@@ -437,14 +498,20 @@ describe('MediaProcessor.process（concat）', () => {
     referenceVersionIds: ['a', 'b'],
     generation: { id: 'g3', conversationId: 'c1', type: 'video' },
   };
+  // 源版本：每段先经 waitForRef 等到 done 再取文件（源可能还在生成，见 runConcat）
+  let sources: Record<string, Record<string, unknown>[]>;
   const mockPrisma = {
     mediaVersion: {
-      findUnique: jest.fn().mockResolvedValue(version),
-      findMany: jest.fn().mockResolvedValue([
-        // findMany 顺序故意与 ids 相反：拼接顺序必须按 ids
-        { id: 'b', filePath: 'b.mp4', url: null },
-        { id: 'a', filePath: null, url: 'https://cdn/a.mp4' },
-      ]),
+      findUnique: jest.fn(({ where }: { where: { id: string } }) =>
+        Promise.resolve(
+          where.id === 'v3'
+            ? version
+            : // 每查一次取下一个状态，查到最后一个就一直是它
+              sources[where.id].length > 1
+              ? sources[where.id].shift()
+              : sources[where.id][0],
+        ),
+      ),
       update: jest.fn(),
     },
   };
@@ -453,6 +520,12 @@ describe('MediaProcessor.process（concat）', () => {
   let dir: string;
 
   beforeEach(async () => {
+    sources = {
+      a: [
+        { id: 'a', status: 'done', filePath: null, url: 'https://cdn/a.mp4' },
+      ],
+      b: [{ id: 'b', status: 'done', filePath: 'b.mp4', url: null }],
+    };
     dir = mkdtempSync(join(tmpdir(), 'media-proc-'));
     process.env.MEDIA_DATA_DIR = dir;
     const module = await Test.createTestingModule({
@@ -463,6 +536,7 @@ describe('MediaProcessor.process（concat）', () => {
         { provide: AigcService, useValue: {} },
         { provide: MediaService, useValue: mockMedia },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
       ],
     }).compile();
     processor = module.get(MediaProcessor);
@@ -504,6 +578,176 @@ describe('MediaProcessor.process（concat）', () => {
     expect(mockPrisma.mediaVersion.update).toHaveBeenLastCalledWith(
       expect.objectContaining({
         data: expect.objectContaining({ status: 'done', filePath: 'v3.mp4' }),
+      }),
+    );
+  });
+
+  it('源还在生成：等它 done 了再拼（画布上整条链一起触发）', async () => {
+    jest
+      .spyOn(global, 'fetch')
+      .mockResolvedValue(new Response(Buffer.from('VIDEO-A'), { status: 200 }));
+    jest.mocked(concatVideos).mockResolvedValue('copy');
+    sources.b = [
+      { id: 'b', status: 'queued', filePath: null, url: null },
+      { id: 'b', status: 'generating', filePath: null, url: null },
+      { id: 'b', status: 'done', filePath: 'b.mp4', url: null },
+    ];
+    // 轮询间隔压到 1ms，其余照真实逻辑走
+    const real = processor.waitForRef.bind(processor);
+    jest
+      .spyOn(processor, 'waitForRef')
+      .mockImplementation((id, _interval, timeout, signal) =>
+        real(id, 1, timeout, signal),
+      );
+
+    await processor.process({
+      name: 'concat',
+      data: { versionId: 'v3' },
+    } as Job<{ versionId: string }>);
+
+    expect(processor.waitForRef).toHaveBeenCalledTimes(2);
+    expect(concatVideos).toHaveBeenCalledWith(
+      [expect.stringMatching(/a\.mp4$/), join(dir, 'b.mp4')],
+      expect.anything(),
+      expect.anything(),
+      expect.anything(),
+    );
+    expect(mockPrisma.mediaVersion.update).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        data: expect.objectContaining({ status: 'done' }),
+      }),
+    );
+  });
+
+  it('源失败了：拼接跟着失败，不调 ffmpeg', async () => {
+    sources.b = [{ id: 'b', status: 'failed', filePath: null, url: null }];
+    jest.mocked(concatVideos).mockClear();
+
+    await processor.process({
+      name: 'concat',
+      data: { versionId: 'v3' },
+    } as Job<{ versionId: string }>);
+
+    expect(concatVideos).not.toHaveBeenCalled();
+    expect(mockMedia.settleFailed).toHaveBeenCalled();
+  });
+});
+
+describe('MediaProcessor.process（mock）', () => {
+  const versionRow = {
+    id: 'v9',
+    prompt: '晨光里旋转的矿泉水',
+    model: 'seedance-2',
+    channel: 'byteplus',
+    params: { aspect_ratio: '9:16' },
+    referenceVersionIds: ['r1'],
+    mock: true,
+    generation: { id: 'g9', conversationId: 'c1', type: 'video' },
+  };
+  const refRow = {
+    id: 'r1',
+    status: 'done',
+    filePath: 'r1.png',
+    url: null,
+    generationId: 'g1',
+    generation: { type: 'image' },
+  };
+  const mockPrisma = {
+    mediaVersion: {
+      findUnique: jest.fn(({ where }: { where: { id: string } }) =>
+        Promise.resolve(where.id === 'v9' ? versionRow : refRow),
+      ),
+      findMany: jest.fn().mockResolvedValue([refRow]),
+      update: jest.fn(),
+    },
+    canvasNode: {
+      findMany: jest.fn().mockResolvedValue([
+        { mediaGenerationId: 'g9', label: '镜头2' },
+        { mediaGenerationId: 'g1', label: '镜头1' },
+      ]),
+    },
+  };
+  const mockStream = { publish: jest.fn() };
+  const mockMedia = { settleFailed: jest.fn() };
+  const submit = jest.fn();
+  const prepareSubmission = jest.fn().mockResolvedValue({
+    config: {
+      channel: 'byteplus',
+      model: 'seedance-2',
+      params: { aspect_ratio: '9:16', duration: '6', with_audio: 'true' },
+    },
+    references: [],
+    kept: [true],
+  });
+  let processor: MediaProcessor;
+
+  beforeEach(async () => {
+    const module = await Test.createTestingModule({
+      providers: [
+        MediaProcessor,
+        { provide: PrismaService, useValue: mockPrisma },
+        { provide: StreamService, useValue: mockStream },
+        { provide: AigcService, useValue: { submit, prepareSubmission } },
+        { provide: MediaService, useValue: mockMedia },
+        { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
+      ],
+    }).compile();
+    processor = module.get(MediaProcessor);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  it('不调 aigc：等上游就绪 → 按真实规则收窄 → 渲染占位视频 → 落本地文件并推 done', async () => {
+    await processor.process({
+      name: 'generate',
+      data: { versionId: 'v9' },
+    } as Job<{ versionId: string }>);
+
+    expect(submit).not.toHaveBeenCalled();
+    expect(mockMedia.settleFailed).not.toHaveBeenCalled();
+    // 依赖是真的：上游 r1 照常经 waitForRef 查库
+    expect(mockPrisma.mediaVersion.findUnique).toHaveBeenCalledWith({
+      where: { id: 'r1' },
+    });
+    expect(prepareSubmission).toHaveBeenCalledWith(
+      expect.objectContaining({
+        type: 'video',
+        references: [{ type: 'image', role: 'reference', url: '' }],
+      }),
+    );
+    // 画面上印的是节点标题、实际生效的档位与引用的上游
+    expect(renderMockImage).toHaveBeenCalledWith(
+      expect.stringContaining('frame.png'),
+      {
+        title: '镜头2',
+        lines: [
+          'seedance-2 · 9:16 · 6 · true',
+          'refs: 镜头1 (image)',
+          '晨光里旋转的矿泉水',
+        ],
+      },
+      { width: 406, height: 720 },
+    );
+    expect(renderMockVideo).toHaveBeenCalledWith(
+      expect.stringContaining('v9.mp4'),
+      expect.stringContaining('frame.png'),
+      6,
+      true,
+      expect.anything(),
+    );
+    expect(mockPrisma.mediaVersion.update).toHaveBeenLastCalledWith({
+      where: { id: 'v9' },
+      data: expect.objectContaining({
+        status: 'done',
+        filePath: 'v9.mp4',
+        params: { aspect_ratio: '9:16', duration: '6', with_audio: 'true' },
+      }),
+    });
+    expect(mockStream.publish).toHaveBeenLastCalledWith(
+      'c1',
+      expect.objectContaining({
+        payload: expect.objectContaining({ status: 'done' }),
       }),
     );
   });

@@ -5,12 +5,13 @@ import { AigcModule } from '../aigc/aigc.module';
 import { EventsModule } from '../events/events.module';
 import { MediaCallbackController } from './media-callback.controller';
 import { MediaController } from './media.controller';
+import { MediaPollProcessor } from './media-poll.processor';
 import { MediaProcessor } from './media.processor';
 import { MediaUploadService } from './media-upload.service';
 import { MediaService } from './media.service';
 
 /**
- * 媒体模块：注册 media-gen 队列，装配 service/processor/controller。
+ * 媒体模块：注册 media-gen（生成 / 拼接）与 media-poll（回调兜底对账）两条队列，装配 service/processor/controller。
  * imports EventsModule —— service/processor 经 StreamService 推 media_update（EventsModule 导出它）。
  * imports AbortModule —— 停止功能的协作取消注册表（service 取消 / processor 注册）。
  * imports AigcModule —— 图片/视频生成统一走 aigc 服务（接单 + 回调），本模块只管状态流转与资产。
@@ -19,13 +20,18 @@ import { MediaService } from './media.service';
  */
 @Module({
   imports: [
-    BullModule.registerQueue({ name: 'media-gen' }),
+    BullModule.registerQueue({ name: 'media-gen' }, { name: 'media-poll' }),
     EventsModule,
     AbortModule,
     AigcModule,
   ],
   controllers: [MediaController, MediaCallbackController],
-  providers: [MediaService, MediaProcessor, MediaUploadService],
+  providers: [
+    MediaService,
+    MediaProcessor,
+    MediaPollProcessor,
+    MediaUploadService,
+  ],
   exports: [MediaService, MediaUploadService],
 })
 export class MediaModule {}

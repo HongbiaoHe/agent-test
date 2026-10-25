@@ -9,6 +9,37 @@ export interface MediaToolContext {
   userId: string;
 }
 
+/**
+ * 生图 / 生视频的档位参数（画布 agent 的 set_node_model 也用这一份）。
+ *
+ * 键写死成已知维度而不是 z.record：record 会生成 JSON Schema 的 propertyNames，Gemini 函数声明不认
+ * （400 Unknown name "propertyNames"）。这六个也正是 aigc.catalog 的 buildTaskBody 唯一会提交的字段。
+ * 值一律 string：目录里的取值本来就是字符串（"8"、"16:9"、"true"），校验按原值比对；
+ * 刻意不在 zod 层收窄取值：zod 拒会抛异常废掉一整轮，交给服务端校验后回一条可改正的错误。
+ */
+export const mediaParamsSchema = z
+  .object({
+    aspect_ratio: z
+      .string()
+      .optional()
+      .describe('画幅比例，如 "16:9" / "16x9" / "adaptive"'),
+    resolution: z
+      .string()
+      .optional()
+      .describe('清晰度，如 "2K" / "1080p" / "medium"'),
+    duration: z.string().optional().describe('视频时长（秒），字符串，如 "8"'),
+    with_audio: z
+      .string()
+      .optional()
+      .describe('视频是否带音频："true" / "false"'),
+    background: z.string().optional().describe('背景，如 "transparent"'),
+    quality: z.string().optional().describe('画质档，如 "medium"'),
+  })
+  .optional()
+  .describe(
+    '档位参数，值必须取自 list_media_models 里该模型的 values（模型没有的维度不要传）。不传的必填项自动取第一个值',
+  );
+
 const generateSchema = z.object({
   // 设计 §安全：prompt 上限 2000 字符（schema 层兜底，超长由 zod 直接拒绝）
   prompt: z.string().max(2000).describe('图像/视频生成提示词（已与用户确认）'),
@@ -22,35 +53,7 @@ const generateSchema = z.object({
     .string()
     .optional()
     .describe('渠道（同名模型出现在多个渠道时才需要指定）'),
-  // 键写死成已知维度而不是 z.record：record 会生成 JSON Schema 的 propertyNames，Gemini 函数声明不认
-  // （400 Unknown name "propertyNames"）。这六个也正是 aigc.catalog 的 buildTaskBody 唯一会提交的字段。
-  // 值一律 string：目录里的取值本来就是字符串（"8"、"16:9"、"true"），校验按原值比对；
-  // 刻意不在 zod 层收窄取值：zod 拒会抛异常废掉一整轮，交给服务端校验后回一条可改正的错误。
-  params: z
-    .object({
-      aspect_ratio: z
-        .string()
-        .optional()
-        .describe('画幅比例，如 "16:9" / "16x9" / "adaptive"'),
-      resolution: z
-        .string()
-        .optional()
-        .describe('清晰度，如 "2K" / "1080p" / "medium"'),
-      duration: z
-        .string()
-        .optional()
-        .describe('视频时长（秒），字符串，如 "8"'),
-      with_audio: z
-        .string()
-        .optional()
-        .describe('视频是否带音频："true" / "false"'),
-      background: z.string().optional().describe('背景，如 "transparent"'),
-      quality: z.string().optional().describe('画质档，如 "medium"'),
-    })
-    .optional()
-    .describe(
-      '档位参数，值必须取自 list_media_models 里该模型的 values（模型没有的维度不要传）。不传的必填项自动取第一个值',
-    ),
+  params: mediaParamsSchema,
   // 上限放宽到各类型上限之和量级：越界交给服务端按模型逐类回可改正的错误，而不是 zod 抛异常
   referenceVersionIds: z
     .array(z.string())

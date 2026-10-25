@@ -10,8 +10,20 @@ import {
   normalize,
   RawEvent,
 } from '../agent/event-normalizer';
+import {
+  messageAttachments,
+  userMessageText,
+} from '../conversations/message-content';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
+import {
+  ATTACHMENT_ANALYSIS_TYPE,
+  formatAttachmentAnalysis,
+  isSettled,
+  type AttachmentAnalysisEvent,
+} from '../media-analysis/attachment-analysis';
+import { MediaAnalysisService } from '../media-analysis/media-analysis.service';
+import { createMediaAnalysisTool } from '../media-analysis/media-analysis.tool';
 import { PrismaService } from '../prisma/prisma.service';
 import { CANVAS_ABORTS } from './canvas.abort';
 import {
@@ -59,6 +71,10 @@ const ROLE_BY_TYPE: Record<string, string> = {
   error: 'assistant',
 };
 
+/** 开跑前等附件理解的上限：带视频的轮次放宽（视频分析慢），到点没完成的由 agent 按需取 */
+const ATTACHMENT_WAIT_MS = 20_000;
+const ATTACHMENT_WAIT_VIDEO_MS = 60_000;
+
 /**
  * 画布 harness agent worker（独立队列 canvas-run）。镜像 AgentProcessor 的状态机与流式落库，
  * 但用画布独立表 + CanvasRun 会计 + token 落库 + ask_user 中断回路。可长跑（>1h）。
@@ -79,6 +95,7 @@ export class CanvasProcessor extends WorkerHost {
     @InjectQueue('canvas-run') private readonly queue: Queue,
     @Inject(CANVAS_ABORTS) private readonly aborts: AbortRegistry,
     private readonly skills: CanvasSkillsService,
+    private readonly analysis: MediaAnalysisService,
   ) {
     super();
   }
@@ -141,6 +158,8 @@ export class CanvasProcessor extends WorkerHost {
           skillDefs,
           skillsListing,
         );
+        // 本轮附件的理解结果：等分析（有上限）后落一条「## 附件理解」，随历史重放给模型
+        await this.persistAttachmentAnalysis(sessionId, runId, signal);
         const messages = await this.loadHistory(sessionId);
         input = { messages };
       }
@@ -155,6 +174,7 @@ export class CanvasProcessor extends WorkerHost {
           userId: session.userId,
           approvalMode,
         }),
+        createMediaAnalysisTool(this.analysis, { userId: session.userId }),
         createSaveSkillTool(async (skillInput) => {
           const saved = await this.skills.save(session.userId, skillInput);
           if (saved.ok) {
@@ -575,6 +595,7 @@ export class CanvasProcessor extends WorkerHost {
             'tool_end',
             SKILLS_LISTING_TYPE,
             SKILL_INVOCATION_TYPE,
+            ATTACHMENT_ANALYSIS_TYPE,
           ],
         },
         role: { in: ['user', 'assistant', 'tool'] },
@@ -613,7 +634,11 @@ export class CanvasProcessor extends WorkerHost {
       }
       return {
         role: m.role,
-        content: (m.content as { text?: string })?.text ?? '',
+        // 用户消息带附件时，末尾拼一段「[附件]」清单（类型 / versionId / 文件名，见 userMessageText）
+        content:
+          m.role === 'user'
+            ? userMessageText(m.content)
+            : ((m.content as { text?: string })?.text ?? ''),
       };
     });
   }
@@ -681,6 +706,64 @@ export class CanvasProcessor extends WorkerHost {
         });
       }
     }
+  }
+
+  /**
+   * run 开头落库本轮附件的理解结果：最新用户消息带了附件、且还没落过，就等它们的分析
+   * （有视频等 60 秒、否则 20 秒，到点没完成的标「分析中」由 agent 按需用工具取），
+   * 落一条 role=user 的「## 附件理解」消息（位置跨轮固定，同技能清单）。
+   * 等待期间推进度事件，前端思考行显示「Reading attachments 2/3」。
+   */
+  private async persistAttachmentAnalysis(
+    sessionId: string,
+    runId: string,
+    signal: AbortSignal,
+  ): Promise<void> {
+    const lastUser = await this.prisma.canvasMessage.findFirst({
+      where: { sessionId, role: 'user', type: 'message' },
+      orderBy: { seq: 'desc' },
+      select: { seq: true, content: true },
+    });
+    const attachments = messageAttachments(lastUser?.content);
+    if (!lastUser || attachments.length === 0) return;
+    const already = await this.prisma.canvasMessage.count({
+      where: {
+        sessionId,
+        type: ATTACHMENT_ANALYSIS_TYPE,
+        seq: { gt: lastUser.seq },
+      },
+    });
+    if (already > 0) return;
+
+    const total = attachments.length;
+    const publish = (payload: AttachmentAnalysisEvent) =>
+      this.stream.publish(sessionId, { type: 'attachment_analysis', payload });
+    const timeoutMs = attachments.some((a) => a.type === 'video')
+      ? ATTACHMENT_WAIT_VIDEO_MS
+      : ATTACHMENT_WAIT_MS;
+    const rows = await this.analysis.waitFor(
+      attachments.map((a) => a.versionId),
+      timeoutMs,
+      (done) => publish({ status: 'reading', done, total }),
+      signal,
+    );
+
+    const seq = await this.prisma.canvasMessage.count({ where: { sessionId } });
+    await this.prisma.canvasMessage.create({
+      data: {
+        sessionId,
+        runId: runId || null,
+        role: 'user',
+        type: ATTACHMENT_ANALYSIS_TYPE,
+        content: { text: formatAttachmentAnalysis(attachments, rows) },
+        seq,
+      },
+    });
+    await publish({
+      status: 'finished',
+      done: rows.filter((r) => isSettled(r.status)).length,
+      total,
+    });
   }
 
   /**

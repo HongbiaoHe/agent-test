@@ -28,6 +28,8 @@ export interface NodeBodyField {
 export interface ClipSource {
   nodeId: string;
   title: string;
+  /** 还没出片时的状态（Not generated / Queued / Generating…）；已有视频为 null */
+  state: string | null;
 }
 
 /** 面板与节点之间的间距（同时作为「空间是否够放」的余量） */
@@ -317,6 +319,12 @@ function ClipList({ clips }: { clips: ClipSource[] }) {
               aria-hidden
             />
             <span className="min-w-0 flex-1 truncate text-sm">{c.title}</span>
+            {/* 没出片也照样占着它的位置：顺序在连线那一刻就定了，和生没生成无关 */}
+            {c.state && (
+              <span className="shrink-0 text-[11px] text-muted-foreground">
+                {c.state}
+              </span>
+            )}
           </button>
         </li>
       ))}

@@ -8,7 +8,11 @@
  */
 import { getQueueToken } from '@nestjs/bullmq';
 import { Test } from '@nestjs/testing';
-import { AbortRegistry, MEDIA_ABORTS } from '../agent/abort-registry';
+import {
+  AbortRegistry,
+  MEDIA_ABORTS,
+  MEDIA_PAUSES,
+} from '../agent/abort-registry';
 import { AigcService } from '../aigc/aigc.service';
 import { PublicUrlService } from '../aigc/public-url.service';
 import { asAssetType, MediaService } from './media.service';
@@ -28,6 +32,8 @@ const mockPrisma = {
     findMany: jest.fn(),
     updateMany: jest.fn(),
   },
+  // 触发时判定是否走测试模式：查不到画布行 = Spark 会话 / 未开 Mock，恒为真实生成
+  canvasSession: { findUnique: jest.fn().mockResolvedValue(null) },
 };
 const mockQueue = { add: jest.fn() };
 const mockStream = { publish: jest.fn() };
@@ -52,6 +58,8 @@ describe('MediaService', () => {
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('media-gen'), useValue: mockQueue },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: getQueueToken('media-poll'), useValue: { add: jest.fn() } },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
         { provide: AigcService, useValue: mockAigc },
         { provide: PublicUrlService, useValue: mockPublicUrl },
       ],
@@ -111,6 +119,195 @@ describe('MediaService', () => {
           }),
         }),
       );
+    });
+  });
+
+  /**
+   * 画布测试模式（Mock）：以触发那一刻的开关为准、环境禁用时拒绝而不是悄悄改走真实生成、
+   * 真实生成不能引用模拟产物、拼接成片继承模拟标记。
+   */
+  describe('测试模式（Mock）', () => {
+    const savedFlag = process.env.CANVAS_MOCK_MEDIA_ENABLED;
+    beforeEach(() => {
+      process.env.CANVAS_MOCK_MEDIA_ENABLED = 'true';
+      mockPrisma.mediaGeneration.create.mockResolvedValue({
+        id: 'gen-1',
+        conversationId: 'canvas-1',
+        type: 'video',
+        versions: [{ id: 'ver-1' }],
+      });
+    });
+    afterEach(() => {
+      process.env.CANVAS_MOCK_MEDIA_ENABLED = savedFlag;
+      mockPrisma.canvasSession.findUnique.mockResolvedValue(null);
+    });
+
+    const ref = (id: string, mock: boolean) => ({
+      id,
+      status: 'done',
+      mock,
+      generation: { type: 'image', userId: 'user-1' },
+    });
+    const versionCreate = () =>
+      expect.objectContaining({
+        data: expect.objectContaining({
+          versions: { create: expect.objectContaining({ mock: true }) },
+        }),
+      });
+
+    it('画布开着 Mock → 版本记为 mock（照常入队，由 worker 走模拟分支）', async () => {
+      mockPrisma.canvasSession.findUnique.mockResolvedValue({
+        mockMedia: true,
+      });
+      await service.createGeneration('canvas-1', 'user-1', 'video', 'p');
+      expect(mockPrisma.mediaGeneration.create).toHaveBeenCalledWith(
+        versionCreate(),
+      );
+      expect(mockQueue.add).toHaveBeenCalledWith(
+        'generate',
+        { versionId: 'ver-1' },
+        { jobId: 'ver-1' },
+      );
+    });
+
+    it('开着 Mock 但环境禁用 → CANVAS_MOCK_DISABLED，不建版本、绝不改走真实生成', async () => {
+      process.env.CANVAS_MOCK_MEDIA_ENABLED = 'false';
+      mockPrisma.canvasSession.findUnique.mockResolvedValue({
+        mockMedia: true,
+      });
+      await expect(
+        service.createGeneration('canvas-1', 'user-1', 'video', 'p'),
+      ).rejects.toMatchObject({
+        errCode: ErrorCodes.CANVAS_MOCK_DISABLED.code,
+      });
+      expect(mockPrisma.mediaGeneration.create).not.toHaveBeenCalled();
+      expect(mockQueue.add).not.toHaveBeenCalled();
+    });
+
+    it('真实生成引用模拟产物 → MEDIA_REF_MOCK，不建版本', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([ref('r1', true)]);
+      await expect(
+        service.createGeneration('canvas-1', 'user-1', 'video', 'p', ['r1']),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.MEDIA_REF_MOCK.code });
+      expect(mockPrisma.mediaGeneration.create).not.toHaveBeenCalled();
+    });
+
+    it('模拟生成引用模拟产物 → 放行', async () => {
+      mockPrisma.canvasSession.findUnique.mockResolvedValue({
+        mockMedia: true,
+      });
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([ref('r1', true)]);
+      await service.createGeneration('canvas-1', 'user-1', 'video', 'p', [
+        'r1',
+      ]);
+      expect(mockPrisma.mediaGeneration.create).toHaveBeenCalledWith(
+        versionCreate(),
+      );
+    });
+
+    it('重试也按此刻的开关：画布开着 Mock → 新版本记为 mock', async () => {
+      mockPrisma.canvasSession.findUnique.mockResolvedValue({
+        mockMedia: true,
+      });
+      mockPrisma.mediaGeneration.findUnique.mockResolvedValue({
+        id: 'gen-1',
+        userId: 'user-1',
+        conversationId: 'canvas-1',
+        type: 'video',
+        versions: [
+          {
+            prompt: 'p',
+            model: 'seedance-2',
+            channel: 'byteplus',
+            params: {},
+            referenceVersionIds: null,
+          },
+        ],
+      });
+      mockPrisma.mediaVersion.create.mockResolvedValue({ id: 'ver-2' });
+      await service.regenerate('gen-1', 'user-1');
+      expect(mockPrisma.mediaVersion.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({ mock: true }),
+      });
+    });
+
+    it('拼接源里有模拟产物 → 成片也记为 mock（拼接本身照常执行）', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        {
+          id: 'a',
+          status: 'done',
+          filePath: 'a.mp4',
+          url: null,
+          mock: true,
+          generation: { type: 'video', userId: 'user-1' },
+        },
+        {
+          id: 'b',
+          status: 'done',
+          filePath: null,
+          url: 'https://cdn/b.mp4',
+          mock: false,
+          generation: { type: 'video', userId: 'user-1' },
+        },
+      ]);
+      await service.createConcat('canvas-1', 'user-1', ['a', 'b']);
+      expect(mockPrisma.mediaGeneration.create).toHaveBeenCalledWith(
+        versionCreate(),
+      );
+      expect(mockQueue.add).toHaveBeenCalledWith(
+        'concat',
+        { versionId: 'ver-1' },
+        { jobId: 'ver-1' },
+      );
+    });
+  });
+
+  describe('createConcat 的源状态', () => {
+    const src = (id: string, status: string, filePath: string | null) => ({
+      id,
+      status,
+      filePath,
+      url: null,
+      mock: false,
+      generation: { type: 'video', userId: 'user-1' },
+    });
+
+    it('源还在排队 / 生成：照收（worker 等齐再拼）', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        src('a', 'done', 'a.mp4'),
+        src('b', 'queued', null),
+        src('c', 'generating', null),
+      ]);
+      await service.createConcat('canvas-1', 'user-1', ['a', 'b', 'c']);
+      expect(mockQueue.add).toHaveBeenCalledWith(
+        'concat',
+        { versionId: 'ver-1' },
+        { jobId: 'ver-1' },
+      );
+    });
+
+    it.each(['failed', 'cancelled'])(
+      '源已 %s：拒绝，不入队',
+      async (status) => {
+        mockPrisma.mediaVersion.findMany.mockResolvedValue([
+          src('a', 'done', 'a.mp4'),
+          src('b', status, null),
+        ]);
+        await expect(
+          service.createConcat('canvas-1', 'user-1', ['a', 'b']),
+        ).rejects.toMatchObject({ errCode: ErrorCodes.MEDIA_REF_INVALID.code });
+        expect(mockQueue.add).not.toHaveBeenCalled();
+      },
+    );
+
+    it('done 了却没有文件：拒绝', async () => {
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        src('a', 'done', 'a.mp4'),
+        src('b', 'done', null),
+      ]);
+      await expect(
+        service.createConcat('canvas-1', 'user-1', ['a', 'b']),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.MEDIA_REF_INVALID.code });
     });
   });
 
@@ -649,7 +846,9 @@ describe('MediaService – cancelByConversation（停止功能）', () => {
           provide: getQueueToken('media-gen'),
           useValue: { add: jest.fn(), getJob },
         },
+        { provide: getQueueToken('media-poll'), useValue: { add: jest.fn() } },
         { provide: MEDIA_ABORTS, useValue: aborts },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
         { provide: AigcService, useValue: mockAigc },
         { provide: PublicUrlService, useValue: mockPublicUrl },
       ],
@@ -719,6 +918,147 @@ describe('MediaService – cancelByConversation（停止功能）', () => {
   });
 });
 
+describe('MediaService – 暂停 / 继续', () => {
+  let service: MediaService;
+  let pauses: AbortRegistry;
+  const findManyVersions = jest.fn();
+  const updateMany = jest.fn();
+  const getJob = jest.fn();
+  const add = jest.fn();
+
+  beforeEach(async () => {
+    pauses = new AbortRegistry();
+    updateMany.mockResolvedValue({ count: 1 });
+    const prisma = {
+      mediaVersion: { findMany: findManyVersions, updateMany },
+    };
+    const module = await Test.createTestingModule({
+      providers: [
+        MediaService,
+        { provide: PrismaService, useValue: prisma },
+        { provide: StreamService, useValue: mockStream },
+        { provide: getQueueToken('media-gen'), useValue: { add, getJob } },
+        { provide: getQueueToken('media-poll'), useValue: { add: jest.fn() } },
+        { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: MEDIA_PAUSES, useValue: pauses },
+        { provide: AigcService, useValue: mockAigc },
+        { provide: PublicUrlService, useValue: mockPublicUrl },
+      ],
+    }).compile();
+    service = module.get(MediaService);
+  });
+
+  afterEach(() => jest.clearAllMocks());
+
+  const gen = { type: 'video', conversationId: 'conv-1' };
+  const ver = (id: string, status: string, extra = {}) => ({
+    id,
+    status,
+    generationId: `g-${id}`,
+    providerTaskId: null,
+    model: 'seedance-2',
+    generation: gen,
+    ...extra,
+  });
+
+  it('排队中：移出队列、落 paused 并推流', async () => {
+    const remove = jest.fn();
+    getJob.mockResolvedValue({ remove });
+    findManyVersions.mockResolvedValue([ver('v1', 'queued')]);
+
+    expect(await service.pauseVersions('conv-1')).toEqual({
+      paused: 1,
+      skipped: 0,
+    });
+    expect(remove).toHaveBeenCalled();
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: 'v1', status: 'queued' },
+      data: { status: 'paused' },
+    });
+    expect(mockStream.publish).toHaveBeenCalledWith(
+      'conv-1',
+      expect.objectContaining({
+        payload: expect.objectContaining({ versionId: 'v1', status: 'paused' }),
+      }),
+    );
+  });
+
+  it('worker 还在等上游（没提交）：经暂停注册表叫停，由 worker 收尾', async () => {
+    const { signal } = pauses.register('v2');
+    findManyVersions.mockResolvedValue([ver('v2', 'generating')]);
+
+    expect(await service.pauseVersions('conv-1')).toEqual({
+      paused: 1,
+      skipped: 0,
+    });
+    expect(signal.aborted).toBe(true);
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('已经提交给 aigc / 已过暂停窗口：跳过，照常完成', async () => {
+    findManyVersions.mockResolvedValue([
+      ver('v3', 'generating', { providerTaskId: 'task-1' }),
+      ver('v4', 'generating'), // 没登记暂停窗口（如正在本地出片）
+    ]);
+
+    expect(await service.pauseVersions('conv-1')).toEqual({
+      paused: 0,
+      skipped: 2,
+    });
+    expect(updateMany).not.toHaveBeenCalled();
+  });
+
+  it('只暂停传入的版本（画布按节点暂停）', async () => {
+    findManyVersions.mockResolvedValue([]);
+    await service.pauseVersions('conv-1', ['v1', 'v2']);
+    expect(findManyVersions).toHaveBeenCalledWith(
+      expect.objectContaining({
+        where: expect.objectContaining({ id: { in: ['v1', 'v2'] } }),
+        orderBy: { createdAt: 'asc' },
+      }),
+    );
+  });
+
+  it('继续：按创建顺序清掉旧 job、改回 queued、按类型重新入队', async () => {
+    getJob.mockResolvedValueOnce({ remove: jest.fn() }).mockResolvedValue(null);
+    findManyVersions.mockResolvedValue([
+      ver('v1', 'paused'),
+      ver('v2', 'paused', { model: 'ffmpeg-concat' }),
+    ]);
+
+    expect(await service.resumeVersions('conv-1')).toEqual({ resumed: 2 });
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: 'v1', status: 'paused' },
+      data: { status: 'queued' },
+    });
+    expect(add.mock.calls).toEqual([
+      ['generate', { versionId: 'v1' }, { jobId: 'v1' }],
+      ['concat', { versionId: 'v2' }, { jobId: 'v2' }],
+    ]);
+  });
+
+  it('继续时状态已变（被并发改走）：不重复入队', async () => {
+    getJob.mockResolvedValue(null);
+    updateMany.mockResolvedValue({ count: 0 });
+    findManyVersions.mockResolvedValue([ver('v1', 'paused')]);
+
+    expect(await service.resumeVersions('conv-1')).toEqual({ resumed: 0 });
+    expect(add).not.toHaveBeenCalled();
+  });
+
+  it('停止会把暂停中的一并作废', async () => {
+    findManyVersions.mockResolvedValue([ver('v5', 'paused')]);
+    await service.cancelByConversation('conv-1');
+    expect(updateMany).toHaveBeenCalledWith({
+      where: { id: 'v5', status: 'paused' },
+      data: expect.objectContaining({
+        status: 'cancelled',
+        error: '用户已停止',
+      }),
+    });
+  });
+});
+
 describe('MediaService.createAgentGenerations', () => {
   let service: MediaService;
   const prepareAgentGeneration = jest.fn();
@@ -736,6 +1076,8 @@ describe('MediaService.createAgentGenerations', () => {
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('media-gen'), useValue: mockQueue },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: getQueueToken('media-poll'), useValue: { add: jest.fn() } },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
         {
           provide: AigcService,
           useValue: { ...mockAigc, prepareAgentGeneration },
@@ -833,6 +1175,8 @@ describe('MediaService：配音参考格式 / 克隆音色 / 我的音色', () =
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('media-gen'), useValue: mockQueue },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
+        { provide: getQueueToken('media-poll'), useValue: { add: jest.fn() } },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
         {
           provide: AigcService,
           useValue: { ...mockAigc, prepareAgentGeneration },
@@ -1019,36 +1363,133 @@ describe('MediaService：配音参考格式 / 克隆音色 / 我的音色', () =
   });
 });
 
-describe('MediaService.scheduleReconcile', () => {
-  it('前 6 轮 10s，之后 30s', async () => {
+describe('MediaService 对账（media-poll 队列）', () => {
+  const pollQueue = { add: jest.fn() };
+  const findUnique = jest.fn();
+  const getTask = jest.fn();
+  let service: MediaService;
+
+  beforeEach(async () => {
     const module = await Test.createTestingModule({
       providers: [
         MediaService,
-        { provide: PrismaService, useValue: mockPrisma },
+        {
+          provide: PrismaService,
+          useValue: {
+            ...mockPrisma,
+            mediaVersion: { ...mockPrisma.mediaVersion, findUnique },
+          },
+        },
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('media-gen'), useValue: mockQueue },
+        { provide: getQueueToken('media-poll'), useValue: pollQueue },
         { provide: MEDIA_ABORTS, useValue: new AbortRegistry() },
-        { provide: AigcService, useValue: mockAigc },
+        { provide: MEDIA_PAUSES, useValue: new AbortRegistry() },
+        { provide: AigcService, useValue: { ...mockAigc, getTask } },
         { provide: PublicUrlService, useValue: mockPublicUrl },
       ],
     }).compile();
-    const service = module.get(MediaService);
-    mockQueue.add.mockClear();
+    service = module.get(MediaService);
+    jest.clearAllMocks();
+  });
 
+  it('对账排在 media-poll，不进生成队列；前 6 轮 10s，之后 30s', async () => {
     await service.scheduleReconcile('v1', 6);
     await service.scheduleReconcile('v1', 7);
 
-    expect(mockQueue.add).toHaveBeenNthCalledWith(
+    // 生成队列的槽位可能全被等上游的下游占着，对账排在那里会永远轮不到
+    expect(mockQueue.add).not.toHaveBeenCalled();
+    expect(pollQueue.add).toHaveBeenNthCalledWith(
       1,
       'poll',
       { versionId: 'v1', attempt: 6 },
       expect.objectContaining({ delay: 10_000 }),
     );
-    expect(mockQueue.add).toHaveBeenNthCalledWith(
+    expect(pollQueue.add).toHaveBeenNthCalledWith(
       2,
       'poll',
       { versionId: 'v1', attempt: 7 },
       expect.objectContaining({ delay: 30_000 }),
     );
+  });
+
+  const open = {
+    id: 'v1',
+    status: 'generating',
+    providerTaskId: 'task-1',
+    generationId: 'g1',
+    generation: { conversationId: 'c1', type: 'image' },
+  };
+
+  it('aigc 还没出结果：排下一轮', async () => {
+    findUnique.mockResolvedValue(open);
+    getTask.mockResolvedValue({ task_id: 'task-1', status: 'processing' });
+    jest.spyOn(service, 'applyTaskResult').mockResolvedValue('pending');
+
+    await service.reconcile('v1', 3);
+
+    expect(pollQueue.add).toHaveBeenCalledWith(
+      'poll',
+      { versionId: 'v1', attempt: 4 },
+      expect.anything(),
+    );
+  });
+
+  it('aigc 已出结果：落库，不再排', async () => {
+    findUnique.mockResolvedValue(open);
+    getTask.mockResolvedValue({ task_id: 'task-1', status: 'success' });
+    const apply = jest
+      .spyOn(service, 'applyTaskResult')
+      .mockResolvedValue('applied');
+
+    await service.reconcile('v1', 1);
+
+    expect(apply).toHaveBeenCalledWith({
+      task_id: 'task-1',
+      status: 'success',
+    });
+    expect(pollQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('查询失败不判死：照样排下一轮', async () => {
+    findUnique.mockResolvedValue(open);
+    getTask.mockRejectedValue(new Error('socket hang up'));
+
+    await service.reconcile('v1', 2);
+
+    expect(pollQueue.add).toHaveBeenCalledWith(
+      'poll',
+      { versionId: 'v1', attempt: 3 },
+      expect.anything(),
+    );
+  });
+
+  it('轮满仍无结果：判超时失败', async () => {
+    findUnique.mockResolvedValue(open);
+    getTask.mockResolvedValue({ task_id: 'task-1', status: 'processing' });
+    jest.spyOn(service, 'applyTaskResult').mockResolvedValue('pending');
+    const settle = jest
+      .spyOn(service, 'settleFailed')
+      .mockResolvedValue('applied');
+
+    await service.reconcile('v1', 60);
+
+    expect(settle).toHaveBeenCalledWith(
+      'v1',
+      'g1',
+      'c1',
+      'image',
+      '生成超时：aigc 长时间未回结果',
+    );
+    expect(pollQueue.add).not.toHaveBeenCalled();
+  });
+
+  it('版本已终结：什么都不做', async () => {
+    findUnique.mockResolvedValue({ ...open, status: 'done' });
+
+    await service.reconcile('v1', 1);
+
+    expect(getTask).not.toHaveBeenCalled();
+    expect(pollQueue.add).not.toHaveBeenCalled();
   });
 });

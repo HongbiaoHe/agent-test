@@ -1,4 +1,11 @@
-import { Film, Image as ImageIcon, Layers, Upload } from "lucide-react";
+import {
+  FileMusic,
+  FileVideoCamera,
+  Film,
+  Image as ImageIcon,
+  ImageUp,
+  Layers,
+} from "lucide-react";
 import type { LucideIcon } from "lucide-react";
 
 import type { CanvasNodeType } from "@/lib/api";
@@ -16,9 +23,20 @@ export const NODE_META: Record<
   CanvasNodeType,
   { label: string; Icon: LucideIcon; tone: string }
 > = {
+  // 三种上传共用同一个身份色（都是「用户自带的素材」），靠图标区分收什么文件
   image_upload: {
     label: NODE_TYPE_LABEL.image_upload,
-    Icon: Upload,
+    Icon: ImageUp,
+    tone: "var(--node-upload)",
+  },
+  video_upload: {
+    label: NODE_TYPE_LABEL.video_upload,
+    Icon: FileVideoCamera,
+    tone: "var(--node-upload)",
+  },
+  audio_upload: {
+    label: NODE_TYPE_LABEL.audio_upload,
+    Icon: FileMusic,
     tone: "var(--node-upload)",
   },
   image_gen: {

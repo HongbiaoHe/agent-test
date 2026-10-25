@@ -8,14 +8,18 @@
  * - moveNode：LWW，不占 revision，广播 move_node
  */
 import { getQueueToken } from '@nestjs/bullmq';
+import { Readable } from 'node:stream';
 import { Test } from '@nestjs/testing';
 import { AbortRegistry } from '../agent/abort-registry';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
 import { CANVAS_ABORTS } from './canvas.abort';
-import { CanvasService } from './canvas.service';
+import { CanvasService, clipOrderTag, reorderBySource } from './canvas.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
+import { MediaAnalysisService } from '../media-analysis/media-analysis.service';
+import { BusinessException } from '../common/errors/business.exception';
+import { MediaUploadService } from '../media/media-upload.service';
 import { ErrorCodes } from '../common/errors/error-code';
 import type { AddNodeOp, UpdateNodeOp } from './canvas.types';
 
@@ -28,7 +32,13 @@ interface MockTx {
     update: jest.Mock;
     delete: jest.Mock;
   };
-  canvasEdge: { upsert: jest.Mock; deleteMany: jest.Mock };
+  canvasEdge: {
+    upsert: jest.Mock;
+    deleteMany: jest.Mock;
+    aggregate: jest.Mock;
+    findMany: jest.Mock;
+    update: jest.Mock;
+  };
   canvasOp: { create: jest.Mock };
 }
 
@@ -42,7 +52,14 @@ function makeTx(): MockTx {
       update: jest.fn(),
       delete: jest.fn(),
     },
-    canvasEdge: { upsert: jest.fn(), deleteMany: jest.fn() },
+    canvasEdge: {
+      upsert: jest.fn(),
+      deleteMany: jest.fn(),
+      // 新边接末尾：取该终点入边的最大序号（缺省没有入边）
+      aggregate: jest.fn().mockResolvedValue({ _max: { position: null } }),
+      findMany: jest.fn(),
+      update: jest.fn(),
+    },
     canvasOp: { create: jest.fn() },
   };
 }
@@ -52,7 +69,11 @@ describe('CanvasService', () => {
   let tx: MockTx;
   const mockPrisma = {
     $transaction: jest.fn(),
-    canvasNode: { updateMany: jest.fn(), findMany: jest.fn() },
+    canvasNode: {
+      updateMany: jest.fn(),
+      findMany: jest.fn(),
+      findFirst: jest.fn(),
+    },
     canvasSession: {
       findFirst: jest.fn(),
       findMany: jest.fn(),
@@ -72,7 +93,14 @@ describe('CanvasService', () => {
   const mockCheckpointer = { deleteThread: jest.fn() };
   const mockStream = { publish: jest.fn() };
   const mockQueue = { add: jest.fn() };
-  const mockMedia = { cancelByConversation: jest.fn() };
+  const mockMedia = {
+    cancelByConversation: jest.fn(),
+    commitAttachments: jest.fn(),
+    pauseVersions: jest.fn(),
+    resumeVersions: jest.fn(),
+  };
+  const mockUploads = { store: jest.fn() };
+  const mockAnalysis = { enqueue: jest.fn().mockResolvedValue(undefined) };
 
   beforeEach(async () => {
     tx = makeTx();
@@ -87,6 +115,8 @@ describe('CanvasService', () => {
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('canvas-run'), useValue: mockQueue },
         { provide: MediaService, useValue: mockMedia },
+        { provide: MediaUploadService, useValue: mockUploads },
+        { provide: MediaAnalysisService, useValue: mockAnalysis },
         { provide: CANVAS_ABORTS, useValue: new AbortRegistry() },
         { provide: CHECKPOINTER, useValue: mockCheckpointer },
       ],
@@ -309,7 +339,7 @@ describe('CanvasService', () => {
     );
   });
 
-  it('add_node：image_upload 的 outputs 由 assetPath 派生（没上传则为空数组）', async () => {
+  it('add_node：上传节点的 outputs 来自挂上的上传版本；只有遗留 assetPath 的不产出', async () => {
     tx.canvasSession.findUnique.mockResolvedValue({
       id: 's1',
       status: 'running',
@@ -318,7 +348,7 @@ describe('CanvasService', () => {
     tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
     const base = {
       id: 'n-new',
-      type: 'image_upload',
+      type: 'audio_upload',
       x: 0,
       y: 0,
       version: 0,
@@ -328,28 +358,239 @@ describe('CanvasService', () => {
       mediaGenerationId: null,
     };
 
-    tx.canvasNode.create.mockResolvedValue({ ...base, assetPath: '/a.png' });
-    const uploaded = await service.applyOp('s1', 'agent', {
-      op: 'add_node',
-      type: 'image_upload',
-      assetPath: '/a.png',
+    // agent 摆附件：建时就挂 generation，patch 里立刻带上 JOIN 出来的输出
+    tx.canvasNode.create.mockResolvedValue({
+      ...base,
+      mediaGenerationId: 'g-up',
     });
-    expect(uploaded.patch).toMatchObject({
+    mockPrisma.mediaVersion.findMany.mockResolvedValue([
+      { id: 'v-up', generationId: 'g-up', status: 'done' },
+    ]);
+    const attached = await service.applyOp('s1', 'agent', {
       op: 'add_node',
-      node: { outputs: [{ type: 'image', content: '/a.png' }] },
+      type: 'audio_upload',
+      mediaGenerationId: 'g-up',
+    });
+    expect(tx.canvasNode.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ mediaGenerationId: 'g-up' }),
+    });
+    expect(attached.patch).toMatchObject({
+      op: 'add_node',
+      node: { outputs: [{ type: 'audio', content: 'v-up' }] },
     });
 
+    // 早年模拟上传的 image_upload 只有 assetPath：拿不出版本 id，当作还没传
     tx.canvasSession.findUnique.mockResolvedValue({
       id: 's1',
       status: 'running',
       revision: 2,
     });
-    tx.canvasNode.create.mockResolvedValue({ ...base, assetPath: null });
-    const blank = await service.applyOp('s1', 'agent', {
+    tx.canvasNode.create.mockResolvedValue({
+      ...base,
+      type: 'image_upload',
+      assetPath: '/a.png',
+    });
+    const legacy = await service.applyOp('s1', 'agent', {
       op: 'add_node',
       type: 'image_upload',
+      assetPath: '/a.png',
     });
-    expect(blank.patch).toMatchObject({ node: { outputs: [] } });
+    expect(legacy.patch).toMatchObject({ node: { outputs: [] } });
+  });
+
+  describe('uploadNodeFile（给上传节点传文件）', () => {
+    const file = {
+      contentType: 'video/mp4',
+      size: 1024,
+      filename: 'clip.mp4',
+      body: Readable.from([]),
+    };
+
+    beforeEach(() => {
+      mockPrisma.canvasSession.findFirst.mockResolvedValue({
+        id: 's1',
+        userId: 'u1',
+        status: 'idle',
+        revision: 3,
+      });
+    });
+
+    it('传完落 done 版本并挂到节点上；没起名的节点用文件名当标题', async () => {
+      mockPrisma.canvasNode.findFirst.mockResolvedValue({
+        type: 'video_upload',
+        label: null,
+      });
+      mockUploads.store.mockResolvedValue({
+        generationId: 'g-1',
+        versionId: 'v-1',
+        filename: 'clip.mp4',
+      });
+      const applyOp = jest.spyOn(service, 'applyOp').mockResolvedValue({
+        revision: 4,
+        patch: { op: 'clear', revision: 4 },
+      });
+
+      const r = await service.uploadNodeFile('s1', 't1', 'u1', 'n1', file);
+
+      expect(mockUploads.store).toHaveBeenCalledWith({
+        ...file,
+        conversationId: 's1',
+        userId: 'u1',
+        status: 'done',
+      });
+      expect(applyOp).toHaveBeenCalledWith('s1', 'user', {
+        op: 'update_node',
+        nodeId: 'n1',
+        mediaGenerationId: 'g-1',
+        label: 'clip.mp4',
+      });
+      expect(r).toEqual({ generationId: 'g-1', versionId: 'v-1' });
+    });
+
+    it('文件类型与节点不符 → CANVAS_UPLOAD_TYPE_MISMATCH，不中转', async () => {
+      mockPrisma.canvasNode.findFirst.mockResolvedValue({
+        type: 'image_upload',
+        label: null,
+      });
+      await expect(
+        service.uploadNodeFile('s1', 't1', 'u1', 'n1', file),
+      ).rejects.toMatchObject({
+        errCode: ErrorCodes.CANVAS_UPLOAD_TYPE_MISMATCH.code,
+      });
+      expect(mockUploads.store).not.toHaveBeenCalled();
+    });
+
+    it('不是上传节点 → CANVAS_UPLOAD_TYPE_MISMATCH，不中转', async () => {
+      mockPrisma.canvasNode.findFirst.mockResolvedValue({
+        type: 'video_gen',
+        label: null,
+      });
+      await expect(
+        service.uploadNodeFile('s1', 't1', 'u1', 'n1', file),
+      ).rejects.toMatchObject({
+        errCode: ErrorCodes.CANVAS_UPLOAD_TYPE_MISMATCH.code,
+      });
+      expect(mockUploads.store).not.toHaveBeenCalled();
+    });
+
+    it('运行期只读 → CANVAS_BUSY，不中转', async () => {
+      mockPrisma.canvasSession.findFirst.mockResolvedValue({
+        id: 's1',
+        userId: 'u1',
+        status: 'running',
+        revision: 3,
+      });
+      await expect(
+        service.uploadNodeFile('s1', 't1', 'u1', 'n1', file),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_BUSY.code });
+      expect(mockUploads.store).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('appendMessage 附件', () => {
+    beforeEach(() => {
+      mockPrisma.canvasSession.findFirst.mockResolvedValue({
+        id: 's1',
+        status: 'idle',
+      });
+      mockPrisma.canvasMessage.count.mockResolvedValue(2);
+    });
+
+    it('附件转正后存进消息 content；只发附件时本轮目标回退成文件名', async () => {
+      const attachment = {
+        versionId: 'v-a',
+        type: 'image',
+        url: 'https://cdn/x.png',
+        filename: 'x.png',
+        contentType: 'image/png',
+      };
+      mockMedia.commitAttachments.mockResolvedValue([attachment]);
+
+      await service.appendMessage(
+        's1',
+        '',
+        't1',
+        'u1',
+        undefined,
+        undefined,
+        undefined,
+        ['v-a'],
+      );
+
+      expect(mockMedia.commitAttachments).toHaveBeenCalledWith('s1', 'u1', [
+        'v-a',
+      ]);
+      expect(mockPrisma.canvasMessage.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          role: 'user',
+          content: { text: '', attachments: [attachment] },
+          seq: 2,
+        }),
+      });
+      expect(mockQueue.add).toHaveBeenCalledWith('run', {
+        sessionId: 's1',
+        goal: 'x.png',
+      });
+    });
+
+    it('发送即为附件投理解任务；投递失败不拦发送', async () => {
+      mockMedia.commitAttachments.mockResolvedValue([
+        {
+          versionId: 'v-a',
+          type: 'image',
+          url: 'https://cdn/x.png',
+          filename: 'x.png',
+          contentType: 'image/png',
+        },
+      ]);
+      mockAnalysis.enqueue.mockRejectedValueOnce(new Error('redis down'));
+
+      await service.appendMessage(
+        's1',
+        '看看这张图',
+        't1',
+        'u1',
+        undefined,
+        undefined,
+        undefined,
+        ['v-a'],
+      );
+
+      expect(mockAnalysis.enqueue).toHaveBeenCalledWith(['v-a']);
+      // 消息照常落库、run 照常入队
+      expect(mockPrisma.canvasMessage.create).toHaveBeenCalled();
+      expect(mockQueue.add).toHaveBeenCalledWith('run', {
+        sessionId: 's1',
+        goal: '看看这张图',
+      });
+    });
+
+    it('正文与附件都没有 → CANVAS_GOAL_EMPTY，不写库', async () => {
+      await expect(
+        service.appendMessage('s1', '  ', 't1', 'u1'),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_GOAL_EMPTY.code });
+      expect(mockPrisma.canvasMessage.create).not.toHaveBeenCalled();
+    });
+
+    it('附件不合法 → 整条拒绝，会话状态不动', async () => {
+      mockMedia.commitAttachments.mockRejectedValue(
+        new Error('MEDIA_ATTACHMENT_INVALID'),
+      );
+      await expect(
+        service.appendMessage(
+          's1',
+          'hi',
+          't1',
+          'u1',
+          undefined,
+          undefined,
+          undefined,
+          ['v-x'],
+        ),
+      ).rejects.toThrow('MEDIA_ATTACHMENT_INVALID');
+      expect(mockPrisma.canvasSession.update).not.toHaveBeenCalled();
+      expect(mockQueue.add).not.toHaveBeenCalled();
+    });
   });
 
   it('add_edge：image_upload → image_gen 合法（参考图），落库并广播', async () => {
@@ -376,6 +617,76 @@ describe('CanvasService', () => {
     });
     expect(r.patch).toMatchObject({ op: 'add_edge', edge: { id: 'e1' } });
     expect(tx.canvasEdge.upsert).toHaveBeenCalled();
+  });
+
+  it('add_edge：新边接在该终点入边的末尾（最大序号 + 1）', async () => {
+    tx.canvasSession.findUnique.mockResolvedValue({
+      id: 's1',
+      status: 'running',
+      revision: 3,
+    });
+    tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
+    tx.canvasNode.findMany.mockResolvedValue([
+      { id: 'v3', type: 'video_gen' },
+      { id: 'c', type: 'video_concat' },
+    ]);
+    tx.canvasEdge.aggregate.mockResolvedValue({ _max: { position: 1 } });
+    tx.canvasEdge.upsert.mockResolvedValue({
+      id: 'e3',
+      source: 'v3',
+      target: 'c',
+    });
+
+    await service.applyOp('s1', 'agent', {
+      op: 'add_edge',
+      source: 'v3',
+      target: 'c',
+    });
+
+    expect(tx.canvasEdge.aggregate).toHaveBeenCalledWith({
+      where: { sessionId: 's1', target: 'c' },
+      _max: { position: true },
+    });
+    expect(tx.canvasEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ position: 2 }) as unknown,
+        update: {},
+      }),
+    );
+  });
+
+  it('reorder_inputs：按给定顺序改序号，只写变了的，patch 带全部入边的新顺序', async () => {
+    tx.canvasSession.findUnique.mockResolvedValue({
+      id: 's1',
+      status: 'running',
+      revision: 3,
+    });
+    tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
+    // 现状：镜2、镜3、镜1（并发连线落乱了）
+    tx.canvasEdge.findMany.mockResolvedValue([
+      { id: 'e2', source: 'v2', position: 0 },
+      { id: 'e3', source: 'v3', position: 1 },
+      { id: 'e1', source: 'v1', position: 2 },
+    ]);
+
+    const r = await service.applyOp('s1', 'agent', {
+      op: 'reorder_inputs',
+      nodeId: 'c',
+      sourceIds: ['v1', 'v2'],
+    });
+
+    // v1、v2 排最前，没列出的 v3 接在后面
+    expect(r.patch).toEqual({
+      op: 'reorder_inputs',
+      nodeId: 'c',
+      edgeIds: ['e1', 'e2', 'e3'],
+      revision: 4,
+    });
+    expect(tx.canvasEdge.update.mock.calls).toEqual([
+      [{ where: { id: 'e1' }, data: { position: 0 } }],
+      [{ where: { id: 'e2' }, data: { position: 1 } }],
+      [{ where: { id: 'e3' }, data: { position: 2 } }],
+    ]);
   });
 
   it('add_edge：video_gen → image_gen 非法（image_gen 只收 image）', async () => {
@@ -609,6 +920,28 @@ describe('CanvasService', () => {
       expect(dataOf(1)).toEqual({ pinnedAt: null, updatedAt: updated });
     });
 
+    it('测试模式开关：开 / 关都落库且保留原 updatedAt；环境禁用时拒绝开启、但始终允许关闭', async () => {
+      const saved = process.env.CANVAS_MOCK_MEDIA_ENABLED;
+      try {
+        process.env.CANVAS_MOCK_MEDIA_ENABLED = 'true';
+        await service.update('s1', 't1', { mockMedia: true });
+        expect(dataOf(0)).toEqual({ mockMedia: true, updatedAt: updated });
+
+        process.env.CANVAS_MOCK_MEDIA_ENABLED = 'false';
+        await expect(
+          service.update('s1', 't1', { mockMedia: true }),
+        ).rejects.toMatchObject({
+          errCode: ErrorCodes.CANVAS_MOCK_DISABLED.code,
+        });
+        expect(mockPrisma.canvasSession.update).toHaveBeenCalledTimes(1);
+
+        await service.update('s1', 't1', { mockMedia: false });
+        expect(dataOf(1)).toEqual({ mockMedia: false, updatedAt: updated });
+      } finally {
+        process.env.CANVAS_MOCK_MEDIA_ENABLED = saved;
+      }
+    });
+
     it('重命名去掉首尾空白；不碰置顶，也不保留 updatedAt（改名算一次更新）', async () => {
       await service.update('s1', 't1', { title: '  海报工作流  ' });
       expect(dataOf(0)).toEqual({ title: '海报工作流' });
@@ -782,6 +1115,57 @@ describe('CanvasService', () => {
    * 短 id：注入给模型的画布状态用完整 cuid 的后 6 位（完整 id 会让这段膨胀近 3 倍，而它每次
    * 画布变化都要追加进上下文）。工具侧靠 resolveNodeId 反解，短 id / 完整 id 都要吃。
    */
+  describe('暂停 / 继续的作用范围', () => {
+    // a → b → d，a → c；e 不相连。按节点暂停 = 该节点 + 全部下游各自的当前版本
+    const node = (id: string, mediaVersionId: string | null) => ({
+      id,
+      mediaVersionId,
+    });
+    beforeEach(() => {
+      jest.spyOn(service, 'snapshot').mockResolvedValue({
+        nodes: [
+          node('a', 'va'),
+          node('b', 'vb'),
+          node('c', null), // 没触发过：没有版本，跳过
+          node('d', 'vd'),
+          node('e', 've'),
+        ],
+        edges: [
+          { source: 'a', target: 'b' },
+          { source: 'a', target: 'c' },
+          { source: 'b', target: 'd' },
+        ],
+      } as unknown as Awaited<ReturnType<CanvasService['snapshot']>>);
+      mockMedia.pauseVersions.mockResolvedValue({ paused: 0, skipped: 0 });
+      mockMedia.resumeVersions.mockResolvedValue({ resumed: 0 });
+    });
+
+    it('按节点暂停：连同所有下游，不碰无关节点', async () => {
+      await service.pauseMedia('s1', 't1', 'a');
+      expect(mockMedia.pauseVersions).toHaveBeenCalledWith('s1', [
+        'va',
+        'vb',
+        'vd',
+      ]);
+    });
+
+    it('按节点继续：同样连同下游', async () => {
+      await service.resumeMedia('s1', 't1', 'b');
+      expect(mockMedia.resumeVersions).toHaveBeenCalledWith('s1', ['vb', 'vd']);
+    });
+
+    it('不传节点 = 整张画布', async () => {
+      await service.pauseMedia('s1', 't1');
+      expect(mockMedia.pauseVersions).toHaveBeenCalledWith('s1', undefined);
+    });
+
+    it('节点不存在 → 拒绝', async () => {
+      await expect(service.pauseMedia('s1', 't1', 'ghost')).rejects.toThrow(
+        BusinessException,
+      );
+    });
+  });
+
   describe('短 id 与反解', () => {
     // 同一秒创建的 cuid，前 8 位相同、后 6 位不同 —— 正是不能用前缀、只能用后缀的原因
     const idA = 'cms7n6wca00jjsp0somugi7qu';
@@ -851,5 +1235,37 @@ describe('CanvasService', () => {
       // 'aaaa' 同时是两个 id 的后缀 → 歧义，不能猜
       await expect(service.resolveNodeId('s1', 'aaaa')).resolves.toBeNull();
     });
+  });
+});
+
+describe('reorderBySource / clipOrderTag', () => {
+  const edges = [
+    { id: 'e2', source: 'v2', target: 'c' },
+    { id: 'e3', source: 'v3', target: 'c' },
+    { id: 'e1', source: 'v1', target: 'c' },
+  ];
+
+  it('列出的按给定顺序排最前，没列出的保持原相对顺序，不存在的 id 忽略、重复的只算一次', () => {
+    expect(
+      reorderBySource(edges, ['v1', 'ghost', 'v1', 'v3']).map((e) => e.id),
+    ).toEqual(['e1', 'e3', 'e2']);
+  });
+
+  it('拼接顺序标注：按入边顺序写「短 id「标题」」，没有入边为空', () => {
+    const nodes = [
+      { id: 'cmnodeaaaaaav1', label: '镜1', type: 'video_gen' },
+      { id: 'cmnodeaaaaaav2', label: null, type: 'video_gen' },
+    ];
+    expect(
+      clipOrderTag(
+        nodes,
+        [
+          { source: 'cmnodeaaaaaav2', target: 'c' },
+          { source: 'cmnodeaaaaaav1', target: 'c' },
+        ],
+        'c',
+      ),
+    ).toBe(' <拼接顺序: aaaav2「video_gen」 → aaaav1「镜1」>');
+    expect(clipOrderTag(nodes, [], 'c')).toBe('');
   });
 });

@@ -1,6 +1,9 @@
+import { AIMessage } from '@langchain/core/messages';
 import type { CanvasService } from './canvas.service';
 import type { MediaService } from '../media/media.service';
 import { createCanvasTools } from './canvas.tools';
+import { BusinessException } from '../common/errors/business.exception';
+import { ErrorCodes } from '../common/errors/error-code';
 
 /**
  * add_node 的必填参数校验。
@@ -88,6 +91,88 @@ describe('add_node 的 type 校验', () => {
  * 提示词取节点自己的 prompt、参考图取自上游 image_gen，与用户手动触发共用同一段逻辑，
  * 这两个用例同时覆盖它。
  */
+/**
+ * add_node 挂用户附件（versionId）：只认本画布本人已发出的上传版本，类型要与节点对得上；
+ * 不对时回一句能照做的话（该用哪种节点 / versionId 从哪来），且不建节点。
+ */
+describe('add_node 挂附件', () => {
+  const applyOp = jest.fn();
+  const findUploadedAsset = jest.fn();
+  const tools = createCanvasTools(
+    // cast-at-injection：只用到 applyOp / findUploadedAsset
+    { applyOp } as unknown as CanvasService,
+    { findUploadedAsset } as unknown as MediaService,
+    { sessionId: 's1', userId: 'u1' },
+  );
+  const addNode = tools.find((t) => t.name === 'add_node');
+
+  beforeEach(() => {
+    applyOp.mockReset();
+    findUploadedAsset.mockReset();
+  });
+
+  it('类型对得上：建节点时挂上 generation，标题缺省用文件名', async () => {
+    findUploadedAsset.mockResolvedValue({
+      generationId: 'g-1',
+      type: 'audio',
+      filename: 'voice.mp3',
+    });
+    applyOp.mockResolvedValue({
+      patch: { op: 'add_node', node: { id: 'cmtjabc123456' } },
+      revision: 3,
+    });
+
+    await addNode!.invoke({ type: 'audio_upload', versionId: 'v-1' });
+
+    expect(findUploadedAsset).toHaveBeenCalledWith('s1', 'u1', 'v-1');
+    expect(applyOp).toHaveBeenCalledWith(
+      's1',
+      'agent',
+      expect.objectContaining({
+        op: 'add_node',
+        type: 'audio_upload',
+        mediaGenerationId: 'g-1',
+        label: 'voice.mp3',
+      }),
+    );
+  });
+
+  it('附件类型与节点不符：指出该用哪种节点，不建节点', async () => {
+    findUploadedAsset.mockResolvedValue({
+      generationId: 'g-1',
+      type: 'video',
+      filename: 'clip.mp4',
+    });
+    const out = await addNode!.invoke({
+      type: 'image_upload',
+      versionId: 'v-1',
+    });
+    expect(applyOp).not.toHaveBeenCalled();
+    expect((JSON.parse(out) as { error?: string }).error).toContain(
+      'video_upload',
+    );
+  });
+
+  it('找不到附件（别的画布 / 还没发出 / 编的 id）：不建节点', async () => {
+    findUploadedAsset.mockResolvedValue(null);
+    const out = await addNode!.invoke({
+      type: 'image_upload',
+      versionId: 'v-x',
+    });
+    expect(applyOp).not.toHaveBeenCalled();
+    expect((JSON.parse(out) as { error?: string }).error).toContain('[附件]');
+  });
+
+  it('versionId 给了非上传节点：不建节点，也不去查附件', async () => {
+    const out = await addNode!.invoke({ type: 'image_gen', versionId: 'v-1' });
+    expect(applyOp).not.toHaveBeenCalled();
+    expect(findUploadedAsset).not.toHaveBeenCalled();
+    expect((JSON.parse(out) as { error?: string }).error).toContain(
+      'image_upload',
+    );
+  });
+});
+
 describe('generate_media_node 的模型来源', () => {
   const refNode = {
     id: 'n-ref',
@@ -180,5 +265,813 @@ describe('generate_media_node 的模型来源', () => {
     expect(createGeneration).not.toHaveBeenCalled();
     const parsed = JSON.parse(out) as { error?: string };
     expect(parsed.error).toContain('prompt');
+  });
+});
+
+/**
+ * set_node_model：agent 给生成节点设模型 / 档位。校验交给 MediaService.prepareNodeConfig，
+ * 这里锁住工具层的几件事——传进去的参考素材计数、不传 model 时沿用节点现有模型、
+ * 合法才落 update_node、不合法回 issues 不落库、非生成节点直接拒。
+ */
+describe('set_node_model', () => {
+  const upstream = [
+    {
+      id: 'n-img',
+      type: 'image_upload',
+      outputs: [{ type: 'image', content: 'v-img' }],
+    },
+    {
+      id: 'n-aud',
+      type: 'audio_upload',
+      outputs: [{ type: 'audio', content: 'v-aud' }],
+    },
+  ];
+
+  function harness(target: Record<string, unknown>) {
+    const applyOp = jest.fn().mockResolvedValue({ revision: 9 });
+    const prepareNodeConfig = jest.fn();
+    const tools = createCanvasTools(
+      // cast-at-injection：只用到这几个方法
+      {
+        applyOp,
+        resolveNodeId: jest.fn().mockResolvedValue(target.id),
+        agentSnapshot: jest.fn().mockResolvedValue({
+          nodes: [...upstream, target],
+          edges: upstream.map((n) => ({ source: n.id, target: target.id })),
+        }),
+      } as unknown as CanvasService,
+      { prepareNodeConfig } as unknown as MediaService,
+      { sessionId: 's1', userId: 'u1' },
+    );
+    return {
+      tool: tools.find((t) => t.name === 'set_node_model')!,
+      applyOp,
+      prepareNodeConfig,
+    };
+  }
+
+  const videoNode = {
+    id: 'n-vid',
+    type: 'video_gen',
+    outputs: [],
+    mediaChannel: 'byteplus',
+    mediaModel: 'seedance-1.5-pro',
+    mediaParams: {},
+  };
+
+  it('合法：落 update_node 三个字段，并回报模型收不下的上游素材', async () => {
+    const { tool, applyOp, prepareNodeConfig } = harness(videoNode);
+    prepareNodeConfig.mockResolvedValue({
+      ok: true,
+      config: {
+        channel: 'byteplus',
+        model: 'seedance-2',
+        params: { aspect_ratio: '16:9' },
+      },
+      dropped: { image: 0, video: 0, audio: 1 },
+    });
+
+    const out = await tool.invoke({
+      nodeId: 'n-vid',
+      model: 'seedance 2.0',
+      params: { aspect_ratio: '16:9' },
+    });
+
+    expect(prepareNodeConfig).toHaveBeenCalledWith('video', {
+      model: 'seedance 2.0',
+      channel: undefined,
+      params: { aspect_ratio: '16:9' },
+      referenceCounts: { image: 1, video: 0, audio: 1 },
+    });
+    expect(applyOp).toHaveBeenCalledWith('s1', 'agent', {
+      op: 'update_node',
+      nodeId: 'n-vid',
+      mediaChannel: 'byteplus',
+      mediaModel: 'seedance-2',
+      mediaParams: { aspect_ratio: '16:9' },
+    });
+    expect(JSON.parse(out)).toMatchObject({
+      ok: true,
+      model: 'seedance-2',
+      droppedInputs: { audio: 1 },
+    });
+  });
+
+  it('不传 model：沿用节点现有模型与渠道，只改档位', async () => {
+    const { tool, prepareNodeConfig } = harness(videoNode);
+    prepareNodeConfig.mockResolvedValue({ ok: false, issues: [] });
+
+    await tool.invoke({ nodeId: 'n-vid', params: { aspect_ratio: '9:16' } });
+
+    expect(prepareNodeConfig).toHaveBeenCalledWith(
+      'video',
+      expect.objectContaining({
+        model: 'seedance-1.5-pro',
+        channel: 'byteplus',
+      }),
+    );
+  });
+
+  it('不合法：回 issues，不落库', async () => {
+    const { tool, applyOp, prepareNodeConfig } = harness(videoNode);
+    prepareNodeConfig.mockResolvedValue({
+      ok: false,
+      issues: [{ field: 'params.aspect_ratio', value: '4:3', message: 'x' }],
+    });
+
+    const out = await tool.invoke({
+      nodeId: 'n-vid',
+      params: { aspect_ratio: '4:3' },
+    });
+
+    expect(applyOp).not.toHaveBeenCalled();
+    expect(JSON.parse(out)).toMatchObject({ error: 'invalid_params' });
+  });
+
+  it('不是生成节点：直接拒，不去校验', async () => {
+    const { tool, applyOp, prepareNodeConfig } = harness({
+      id: 'n-cat',
+      type: 'video_concat',
+      outputs: [],
+    });
+
+    const out = await tool.invoke({ nodeId: 'n-cat', model: 'seedance-2' });
+
+    expect(prepareNodeConfig).not.toHaveBeenCalled();
+    expect(applyOp).not.toHaveBeenCalled();
+    expect((JSON.parse(out) as { error?: string }).error).toContain(
+      'image_gen',
+    );
+  });
+});
+
+/**
+ * add_node 建生成节点时就定模型与档位：校验同 set_node_model（参考素材按 0 算，节点刚建还没入边），
+ * 合法才建、并把三个字段随 add_node 一起落；不合法一个节点都不建。
+ */
+describe('add_node 建时定模型', () => {
+  function harness() {
+    const applyOp = jest.fn().mockResolvedValue({
+      patch: { op: 'add_node', node: { id: 'cmtjabc123456' } },
+      revision: 4,
+    });
+    const prepareNodeConfig = jest.fn();
+    const tools = createCanvasTools(
+      // cast-at-injection：只用到这两个方法
+      { applyOp } as unknown as CanvasService,
+      { prepareNodeConfig } as unknown as MediaService,
+      { sessionId: 's1', userId: 'u1' },
+    );
+    return {
+      tool: tools.find((t) => t.name === 'add_node')!,
+      applyOp,
+      prepareNodeConfig,
+    };
+  }
+
+  it('合法：模型与档位随 add_node 一起落，返回值里带上最终档位', async () => {
+    const { tool, applyOp, prepareNodeConfig } = harness();
+    prepareNodeConfig.mockResolvedValue({
+      ok: true,
+      config: {
+        channel: 'byteplus',
+        model: 'seedance-2',
+        params: { aspect_ratio: '9:16', duration: '5', resolution: '720p' },
+      },
+      dropped: { image: 0, video: 0, audio: 0 },
+    });
+
+    const out = await tool.invoke({
+      type: 'video_gen',
+      prompt: '镜头 1',
+      model: 'Seedance 2.0',
+      params: { aspect_ratio: '9:16', duration: '5', resolution: '720p' },
+    });
+
+    expect(prepareNodeConfig).toHaveBeenCalledWith('video', {
+      model: 'Seedance 2.0',
+      channel: undefined,
+      params: { aspect_ratio: '9:16', duration: '5', resolution: '720p' },
+      referenceCounts: { image: 0, video: 0, audio: 0 },
+    });
+    expect(applyOp).toHaveBeenCalledWith(
+      's1',
+      'agent',
+      expect.objectContaining({
+        op: 'add_node',
+        type: 'video_gen',
+        mediaChannel: 'byteplus',
+        mediaModel: 'seedance-2',
+        mediaParams: {
+          aspect_ratio: '9:16',
+          duration: '5',
+          resolution: '720p',
+        },
+      }),
+    );
+    expect(JSON.parse(out)).toMatchObject({
+      model: 'seedance-2',
+      params: { aspect_ratio: '9:16' },
+    });
+  });
+
+  it('不合法：回 issues，节点不建', async () => {
+    const { tool, applyOp, prepareNodeConfig } = harness();
+    prepareNodeConfig.mockResolvedValue({
+      ok: false,
+      issues: [{ field: 'params.aspect_ratio', value: '2:1', message: 'x' }],
+    });
+
+    const out = await tool.invoke({
+      type: 'video_gen',
+      params: { aspect_ratio: '2:1' },
+    });
+
+    expect(applyOp).not.toHaveBeenCalled();
+    expect(JSON.parse(out)).toMatchObject({ error: 'invalid_params' });
+  });
+
+  it('非生成节点带 model：拒绝，不校验也不建', async () => {
+    const { tool, applyOp, prepareNodeConfig } = harness();
+
+    const out = await tool.invoke({
+      type: 'video_concat',
+      model: 'seedance-2',
+    });
+
+    expect(prepareNodeConfig).not.toHaveBeenCalled();
+    expect(applyOp).not.toHaveBeenCalled();
+    expect((JSON.parse(out) as { error?: string }).error).toContain(
+      'image_gen',
+    );
+  });
+
+  it('不带 model / params：照旧建节点，不去校验', async () => {
+    const { tool, applyOp, prepareNodeConfig } = harness();
+
+    await tool.invoke({ type: 'image_gen', prompt: 'x' });
+
+    expect(prepareNodeConfig).not.toHaveBeenCalled();
+    expect(applyOp).toHaveBeenCalledWith(
+      's1',
+      'agent',
+      expect.objectContaining({
+        mediaModel: undefined,
+        mediaParams: undefined,
+      }),
+    );
+  });
+});
+
+/**
+ * generate_media_node × 测试模式：画布没开 Mock 时，上游是模拟产物要先点名拦下（不触发生成）；
+ * 开着 Mock 则照常交给 MediaService（它按触发时的开关记 mock）。业务拒绝回一句话，不抛异常。
+ */
+describe('generate_media_node 与测试模式', () => {
+  const upstream = {
+    id: 'cmup000kfmock1',
+    type: 'image_gen',
+    label: '关键帧1',
+    mediaMock: true,
+    outputs: [{ type: 'image', content: 'v-up' }],
+  };
+  const target = {
+    id: 'cmvid00target',
+    type: 'video_gen',
+    prompt: '镜头 1',
+    outputs: [],
+    mediaChannel: null,
+    mediaModel: null,
+    mediaParams: null,
+  };
+
+  function harness(mockMedia: boolean) {
+    const applyOp = jest.fn().mockResolvedValue({ revision: 1 });
+    const createGeneration = jest
+      .fn()
+      .mockResolvedValue({ generationId: 'g-1', versionId: 'v-1' });
+    const tools = createCanvasTools(
+      // cast-at-injection：只用到这几个方法
+      {
+        applyOp,
+        resolveNodeId: jest.fn().mockResolvedValue(target.id),
+        agentSnapshot: jest.fn().mockResolvedValue({
+          mockMedia,
+          nodes: [upstream, target],
+          edges: [{ source: upstream.id, target: target.id }],
+        }),
+      } as unknown as CanvasService,
+      { createGeneration } as unknown as MediaService,
+      { sessionId: 's1', userId: 'u1' },
+    );
+    return {
+      tool: tools.find((t) => t.name === 'generate_media_node')!,
+      createGeneration,
+      applyOp,
+    };
+  }
+
+  it('没开 Mock、上游是模拟产物：点名上游并拒绝，不触发生成', async () => {
+    const { tool, createGeneration, applyOp } = harness(false);
+    const out = await tool.invoke({ nodeId: target.id });
+    expect(createGeneration).not.toHaveBeenCalled();
+    expect(applyOp).not.toHaveBeenCalled();
+    const { error } = JSON.parse(out) as { error: string };
+    expect(error).toContain('关键帧1');
+    expect(error).toContain('mock1');
+  });
+
+  it('开着 Mock：照常触发（是否模拟由 MediaService 按触发时的开关定）', async () => {
+    const { tool, createGeneration } = harness(true);
+    await tool.invoke({ nodeId: target.id });
+    expect(createGeneration).toHaveBeenCalled();
+  });
+
+  it('业务拒绝（如环境禁用了测试模式）：回一句话而不是抛异常', async () => {
+    const { tool, createGeneration } = harness(true);
+    createGeneration.mockRejectedValue(
+      new BusinessException(ErrorCodes.CANVAS_MOCK_DISABLED),
+    );
+    const out = await tool.invoke({ nodeId: target.id });
+    expect(JSON.parse(out)).toMatchObject({
+      error: { code: ErrorCodes.CANVAS_MOCK_DISABLED.code },
+    });
+  });
+});
+
+/**
+ * 上游依赖：画布上一口气触发整条链时，在途（排队 / 生成中）的上游带上它的版本让下游等，
+ * 没触发过的上游直接拒绝——否则下游会少带一路参考就开跑（Mock 验收里实际撞到过）。
+ */
+describe('generate_media_node / merge_video_node 的上游依赖', () => {
+  const inFlight = {
+    id: 'cmimg00flight',
+    type: 'image_gen',
+    label: '关键帧',
+    mediaMock: false,
+    mediaVersionId: 'v-flight',
+    mediaStatus: 'generating',
+    outputs: [],
+  };
+  const never = {
+    id: 'cmimg000never',
+    type: 'image_gen',
+    label: '没触发',
+    mediaMock: false,
+    mediaVersionId: null,
+    mediaStatus: null,
+    outputs: [],
+  };
+  const videoGen = {
+    id: 'cmvid00target',
+    type: 'video_gen',
+    prompt: '镜头 1',
+    outputs: [],
+    mediaChannel: null,
+    mediaModel: null,
+    mediaParams: null,
+  };
+  const clipDone = {
+    id: 'cmclip00done1',
+    type: 'video_gen',
+    label: '片段1',
+    mediaMock: false,
+    mediaVersionId: 'v-c1',
+    mediaStatus: 'done',
+    outputs: [{ type: 'video', content: 'v-c1' }],
+  };
+  const clipQueued = {
+    id: 'cmclip0queue2',
+    type: 'video_gen',
+    label: '片段2',
+    mediaMock: false,
+    mediaVersionId: 'v-c2',
+    mediaStatus: 'queued',
+    outputs: [],
+  };
+  const clipNever = {
+    ...never,
+    id: 'cmclip0never3',
+    type: 'video_gen',
+    label: '片段3',
+  };
+  const concat = { id: 'cmconcat00tgt', type: 'video_concat', outputs: [] };
+
+  function harness(
+    nodes: Record<string, unknown>[],
+    edges: { source: string; target: string }[],
+    targetId: string,
+  ) {
+    const applyOp = jest.fn().mockResolvedValue({ revision: 1 });
+    const createGeneration = jest
+      .fn()
+      .mockResolvedValue({ generationId: 'g-1', versionId: 'v-1' });
+    const createConcat = jest
+      .fn()
+      .mockResolvedValue({ generationId: 'g-2', versionId: 'v-2' });
+    const tools = createCanvasTools(
+      // cast-at-injection：只用到这几个方法
+      {
+        applyOp,
+        resolveNodeId: jest.fn().mockResolvedValue(targetId),
+        agentSnapshot: jest
+          .fn()
+          .mockResolvedValue({ mockMedia: false, nodes, edges }),
+      } as unknown as CanvasService,
+      { createGeneration, createConcat } as unknown as MediaService,
+      { sessionId: 's1', userId: 'u1' },
+    );
+    return {
+      generate: tools.find((t) => t.name === 'generate_media_node')!,
+      merge: tools.find((t) => t.name === 'merge_video_node')!,
+      createGeneration,
+      createConcat,
+      applyOp,
+    };
+  }
+
+  it('上游在生成中：带上它的版本照常触发，并回报 pendingInputs', async () => {
+    const h = harness(
+      [inFlight, videoGen],
+      [{ source: inFlight.id, target: videoGen.id }],
+      videoGen.id,
+    );
+    const out = await h.generate.invoke({ nodeId: videoGen.id });
+    expect(h.createGeneration).toHaveBeenCalledWith(
+      's1',
+      'u1',
+      'video',
+      '镜头 1',
+      ['v-flight'],
+      expect.anything(),
+    );
+    expect(JSON.parse(out)).toMatchObject({ references: 1, pendingInputs: 1 });
+  });
+
+  it('上游没触发过：点名拒绝，不触发也不落 op', async () => {
+    const h = harness(
+      [inFlight, never, videoGen],
+      [
+        { source: inFlight.id, target: videoGen.id },
+        { source: never.id, target: videoGen.id },
+      ],
+      videoGen.id,
+    );
+    const out = await h.generate.invoke({ nodeId: videoGen.id });
+    expect(h.createGeneration).not.toHaveBeenCalled();
+    expect(h.applyOp).not.toHaveBeenCalled();
+    const { error } = JSON.parse(out) as { error: string };
+    expect(error).toContain('没触发');
+    expect(error).toContain('0never');
+  });
+
+  it('拼接：已完成 + 排队中的片段按入边顺序提交，回报 pendingClips', async () => {
+    const h = harness(
+      [clipQueued, clipDone, concat],
+      [
+        { source: clipQueued.id, target: concat.id },
+        { source: clipDone.id, target: concat.id },
+      ],
+      concat.id,
+    );
+    const out = await h.merge.invoke({ nodeId: concat.id });
+    expect(h.createConcat).toHaveBeenCalledWith('s1', 'u1', ['v-c2', 'v-c1']);
+    expect(JSON.parse(out)).toMatchObject({ clips: 2, pendingClips: 1 });
+  });
+
+  it('拼接：有片段没触发过 → 点名拒绝，不拼', async () => {
+    const h = harness(
+      [clipDone, clipQueued, clipNever, concat],
+      [
+        { source: clipDone.id, target: concat.id },
+        { source: clipQueued.id, target: concat.id },
+        { source: clipNever.id, target: concat.id },
+      ],
+      concat.id,
+    );
+    const out = await h.merge.invoke({ nodeId: concat.id });
+    expect(h.createConcat).not.toHaveBeenCalled();
+    expect((JSON.parse(out) as { error: string }).error).toContain('片段3');
+  });
+});
+
+/**
+ * 同一条 AI 消息里一起触发（「全部触发」一步发出）：调用是并行跑的，下游可能先跑到。
+ * 下游要先等同批的直接上游挂上新版本，再收集参考——否则没生成过的上游被当成缺失拒掉，
+ * 生成过的会拿上一版当参考。
+ */
+describe('同一批触发按依赖顺序落地', () => {
+  type FakeNode = {
+    id: string;
+    type: string;
+    label: string;
+    prompt?: string;
+    mediaMock: boolean;
+    mediaVersionId: string | null;
+    mediaStatus: string | null;
+    outputs: { type: string; content: string }[];
+    mediaChannel: null;
+    mediaModel: null;
+    mediaParams: null;
+  };
+  const make = (
+    id: string,
+    type: string,
+    media: Pick<FakeNode, 'mediaVersionId' | 'mediaStatus' | 'outputs'>,
+  ): FakeNode => ({
+    id,
+    type,
+    label: id,
+    prompt: `${id} 提示词`,
+    mediaMock: false,
+    mediaChannel: null,
+    mediaModel: null,
+    mediaParams: null,
+    ...media,
+  });
+
+  function harness(upstreamMedia: Parameters<typeof make>[2]) {
+    const nodes = [
+      make('cmimgupstream', 'image_gen', upstreamMedia),
+      make('cmviddownstrm', 'video_gen', {
+        mediaVersionId: null,
+        mediaStatus: null,
+        outputs: [],
+      }),
+    ];
+    const edges = [{ source: 'cmimgupstream', target: 'cmviddownstrm' }];
+    let seq = 0;
+    const createGeneration = jest.fn((..._args: unknown[]) => {
+      seq++;
+      return Promise.resolve({
+        generationId: `g-${seq}`,
+        versionId: `v-new-${seq}`,
+      });
+    });
+    // update_node 挂上新 generation：节点换成新版本、排队中（快照 JOIN 的效果）
+    const applyOp = jest.fn(
+      (
+        _s: string,
+        _a: string,
+        op: { nodeId: string; mediaGenerationId: string },
+      ) => {
+        const n = nodes.find((x) => x.id === op.nodeId)!;
+        n.mediaVersionId = op.mediaGenerationId.replace('g-', 'v-new-');
+        n.mediaStatus = 'queued';
+        n.outputs = [];
+        return Promise.resolve({ revision: 1 });
+      },
+    );
+    const tools = createCanvasTools(
+      // cast-at-injection：只用到这几个方法
+      {
+        applyOp,
+        resolveNodeId: jest.fn((_s: string, id: string) => Promise.resolve(id)),
+        agentSnapshot: jest.fn(() =>
+          Promise.resolve({
+            mockMedia: false,
+            nodes: nodes.map((n) => ({ ...n, outputs: [...n.outputs] })),
+            edges,
+          }),
+        ),
+      } as unknown as CanvasService,
+      { createGeneration } as unknown as MediaService,
+      { sessionId: 's1', userId: 'u1' },
+    );
+    const generate = tools.find((t) => t.name === 'generate_media_node')!;
+    // ToolNode 传给工具的 config.state：最后一条是发起这批调用的 AI 消息
+    const batchConfig = {
+      state: {
+        messages: [
+          new AIMessage({
+            content: '',
+            tool_calls: [
+              {
+                id: 'c-up',
+                name: 'generate_media_node',
+                args: { nodeId: 'cmimgupstream' },
+              },
+              {
+                id: 'c-down',
+                name: 'generate_media_node',
+                args: { nodeId: 'cmviddownstrm' },
+              },
+            ],
+          }),
+        ],
+      },
+    };
+    const call = (nodeId: string) =>
+      generate
+        .invoke(
+          { nodeId },
+          {
+            ...batchConfig,
+            toolCall: {
+              id: `c-${nodeId}`,
+              name: 'generate_media_node',
+              args: { nodeId },
+            },
+          },
+        )
+        // 带 toolCall 调用时工具回 ToolMessage（与 ToolNode 里一致）
+        .then((msg) => JSON.parse(msg.text) as Record<string, unknown>);
+    return { call, createGeneration };
+  }
+
+  it('上游没生成过：下游先跑也会等上游挂上新版本，再带它的版本触发', async () => {
+    const h = harness({ mediaVersionId: null, mediaStatus: null, outputs: [] });
+    const down = h.call('cmviddownstrm');
+    await new Promise((r) => setTimeout(r, 20)); // 下游先跑到、在等
+    const up = h.call('cmimgupstream');
+    const [d, u] = await Promise.all([down, up]);
+
+    expect(u).toMatchObject({ status: 'queued' });
+    expect(d).toMatchObject({
+      status: 'queued',
+      references: 1,
+      pendingInputs: 1,
+    });
+    // 上游先落库，下游引用的是上游这次的新版本
+    expect(h.createGeneration.mock.calls.map((c) => c[3])).toEqual([
+      'cmimgupstream 提示词',
+      'cmviddownstrm 提示词',
+    ]);
+    expect(h.createGeneration.mock.calls[1][4]).toEqual(['v-new-1']);
+  });
+
+  it('上游生成过（全部重新生成）：下游不会拿到上一版', async () => {
+    const h = harness({
+      mediaVersionId: 'v-old',
+      mediaStatus: 'done',
+      outputs: [{ type: 'image', content: 'v-old' }],
+    });
+    const down = h.call('cmviddownstrm');
+    await new Promise((r) => setTimeout(r, 20));
+    await Promise.all([down, h.call('cmimgupstream')]);
+
+    expect(h.createGeneration.mock.calls[1][4]).toEqual(['v-new-1']);
+  });
+});
+
+/**
+ * 拼接顺序：入边顺序就是成片顺序。同一步里并发的连线要按调用先后落库；
+ * 拼接可以声明 order 先重排再拼；set_clip_order 只改顺序。
+ */
+describe('拼接顺序', () => {
+  it('同一步里连向同一节点的连线：后发先到也按调用顺序落库', async () => {
+    const landedOrder: string[] = [];
+    const applyOp = jest.fn(
+      (_s: string, _a: string, op: { source: string }) => {
+        landedOrder.push(op.source);
+        return Promise.resolve({
+          revision: landedOrder.length,
+          patch: { op: 'add_edge', edge: { id: `e-${op.source}` } },
+        });
+      },
+    );
+    const tools = createCanvasTools(
+      // cast-at-injection：只用到这两个方法
+      {
+        applyOp,
+        resolveNodeId: jest.fn((_s: string, id: string) => Promise.resolve(id)),
+      } as unknown as CanvasService,
+      {} as unknown as MediaService,
+      { sessionId: 's1', userId: 'u1' },
+    );
+    const connect = tools.find((t) => t.name === 'connect_nodes')!;
+    const calls = ['v1', 'v2', 'v3'].map((src) => ({
+      id: `c-${src}`,
+      name: 'connect_nodes',
+      args: { sourceId: src, targetId: 'concat' },
+    }));
+    const state = {
+      messages: [new AIMessage({ content: '', tool_calls: calls })],
+    };
+    const invoke = (i: number) =>
+      connect.invoke(calls[i].args, {
+        state,
+        toolCall: { ...calls[i], type: 'tool_call' as const },
+      });
+
+    // 倒着发起：v3 最先跑到、v1 最后
+    await Promise.all([invoke(2), invoke(1), invoke(0)]);
+
+    expect(landedOrder).toEqual(['v1', 'v2', 'v3']);
+  });
+
+  describe('merge_video_node 的 order / set_clip_order', () => {
+    const node = (id: string, type: string, label: string, done = true) => ({
+      id,
+      type,
+      label,
+      mediaMock: false,
+      mediaVersionId: done ? `ver-${id}` : null,
+      mediaStatus: done ? 'done' : null,
+      outputs: done ? [{ type: 'video', content: `ver-${id}` }] : [],
+    });
+
+    function harness() {
+      const nodes = [
+        node('cmshot0000001', 'video_gen', '镜1'),
+        node('cmshot0000002', 'video_gen', '镜2'),
+        node('cmshot0000003', 'video_gen', '镜3'),
+        node('cmconcat00001', 'video_concat', '成片', false),
+      ];
+      // 现状：镜2、镜3、镜1
+      let edges = ['cmshot0000002', 'cmshot0000003', 'cmshot0000001'].map(
+        (source) => ({ source, target: 'cmconcat00001' }),
+      );
+      const applyOp = jest.fn(
+        (_s: string, _a: string, op: { op: string; sourceIds?: string[] }) => {
+          if (op.op === 'reorder_inputs' && op.sourceIds) {
+            const listed = op.sourceIds;
+            edges = [
+              ...listed.map((source) => ({ source, target: 'cmconcat00001' })),
+              ...edges.filter((e) => !listed.includes(e.source)),
+            ];
+          }
+          return Promise.resolve({ revision: 1, patch: { op: op.op } });
+        },
+      );
+      const createConcat = jest
+        .fn()
+        .mockResolvedValue({ generationId: 'g-1', versionId: 'v-1' });
+      const tools = createCanvasTools(
+        // cast-at-injection：只用到这几个方法
+        {
+          applyOp,
+          resolveNodeId: jest.fn((_s: string, id: string) =>
+            Promise.resolve(nodes.find((n) => n.id.endsWith(id))?.id ?? null),
+          ),
+          agentSnapshot: jest.fn(() =>
+            Promise.resolve({ mockMedia: false, nodes, edges: [...edges] }),
+          ),
+        } as unknown as CanvasService,
+        { createConcat } as unknown as MediaService,
+        { sessionId: 's1', userId: 'u1' },
+      );
+      return {
+        merge: tools.find((t) => t.name === 'merge_video_node')!,
+        setOrder: tools.find((t) => t.name === 'set_clip_order')!,
+        createConcat,
+        applyOp,
+      };
+    }
+    const parse = (out: unknown) =>
+      JSON.parse(String(out)) as Record<string, unknown>;
+
+    it('带 order：先按叙事顺序重排再拼，返回实际顺序', async () => {
+      const h = harness();
+      const out = parse(
+        await h.merge.invoke({
+          nodeId: 'cmconcat00001',
+          order: ['0000001', '0000002', '0000003'],
+        }),
+      );
+      expect(h.createConcat).toHaveBeenCalledWith('s1', 'u1', [
+        'ver-cmshot0000001',
+        'ver-cmshot0000002',
+        'ver-cmshot0000003',
+      ]);
+      expect(out.order).toEqual([
+        '000001「镜1」',
+        '000002「镜2」',
+        '000003「镜3」',
+      ]);
+    });
+
+    it('不带 order：按现有入边顺序拼，返回值让模型能核对', async () => {
+      const h = harness();
+      const out = parse(await h.merge.invoke({ nodeId: 'cmconcat00001' }));
+      expect(out.order).toEqual([
+        '000002「镜2」',
+        '000003「镜3」',
+        '000001「镜1」',
+      ]);
+    });
+
+    it('set_clip_order：只改顺序不拼；不是上游的 id 拒绝且不改动', async () => {
+      const h = harness();
+      const ok = parse(
+        await h.setOrder.invoke({
+          nodeId: 'cmconcat00001',
+          order: ['0000001'],
+        }),
+      );
+      expect(ok.order).toEqual([
+        '000001「镜1」',
+        '000002「镜2」',
+        '000003「镜3」',
+      ]);
+      expect(h.createConcat).not.toHaveBeenCalled();
+
+      h.applyOp.mockClear();
+      const bad = parse(
+        await h.setOrder.invoke({ nodeId: 'cmconcat00001', order: ['ghost'] }),
+      );
+      expect(String(bad.error)).toContain('不是该拼接节点的上游');
+      expect(h.applyOp).not.toHaveBeenCalled();
+    });
   });
 });

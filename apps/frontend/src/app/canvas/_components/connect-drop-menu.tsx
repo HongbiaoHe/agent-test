@@ -30,6 +30,8 @@ export interface ConnectDrop {
  */
 const ORDER: CanvasNodeType[] = [
   "image_upload",
+  "video_upload",
+  "audio_upload",
   "image_gen",
   "video_gen",
   "video_concat",

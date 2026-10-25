@@ -29,11 +29,11 @@ import { cn } from "@/lib/utils";
 import { findAigcModel, useAigcModels } from "../_hooks/use-aigc-models";
 import {
   AUTO,
-  derivedDims,
   hasOwnAuto,
   optionText,
   orderedParams,
   paramLabel,
+  planReferences,
   resolveParams,
   sortedOptions,
   type ResolvedParams,
@@ -43,9 +43,10 @@ import { CanvasEditorContext } from "./flow-canvas";
 /**
  * 节点当前「生效」的模型与档位：节点选过的那个；没选过（或已下线）就是目录给的默认模型。
  * 档位按目录 constraints + 上游输入收窄过——显示的就是真会提交的那份。
- * 模型区与 Generate 按钮各自要用（两者不在同一行渲染），目录走 react-query 缓存，不会重复请求。
+ * references：上游素材这次各自的去向（会不会提交、在提示词里叫什么），附件栏据此标注。
+ * 模型区、Generate 按钮与附件栏各自要用（不在同一处渲染），目录走 react-query 缓存，不会重复请求。
  */
-function useActiveModel(
+export function useActiveModel(
   nodeId: string,
   mediaType: "image" | "video",
   channel: string | null,
@@ -59,7 +60,12 @@ function useActiveModel(
   const activeChannel = chosen ? channel : (fallback?.channel ?? null);
   const activeAlias = chosen ? model : (fallback?.model ?? null);
   const active = findAigcModel(catalog.data, activeChannel, activeAlias);
-  const derived = active ? derivedDims(resolveInputs(nodeId), active) : {};
+  const references = planReferences(
+    resolveInputs(nodeId),
+    mediaType === "video" ? "video_gen" : "image_gen",
+    active,
+  );
+  const derived = active ? references.derived : {};
   const requested = chosen ? (params ?? {}) : (fallback?.params ?? {});
   return {
     catalog,
@@ -67,6 +73,7 @@ function useActiveModel(
     activeAlias,
     active,
     derived,
+    references: references.fates,
     resolved: active ? resolveParams(active, requested, derived) : null,
   };
 }

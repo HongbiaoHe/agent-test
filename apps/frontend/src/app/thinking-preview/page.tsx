@@ -120,7 +120,7 @@ const PHASE_CASES: { label: string; items: ChatItem[]; busy: boolean }[] = [
   { label: "空流 + busy", items: [], busy: true },
   {
     label: "末项 user",
-    items: [{ id: "1", kind: "user", text: "hi" }],
+    items: [{ id: "1", kind: "user", text: "hi", attachments: [] }],
     busy: true,
   },
   {

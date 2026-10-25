@@ -146,6 +146,11 @@ export const ErrorCodes = {
     code: 60009,
     message: 'Uploaded files cannot be regenerated',
   },
+  MEDIA_REF_MOCK: {
+    code: 60010,
+    message:
+      'Real generation cannot use mock (simulated) outputs as references: generate those upstream nodes for real first',
+  },
   MEDIA_ATTACHMENT_INVALID: {
     code: 60008,
     message:
@@ -176,5 +181,20 @@ export const ErrorCodes = {
   CANVAS_SKILL_BUILTIN: {
     code: 70010,
     message: 'Built-in skills cannot be deleted or disabled',
+  },
+  CANVAS_MOCK_DISABLED: {
+    code: 70012,
+    message:
+      'Mock mode is disabled in this environment: turn Mock off on this canvas to generate',
+  },
+  CANVAS_UPSTREAM_NOT_READY: {
+    code: 70013,
+    message:
+      'An upstream node has no output yet and is not generating: generate it first',
+  },
+  CANVAS_UPLOAD_TYPE_MISMATCH: {
+    code: 70011,
+    message:
+      'This file does not fit the node (image upload nodes take images, video upload nodes take videos, audio upload nodes take audio)',
   },
 } as const satisfies Record<string, ErrorDef>;

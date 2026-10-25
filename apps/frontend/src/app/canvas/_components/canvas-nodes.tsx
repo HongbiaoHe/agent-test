@@ -14,22 +14,39 @@ import {
   Clock,
   Copy,
   Download,
+  FlaskConical,
   Layers,
   Link2,
   Loader2,
   Maximize2,
   MessagesSquare,
+  Music,
+  Pause,
+  Play,
   RotateCcw,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { useContext, useRef, useState } from "react";
 
-import type { CanvasNodeDto, CanvasNodeType } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import type {
+  CanvasNodeDto,
+  CanvasNodeType,
+  CanvasUploadNodeType,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 import { useMediaAsset } from "../_hooks/use-media-asset";
+import { placeholderAspect } from "../_lib/aigc-params";
+import { useNodeUpload } from "../_hooks/use-node-upload";
 import {
+  CANVAS_NODE_IO,
   canConnectNodeTypes,
+  isInFlight,
+  isUploadNodeType,
+  UPLOAD_NODE_ASSET,
+  upstreamOutputType,
   type NodeInputSource,
 } from "../_lib/node-io";
 import {
@@ -46,7 +63,11 @@ import {
 import { NodeTitleField } from "./node-inline-field";
 import { NodeMediaDialog } from "./node-media-dialog";
 import { NodeAttachments } from "./node-attachments";
-import { NodeGenerateButton, NodeModelControls } from "./node-model-controls";
+import {
+  NodeGenerateButton,
+  NodeModelControls,
+  useActiveModel,
+} from "./node-model-controls";
 import { NODE_META, NodeTypeIcon } from "./node-meta";
 import { VideoSequence } from "./video-sequence";
 
@@ -454,41 +475,194 @@ function HeroSkeleton({
   state,
   runningLabel = "Generating",
   full,
+  aspect,
 }: {
-  kind: "image" | "video";
+  kind: "image" | "video" | "audio";
   /** 不传 = 只是资产在途（已 done，正在拉 blob），不必标注 */
-  state?: "generating" | "queued";
+  state?: "generating" | "queued" | "paused";
   /** 「在跑」的措辞：生成说 Generating，拼接说 Merging */
   runningLabel?: string;
   /** 骨架就是卡面的全部（在跑时正文不渲染）：四角都要圆 */
   full?: boolean;
+  /** 已知产物画幅（宽 / 高）时按它占位，与空态画框同形，开跑时卡片不跳；不传按类型的常见比例 */
+  aspect?: number;
 }) {
   return (
-    <HeroFrame busy full={full}>
-      <div className={kind === "video" ? "aspect-video" : "aspect-[4/3]"} />
+    // 暂停中不扫光：画面静止本身就在说「没在动」，角标再写明是暂停
+    <HeroFrame busy={state !== "paused"} full={full}>
+      <div
+        className={cn(
+          !aspect &&
+            (kind === "video"
+              ? "aspect-video"
+              : kind === "audio"
+                ? "h-20"
+                : "aspect-[4/3]"),
+          // 整卡画框是透明底（扫光自带底色）；暂停不扫光，补上与空态画框一样的弱化底
+          state === "paused" && "bg-muted",
+        )}
+        style={aspect ? { aspectRatio: aspect } : undefined}
+      />
       {state && <BusyBadge state={state} runningLabel={runningLabel} />}
     </HeroFrame>
   );
 }
 
-/** 骨架角上的状态角标：转圈=在跑，钟=在排队。与序列预览的段数角标同一套形态。 */
+/** 骨架角上的状态角标：转圈=在跑，钟=在排队，暂停符=已暂停。与序列预览的段数角标同一套形态。 */
 function BusyBadge({
   state,
   runningLabel,
 }: {
-  state: "generating" | "queued";
+  state: "generating" | "queued" | "paused";
   runningLabel: string;
 }) {
-  const running = state === "generating";
   return (
     <span className="pointer-events-none absolute right-1.5 bottom-1.5 flex items-center gap-1 rounded-full bg-foreground/75 px-1.5 py-0.5 text-[10px] text-background">
-      {running ? (
+      {state === "generating" ? (
         <Loader2 className="size-2.5 animate-spin" aria-hidden />
-      ) : (
+      ) : state === "queued" ? (
         <Clock className="size-2.5" aria-hidden />
+      ) : (
+        <Pause className="size-2.5" aria-hidden />
       )}
-      {running ? runningLabel : "Queued"}
+      {state === "generating"
+        ? runningLabel
+        : state === "queued"
+          ? "Queued"
+          : "Paused"}
     </span>
+  );
+}
+
+/** 拼接面板里一段素材的状态：已有视频不标；没有的说清卡在哪（上传节点是没传文件） */
+function clipState(s: NodeInputSource): string | null {
+  if (s.outputs.some((o) => o.type === "video")) return null;
+  if (isUploadNodeType(s.nodeType)) return "No file yet";
+  switch (s.mediaStatus) {
+    case "queued":
+      return "Queued";
+    case "generating":
+      return s.nodeType === "video_concat" ? "Merging" : "Generating";
+    case "paused":
+      return "Paused";
+    case "failed":
+      return "Failed";
+    case "cancelled":
+      return "Cancelled";
+    default:
+      return "Not generated";
+  }
+}
+
+/**
+ * 卡片悬停操作组里的暂停 / 继续：连同它的下游一起（下游在等它，单独停它只会让下游干等到超时）。
+ * 已提交给模型的停不下来，点了会提示一句。agent 运行中也给——生成多半就是 agent 触发的。
+ */
+function MediaControlButton({
+  nodeId,
+  status,
+}: {
+  nodeId: string;
+  status: string | null;
+}) {
+  const { pauseMedia, resumeMedia } = useContext(CanvasEditorContext);
+  if (status === "queued" || status === "generating") {
+    return (
+      <CanvasToolbarButton
+        label="Pause (with downstream)"
+        icon={<Pause className="size-3.5" />}
+        onClick={() => pauseMedia(nodeId)}
+      />
+    );
+  }
+  if (status === "paused") {
+    return (
+      <CanvasToolbarButton
+        label="Resume (with downstream)"
+        icon={<Play className="size-3.5" />}
+        onClick={() => resumeMedia(nodeId)}
+      />
+    );
+  }
+  return null;
+}
+
+/**
+ * 还没有产物时的主视觉：先按将来产物的画幅摆出一块空画框（无从得知就 16:9），中间是节点类型图标。
+ * 卡片从一开始就是成品的形状，出图 / 出片时原地接替，不会忽高忽低。
+ */
+function HeroPlaceholder({
+  type,
+  aspect = 16 / 9,
+  full,
+  children,
+}: {
+  type: CanvasNodeType;
+  /** 宽 / 高 */
+  aspect?: number;
+  /** 画框就是卡面的全部（下面没有正文）：四角都要圆 */
+  full?: boolean;
+  /** 图标下方的内容（上传节点的选择按钮） */
+  children?: React.ReactNode;
+}) {
+  const { Icon } = NODE_META[type];
+  return (
+    <HeroFrame full={full}>
+      <div
+        className="flex flex-col items-center justify-center gap-2 bg-muted"
+        style={{ aspectRatio: aspect }}
+      >
+        {/* 淡色只给图标：框里的按钮 / 说明文字要保持正常对比度 */}
+        <Icon className="size-5 text-muted-foreground/60" aria-hidden />
+        {children}
+      </div>
+    </HeroFrame>
+  );
+}
+
+/**
+ * 画框里的一句状态 + 可选按钮（失败 / 取消时的 Retry、可合成时的 Merge）。
+ * 没有产物的卡片只留画框，需要说的话、能按的按钮都收进框里，不在卡片下面另起一行。
+ */
+function HeroNotice({
+  icon,
+  text,
+  tone = "muted",
+  action,
+}: {
+  icon?: React.ReactNode;
+  text?: string;
+  tone?: "muted" | "danger";
+  action?: { label: string; icon: React.ReactNode; onClick: () => void };
+}) {
+  return (
+    <div className="flex flex-col items-center gap-1.5 px-3 text-center">
+      {text && (
+        <span
+          className={cn(
+            "flex items-center gap-1 text-[11px]",
+            tone === "danger" ? "text-destructive" : "text-muted-foreground",
+          )}
+        >
+          {icon}
+          {text}
+        </span>
+      )}
+      {action && (
+        <Button
+          variant="outline"
+          size="xs"
+          className="nodrag"
+          onClick={(e) => {
+            e.stopPropagation(); // 别顺带把节点选中、弹出编辑面板
+            action.onClick();
+          }}
+        >
+          {action.icon}
+          {action.label}
+        </Button>
+      )}
+    </div>
   );
 }
 
@@ -527,11 +701,14 @@ function HeroMedia({
   kind,
   title,
   onZoom,
+  mock = false,
 }: {
   url: string;
   kind: "image" | "video";
   title: string;
   onZoom: () => void;
+  /** 测试模式产出的占位素材：右下角挂「Mock」角标，免得和真实结果混淆 */
+  mock?: boolean;
 }) {
   // 满宽 + 高度按比例自适应：卡片高度因此**就是**素材的高度，既不留信箱黑边
   // （object-contain 撞上固定 max-height 时竖图两侧会空出灰带），也不裁掉构图
@@ -561,12 +738,28 @@ function HeroMedia({
           className={fill}
         />
       )}
+      {mock && <MockBadge />}
     </HeroFrame>
   );
 }
 
+/** 「Mock」角标：与标题栏的 Mock 开关同一套警示色语言（淡底描边 + 染色图标、文字正文色）。 */
+function MockBadge() {
+  return (
+    <span className="pointer-events-none absolute right-1.5 bottom-1.5 flex items-center gap-1 rounded-full border border-warning/60 bg-background/90 px-1.5 py-0.5 text-[10px] font-medium text-foreground">
+      <FlaskConical className="size-2.5 text-warning" aria-hidden />
+      Mock
+    </span>
+  );
+}
+
 /** blob mime → 下载文件名后缀。拿不到 mime 时按类型给个合理缺省。 */
-function extFor(mime: string, kind: "image" | "video"): string {
+function extFor(mime: string, kind: "image" | "video" | "audio"): string {
+  if (kind === "audio") {
+    if (mime.includes("mpeg")) return "mp3";
+    if (mime.includes("wav")) return "wav";
+    return "m4a";
+  }
   if (mime.includes("jpeg")) return "jpg";
   if (mime.includes("png")) return "png";
   if (mime.includes("webp")) return "webp";
@@ -619,26 +812,272 @@ function InputSummary({ inputs }: { inputs: NodeInputSource[] }) {
   );
 }
 
-function ImageUploadNode({ data, selected, dragging }: NodeProps) {
-  const d = data as NodeData;
+/** 音频的主视觉：没有画面可看，放文件名 + 一条播放器。 */
+function AudioHero({ url, title }: { url: string; title: string }) {
   return (
-    <NodeShell
-      nodeId={d.id}
-      nodeType="image_upload"
+    <HeroFrame full>
+      <div className="flex flex-col gap-2 p-3">
+        <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+          <Music className="size-3.5 shrink-0" aria-hidden />
+          <span className="truncate">{title}</span>
+        </span>
+        {/* nodrag：拖进度条时别变成拖卡片 */}
+        <audio
+          src={url}
+          controls
+          preload="metadata"
+          className="nodrag h-8 w-full"
+        />
+      </div>
+    </HeroFrame>
+  );
+}
+
+/**
+ * 上传节点（图片 / 视频 / 音频共用一套）：用户自带的素材，传完即可连给下游作参考。
+ *
+ * 文件挂在节点上（后端落一个上传版本，与生成节点同走 mediaGenerationId），所以传完后的形态
+ * 与生成节点出片一致：卡面只剩画面、双击看大图、可下载；音频没有画面，主视觉换成播放器。
+ * 重传 = 换一个新文件（旧的不删，只是不再挂在这张卡上）。
+ *
+ * 没文件时卡上一枚「选文件」，也可以直接把文件拖到卡上；上传中骨架扫光 + 角标写进度。
+ * 运行期（readOnly）不让传：那时 agent 是唯一写者，服务端也会拒。
+ */
+function UploadNode({
+  data,
+  selected,
+  dragging,
+  nodeType,
+}: {
+  data: NodeData;
+  selected: boolean;
+  dragging: boolean;
+  nodeType: CanvasUploadNodeType;
+}) {
+  const { readOnly, uploadNodeFile } = useContext(CanvasEditorContext);
+  const kind = UPLOAD_NODE_ASSET[nodeType];
+  const upload = useNodeUpload(
+    data.id,
+    nodeType,
+    data.mediaVersionId,
+    uploadNodeFile,
+  );
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [zoom, setZoom] = useState(false);
+  const [dropping, setDropping] = useState(false);
+  const title = data.label?.trim() || NODE_META[nodeType].label;
+
+  const done = data.mediaStatus === "done" && !!data.mediaVersionId;
+  const asset = useMediaAsset(done ? data.mediaVersionId : null);
+  const uploading = upload.isUploading;
+  const canUpload = !readOnly && !uploading;
+
+  const pick = () => inputRef.current?.click();
+  const download = () => {
+    if (asset.status !== "ready") return;
+    const a = document.createElement("a");
+    a.href = asset.url;
+    // 标题缺省就是原始文件名（已带后缀）；改过名的再补一个
+    a.download = /\.[a-z0-9]{2,4}$/i.test(title)
+      ? title
+      : `${title}.${extFor(asset.mime, kind)}`;
+    a.click();
+  };
+
+  let hero: React.ReactNode = null;
+  if (uploading) {
+    // 接口已返回、等节点数据换版本的那一小段按 100% 显示
+    const progress =
+      upload.state.status === "uploading" ? upload.state.progress : 1;
+    hero = (
+      <HeroSkeleton
+        kind={kind}
+        state="generating"
+        runningLabel={`Uploading ${Math.round(progress * 100)}%`}
+        full
+        aspect={16 / 9}
+      />
+    );
+  } else if (done) {
+    hero =
+      asset.status === "ready" ? (
+        kind === "audio" ? (
+          <AudioHero url={asset.url} title={title} />
+        ) : (
+          <HeroMedia
+            url={asset.url}
+            kind={kind}
+            title={title}
+            onZoom={() => setZoom(true)}
+          />
+        )
+      ) : asset.status === "error" ? (
+        <HeroLoadError onRetry={asset.retry} />
+      ) : (
+        <HeroSkeleton kind={kind} />
+      );
+  }
+
+  const heroActions =
+    asset.status === "ready" ? (
+      <>
+        {kind !== "audio" && (
+          <CanvasToolbarButton
+            label={kind === "video" ? "Play full size" : "View full size"}
+            icon={<Maximize2 className="size-3.5" />}
+            onClick={() => setZoom(true)}
+          />
+        )}
+        <CanvasToolbarButton
+          label="Download"
+          icon={<Download className="size-3.5" />}
+          onClick={download}
+        />
+        {canUpload && (
+          <CanvasToolbarButton
+            label="Replace file"
+            icon={<Upload className="size-3.5" />}
+            onClick={pick}
+          />
+        )}
+      </>
+    ) : null;
+
+  let status: React.ReactNode = null;
+  if (upload.state.status === "error") {
+    status = (
+      <StatusLine
+        icon={<AlertTriangle className="size-3" aria-hidden />}
+        tone="danger"
+        text={upload.state.message}
+        action={{
+          label: "Retry",
+          icon: <RotateCcw className="size-3" aria-hidden />,
+          onClick: upload.retry,
+        }}
+      />
+    );
+  } else if (!done && !uploading && readOnly) {
+    status = <StatusLine text={`No ${kind} uploaded yet`} />;
+  }
+
+  // 还没文件：16:9 空画框，选择按钮放在框里（整张卡就是拖放区）；下面没有状态条时画框独占卡面
+  const empty = !done && !uploading;
+  if (empty) {
+    hero = (
+      <HeroPlaceholder type={nodeType} full={!status}>
+        {!readOnly && (
+          <div className="flex flex-col items-center gap-1">
+            <Button
+              variant="outline"
+              size="xs"
+              className="nodrag"
+              onClick={(e) => {
+                e.stopPropagation(); // 别顺带把节点选中、弹出编辑面板
+                pick();
+              }}
+            >
+              <Upload className="size-3" aria-hidden />
+              Choose {kind}
+            </Button>
+            <span className="text-[11px] text-muted-foreground">
+              or drop a file here
+            </span>
+          </div>
+        )}
+      </HeroPlaceholder>
+    );
+  }
+
+  return (
+    <div
+      // 拖文件到卡上即上传：只认带文件的拖拽，拖动卡片本身不经过这里
+      onDragOver={(e) => {
+        if (!canUpload || !e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        setDropping(true);
+      }}
+      onDragLeave={() => setDropping(false)}
+      onDrop={(e) => {
+        setDropping(false);
+        const file = e.dataTransfer.files[0];
+        if (!canUpload || !file) return;
+        e.preventDefault();
+        upload.start(file);
+      }}
+      className={cn("rounded-lg", dropping && "ring-2 ring-ring")}
+    >
+      <NodeShell
+        nodeId={data.id}
+        nodeType={nodeType}
+        selected={selected}
+        dragging={dragging}
+        label={data.label ?? ""}
+        mediaOnly={
+          (done && asset.status === "ready") || uploading || (empty && !status)
+        }
+        hero={hero}
+        heroActions={heroActions}
+        status={status}
+        hasSource
+      />
+      <input
+        ref={inputRef}
+        type="file"
+        accept={upload.accept}
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) upload.start(file);
+          // 清空值：同一个文件还能再选一次（重传 / 失败后重选）
+          e.target.value = "";
+        }}
+      />
+      {/* 灯箱挂在 NodeShell 外面，理由同 MediaGenNode */}
+      {asset.status === "ready" && kind !== "audio" && (
+        <NodeMediaDialog
+          open={zoom}
+          onOpenChange={setZoom}
+          url={asset.url}
+          kind={kind}
+          title={title}
+          onDownload={download}
+        />
+      )}
+    </div>
+  );
+}
+
+function ImageUploadNode({ data, selected, dragging }: NodeProps) {
+  return (
+    <UploadNode
+      data={data as NodeData}
       selected={!!selected}
       dragging={!!dragging}
-      label={d.label ?? ""}
-      status={
-        d.assetPath ? undefined : <StatusLine text="No image attached yet" />
-      }
-      hasSource
-    >
-      {d.assetPath && (
-        <p className="truncate font-mono text-[11px] text-muted-foreground">
-          {d.assetPath}
-        </p>
-      )}
-    </NodeShell>
+      nodeType="image_upload"
+    />
+  );
+}
+
+function VideoUploadNode({ data, selected, dragging }: NodeProps) {
+  return (
+    <UploadNode
+      data={data as NodeData}
+      selected={!!selected}
+      dragging={!!dragging}
+      nodeType="video_upload"
+    />
+  );
+}
+
+function AudioUploadNode({ data, selected, dragging }: NodeProps) {
+  return (
+    <UploadNode
+      data={data as NodeData}
+      selected={!!selected}
+      dragging={!!dragging}
+      nodeType="audio_upload"
+    />
   );
 }
 
@@ -664,6 +1103,16 @@ function MediaGenNode({
   const { resolveInputs, retryMedia, readOnly } =
     useContext(CanvasEditorContext);
   const inputs = resolveInputs(data.id);
+  // 上游各路这次会不会提交（按所选模型的素材上限算），附件栏据此标序号 / 压淡
+  const { references, resolved } = useActiveModel(
+    data.id,
+    kind,
+    data.mediaChannel,
+    data.mediaModel,
+    data.mediaParams,
+  );
+  // 空态 / 骨架按当前生效的画幅占位（没有画幅这一维或自适应时 16:9）
+  const aspect = placeholderAspect(resolved?.values.aspect_ratio);
   // 提示词是这个节点自己的字段（入边只提供参考图）
   const prompt = data.prompt?.trim() ?? "";
   const title = data.label?.trim() || NODE_META[nodeType].label;
@@ -687,7 +1136,10 @@ function MediaGenNode({
   // 一屏几十张卡各顶三行字，反而看不出哪几张在动。要看内容点开面板。
   const busyNow =
     data.mediaStatus === "generating" || data.mediaStatus === "queued";
-  const mediaOnly = (done && asset.status === "ready") || busyNow;
+  // 没出片的一律只留画框（失败 / 取消的提示与 Retry 收进框里）——提示词点开面板就有
+  const failedNow =
+    data.mediaStatus === "failed" || data.mediaStatus === "cancelled";
+  const mediaOnly = (done && asset.status === "ready") || !done;
 
   let hero: React.ReactNode = null;
   if (done) {
@@ -698,11 +1150,12 @@ function MediaGenNode({
           kind={kind}
           title={title}
           onZoom={() => setZoom(true)}
+          mock={data.mediaMock}
         />
       ) : asset.status === "error" ? (
         <HeroLoadError onRetry={asset.retry} />
       ) : (
-        <HeroSkeleton kind={kind} />
+        <HeroSkeleton kind={kind} aspect={aspect} />
       );
   } else if (
     data.mediaStatus === "generating" ||
@@ -710,63 +1163,68 @@ function MediaGenNode({
   ) {
     // 排队中同样出骨架：队列并发有限，后面的任务要等前面跑完，
     // 不给占位的话这些节点看起来像根本没被触发。两者靠骨架上的角标区分。
-    hero = <HeroSkeleton kind={kind} state={data.mediaStatus} full />;
+    hero = (
+      <HeroSkeleton
+        kind={kind}
+        state={data.mediaStatus}
+        full
+        aspect={aspect}
+      />
+    );
+  } else if (data.mediaStatus === "paused") {
+    hero = <HeroSkeleton kind={kind} state="paused" full aspect={aspect} />;
+  } else {
+    // 没出过片（或失败 / 取消）：按当前画幅摆一块空画框；失败 / 取消时框里给一句状态和 Retry
+    const cancelled = data.mediaStatus === "cancelled";
+    hero = (
+      <HeroPlaceholder type={nodeType} aspect={aspect} full>
+        {failedNow && (
+          <HeroNotice
+            // cancelled = 用户停止：不是错误，用中性色，但同样可以重试
+            icon={
+              cancelled ? (
+                <Ban className="size-3" aria-hidden />
+              ) : (
+                <AlertTriangle className="size-3" aria-hidden />
+              )
+            }
+            tone={cancelled ? "muted" : "danger"}
+            text={cancelled ? "Render cancelled" : "Render failed"}
+            action={
+              readOnly || !data.mediaGenerationId
+                ? undefined
+                : {
+                    label: "Retry",
+                    icon: <RotateCcw className="size-3" aria-hidden />,
+                    onClick: () =>
+                      retryMedia(data.mediaGenerationId as string),
+                  }
+            }
+          />
+        )}
+      </HeroPlaceholder>
+    );
   }
 
-  const heroActions =
-    asset.status === "ready" ? (
-      <>
-        <CanvasToolbarButton
-          label={kind === "video" ? "Play full size" : "View full size"}
-          icon={<Maximize2 className="size-3.5" />}
-          onClick={() => setZoom(true)}
-        />
-        <CanvasToolbarButton
-          label="Download"
-          icon={<Download className="size-3.5" />}
-          onClick={download}
-        />
-      </>
-    ) : null;
-
-  // 在跑（generating / queued）时整条状态条都不出：骨架的扫光与角标已经说明进度。
-  // 必须**整段跳过**——只删掉那两个分支的话会掉进末尾的 else，
-  // 变成一边转圈一边写着「Ready — ask the agent to render it」。
-  let status: React.ReactNode = null;
-  if (!done && !busyNow) {
-    if (data.mediaStatus === "failed" || data.mediaStatus === "cancelled") {
-      // cancelled = 用户停止：不是错误，用中性色，但同样可以重试
-      const cancelled = data.mediaStatus === "cancelled";
-      status = (
-        <StatusLine
-          icon={
-            cancelled ? (
-              <Ban className="size-3" aria-hidden />
-            ) : (
-              <AlertTriangle className="size-3" aria-hidden />
-            )
-          }
-          tone={cancelled ? "muted" : "danger"}
-          text={cancelled ? "Render cancelled" : "Render failed"}
-          action={
-            readOnly || !data.mediaGenerationId
-              ? undefined
-              : {
-                  label: "Retry",
-                  icon: <RotateCcw className="size-3" aria-hidden />,
-                  onClick: () =>
-                    retryMedia(data.mediaGenerationId as string),
-                }
-          }
-        />
-      );
-    } else if (!prompt) {
-      status = <StatusLine text="Empty prompt — click to write it" />;
-    } else {
-      // 生成入口在面板里（选中节点即浮出）：既能选模型也能直接按 Generate
-      status = <StatusLine text="Ready — pick a model and generate" />;
-    }
-  }
+  const heroActions = (
+    <>
+      <MediaControlButton nodeId={data.id} status={data.mediaStatus} />
+      {asset.status === "ready" && (
+        <>
+          <CanvasToolbarButton
+            label={kind === "video" ? "Play full size" : "View full size"}
+            icon={<Maximize2 className="size-3.5" />}
+            onClick={() => setZoom(true)}
+          />
+          <CanvasToolbarButton
+            label="Download"
+            icon={<Download className="size-3.5" />}
+            onClick={download}
+          />
+        </>
+      )}
+    </>
+  );
 
   const shell = (
     <NodeShell
@@ -804,11 +1262,10 @@ function MediaGenNode({
       }
       // 上游素材以附件栏的形式排在提示词上方（取代参数条上的「From …」摘要胶囊——
       // 同一份信息出现两遍，且附件栏能直接看到素材、点了能跳过去）
-      attachments={<NodeAttachments inputs={inputs} />}
+      attachments={<NodeAttachments inputs={inputs} fates={references} />}
       mediaOnly={mediaOnly}
       hero={hero}
       heroActions={heroActions}
-      status={status}
       footer={<InputSummary inputs={inputs} />}
       hasTarget
       hasSource
@@ -882,13 +1339,34 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
   const clips = inputs.flatMap((s) =>
     s.outputs.filter((o) => o.type === "video").map((o) => o.content),
   );
+  // 还在排队 / 生成的上游视频也算一段：可以先按 Merge，服务端等它们出片再拼（同后端 collectVideoSources）
+  const pendingClips = inputs.filter(
+    (s) => isInFlight(s) && upstreamOutputType(s, ["video"]) === "video",
+  ).length;
+  // 连着、却既没产物也没在生成的视频上游：得先生成它们
+  const missingClips = inputs.filter(
+    (s) =>
+      s.outputs.length === 0 &&
+      !isInFlight(s) &&
+      CANVAS_NODE_IO[s.nodeType].outputs.includes("video"),
+  ).length;
+  const totalClips = clips.length + pendingClips;
   const title = d.label?.trim() || NODE_META.video_concat.label;
   const done = d.mediaStatus === "done" && !!d.mediaVersionId;
   const asset = useMediaAsset(done ? d.mediaVersionId : null);
-  const busyNow = d.mediaStatus === "generating" || d.mediaStatus === "queued";
+  const busyNow =
+    d.mediaStatus === "generating" ||
+    d.mediaStatus === "queued" ||
+    // 暂停中与在跑同样处理：卡面只留骨架（角标写 Paused），不给 Merge
+    d.mediaStatus === "paused";
   const merged = done && asset.status === "ready";
+  const failedNow = d.mediaStatus === "failed" || d.mediaStatus === "cancelled";
+  // 每段都有着落了才给 Merge：合成要花时间，不在连线的瞬间替用户决定
+  const canMerge = missingClips === 0 && totalClips >= 2;
+  // 还没有能预览的片段：卡面只留空画框（同生成节点），Retry / Merge 收进框里
+  const placeholder = !done && !busyNow && clips.length === 0;
   // 同生成节点：合成完只留成片，合成中只留骨架 + 角标
-  const mediaOnly = merged || busyNow;
+  const mediaOnly = merged || busyNow || placeholder;
 
   const download = () => {
     if (asset.status !== "ready") return;
@@ -898,8 +1376,40 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
     a.click();
   };
 
-  // 合成后放成片；没合成但有上游就放连续预览；都没有就不占那块高度
-  let hero: React.ReactNode = null;
+  // 合成后放成片；没合成但有上游就放连续预览；都没有就放一块 16:9 的空画框——
+  // 先把成片的形状摆出来，连上视频后预览原地接替，卡片不会忽高忽低
+  const cancelled = d.mediaStatus === "cancelled";
+  const retry = {
+    label: "Retry",
+    icon: <RotateCcw className="size-3" aria-hidden />,
+    onClick: () => mergeVideo(d.id),
+  };
+  const merge = {
+    label: "Merge",
+    icon: <Layers className="size-3" aria-hidden />,
+    onClick: () => mergeVideo(d.id),
+  };
+  let hero: React.ReactNode = (
+    <HeroPlaceholder type="video_concat" full>
+      {failedNow ? (
+        <HeroNotice
+          icon={
+            cancelled ? (
+              <Ban className="size-3" aria-hidden />
+            ) : (
+              <AlertTriangle className="size-3" aria-hidden />
+            )
+          }
+          tone={cancelled ? "muted" : "danger"}
+          text={cancelled ? "Merge cancelled" : "Merge failed"}
+          action={readOnly ? undefined : retry}
+        />
+      ) : (
+        // 上游都还在生成（一段都没出片）也能先按：服务端等齐了再拼
+        canMerge && !readOnly && <HeroNotice action={merge} />
+      )}
+    </HeroPlaceholder>
+  );
   if (merged) {
     hero = (
       <HeroMedia
@@ -907,6 +1417,7 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
         kind="video"
         title={title}
         onZoom={() => setZoom(true)}
+        mock={d.mediaMock}
       />
     );
   } else if (done) {
@@ -916,7 +1427,11 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
       ) : (
         <HeroSkeleton kind="video" />
       );
-  } else if (d.mediaStatus === "generating" || d.mediaStatus === "queued") {
+  } else if (
+    d.mediaStatus === "generating" ||
+    d.mediaStatus === "queued" ||
+    d.mediaStatus === "paused"
+  ) {
     hero = (
       <HeroSkeleton
         kind="video"
@@ -933,11 +1448,11 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
     );
   }
 
-  // 在跑时整条状态条都不出（否则会掉进末尾的分支，一边合成一边还给一个 Merge 按钮）
+  // 状态条只跟着片段预览出（预览占着画框，话只能写在下面）；在跑时不出
+  // （否则会掉进末尾的分支，一边合成一边还给一个 Merge 按钮），空画框时话已收进框里
   let status: React.ReactNode = null;
-  if (!done && !busyNow) {
-    if (d.mediaStatus === "failed" || d.mediaStatus === "cancelled") {
-      const cancelled = d.mediaStatus === "cancelled";
+  if (!done && !busyNow && !placeholder) {
+    if (failedNow) {
       status = (
         <StatusLine
           icon={
@@ -949,35 +1464,29 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
           }
           tone={cancelled ? "muted" : "danger"}
           text={cancelled ? "Merge cancelled" : "Merge failed"}
-          action={
-            readOnly
-              ? undefined
-              : {
-                  label: "Retry",
-                  icon: <RotateCcw className="size-3" aria-hidden />,
-                  onClick: () => mergeVideo(d.id),
-                }
-          }
+          action={readOnly ? undefined : retry}
         />
       );
-    } else if (clips.length < 2) {
-      status = (
-        <StatusLine text={`Connect at least two videos (${clips.length})`} />
-      );
-    } else {
-      // 素材齐了才给 Merge：合成要花时间，不在连线的瞬间替用户决定
+    } else if (missingClips > 0) {
+      // 连着却没生成的视频先点出来——此时「至少连两段」会误导（段数可能早就够了）
       status = (
         <StatusLine
-          text={`${clips.length} clips — hover to preview`}
-          action={
-            readOnly
-              ? undefined
-              : {
-                  label: "Merge",
-                  icon: <Layers className="size-3" aria-hidden />,
-                  onClick: () => mergeVideo(d.id),
-                }
+          text={`Generate ${missingClips} upstream ${missingClips === 1 ? "video" : "videos"} first`}
+        />
+      );
+    } else if (totalClips < 2) {
+      status = (
+        <StatusLine text={`Connect at least two videos (${totalClips})`} />
+      );
+    } else {
+      status = (
+        <StatusLine
+          text={
+            pendingClips > 0
+              ? `${totalClips} clips — ${pendingClips} still generating`
+              : `${clips.length} clips — hover to preview`
           }
+          action={readOnly ? undefined : merge}
         />
       );
     }
@@ -993,25 +1502,33 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
         label={d.label ?? ""}
         composerMeta={<InputsPill inputs={inputs} />}
         // 拼接节点没有提示词：面板里列的是待合成的视频序列（点一条跳到那个节点）
+        // 列出所有连进来的视频类上游（含还没生成的），顺序就是拼接顺序
         clips={inputs
-          .filter((s) => s.outputs.some((o) => o.type === "video"))
-          .map((s) => ({ nodeId: s.nodeId, title: s.title }))}
+          .filter((s) => CANVAS_NODE_IO[s.nodeType].outputs.includes("video"))
+          .map((s) => ({
+            nodeId: s.nodeId,
+            title: s.title,
+            state: clipState(s),
+          }))}
         hero={hero}
         heroActions={
-          asset.status === "ready" ? (
-            <>
-              <CanvasToolbarButton
-                label="Play full size"
-                icon={<Maximize2 className="size-3.5" />}
-                onClick={() => setZoom(true)}
-              />
-              <CanvasToolbarButton
-                label="Download"
-                icon={<Download className="size-3.5" />}
-                onClick={download}
-              />
-            </>
-          ) : null
+          <>
+            <MediaControlButton nodeId={d.id} status={d.mediaStatus} />
+            {asset.status === "ready" && (
+              <>
+                <CanvasToolbarButton
+                  label="Play full size"
+                  icon={<Maximize2 className="size-3.5" />}
+                  onClick={() => setZoom(true)}
+                />
+                <CanvasToolbarButton
+                  label="Download"
+                  icon={<Download className="size-3.5" />}
+                  onClick={download}
+                />
+              </>
+            )}
+          </>
         }
         status={status}
         footer={<InputSummary inputs={inputs} />}
@@ -1035,6 +1552,8 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
 
 export const nodeTypes: NodeTypes = {
   image_upload: ImageUploadNode,
+  video_upload: VideoUploadNode,
+  audio_upload: AudioUploadNode,
   image_gen: ImageGenNode,
   video_gen: VideoGenNode,
   video_concat: VideoConcatNode,

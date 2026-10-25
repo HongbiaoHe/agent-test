@@ -18,6 +18,8 @@ export const canvasOpSchema: z.ZodType<CanvasOpInput> = z.discriminatedUnion(
       label: z.string().optional(),
       prompt: z.string().optional(),
       assetPath: z.string().optional(),
+      // 复制上传节点时副本挂同一份上传资产（见前端 duplicateFromCanvas）
+      mediaGenerationId: z.string().optional(),
     }),
     z.object({
       op: z.literal('update_node'),
@@ -42,5 +44,10 @@ export const canvasOpSchema: z.ZodType<CanvasOpInput> = z.discriminatedUnion(
     }),
     z.object({ op: z.literal('remove_edge'), edgeId: z.string() }),
     z.object({ op: z.literal('clear') }),
+    z.object({
+      op: z.literal('reorder_inputs'),
+      nodeId: z.string(),
+      sourceIds: z.array(z.string()),
+    }),
   ],
 ) as z.ZodType<CanvasOpInput>;

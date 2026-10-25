@@ -61,6 +61,15 @@ export function applyPatch(state: CanvasState, patch: CanvasPatch): CanvasState 
       };
     case "clear":
       return { ...state, revision: patch.revision, nodes: [], edges: [] };
+    case "reorder_inputs": {
+      // 该节点的入边按新顺序排到末尾即可：各处都是按 target 过滤后取相对顺序（预览、合并面板、参考编号）
+      const order = new Map(patch.edgeIds.map((id, i) => [id, i]));
+      const others = state.edges.filter((e) => !order.has(e.id));
+      const inputs = state.edges
+        .filter((e) => order.has(e.id))
+        .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+      return { ...state, revision: patch.revision, edges: [...others, ...inputs] };
+    }
   }
 }
 
@@ -72,14 +81,16 @@ function upsertNode(
   if (idx === -1) return [...nodes, node];
   const next = nodes.slice();
   // 只有生成节点的 outputs 依赖 media JOIN，patch 里恒为空 → 沿用旧值，避免闪回「未生成」。
-  // text / image_upload 的 outputs 只看节点自身字段，patch 里就是准的，不能兜底
-  // （否则清空正文后 outputs 卡在旧值不清）。
+  // 上传节点的 add/update patch 后端都带了 media JOIN，patch 里就是准的，不能兜底
+  // （否则换文件后 outputs 卡在旧值不清）。
   const joinDerived = node.type === "image_gen" || node.type === "video_gen";
   next[idx] = {
     ...node,
     // update_node 的 patch 不带 media 字段（快照才 JOIN）；保留已有状态，避免闪回 null
     mediaVersionId: node.mediaVersionId ?? nodes[idx].mediaVersionId,
     mediaStatus: node.mediaStatus ?? nodes[idx].mediaStatus,
+    // 同上：没带版本的 patch 也没带 mock 标记，沿用已有值
+    mediaMock: node.mediaVersionId ? node.mediaMock : nodes[idx].mediaMock,
     outputs:
       joinDerived && node.outputs.length === 0
         ? nodes[idx].outputs

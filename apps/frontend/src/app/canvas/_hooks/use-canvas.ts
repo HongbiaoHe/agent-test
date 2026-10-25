@@ -16,10 +16,16 @@ import {
   moveCanvasNode,
   regenerateMedia,
   setCanvasFocus,
+  setCanvasMockMedia,
   stopCanvas,
+  pauseCanvasMedia,
+  resumeCanvasMedia,
+  uploadCanvasNodeFile,
   type CanvasNodeType,
   type CanvasOpInput,
   type CanvasPatch,
+  type MessageAttachment,
+  type UploadOptions,
 } from "@/lib/api";
 import {
   respondCanvasControl,
@@ -208,11 +214,12 @@ export function useCanvas(sessionId: string | null) {
     model?: string,
     thinkingLevel?: string,
     approvalMode?: string,
+    attachments: MessageAttachment[] = [],
   ) {
     if (!sessionId) return;
     setLiveChat((prev) => [
       ...prev,
-      { type: "message", role: "user", payload: { text } },
+      { type: "message", role: "user", payload: { text, attachments } },
     ]);
     setPending(true);
     await appendCanvasMessage(
@@ -221,6 +228,7 @@ export function useCanvas(sessionId: string | null) {
       model,
       thinkingLevel,
       approvalMode,
+      attachments.map((a) => a.versionId),
     );
   }
 
@@ -445,6 +453,40 @@ export function useCanvas(sessionId: string | null) {
   }
 
   /**
+   * 暂停 / 继续生成（不传 nodeId = 整张画布；传了 = 该节点及其下游）。
+   * 卡片状态不用手动改：后端改完状态即推 media_update，快照随之重拉。
+   * 已经提交给模型的停不下来（云端会跑完），提示一句免得以为没生效。
+   */
+  function pauseMedia(nodeId?: string) {
+    if (!sessionId) return;
+    void pauseCanvasMedia(sessionId, nodeId)
+      .then(({ paused, skipped }) => {
+        if (skipped > 0) {
+          toast(
+            paused > 0
+              ? `Paused ${paused} · ${skipped} already submitted will finish`
+              : "Already submitted to the model — it can't be paused",
+          );
+        }
+        void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
+      })
+      .catch((e: unknown) => {
+        toast.error(e instanceof Error ? e.message : "Pause failed");
+      });
+  }
+
+  function resumeMedia(nodeId?: string) {
+    if (!sessionId) return;
+    void resumeCanvasMedia(sessionId, nodeId)
+      .then(() => {
+        void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
+      })
+      .catch((e: unknown) => {
+        toast.error(e instanceof Error ? e.message : "Resume failed");
+      });
+  }
+
+  /**
    * 用节点上选定的模型生成一次（生成节点面板上的 Generate）。
    *
    * 提示词与参考图由服务端按入边收集（与 agent 的 generate_media_node 同一段逻辑），
@@ -484,6 +526,26 @@ export function useCanvas(sessionId: string | null) {
   }
 
   /**
+   * 给上传节点传文件（卡片上的选择 / 拖入）。进度与失败由卡片自己显示；传完后端会广播
+   * update_node patch 让节点出图，这里再刷一次快照兜底（patch 漏了也不至于停在「没文件」）。
+   */
+  async function uploadNodeFile(
+    nodeId: string,
+    file: File,
+    opts: UploadOptions,
+  ): Promise<{ versionId: string }> {
+    if (!sessionId) throw new Error("Canvas not loaded");
+    const { versionId } = await uploadCanvasNodeFile(
+      sessionId,
+      nodeId,
+      file,
+      opts,
+    );
+    void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
+    return { versionId };
+  }
+
+  /**
    * 「加入对话」：把选中的节点圈给 agent（传空数组 = 取消圈定）。
    * 会话级持续生效，服务端存在 CanvasSession.focusNodeIds 上，注入上下文时据此裁剪。
    * 成功后重拉快照，画布上的圈定标记与输入框上的提示都跟着刷新。
@@ -496,6 +558,24 @@ export function useCanvas(sessionId: string | null) {
       })
       .catch((e: unknown) => {
         toast.error(e instanceof Error ? e.message : "Could not update focus");
+      });
+  }
+
+  // 测试模式开关的乐观值：不改 react-query 里的快照（那会让画布按旧快照重铺、冲掉之后到达的 patch），
+  // 本地先显示，等快照里的值追上来再交还（render 期同步，规避 effect-setState）
+  const [mockPending, setMockPending] = useState<boolean | null>(null);
+  const serverMock = snapQ.data?.mockMedia ?? false;
+  if (mockPending !== null && serverMock === mockPending) setMockPending(null);
+
+  /** 切换测试模式：立即保存到画布上，之后触发的生成按新值走（已在跑的不受影响）。 */
+  function setMockMedia(on: boolean) {
+    if (!sessionId) return;
+    setMockPending(on);
+    void setCanvasMockMedia(sessionId, on)
+      .then(() => qc.invalidateQueries({ queryKey: ["canvas", sessionId] }))
+      .catch((e: unknown) => {
+        setMockPending(null);
+        toast.error(e instanceof Error ? e.message : "Could not switch Mock mode");
       });
   }
 
@@ -551,10 +631,19 @@ export function useCanvas(sessionId: string | null) {
     generateNode,
     /** 触发视频拼接（video_concat 卡片上的 Merge） */
     mergeVideo,
+    /** 暂停 / 继续生成（顶栏的全部暂停 / 继续、卡片上的单节点暂停 / 继续） */
+    pauseMedia,
+    resumeMedia,
+    /** 给上传节点传文件（卡片上的选择 / 拖入） */
+    uploadNodeFile,
     /** 敏感操作审批模式（会话级，后端已归一化） */
     approvalMode: snapQ.data?.approvalMode ?? "review",
     /** 「加入对话」圈定的节点 id（空 = 关注整块画布） */
     focusNodeIds: snapQ.data?.focusNodeIds ?? EMPTY_FOCUS,
     setFocus,
+    /** 测试模式（Mock）：当前开关（含乐观值）、环境是否允许、切换 */
+    mockMedia: mockPending ?? serverMock,
+    mockMediaAvailable: snapQ.data?.mockMediaAvailable ?? false,
+    setMockMedia,
   };
 }

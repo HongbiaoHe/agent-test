@@ -7,6 +7,7 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
+import { MessageAttachments } from "@/components/attachments/message-attachments";
 import { ErrorNotice } from "@/components/chat/error-notice";
 import {
   listCommands,
@@ -18,7 +19,6 @@ import { useNow } from "../_hooks/use-now";
 import type { ThreadItem } from "../_lib/thread";
 import { formatFullDateTime, formatMessageTime } from "../_lib/time";
 import { Markdown } from "./markdown";
-import { MessageAttachments } from "./message-attachments";
 
 const CMD_KIND_LABEL: Record<SkillKind, string> = {
   builtin: "Built-in",

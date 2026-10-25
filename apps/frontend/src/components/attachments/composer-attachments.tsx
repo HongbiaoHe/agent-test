@@ -10,7 +10,7 @@ import {
 } from "@/components/ui/tooltip";
 import { cn } from "@/lib/utils";
 
-import type { DraftAttachment } from "../_hooks/use-attachments";
+import type { DraftAttachment } from "./use-attachments";
 
 /**
  * 输入框上方的附件条：每枚一个方块（图片显示缩略图，视频 / 音频显示类型图标），
@@ -19,13 +19,19 @@ import type { DraftAttachment } from "../_hooks/use-attachments";
 export function ComposerAttachments({
   items,
   onRemove,
+  className,
 }: {
   items: DraftAttachment[];
   onRemove: (localId: string) => void;
+  /** 各输入框的内边距不同，留给调用方覆盖 */
+  className?: string;
 }) {
   if (items.length === 0) return null;
   return (
-    <ul aria-label="Attachments" className="flex flex-wrap gap-2 px-3 pt-3">
+    <ul
+      aria-label="Attachments"
+      className={cn("flex flex-wrap gap-2 px-3 pt-3", className)}
+    >
       {items.map((it) => (
         <li key={it.localId} className="relative">
           <Tooltip>
