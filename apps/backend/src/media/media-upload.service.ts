@@ -50,13 +50,27 @@ export interface UploadedAsset {
   size: number;
 }
 
+/** 一次上传的文件本体：Content-Type / Content-Length 即类型与字节数，原始文件名另传。 */
+export interface UploadFileInput {
+  contentType: string;
+  size: number;
+  filename: string;
+  body: Readable;
+}
+
+/** 原始文件名只留最后一段（防路径）、去首尾空白、限 255 字；空则给个占位名。 */
+export function cleanFilename(raw: string | undefined): string {
+  const base = (raw ?? '').split(/[\\/]/).pop()?.trim() ?? '';
+  return base.slice(0, 255) || 'file';
+}
+
 /**
  * 用户文件上传：按 aigc 文档两步走——先申请预签名地址，再把文件 PUT 到 GCS。
  *
  * 第二步由后端流式中转而不是浏览器直传：GCS 桶没配 CORS，浏览器 PUT 会被预检拦下
  * （2026-10-21 实测）。请求体原样 pipe 给 GCS，不落盘、不整块读进内存。
  *
- * 传完落一条 MediaGeneration + MediaVersion（model=upload，status=staged）：staged 不进资产清单、
+ * 传完落一条 MediaGeneration + MediaVersion（model=upload）。对话附件落 staged：不进资产清单、
  * 不能被引用，随消息发出时才转 done（见 MediaService.commitAttachments）——用户放弃的附件不会
  * 混进模型视野。未发送的 staged 行与 GCS 文件都不清理。
  */
@@ -69,28 +83,14 @@ export class MediaUploadService {
     private readonly aigc: AigcClient,
   ) {}
 
-  async upload(input: {
-    conversationId: string;
-    tenantId: string;
-    userId: string;
-    contentType: string;
-    size: number;
-    filename: string;
-    body: Readable;
-  }): Promise<UploadedAsset> {
-    const type = UPLOAD_CONTENT_TYPES[input.contentType];
-    if (!type) {
-      throw new BusinessException(ErrorCodes.MEDIA_UPLOAD_UNSUPPORTED);
-    }
-    if (!Number.isInteger(input.size) || input.size <= 0) {
-      throw new BusinessException(ErrorCodes.MEDIA_UPLOAD_UNSUPPORTED);
-    }
-    if (input.size > UPLOAD_MAX_BYTES[type]) {
-      throw new BusinessException(
-        ErrorCodes.MEDIA_UPLOAD_TOO_LARGE,
-        HttpStatus.PAYLOAD_TOO_LARGE,
-      );
-    }
+  /** Spark 会话的附件上传：校验会话归属后落 staged 资产。 */
+  async upload(
+    input: UploadFileInput & {
+      conversationId: string;
+      tenantId: string;
+      userId: string;
+    },
+  ): Promise<UploadedAsset> {
     // 租户隔离同 appendMessage：只能往自己租户、未删除的会话上传
     const conv = await this.prisma.conversation.findFirst({
       where: {
@@ -104,6 +104,34 @@ export class MediaUploadService {
       throw new BusinessException(
         ErrorCodes.CONVERSATION_NOT_FOUND,
         HttpStatus.NOT_FOUND,
+      );
+    }
+    return this.store({ ...input, status: 'staged' });
+  }
+
+  /**
+   * 校验文件 → 中转到 GCS → 落资产。**不校验归属**：调用方先确认 conversationId
+   * （画布传 sessionId，同 media 生成的记账口径）属于当前用户。
+   * status：对话附件 staged（随消息发出才转正）；画布上传节点直接 done（传完即挂到节点上可被引用）。
+   */
+  async store(
+    input: UploadFileInput & {
+      conversationId: string;
+      userId: string;
+      status: 'staged' | 'done';
+    },
+  ): Promise<UploadedAsset> {
+    const type = UPLOAD_CONTENT_TYPES[input.contentType];
+    if (!type) {
+      throw new BusinessException(ErrorCodes.MEDIA_UPLOAD_UNSUPPORTED);
+    }
+    if (!Number.isInteger(input.size) || input.size <= 0) {
+      throw new BusinessException(ErrorCodes.MEDIA_UPLOAD_UNSUPPORTED);
+    }
+    if (input.size > UPLOAD_MAX_BYTES[type]) {
+      throw new BusinessException(
+        ErrorCodes.MEDIA_UPLOAD_TOO_LARGE,
+        HttpStatus.PAYLOAD_TOO_LARGE,
       );
     }
 
@@ -153,7 +181,7 @@ export class MediaUploadService {
           create: {
             prompt: input.filename,
             model: UPLOAD_MODEL,
-            status: 'staged',
+            status: input.status,
             url: signed.url,
             params: {
               contentType: input.contentType,

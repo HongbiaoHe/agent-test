@@ -19,6 +19,7 @@ import {
   sanitizeParams,
   taskPath,
   toCatalog,
+  videoRefRole,
 } from './aigc.catalog';
 import {
   type AigcCatalog,
@@ -93,6 +94,58 @@ export class AigcService {
     return {
       ok: true,
       config: { channel, model: model.model_alias, params: checked.params },
+    };
+  }
+
+  /**
+   * 画布 agent 给生成节点设模型前的严格校验（set_node_model）：解析模型名、逐项校验档位，
+   * 不合法返回 issues 交回模型改参。与 prepareAgentGeneration 的差别：画布的参考素材取自入边，
+   * 超出模型上限的部分提交时丢掉（submit / MediaProcessor.loadRefUrls）而不是拒绝——所以先按同样的
+   * 规则把张数截一下再推 derived 维度，不因上游连多了就不让换模型；也不查提示词（换模型时还没定稿）。
+   * dropped：按这个模型，各类上游素材有几个不会被提交（工具回给模型，让它知道这个选择的代价）。
+   */
+  async prepareNodeConfig(
+    type: 'image' | 'video',
+    req: {
+      model?: string;
+      channel?: string;
+      params?: Record<string, string>;
+      referenceCounts: ReferenceCounts;
+    },
+  ): Promise<
+    | { ok: true; config: AigcMediaConfig; dropped: ReferenceCounts }
+    | { ok: false; issues: AgentParamIssue[] }
+  > {
+    const resolved = resolveAgentModel(await this.channels(type), req);
+    if ('issue' in resolved) return { ok: false, issues: [resolved.issue] };
+    const { channel, model } = resolved;
+    const firstFrame =
+      type === 'video' && videoRefRole(model.model_alias) === 'first_frame';
+    const used: ReferenceCounts = {
+      // 首帧模式只取第一张图（MediaProcessor.loadRefUrls），其余按模型上限截（AigcService.submit）
+      image: Math.min(
+        req.referenceCounts.image,
+        firstFrame ? 1 : model.image_input_number,
+        model.image_input_number,
+      ),
+      video: Math.min(req.referenceCounts.video, model.video_input_number),
+      audio: Math.min(req.referenceCounts.audio, model.audio_input_number),
+    };
+    const checked = validateAgentRequest(model, {
+      params: req.params ?? {},
+      prompt: '',
+      referenceCounts: used,
+      derived: agentDerivedDims(type, model.model_alias, used),
+    });
+    if (!checked.ok) return checked;
+    return {
+      ok: true,
+      config: { channel, model: model.model_alias, params: checked.params },
+      dropped: {
+        image: req.referenceCounts.image - used.image,
+        video: req.referenceCounts.video - used.video,
+        audio: req.referenceCounts.audio - used.audio,
+      },
     };
   }
 

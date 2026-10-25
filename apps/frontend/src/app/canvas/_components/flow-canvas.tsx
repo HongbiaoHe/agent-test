@@ -21,11 +21,17 @@ import {
   useState,
 } from "react";
 
-import type { CanvasNodeDto, CanvasNodeType, CanvasOpInput } from "@/lib/api";
+import type {
+  CanvasNodeDto,
+  CanvasNodeType,
+  CanvasOpInput,
+  UploadOptions,
+} from "@/lib/api";
 
 import type { CanvasState } from "../_lib/canvas-state";
 import {
   canConnectNodeTypes,
+  isUploadNodeType,
   resolveNodeInputs,
   type NodeInputSource,
 } from "../_lib/node-io";
@@ -87,6 +93,12 @@ export const CanvasEditorContext = createContext<{
   generateNode: (nodeId: string) => void;
   /** 触发视频拼接（video_concat 卡片上的 Merge） */
   mergeVideo: (nodeId: string) => void;
+  /** 给上传节点传文件（进度经 opts 回报；失败 reject，由卡片显示）；回新版本 id */
+  uploadNodeFile: (
+    nodeId: string,
+    file: File,
+    opts: UploadOptions,
+  ) => Promise<{ versionId: string }>;
   /** 点端口上的「+」：在该处弹出「接一个什么节点」菜单（与拖到空白处同一个菜单） */
   openConnectMenu: (input: ConnectMenuRequest) => void;
   /** 选中并把视图移到某个节点上（如上游摘要里点某一路来源 → 跳到那张卡） */
@@ -112,6 +124,7 @@ export const CanvasEditorContext = createContext<{
   retryMedia: () => {},
   generateNode: () => {},
   mergeVideo: () => {},
+  uploadNodeFile: () => Promise.reject(new Error("Canvas not loaded")),
   openConnectMenu: () => {},
   focusNode: () => {},
   focusedNodeIds: new Set<string>(),
@@ -342,6 +355,12 @@ interface FlowCanvasProps {
   onGenerateNode: (nodeId: string) => void;
   /** 触发视频拼接（video_concat 卡片上的 Merge） */
   onMergeVideo: (nodeId: string) => void;
+  /** 给上传节点传文件（上传节点卡片上的选择 / 拖入） */
+  onUploadNodeFile: (
+    nodeId: string,
+    file: File,
+    opts: UploadOptions,
+  ) => Promise<{ versionId: string }>;
   /** 快照还没落地：此时节点为空是"还没加载"，不是"这块画布是空的" */
   loading: boolean;
   /** 「加入对话」圈定的节点 id（空 = 关注整块画布） */
@@ -385,6 +404,7 @@ function FlowCanvasInner({
   onRetryMedia,
   onGenerateNode,
   onMergeVideo,
+  onUploadNodeFile,
   loading,
   focusNodeIds,
   onSetFocus,
@@ -635,6 +655,7 @@ function FlowCanvasInner({
   // 复制节点：落一条 add_node op，位置右下偏移 40px。
   // 只带可编辑内容（label/text/assetPath），生成态与媒资**不**随副本走——
   // 副本是一份新素材，指向同一份 generation 会让两张卡的状态互相打架。
+  // 例外是上传节点：传上来的文件就是它的内容，且上传版本不可重新生成，两张卡共用不会打架。
   // 快捷键（Cmd/Ctrl+D）与卡片上的复制键共用它，行为保持一致。
   const duplicateFromCanvas = useCallback(
     (nodeId: string) => {
@@ -646,6 +667,9 @@ function FlowCanvasInner({
         label: n.label ?? undefined,
         prompt: n.prompt ?? undefined,
         assetPath: n.assetPath ?? undefined,
+        mediaGenerationId: isUploadNodeType(n.type)
+          ? (n.mediaGenerationId ?? undefined)
+          : undefined,
         x: n.x + 40,
         y: n.y + 40,
       });
@@ -676,6 +700,7 @@ function FlowCanvasInner({
       retryMedia: onRetryMedia,
       generateNode: onGenerateNode,
       mergeVideo: onMergeVideo,
+      uploadNodeFile: onUploadNodeFile,
       openConnectMenu: (r: ConnectMenuRequest) =>
         openDropAt(r.nodeId, r.direction, r.clientX, r.clientY),
       focusNode: focusNodeOnCanvas,
@@ -696,6 +721,7 @@ function FlowCanvasInner({
       onRetryMedia,
       onGenerateNode,
       onMergeVideo,
+      onUploadNodeFile,
       openDropAt,
       focusNodeOnCanvas,
       focusSet,

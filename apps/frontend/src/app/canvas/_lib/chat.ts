@@ -1,4 +1,5 @@
-import type { CanvasMessage } from "@/lib/api";
+import { parseAttachments } from "@/components/attachments/attachments";
+import type { CanvasMessage, MessageAttachment } from "@/lib/api";
 
 /**
  * 画布 agent 聊天区的归一事件与折叠 reducer（精简版：只管对话流，画布结构与 token 由各自 hook 处理）。
@@ -32,7 +33,8 @@ export interface AskRequest {
 }
 
 export type ChatItem =
-  | { id: string; kind: "user"; text: string }
+  /** attachments：随这条消息上传的附件（老消息没有，为空数组） */
+  | { id: string; kind: "user"; text: string; attachments: MessageAttachment[] }
   | { id: string; kind: "assistant"; text: string; streaming: boolean }
   /**
    * 模型思考过程（推理型模型才有）：流式累加，其后第一个其它事件到来即收口。
@@ -187,18 +189,33 @@ export function reduce(input: ChatState, ev: ChatEvent): ChatState {
     case "message": {
       const text = String(ev.payload.text ?? "");
       if (ev.role === "user") {
-        return bump([...state.items, { id: id(), kind: "user", text }]);
+        const attachments = parseAttachments(ev.payload.attachments);
+        return bump([
+          ...state.items,
+          { id: id(), kind: "user", text, attachments },
+        ]);
+      }
+      // 往回跳过队尾的思考块再找正在流的回复：Gemini 的思考只能从 updates 整块拿到，
+      // 实况顺序是「token 流 → 整块思考 → 最终 message」，只看最后一项会把这条回复再画一遍。
+      // 收口时把夹在后面的思考挪到回复前面——后端落库也是先思考后回复，刷新前后长得一样。
+      let at = state.items.length - 1;
+      while (state.items[at]?.kind === "reasoning") at--;
+      const streamed = state.items[at];
+      if (streamed?.kind === "assistant" && streamed.streaming) {
+        return {
+          ...state,
+          items: [
+            ...state.items.slice(0, at),
+            ...state.items.slice(at + 1),
+            {
+              ...streamed,
+              text: text.length >= streamed.text.length ? text : streamed.text,
+              streaming: false,
+            },
+          ],
+        };
       }
       const last = state.items[state.items.length - 1];
-      if (last?.kind === "assistant" && last.streaming) {
-        const items = state.items.slice();
-        items[items.length - 1] = {
-          ...last,
-          text: text.length >= last.text.length ? text : last.text,
-          streaming: false,
-        };
-        return { ...state, items };
-      }
       if (!text) return state;
       // 防御性去重：与上一条已收口的助手气泡文本完全相同 → 跳过（后端已去重，这里兜底）
       if (last?.kind === "assistant" && !last.streaming && last.text === text) {

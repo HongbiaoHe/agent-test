@@ -3,14 +3,21 @@ import {
   Controller,
   Delete,
   Get,
+  Headers,
   Param,
   Patch,
   Post,
   Query,
+  Req,
   UseGuards,
 } from '@nestjs/common';
+import type { Request } from 'express';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { type AuthUser, JwtAuthGuard } from '../auth/jwt-auth.guard';
+import {
+  cleanFilename,
+  type UploadFileInput,
+} from '../media/media-upload.service';
 import { canvasOpSchema } from './canvas.op-schema';
 import { CanvasService } from './canvas.service';
 import { AppendCanvasMessageDto } from './dto/append-message.dto';
@@ -95,6 +102,48 @@ export class CanvasController {
       dto.model,
       dto.thinkingLevel,
       dto.approvalMode,
+      dto.attachmentVersionIds,
+    );
+  }
+
+  /**
+   * 对话输入框的附件上传（同 POST /conversations/:id/uploads）：请求体就是文件二进制，
+   * 返回暂存（staged）的资产，随下一条消息的 attachmentVersionIds 发出时才转正。
+   */
+  @Post(':id/uploads')
+  uploadAttachment(
+    @Param('id') id: string,
+    @Headers('content-type') contentType: string | undefined,
+    @Headers('content-length') contentLength: string | undefined,
+    @Query('filename') filename: string | undefined,
+    @Req() req: Request,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.canvas.uploadAttachment(
+      id,
+      user.tenantId,
+      user.userId,
+      readUploadFile(contentType, contentLength, filename, req),
+    );
+  }
+
+  /** 给上传节点传文件（请求体同上）：传完直接挂到节点上，下游即可当参考素材用。 */
+  @Post(':id/nodes/:nodeId/upload')
+  uploadNodeFile(
+    @Param('id') id: string,
+    @Param('nodeId') nodeId: string,
+    @Headers('content-type') contentType: string | undefined,
+    @Headers('content-length') contentLength: string | undefined,
+    @Query('filename') filename: string | undefined,
+    @Req() req: Request,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.canvas.uploadNodeFile(
+      id,
+      user.tenantId,
+      user.userId,
+      nodeId,
+      readUploadFile(contentType, contentLength, filename, req),
     );
   }
 
@@ -180,4 +229,22 @@ export class CanvasController {
   ) {
     return this.canvas.moveNode(id, nodeId, dto.x, dto.y, user.tenantId);
   }
+}
+
+/**
+ * 原始请求 → 上传文件描述。非 JSON 的 Content-Type 不会被全局 body parser 消费，req 仍是完整的原始流。
+ * Content-Type 去掉 `; charset=...` 之类的参数，白名单按纯 MIME 比对。
+ */
+function readUploadFile(
+  contentType: string | undefined,
+  contentLength: string | undefined,
+  filename: string | undefined,
+  req: Request,
+): UploadFileInput {
+  return {
+    contentType: (contentType ?? '').split(';')[0].trim().toLowerCase(),
+    size: Number(contentLength),
+    filename: cleanFilename(filename),
+    body: req,
+  };
 }

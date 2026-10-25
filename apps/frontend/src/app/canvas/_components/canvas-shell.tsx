@@ -108,6 +108,7 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
             onRetryMedia={c.retryMedia}
             onGenerateNode={c.generateNode}
             onMergeVideo={c.mergeVideo}
+            onUploadNodeFile={c.uploadNodeFile}
             loading={c.isLoading}
             focusNodeIds={c.focusNodeIds}
             onSetFocus={c.setFocus}

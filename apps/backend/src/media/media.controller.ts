@@ -14,7 +14,7 @@ import type { Request } from 'express';
 import { createReadStream } from 'node:fs';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { type AuthUser, JwtAuthGuard } from '../auth/jwt-auth.guard';
-import { MediaUploadService } from './media-upload.service';
+import { cleanFilename, MediaUploadService } from './media-upload.service';
 import { MediaService } from './media.service';
 import { RegenerateMediaDto } from './dto/regenerate-media.dto';
 
@@ -104,10 +104,4 @@ export class MediaController {
     );
     return new StreamableFile(createReadStream(absPath), { type: mimeType });
   }
-}
-
-/** 原始文件名只留最后一段（防路径）、去首尾空白、限 255 字；空则给个占位名。 */
-function cleanFilename(raw: string | undefined): string {
-  const base = (raw ?? '').split(/[\\/]/).pop()?.trim() ?? '';
-  return base.slice(0, 255) || 'file';
 }

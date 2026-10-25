@@ -163,31 +163,45 @@ export interface UploadedAttachment extends MessageAttachment {
   size: number;
 }
 
+/** 上传的进度回调与中止信号。 */
+export interface UploadOptions {
+  onProgress?: (fraction: number) => void;
+  signal?: AbortSignal;
+}
+
 /**
  * 上传一个附件：文件二进制原样作请求体，经同源路由 /api/uploads/:id 流式转给后端，
- * 后端再按 aigc 预签名地址 PUT 到 GCS。用 XHR 而不是 fetch：要上传进度（fetch 拿不到）。
- * 不走 /api-backend：那条路径的 middleware 会把 >10MB 的请求体截断（见路由文件注释）。
+ * 后端再按 aigc 预签名地址 PUT 到 GCS。
  */
 export function uploadAttachment(
   conversationId: string,
   file: File,
-  opts: { onProgress?: (fraction: number) => void; signal?: AbortSignal } = {},
+  opts: UploadOptions = {},
 ): Promise<UploadedAttachment> {
+  return uploadFile(`/api/uploads/${encodeURIComponent(conversationId)}`, file, opts);
+}
+
+/**
+ * 把文件 POST 到某个同源上传路由（路由再流式转给后端）。用 XHR 而不是 fetch：要上传进度（fetch 拿不到）。
+ * 不走 /api-backend：那条路径的 middleware 会把 >10MB 的请求体截断（见 app/api/_lib/proxy-upload.ts）。
+ */
+function uploadFile<T>(
+  path: string,
+  file: File,
+  opts: UploadOptions,
+): Promise<T> {
   return new Promise((resolve, reject) => {
     const xhr = new XMLHttpRequest();
-    xhr.open(
-      "POST",
-      `/api/uploads/${encodeURIComponent(conversationId)}?filename=${encodeURIComponent(file.name)}`,
-    );
+    xhr.open("POST", `${path}?filename=${encodeURIComponent(file.name)}`);
     xhr.setRequestHeader("Content-Type", file.type);
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable) opts.onProgress?.(e.loaded / e.total);
     };
     xhr.onload = () => {
       if (xhr.status === 401) redirectToLogin();
-      let body: ApiEnvelope<UploadedAttachment>;
+      let body: ApiEnvelope<T>;
       try {
-        body = JSON.parse(xhr.responseText) as ApiEnvelope<UploadedAttachment>;
+        body = JSON.parse(xhr.responseText) as ApiEnvelope<T>;
       } catch {
         reject(new Error(`Upload failed (${xhr.status})`));
         return;
@@ -528,19 +542,24 @@ export type CanvasApprovalMode = "review" | "auto";
 
 export type CanvasNodeType =
   | "image_upload"
+  | "video_upload"
+  | "audio_upload"
   | "image_gen"
   | "video_gen"
   | "video_concat";
 
-/**
- * 节点端口上流动的资源类型（镜像后端 canvas.types）。
- * 没有 text——提示词是生成节点自己的 prompt 字段，不是端口上流动的资源。
- */
-export type CanvasIoType = "image" | "video";
+/** 上传节点：每种只收一类文件（镜像后端 canvas.types）。 */
+export type CanvasUploadNodeType = "image_upload" | "video_upload" | "audio_upload";
 
 /**
- * 节点的一份输出（镜像后端 canvas.types）。content 语义随 type：
- * image/video → mediaVersionId；image_upload 破例存 assetPath。
+ * 节点端口上流动的资源类型（镜像后端 canvas.types）。
+ * 没有 text——提示词是生成节点自己的 prompt 字段，不是端口上流动的资源。audio 只来自上传。
+ */
+export type CanvasIoType = "image" | "video" | "audio";
+
+/**
+ * 节点的一份输出（镜像后端 canvas.types）。content 恒为 mediaVersionId——上传节点同样挂一个
+ * 上传版本（早年模拟上传只存了 assetPath 的 image_upload 不产出输出）。
  */
 export interface CanvasNodeOutput {
   type: CanvasIoType;
@@ -623,6 +642,8 @@ export type CanvasOpInput =
       text?: string;
       prompt?: string;
       assetPath?: string;
+      /** 上传节点的副本挂同一份上传资产（上传版本不可重新生成，共用不会互相打架） */
+      mediaGenerationId?: string;
     }
   | {
       op: "update_node";
@@ -772,17 +793,58 @@ export function clearCanvasPlan(id: string): Promise<{ cleared: true }> {
   return request(`/canvas/${id}/plan`, { method: "DELETE" });
 }
 
+/**
+ * 画布对话追加一条用户消息。attachmentVersionIds：随消息发出的上传附件
+ * （uploadCanvasAttachment 返回的 versionId）；带附件时 content 可为空。
+ */
 export function appendCanvasMessage(
   id: string,
   content: string,
   model?: string,
   thinkingLevel?: string,
   approvalMode?: string,
+  attachmentVersionIds?: string[],
 ): Promise<{ sessionId: string }> {
   return request(`/canvas/${id}/messages`, {
     method: "POST",
-    body: JSON.stringify({ content, model, thinkingLevel, approvalMode }),
+    body: JSON.stringify({
+      content,
+      model,
+      thinkingLevel,
+      approvalMode,
+      attachmentVersionIds,
+    }),
   });
+}
+
+/** 画布对话输入框的附件上传：返回暂存（staged）资产，随下一条消息发出时才转正。 */
+export function uploadCanvasAttachment(
+  canvasId: string,
+  file: File,
+  opts: UploadOptions = {},
+): Promise<UploadedAttachment> {
+  return uploadFile(
+    `/api/canvas/${encodeURIComponent(canvasId)}/uploads`,
+    file,
+    opts,
+  );
+}
+
+/**
+ * 给上传节点传文件：传完后端直接挂到节点上并广播 update_node patch（卡片据此出图），
+ * 这里只回新版本的 id。
+ */
+export function uploadCanvasNodeFile(
+  canvasId: string,
+  nodeId: string,
+  file: File,
+  opts: UploadOptions = {},
+): Promise<{ generationId: string; versionId: string }> {
+  return uploadFile(
+    `/api/canvas/${encodeURIComponent(canvasId)}/nodes/${encodeURIComponent(nodeId)}/upload`,
+    file,
+    opts,
+  );
 }
 
 /**
@@ -854,7 +916,10 @@ export interface AigcModel {
   identifier?: string;
   display_name?: string;
   type: string;
+  /** 各类参考素材最多收几个（0 = 不收）；超出的部分提交时被丢掉 */
   image_input_number: number;
+  video_input_number: number;
+  audio_input_number: number;
   params: AigcModelParam[];
   constraints: AigcConstraint[];
   /** 视频模型的参考图以什么 role 提交（我方按模型名单推出，见后端 videoRefRole） */

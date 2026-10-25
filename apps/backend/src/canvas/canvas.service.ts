@@ -8,6 +8,12 @@ import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
 import { StreamService } from '../events/stream.service';
 import { MediaService, readParams } from '../media/media.service';
+import {
+  MediaUploadService,
+  UPLOAD_CONTENT_TYPES,
+  type UploadedAsset,
+  type UploadFileInput,
+} from '../media/media-upload.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CANVAS_ABORTS } from './canvas.abort';
 import {
@@ -28,7 +34,9 @@ import {
   collectGenerationInputs,
   collectVideoSources,
   isCanvasNodeType,
+  isUploadNodeType,
   shortNodeId,
+  UPLOAD_NODE_ASSET,
 } from './canvas.types';
 import { groupByModel, sumCalls } from '../agent/token-usage';
 
@@ -62,13 +70,18 @@ function readTriggerGoal(trigger: Prisma.JsonValue): string {
  */
 function deriveOutputs(
   type: CanvasNodeType,
-  n: { assetPath: string | null },
   media?: { id: string; status: string },
 ): CanvasNodeOutput[] {
   switch (type) {
-    // MVP 模拟上传：没有 MediaVersion，content 破例存 assetPath
+    // 上传节点挂的是 model=upload 的版本（传完即 done）。早年模拟上传只存了 assetPath、
+    // 没有版本，拿不出可引用的 id，就当还没传文件
     case 'image_upload':
-      return n.assetPath ? [{ type: 'image', content: n.assetPath }] : [];
+    case 'video_upload':
+    // eslint-disable-next-line no-fallthrough -- 三者只差输出类型，共用下面这一段
+    case 'audio_upload':
+      return media?.status === 'done'
+        ? [{ type: UPLOAD_NODE_ASSET[type], content: media.id }]
+        : [];
     case 'image_gen':
     case 'video_gen':
     // eslint-disable-next-line no-fallthrough -- 三者产出形状一致，共用下面这一段
@@ -105,6 +118,7 @@ export class CanvasService {
     private readonly stream: StreamService,
     @InjectQueue('canvas-run') private readonly queue: Queue,
     private readonly media: MediaService,
+    private readonly uploads: MediaUploadService,
     @Inject(CANVAS_ABORTS) private readonly aborts: AbortRegistry,
     // 只用到 deleteThread（清空 agent 上下文）；按最小接口注入，避免依赖 RedisSaver 全量类型
     @Inject(CHECKPOINTER)
@@ -335,6 +349,77 @@ export class CanvasService {
     return { generationId };
   }
 
+  /**
+   * 给上传节点传文件（卡片上的选择 / 拖入）：流式中转到 GCS，落一个 done 的上传版本并挂到节点上，
+   * 之后与生成节点一样经 mediaGenerationId 出 outputs、被下游当参考素材引用。重传 = 换一个新版本。
+   *
+   * 中转前先拦下注定失败的请求（节点不存在 / 不是上传节点 / 文件类型对不上 / 运行期只读），
+   * 免得把文件传完了才发现挂不上。
+   */
+  async uploadNodeFile(
+    id: string,
+    tenantId: string,
+    userId: string,
+    nodeId: string,
+    file: UploadFileInput,
+  ): Promise<{ generationId: string; versionId: string }> {
+    const session = await this.assertOwner(id, tenantId);
+    if (BUSY_STATUSES.includes(session.status)) {
+      throw new BusinessException(ErrorCodes.CANVAS_BUSY);
+    }
+    const node = await this.prisma.canvasNode.findFirst({
+      where: { id: nodeId, sessionId: id },
+      select: { type: true, label: true },
+    });
+    if (!node) {
+      throw new BusinessException(
+        ErrorCodes.CANVAS_NODE_NOT_FOUND,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    if (!isUploadNodeType(node.type)) {
+      throw new BusinessException(ErrorCodes.CANVAS_UPLOAD_TYPE_MISMATCH);
+    }
+    // 白名单外的类型交给 store 报 MEDIA_UPLOAD_UNSUPPORTED；这里只管「是白名单里的，但放错了节点」
+    const assetType = UPLOAD_CONTENT_TYPES[file.contentType];
+    if (assetType && assetType !== UPLOAD_NODE_ASSET[node.type]) {
+      throw new BusinessException(ErrorCodes.CANVAS_UPLOAD_TYPE_MISMATCH);
+    }
+    const asset = await this.uploads.store({
+      ...file,
+      conversationId: id,
+      userId,
+      status: 'done',
+    });
+    await this.applyOp(id, 'user', {
+      op: 'update_node',
+      nodeId,
+      mediaGenerationId: asset.generationId,
+      // 没起过名的卡片用文件名当标题，一眼认得出传的是哪个
+      ...(node.label?.trim() ? {} : { label: asset.filename }),
+    });
+    return { generationId: asset.generationId, versionId: asset.versionId };
+  }
+
+  /**
+   * 对话输入框里的附件上传：落 staged 资产，随下一条消息的 attachmentVersionIds 发出才转正
+   * （同 Spark 会话，见 MediaUploadService）。资产按 sessionId 记账，与画布生成同一口径。
+   */
+  async uploadAttachment(
+    id: string,
+    tenantId: string,
+    userId: string,
+    file: UploadFileInput,
+  ): Promise<UploadedAsset> {
+    await this.assertOwner(id, tenantId);
+    return this.uploads.store({
+      ...file,
+      conversationId: id,
+      userId,
+      status: 'staged',
+    });
+  }
+
   async snapshot(id: string, tenantId: string): Promise<CanvasSnapshot> {
     await this.assertOwner(id, tenantId);
     return this.buildSnapshot(id);
@@ -375,7 +460,9 @@ export class CanvasService {
     const nodeLines = listed.map((n) => {
       const desc = (n.label ?? n.prompt ?? '').slice(0, 30);
       const media = n.mediaStatus ? ` <生成:${n.mediaStatus}>` : '';
-      return `- ${shortNodeId(n.id)} [${n.type}] "${desc}" @(${Math.round(n.x)},${Math.round(n.y)})${media}`;
+      // 只列显式设过的：没设 = 默认模型，不写省 token
+      const model = n.mediaModel ? ` <模型:${n.mediaModel}>` : '';
+      return `- ${shortNodeId(n.id)} [${n.type}] "${desc}" @(${Math.round(n.x)},${Math.round(n.y)})${media}${model}`;
     });
     const edgeLines = listedEdges.map(
       (e) => `- ${shortNodeId(e.source)} → ${shortNodeId(e.target)}`,
@@ -653,17 +740,22 @@ export class CanvasService {
     };
   }
 
-  /** 追加用户消息并续跑（多轮，同 thread_id）。仅空闲态允许，否则 CANVAS_BUSY。 */
+  /**
+   * 追加用户消息并续跑（多轮，同 thread_id）。仅空闲态允许，否则 CANVAS_BUSY。
+   * attachmentVersionIds：随消息发出的上传附件，校验通过后转正（staged → done）并存进消息 content，
+   * 重放时拼成「[附件]」清单给模型（同 Spark 会话）；带附件时正文可为空。
+   */
   async appendMessage(
     id: string,
-    content: string,
+    content: string | undefined,
     tenantId: string,
     userId: string,
     model?: string,
     thinkingLevel?: string,
     approvalMode?: string,
+    attachmentVersionIds: string[] = [],
   ): Promise<{ sessionId: string }> {
-    if (!content?.trim()) {
+    if (!content?.trim() && attachmentVersionIds.length === 0) {
       throw new BusinessException(ErrorCodes.CANVAS_GOAL_EMPTY);
     }
     const session = await this.prisma.canvasSession.findFirst({
@@ -679,6 +771,17 @@ export class CanvasService {
     if (!['idle', 'done', 'failed', 'stopped'].includes(session.status)) {
       throw new BusinessException(ErrorCodes.CANVAS_BUSY);
     }
+
+    // 附件先转正：不合法（非本画布 / 已发过 / 不存在）整条消息拒绝，会话状态不动
+    const attachments = await this.media.commitAttachments(
+      id,
+      userId,
+      attachmentVersionIds,
+    );
+    // 只发附件：本轮目标（token 报表里的 goal）回退成文件名
+    const goal = content?.trim()
+      ? content
+      : attachments.map((a) => a.filename).join(', ');
 
     await this.prisma.canvasSession.update({
       where: { id },
@@ -698,11 +801,17 @@ export class CanvasService {
         sessionId: id,
         role: 'user',
         type: 'message',
-        content: { text: content },
+        content: {
+          text: content ?? '',
+          // 展开成对象字面量：interface 没有隐式索引签名，直接塞不进 Prisma 的 Json 入参类型
+          ...(attachments.length > 0
+            ? { attachments: attachments.map((a) => ({ ...a })) }
+            : {}),
+        },
         seq,
       },
     });
-    await this.queue.add('run', { sessionId: id, goal: content });
+    await this.queue.add('run', { sessionId: id, goal });
     return { sessionId: id };
   }
 
@@ -886,9 +995,19 @@ export class CanvasService {
             label: op.label ?? null,
             prompt: op.prompt ?? null,
             assetPath: op.assetPath ?? null,
+            mediaGenerationId: op.mediaGenerationId ?? null,
+            mediaChannel: op.mediaChannel ?? null,
+            mediaModel: op.mediaModel ?? null,
+            ...(op.mediaParams ? { mediaParams: op.mediaParams } : {}),
           },
         });
-        return { op: 'add_node', node: this.toNodeDto(node), revision };
+        // 建时就挂了资产（agent 摆附件）→ 带上 media JOIN，patch 里的节点立刻有 outputs
+        const media = node.mediaGenerationId
+          ? (await this.resolveMedia([node.mediaGenerationId])).get(
+              node.mediaGenerationId,
+            )
+          : undefined;
+        return { op: 'add_node', node: this.toNodeDto(node, media), revision };
       }
       case 'update_node': {
         const existing = await tx.canvasNode.findFirst({
@@ -1117,7 +1236,7 @@ export class CanvasService {
       mediaParams: n.mediaParams === null ? null : readParams(n.mediaParams),
       mediaVersionId: media?.id ?? null,
       mediaStatus: media?.status ?? null,
-      outputs: deriveOutputs(type, n, media),
+      outputs: deriveOutputs(type, media),
     };
   }
 

@@ -1,6 +1,7 @@
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { MediaService } from '../media/media.service';
+import { mediaParamsSchema } from '../media/media.tools';
 import { CanvasService } from './canvas.service';
 import {
   CANVAS_NODE_TYPES,
@@ -8,7 +9,10 @@ import {
   type CanvasApprovalMode,
   collectVideoSources,
   isCanvasNodeType,
+  isUploadNodeType,
   shortNodeId,
+  UPLOAD_NODE_ASSET,
+  uploadNodeTypeFor,
 } from './canvas.types';
 
 /** 工具运行上下文：worker 闭包注入当前画布会话与可信 userId（不经模型，无注入风险）。 */
@@ -44,7 +48,17 @@ export function createCanvasTools(
   const resolveId = (id: string) => canvas.resolveNodeId(ctx.sessionId, id);
 
   const addNode = tool(
-    async ({ type, label, prompt, x, y }) => {
+    async ({
+      type,
+      label,
+      prompt,
+      versionId,
+      model,
+      channel,
+      params,
+      x,
+      y,
+    }) => {
       // type 的校验**整个**放在这儿而不是交给 zod 枚举：让 zod 直接拒的话，报错会以一大坨
       // 带堆栈的异常进对话历史、废掉一整轮；这里返回一句话，模型下一步就能补上——
       // 与本文件其它工具报「节点不存在」是同一套做法。
@@ -67,11 +81,81 @@ export function createCanvasTools(
           error: `未知的 type "${type}"，取值：${CANVAS_NODE_TYPES.join(' | ')}`,
         });
       }
+      // 上传节点挂用户在对话里发的附件：只认本画布、本人、已随消息发出的上传版本，
+      // 且附件类型要与节点类型一致（报错里直接给出该用哪种节点，模型下一步就能改对）
+      let mediaGenerationId: string | undefined;
+      let defaultLabel: string | undefined;
+      if (versionId) {
+        if (!isUploadNodeType(type)) {
+          return JSON.stringify({
+            error:
+              'versionId 只用于上传节点（image_upload / video_upload / audio_upload）',
+          });
+        }
+        const asset = await media.findUploadedAsset(
+          ctx.sessionId,
+          ctx.userId,
+          versionId,
+        );
+        if (!asset) {
+          return JSON.stringify({
+            error:
+              '找不到这个附件：versionId 必须取自用户消息里的「[附件]」清单',
+            versionId,
+          });
+        }
+        if (asset.type !== UPLOAD_NODE_ASSET[type]) {
+          return JSON.stringify({
+            error: `这个附件是 ${asset.type}，要用 ${uploadNodeTypeFor(asset.type)} 节点`,
+            versionId,
+          });
+        }
+        mediaGenerationId = asset.generationId;
+        defaultLabel = asset.filename;
+      }
+      // 生成节点建时就定好模型与档位（同 set_node_model 的严格校验），不合法一个节点都不建——
+      // 先建成默认再改，用户会先看到一张 1:1 / 默认模型的卡片，且 agent 常常忘了回头改。
+      // 刚建的节点还没有入边，参考素材按 0 算；之后连上参考图若触发约束，生成时按原规则收窄。
+      let config:
+        | { channel: string; model: string; params: Record<string, string> }
+        | undefined;
+      if (
+        model !== undefined ||
+        channel !== undefined ||
+        params !== undefined
+      ) {
+        if (type !== 'image_gen' && type !== 'video_gen') {
+          return JSON.stringify({
+            error: 'model / channel / params 只用于 image_gen / video_gen',
+          });
+        }
+        const r = await media.prepareNodeConfig(
+          type === 'video_gen' ? 'video' : 'image',
+          {
+            model,
+            channel,
+            params,
+            referenceCounts: { image: 0, video: 0, audio: 0 },
+          },
+        );
+        if (!r.ok) {
+          return JSON.stringify({
+            error: 'invalid_params',
+            issues: r.issues,
+            hint: '节点未创建。按 issues 修正后重新调用 add_node；完整的模型与档位表可调用 list_media_models',
+          });
+        }
+        config = r.config;
+      }
       const r = await canvas.applyOp(ctx.sessionId, 'agent', {
         op: 'add_node',
         type,
-        label,
+        label: label ?? defaultLabel,
         prompt,
+        mediaGenerationId,
+        mediaChannel: config?.channel,
+        mediaModel: config?.model,
+        mediaParams: config?.params,
         x,
         y,
       });
@@ -80,12 +164,13 @@ export function createCanvasTools(
       return JSON.stringify({
         nodeId: node ? shortNodeId(node.id) : undefined,
         revision: r.revision,
+        ...(config ? { model: config.model, params: config.params } : {}),
       });
     },
     {
       name: 'add_node',
       description:
-        '在画布上新建一个节点。type：image_upload(上传图片占位) | image_gen(生图) | video_gen(生视频) | video_concat(把多段上游视频按顺序拼成一条)。生成节点的提示词直接写在它自己的 prompt 参数里（建节点时就可以给）。x/y 为画布坐标（按工作流从左到右布局，纵向错开避免重叠）。返回 nodeId。',
+        '在画布上新建一个节点。type：image_upload / video_upload / audio_upload(用户上传的图片 / 视频 / 音频) | image_gen(生图) | video_gen(生视频) | video_concat(把多段上游视频按顺序拼成一条)。生成节点的提示词直接写在它自己的 prompt 参数里，模型与档位用 model / params 在建节点时一并定好（不传就是默认模型的默认档位）；不合法时返回 error=invalid_params 与 issues，节点不会被创建，按 issues 修正后重试。要把用户在对话里发的附件放上画布：建对应类型的上传节点并传 versionId（取自用户消息的「[附件]」清单）；不传 versionId 的上传节点是空的，等用户自己在卡片上传文件。x/y 为画布坐标（按工作流从左到右布局，纵向错开避免重叠）。返回 nodeId。',
       schema: z.object({
         // 刻意用 z.string() 而不是 z.enum：枚举由 zod 拒会抛异常（见函数体注释），
         // 取值范围写在 description 里，模型读的是这个
@@ -93,13 +178,33 @@ export function createCanvasTools(
           .string()
           .optional()
           .describe(
-            '节点类型（必填）：image_upload 上传图片占位 / image_gen 生图 / video_gen 生视频 / video_concat 视频拼接',
+            '节点类型（必填）：image_upload 上传图片 / video_upload 上传视频 / audio_upload 上传音频 / image_gen 生图 / video_gen 生视频 / video_concat 视频拼接',
           ),
-        label: z.string().optional().describe('节点标题（可选）'),
+        label: z
+          .string()
+          .optional()
+          .describe('节点标题（可选；挂附件时缺省用文件名）'),
         prompt: z
           .string()
           .optional()
           .describe('生成提示词（image_gen / video_gen 专有）'),
+        model: z
+          .string()
+          .optional()
+          .describe(
+            '生成节点专有：模型别名（list_media_models 返回的 model，也认展示名）；不传 = 默认模型',
+          ),
+        channel: z
+          .string()
+          .optional()
+          .describe('生成节点专有：渠道（同名模型出现在多个渠道时才需要指定）'),
+        params: mediaParamsSchema,
+        versionId: z
+          .string()
+          .optional()
+          .describe(
+            '上传节点专有：用户附件的 versionId（「[附件]」清单里那个），类型须与节点一致',
+          ),
         x: z.number().optional(),
         y: z.number().optional(),
       }),
@@ -161,7 +266,7 @@ export function createCanvasTools(
     {
       name: 'connect_nodes',
       description:
-        '用有向连线连接两个节点（sourceId → targetId，表示 source 是 target 的上游输入）。入边只提供**参考图**——提示词是生成节点自己的 prompt 字段，不靠连线。类型契约：image_upload 输出 image；image_gen 接受 image 输出 image；video_gen 接受 image/video 输出 video（video 输入仅用于串联画布，不参与生成）；video_concat 只吃 video。image_upload 没有输入端口，任何指向它的连线都会被拒绝。',
+        '用有向连线连接两个节点（sourceId → targetId，表示 source 是 target 的上游输入）。入边只提供**参考素材**——提示词是生成节点自己的 prompt 字段，不靠连线。类型契约：image_upload / video_upload / audio_upload 分别输出 image / video / audio；image_gen 接受 image 输出 image；video_gen 接受 image/video/audio 输出 video（各类型能用几个看节点所选模型，超出的不会提交）；video_concat 只吃 video。上传节点没有输入端口，任何指向它的连线都会被拒绝。',
       schema: z.object({ sourceId: z.string(), targetId: z.string() }),
     },
   );
@@ -197,7 +302,7 @@ export function createCanvasTools(
           type: node.type,
         });
       }
-      // 提示词是节点自己的字段；入边只提供参考图（契约见 canvas.types 的 CANVAS_NODE_IO）。
+      // 提示词是节点自己的字段；入边只提供参考素材（契约见 canvas.types 的 CANVAS_NODE_IO）。
       // 与用户手动触发（CanvasService.generateMediaNode）共用同一段收集逻辑。
       const prompt = node.prompt?.trim() ?? '';
       if (!prompt) {
@@ -216,8 +321,8 @@ export function createCanvasTools(
         type,
         prompt,
         referenceVersionIds.length ? referenceVersionIds : undefined,
-        // 模型取节点上选定的那份（用户在卡片面板里选的）；没选就回落该类型默认模型。
-        // agent 不参与选模型——它只负责"什么时候生成"。
+        // 模型取节点上选定的那份（用户在卡片面板里选的，或 agent 用 set_node_model 设的）；
+        // 没选就回落该类型默认模型。
         {
           channel: node.mediaChannel ?? undefined,
           model: node.mediaModel ?? undefined,
@@ -234,16 +339,111 @@ export function createCanvasTools(
         generationId,
         status: 'queued',
         references: referenceVersionIds.length,
-        // 明确回报被跳过的上游资源，模型不会误以为它们参与了生成
-        skippedImageUpload: inputs.skippedImageUpload, // MVP 模拟上传，无 versionId 可引用
-        skippedVideoInputs: inputs.skippedVideoInputs, // 管线吃不下视频参考，video 入边只用于串联画布
+        // 明确回报连着但还没产物的上游，模型不会误以为它们参与了生成
+        waitingInputs: inputs.waitingInputs,
       });
     },
     {
       name: 'generate_media_node',
       description:
-        '触发某个 image_gen / video_gen 节点的实际生成（异步）。提示词取**该节点自己的 prompt 字段**（用 add_node / update_node 写上去），没写就会报错；参考图取自入边（上游 image_gen 的图片）。上游 image_upload 与上游视频均不参与生成（前者模拟上传无资产可引用，后者底层管线吃不下视频参考），都会在返回值里报出。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
+        '触发某个 image_gen / video_gen 节点的实际生成（异步）。提示词取**该节点自己的 prompt 字段**（用 add_node / update_node 写上去），没写就会报错；模型与档位取节点上设好的那份（要换用 set_node_model，没设过用默认模型）；参考素材取自入边上游已就绪的图片 / 视频 / 音频（生成的与上传的都算，按入边顺序；超出所选模型上限的不会提交）。连着但还没产物的上游不参与，数量在返回值 waitingInputs 里。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
       schema: z.object({ nodeId: z.string() }),
+    },
+  );
+
+  const listMediaModels = tool(
+    async ({ type }: { type: 'image' | 'video' }) =>
+      JSON.stringify(await media.agentModelCatalog(type, ctx.userId)),
+    {
+      name: 'list_media_models',
+      description:
+        '查询当前可用的生图 / 生视频模型及每个模型支持的档位（画幅比例、清晰度、时长、音频等可选值，参考图 / 参考视频 / 参考音频数量上限，参数之间的约束规则 rules，用途提示 hint）。' +
+        '给节点换模型或改档位（set_node_model）前用它确认模型名与可选值。目录可能随时增减模型，以本工具返回为准。',
+      schema: z.object({
+        type: z.enum(['image', 'video']).describe('image 生图 / video 生视频'),
+      }),
+    },
+  );
+
+  /**
+   * 给生成节点设模型与档位——与用户在卡片面板上选模型是同一件事（同样落 update_node 的三个字段），
+   * 只是 agent 传的值要先过一遍严格校验：模型名、档位取值、约束规则不合法就回 issues 让它改，
+   * 不像生成时那样静默收窄（静默改写会让「用户说要 16:9」变成别的比例而没人知道）。
+   */
+  const setNodeModel = tool(
+    async ({ nodeId, model, channel, params }) => {
+      const full = await resolveId(nodeId);
+      const snap = await canvas.agentSnapshot(ctx.sessionId);
+      const node = full ? snap.nodes.find((n) => n.id === full) : undefined;
+      if (!node) {
+        return JSON.stringify({ error: '节点不存在', nodeId });
+      }
+      if (node.type !== 'image_gen' && node.type !== 'video_gen') {
+        return JSON.stringify({
+          error: '只有 image_gen / video_gen 节点有模型可设',
+          type: node.type,
+        });
+      }
+      const type = node.type === 'video_gen' ? 'video' : 'image';
+      // 不传 model = 保持节点现有模型、只改档位（节点没设过就是默认模型）
+      const r = await media.prepareNodeConfig(type, {
+        model: model ?? node.mediaModel ?? undefined,
+        channel: model ? channel : (channel ?? node.mediaChannel ?? undefined),
+        params,
+        referenceCounts: collectGenerationInputs(
+          snap.nodes,
+          snap.edges,
+          node.id,
+        ).referenceCounts,
+      });
+      if (!r.ok) {
+        return JSON.stringify({
+          error: 'invalid_params',
+          issues: r.issues,
+          hint: '按 issues 修正后重新调用；完整的模型与档位表可调用 list_media_models',
+        });
+      }
+      const rev = await canvas.applyOp(ctx.sessionId, 'agent', {
+        op: 'update_node',
+        nodeId: node.id,
+        mediaChannel: r.config.channel,
+        mediaModel: r.config.model,
+        mediaParams: r.config.params,
+      });
+      const dropped = Object.entries(r.dropped).filter(([, n]) => n > 0);
+      return JSON.stringify({
+        ok: true,
+        model: r.config.model,
+        channel: r.config.channel,
+        params: r.config.params,
+        revision: rev.revision,
+        // 这个模型收不下的上游素材（生成时不会提交）：照实告诉模型，由它决定要不要换
+        ...(dropped.length
+          ? { droppedInputs: Object.fromEntries(dropped) }
+          : {}),
+      });
+    },
+    {
+      name: 'set_node_model',
+      description:
+        '给**已有的** image_gen / video_gen 节点改生成模型与档位（画幅比例、清晰度、时长、音频等），与用户在卡片上选模型等效；新建节点时直接用 add_node 的 model / params 定好，不必建完再改。' +
+        '用户点名了模型或档位（如「换 seedance 2.0」「生成 16:9」）就用它改，不要让用户自己去卡片上改。' +
+        '不传 model 表示保持节点当前模型、只改档位；params 只传要指定的维度，没传的必填项自动取第一个值。' +
+        '不合法时返回 error=invalid_params 与 issues（含 allowed 可选值），按 issues 修正后重试。改完后需要出片再调 generate_media_node。',
+      schema: z.object({
+        nodeId: z.string(),
+        model: z
+          .string()
+          .optional()
+          .describe(
+            '模型别名（list_media_models 返回的 model，也认展示名如 "Seedance 2.0"）；不传 = 保持节点当前模型',
+          ),
+        channel: z
+          .string()
+          .optional()
+          .describe('渠道（同名模型出现在多个渠道时才需要指定）'),
+        params: mediaParamsSchema,
+      }),
     },
   );
 
@@ -342,6 +542,8 @@ export function createCanvasTools(
     connectNodes,
     deleteNode,
     clearCanvas,
+    listMediaModels,
+    setNodeModel,
     generateMediaNode,
     mergeVideoNode,
     askUser,

@@ -2,9 +2,12 @@ import type {
   AigcModel,
   AigcModelParam,
   AigcParamOption,
+  CanvasIoType,
   CanvasNodeOutput,
   CanvasNodeType,
 } from "@/lib/api";
+
+import { CANVAS_NODE_IO } from "./node-io";
 
 /**
  * 生成节点档位的纯计算：展示文本、排序，以及按目录 `constraints` 收窄档位。
@@ -94,33 +97,88 @@ export function hasOwnAuto(p: AigcModelParam): boolean {
   return p.options.some((o) => optionText(o) === AUTO);
 }
 
-/** 上游节点的最小形状（resolveInputs 的结果里只用到这两项） */
+/** 上游节点的最小形状（resolveInputs 的结果里只用到这一项） */
 interface UpstreamSource {
-  nodeType: CanvasNodeType;
   outputs: CanvasNodeOutput[];
 }
 
 /**
- * derived 维度（`constraints.when` 会拿它们当条件），与后端 `derivedDims` 同义：
- * 参考资源只来自上游**已出图的 image_gen**（image_upload 与视频入边不进生成，
- * 见后端 collectGenerationInputs）；首尾帧控制取决于该模型的参考图 role。
+ * 一路上游在这次生成里的去向：
+ * - used：会被提交，label 是它在提示词里的叫法（`Image 1` / `Video 1` / `Audio 1`，按类型各自计数）；
+ * - pending：还没产物（没生成完 / 没传文件）；
+ * - type：产物类型这个节点不收（历史遗留的非法边）；
+ * - frame：首帧模式的视频模型只认第一张图，后面的图不提交；
+ * - limit：超出所选模型这类素材的上限。
  */
-export function derivedDims(
+export type ReferenceFate =
+  | { used: true; type: CanvasIoType; label: string }
+  | { used: false; reason: "pending" | "type" | "frame" | "limit" };
+
+const TYPE_WORD: Record<CanvasIoType, string> = {
+  image: "Image",
+  video: "Video",
+  audio: "Audio",
+};
+
+/**
+ * 这次生成真正会提交哪些参考素材——后端三步的镜像，三处必须同一套规则：
+ *  1. 按入边顺序收目标节点接受的类型（collectGenerationInputs）；
+ *  2. 首帧模式的视频模型只取第一张图（MediaProcessor.loadRefUrls）；
+ *  3. 图 / 视频 / 音频各自截到模型上限（AigcService.submit）。
+ * 模型目录还没到手（model 为 null）时先不截上限。
+ * derived 维度（`constraints.when` 会拿它们当条件）按真会提交的那些算，与后端 `derivedDims` 同义。
+ */
+export function planReferences(
   inputs: readonly UpstreamSource[],
-  model: AigcModel,
-): Record<string, string> {
-  const hasImage = inputs.some(
-    (s) =>
-      s.nodeType === "image_gen" && s.outputs.some((o) => o.type === "image"),
-  );
+  target: CanvasNodeType,
+  model: AigcModel | null,
+): { fates: ReferenceFate[]; derived: Record<string, string> } {
+  const accepted = CANVAS_NODE_IO[target].inputs;
+  const imageRole =
+    target === "video_gen" ? (model?.ref_role ?? "reference") : "reference";
+  const limits: Record<CanvasIoType, number> = model
+    ? {
+        image: model.image_input_number,
+        video: model.video_input_number,
+        audio: model.audio_input_number,
+      }
+    : { image: Infinity, video: Infinity, audio: Infinity };
+  const used: Record<CanvasIoType, number> = { image: 0, video: 0, audio: 0 };
+  let images = 0;
+
+  const fates = inputs.map((s): ReferenceFate => {
+    if (s.outputs.length === 0) return { used: false, reason: "pending" };
+    const output = s.outputs.find((o) => accepted.includes(o.type));
+    if (!output) return { used: false, reason: "type" };
+    if (output.type === "image") {
+      if (imageRole === "first_frame" && images >= 1) {
+        return { used: false, reason: "frame" };
+      }
+      images++;
+    }
+    if (used[output.type] >= limits[output.type]) {
+      return { used: false, reason: "limit" };
+    }
+    used[output.type]++;
+    return {
+      used: true,
+      type: output.type,
+      label: `${TYPE_WORD[output.type]} ${used[output.type]}`,
+    };
+  });
+
+  const yes = (t: CanvasIoType) => (used[t] > 0 ? "yes" : "no");
   const frame =
-    hasImage &&
-    (model.ref_role === "first_frame" || model.ref_role === "last_frame");
+    used.image > 0 &&
+    (imageRole === "first_frame" || imageRole === "last_frame");
   return {
-    input_has_image: hasImage ? "yes" : "no",
-    input_has_video: "no",
-    input_has_audio: "no",
-    input_has_frame_control: frame ? "yes" : "no",
+    fates,
+    derived: {
+      input_has_image: yes("image"),
+      input_has_video: yes("video"),
+      input_has_audio: yes("audio"),
+      input_has_frame_control: frame ? "yes" : "no",
+    },
   };
 }
 

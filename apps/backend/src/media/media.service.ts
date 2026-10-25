@@ -875,6 +875,33 @@ export class MediaService {
   }
 
   /**
+   * 查一个已转正的上传资产（画布 agent 把附件摆成上传节点时用）：必须是本会话、本人上传、
+   * 已随消息发出（done）的版本；不满足返回 null，由调用方回一句话给模型。
+   */
+  async findUploadedAsset(
+    conversationId: string,
+    userId: string,
+    versionId: string,
+  ): Promise<{
+    generationId: string;
+    type: MediaAssetType;
+    filename: string;
+  } | null> {
+    const v = await this.prisma.mediaVersion.findFirst({
+      where: {
+        id: versionId,
+        model: UPLOAD_MODEL,
+        status: 'done',
+        generation: { conversationId, userId },
+      },
+      include: { generation: true },
+    });
+    const type = v ? asAssetType(v.generation.type) : null;
+    if (!v || !type) return null;
+    return { generationId: v.generationId, type, filename: v.prompt };
+  }
+
+  /**
    * 同步进沙箱前的解析（sync_media_to_sandbox 用）：逐个 versionId 查出资产来源。
    * 只认本会话、本人、已 done 的版本（生成的与上传的都行），有 CDN 地址给 url、只有本地文件
    * （拼接产物）给 filePath；不满足的单独报原因，不连累其余。
@@ -964,6 +991,14 @@ export class MediaService {
         note: 'clone_voice 的 language 传 value；必须与录音实际语种一致（不支持跨语言复刻）',
       },
     };
+  }
+
+  /** 画布 agent 给生成节点设模型前的校验（见 AigcService.prepareNodeConfig）。 */
+  prepareNodeConfig(
+    type: 'image' | 'video',
+    req: Parameters<AigcService['prepareNodeConfig']>[1],
+  ) {
+    return this.aigc.prepareNodeConfig(type, req);
   }
 
   /**

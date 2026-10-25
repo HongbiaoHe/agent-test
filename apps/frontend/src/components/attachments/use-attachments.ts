@@ -3,13 +3,14 @@
 import { useState } from "react";
 import { toast } from "sonner";
 
-import {
-  type AttachmentType,
-  type MessageAttachment,
-  uploadAttachment,
+import type {
+  AttachmentType,
+  MessageAttachment,
+  UploadedAttachment,
+  UploadOptions,
 } from "@/lib/api";
 
-import { ATTACHMENTS_MAX, classifyFile } from "../_lib/attachments";
+import { ATTACHMENTS_MAX, classifyFile } from "./attachments";
 
 /** 输入框里的一枚附件：选中即开始上传，传完拿到 asset（versionId 等）才能随消息发出。 */
 export interface DraftAttachment {
@@ -31,8 +32,17 @@ export interface DraftAttachment {
  * 输入框附件的状态：加文件 → 校验（类型 / 大小 / 数量）→ 立刻上传（带进度）→ 可移除。
  * 会话切换时清空（render 期校正，不在 effect 里 setState）。
  * 发送条件：没有在传的、且至少有正文或一个传好的附件——上传中禁用发送（设计已定，不做后台补传）。
+ *
+ * upload：往哪传由调用方定（Spark 会话 / 画布对话各有各的上传接口），这里只管状态。
  */
-export function useAttachments(conversationId: string | null) {
+export function useAttachments(
+  conversationId: string | null,
+  upload: (
+    conversationId: string,
+    file: File,
+    opts: UploadOptions,
+  ) => Promise<UploadedAttachment>,
+) {
   const [items, setItems] = useState<DraftAttachment[]>([]);
 
   const [trackedId, setTrackedId] = useState(conversationId);
@@ -81,7 +91,7 @@ export function useAttachments(conversationId: string | null) {
 
     for (const it of added) {
       const { controller } = it;
-      uploadAttachment(conversationId, it.file, {
+      upload(conversationId, it.file, {
         signal: controller.signal,
         onProgress: (progress) => patch(it.localId, { progress }),
       })

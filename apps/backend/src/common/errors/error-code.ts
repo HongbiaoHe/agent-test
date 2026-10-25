@@ -177,4 +177,9 @@ export const ErrorCodes = {
     code: 70010,
     message: 'Built-in skills cannot be deleted or disabled',
   },
+  CANVAS_UPLOAD_TYPE_MISMATCH: {
+    code: 70011,
+    message:
+      'This file does not fit the node (image upload nodes take images, video upload nodes take videos, audio upload nodes take audio)',
+  },
 } as const satisfies Record<string, ErrorDef>;

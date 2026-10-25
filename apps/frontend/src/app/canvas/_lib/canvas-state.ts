@@ -72,8 +72,8 @@ function upsertNode(
   if (idx === -1) return [...nodes, node];
   const next = nodes.slice();
   // 只有生成节点的 outputs 依赖 media JOIN，patch 里恒为空 → 沿用旧值，避免闪回「未生成」。
-  // text / image_upload 的 outputs 只看节点自身字段，patch 里就是准的，不能兜底
-  // （否则清空正文后 outputs 卡在旧值不清）。
+  // 上传节点的 add/update patch 后端都带了 media JOIN，patch 里就是准的，不能兜底
+  // （否则换文件后 outputs 卡在旧值不清）。
   const joinDerived = node.type === "image_gen" || node.type === "video_gen";
   next[idx] = {
     ...node,

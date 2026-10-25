@@ -2,12 +2,14 @@
 
 import {
   AlertTriangle,
+  ArrowRight,
   Brain,
   Check,
   ChevronDown,
   CircleDot,
   Loader2,
   MessagesSquare,
+  Paperclip,
   Pause,
   Send,
   Sparkles,
@@ -20,6 +22,10 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useEffect, useRef, useState } from "react";
 
 import { ThinkingSwitcher } from "@/components/agent/thinking-switcher";
+import { ATTACHMENT_ACCEPT } from "@/components/attachments/attachments";
+import { ComposerAttachments } from "@/components/attachments/composer-attachments";
+import { MessageAttachments } from "@/components/attachments/message-attachments";
+import { useAttachments } from "@/components/attachments/use-attachments";
 import { ErrorNotice } from "@/components/chat/error-notice";
 import { JumpToLatest } from "@/components/chat/jump-to-latest";
 import { useChatScroll } from "@/components/chat/use-chat-scroll";
@@ -28,7 +34,11 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Textarea } from "@/components/ui/textarea";
 import { cn } from "@/lib/utils";
 
-import type { CanvasApprovalMode } from "@/lib/api";
+import {
+  type CanvasApprovalMode,
+  type MessageAttachment,
+  uploadCanvasAttachment,
+} from "@/lib/api";
 
 import type { ChatItem, ChatState } from "../_lib/chat";
 import { PHASE_UI, agentPhase } from "../_lib/thinking-phase";
@@ -258,10 +268,14 @@ function Item({
     case "user":
       return (
         // data-chat-anchor：发送后 useChatScroll 靠它把这条消息顶到视口顶部（取最后一个）
-        <div data-chat-anchor className="flex justify-end">
-          <div className="max-w-[85%] whitespace-pre-wrap rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground">
-            <UserText text={item.text} invokedSkill={invokedSkill} />
-          </div>
+        <div data-chat-anchor className="flex flex-col items-end gap-1.5">
+          <MessageAttachments attachments={item.attachments} />
+          {/* 只发了附件的消息没有正文，不画空气泡 */}
+          {item.text && (
+            <div className="max-w-[85%] whitespace-pre-wrap rounded-lg bg-primary px-3 py-2 text-sm text-primary-foreground">
+              <UserText text={item.text} invokedSkill={invokedSkill} />
+            </div>
+          )}
         </div>
       );
     case "skill":
@@ -525,42 +539,100 @@ function AskPanel({
     );
   }
 
+  const submit = () => {
+    const t = text.trim();
+    if (!t) return;
+    onAnswer(t);
+    setText("");
+  };
+
+  // 问题是这张卡的正文，用正文色；选项是一列整宽的可点行——模型给的选项常是「名称 — 说明」的长句，
+  // 胶囊按钮一行一个又不换行，长的被截掉、短的挤成一团，扫一眼看不出差别。
   return (
-    <div className="space-y-2 rounded-lg border border-primary/40 bg-primary/5 p-3">
-      <div className="flex items-center gap-2 text-sm font-medium text-foreground">
-        <Sparkles className="size-4 text-primary" />
-        Agent asks
-      </div>
-      <p className="text-sm text-muted-foreground">{ask.question}</p>
-      {ask.options.length > 0 && (
-        <div className="flex flex-wrap gap-2">
-          {ask.options.map((o) => (
-            <Button key={o} size="sm" variant="outline" onClick={() => onAnswer(o)}>
-              {o}
-            </Button>
-          ))}
+    <div className="space-y-3 rounded-lg border border-primary/40 bg-primary/5 p-3">
+      <div className="space-y-1">
+        <div className="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
+          <Sparkles className="size-3.5 text-primary" aria-hidden />
+          Agent asks
         </div>
+        <p className="text-sm leading-relaxed whitespace-pre-line text-foreground">
+          {ask.question}
+        </p>
+      </div>
+      {ask.options.length > 0 && (
+        <ul aria-label="Suggested answers" className="flex flex-col gap-1.5">
+          {ask.options.map((o) => {
+            const { title, detail } = splitOption(o);
+            return (
+              <li key={o}>
+                <Button
+                  variant="outline"
+                  onClick={() => onAnswer(o)}
+                  className="group/option h-auto w-full items-start justify-between gap-3 px-3 py-2 text-left font-normal whitespace-normal"
+                >
+                  <span className="min-w-0 flex-1">
+                    <span className="block font-medium text-foreground">
+                      {title}
+                    </span>
+                    {detail && (
+                      <span className="mt-0.5 block text-xs leading-relaxed text-muted-foreground">
+                        {detail}
+                      </span>
+                    )}
+                  </span>
+                  {/* 点一下就直接作答（不是先选再确认）：箭头在悬停 / 聚焦时亮起，提示这一点 */}
+                  <ArrowRight
+                    className="mt-0.5 size-3.5 text-muted-foreground/0 transition-colors duration-150 group-hover/option:text-foreground group-focus-visible/option:text-foreground"
+                    aria-hidden
+                  />
+                </Button>
+              </li>
+            );
+          })}
+        </ul>
       )}
-      <div className="flex gap-2">
+      {/* 自由作答：与底部输入框同一套形态（发送键内嵌右下、Enter 发送 / Shift+Enter 换行） */}
+      <div className="flex items-end gap-1.5 rounded-lg border border-input bg-background py-1.5 pr-1.5 pl-3 transition-colors focus-within:border-ring focus-within:ring-3 focus-within:ring-ring/40 dark:bg-input/30">
         <Textarea
           value={text}
           onChange={(e) => setText(e.target.value)}
-          placeholder="Type your answer…"
-          className="min-h-9 resize-none"
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey && !e.nativeEvent.isComposing) {
+              e.preventDefault();
+              submit();
+            }
+          }}
+          rows={1}
+          aria-label="Your answer"
+          placeholder={
+            ask.options.length > 0
+              ? "Or type your own answer…"
+              : "Type your answer…"
+          }
+          className="max-h-32 min-h-0 flex-1 resize-none border-0 bg-transparent p-0 py-1 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0 dark:bg-transparent"
         />
         <Button
-          size="sm"
+          size="icon-sm"
+          aria-label="Send answer"
+          title="Send answer (Enter)"
           disabled={!text.trim()}
-          onClick={() => {
-            onAnswer(text.trim());
-            setText("");
-          }}
+          onClick={submit}
+          className="disabled:opacity-40"
         >
-          Send answer
+          <Send />
         </Button>
       </div>
     </div>
   );
+}
+
+/**
+ * 选项拆成「名称 + 说明」两行：模型常写成 `Wan 3.0（fal）— 时长 2–30 秒…`。
+ * 只认破折号（— / –）作分隔，免得把「16:9」「1-2 秒」这类内容误拆；没有分隔就整句当名称。
+ */
+function splitOption(option: string): { title: string; detail: string | null } {
+  const m = /^(.+?)\s*[—–]\s*(.+)$/.exec(option);
+  return m ? { title: m[1], detail: m[2] } : { title: option, detail: null };
 }
 
 export function CanvasChat({
@@ -593,6 +665,7 @@ export function CanvasChat({
     model?: string,
     thinkingLevel?: ThinkingLevel,
     approvalMode?: CanvasApprovalMode,
+    attachments?: MessageAttachment[],
   ) => void;
   onStop: () => void;
   onAnswer: (msg: string) => void;
@@ -692,12 +765,46 @@ export function CanvasChat({
     }
   }, [savedSkills, queryClient]);
 
+  // ——— 附件：回形针 / 拖拽 / 粘贴，选中即上传（同 Spark 输入框）———
+  const fileInputRef = useRef<HTMLInputElement>(null);
+  const attachments = useAttachments(sessionId, uploadCanvasAttachment);
+  const [dragging, setDragging] = useState(false);
+  // 上传中 / 有失败的附件时不让发：发出去的消息里会少东西
+  const attachmentsBlocked =
+    attachments.uploading ||
+    attachments.items.some((it) => it.status === "error");
+  const canSend =
+    !busy &&
+    !attachmentsBlocked &&
+    (text.trim().length > 0 || attachments.ready.length > 0);
+
   function submit() {
-    const t = text.trim();
-    if (!t || busy) return;
+    if (!canSend) return;
     armAnchor();
-    onSend(t, model, thinking, approval);
+    onSend(text.trim(), model, thinking, approval, attachments.ready);
     setText("");
+    attachments.clear();
+  }
+
+  /** 粘贴：剪贴板里有文件（截图、复制的图片）就当附件收下，不往输入框里贴 */
+  function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
+    if (busy || e.clipboardData.files.length === 0) return;
+    e.preventDefault();
+    attachments.add(e.clipboardData.files);
+  }
+
+  /** 拖拽文件进输入框：只认带文件的拖拽（拖一段文字进来照常） */
+  function onDragOver(e: React.DragEvent<HTMLDivElement>) {
+    if (busy || !e.dataTransfer.types.includes("Files")) return;
+    e.preventDefault();
+    setDragging(true);
+  }
+
+  function onDrop(e: React.DragEvent<HTMLDivElement>) {
+    setDragging(false);
+    if (busy || e.dataTransfer.files.length === 0) return;
+    e.preventDefault();
+    attachments.add(e.dataTransfer.files);
   }
 
   const planItem = chat.items.find((it) => it.kind === "plan");
@@ -807,10 +914,14 @@ export function CanvasChat({
             textarea 去边框内嵌、随输入自动增高（field-sizing-content），发送键内嵌右下。
             relative：技能补全菜单贴着它的上沿浮出 */}
         <div
+          onDragOver={onDragOver}
+          onDragLeave={() => setDragging(false)}
+          onDrop={onDrop}
           className={cn(
             "group relative rounded-xl border border-input bg-background px-3 py-2.5 transition-all duration-200",
             "focus-within:border-primary/50 focus-within:shadow-sm focus-within:ring-3 focus-within:ring-ring/40",
             busy && "opacity-80",
+            dragging && "border-ring bg-accent",
           )}
         >
           {menuOpen && (
@@ -821,10 +932,16 @@ export function CanvasChat({
               onHover={setActiveIndex}
             />
           )}
+          <ComposerAttachments
+            items={attachments.items}
+            onRemove={attachments.remove}
+            className="px-0 pt-0 pb-2"
+          />
           <Textarea
             ref={inputRef}
             value={text}
             onChange={(e) => setText(e.target.value)}
+            onPaste={onPaste}
             onKeyDown={(e) => {
               if (menuOpen) {
                 if (e.key === "ArrowDown" || e.key === "ArrowUp") {
@@ -865,6 +982,28 @@ export function CanvasChat({
           <div className="mt-2 flex items-end justify-between gap-2">
             {/* flex-wrap：面板窄时切换器折到第二排，而不是压到发送键上 */}
             <div className="flex min-w-0 flex-wrap items-center gap-1">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label="Attach files"
+                title="Attach images, videos or audio"
+                disabled={busy}
+                onClick={() => fileInputRef.current?.click()}
+              >
+                <Paperclip />
+              </Button>
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                accept={ATTACHMENT_ACCEPT}
+                className="hidden"
+                onChange={(e) => {
+                  if (e.target.files) attachments.add(e.target.files);
+                  // 清空值：同一个文件移除后还能再选一次
+                  e.target.value = "";
+                }}
+              />
               <SkillPicker
                 skills={enabledSkills}
                 disabled={busy}
@@ -902,7 +1041,7 @@ export function CanvasChat({
               <Button
                 size="icon"
                 onClick={submit}
-                disabled={!text.trim()}
+                disabled={!canSend}
                 title="Send (Enter)"
                 className="size-8 rounded-lg transition-transform active:translate-y-px disabled:opacity-40"
               >

@@ -61,7 +61,7 @@ export function asApprovalMode(v: unknown): CanvasApprovalMode {
 }
 
 /**
- * 画布节点类型：上传图片 / 生图 / 生视频 / 视频拼接。
+ * 画布节点类型：上传图片 / 上传视频 / 上传音频 / 生图 / 生视频 / 视频拼接。
  *
  * 曾经还有一个 `text` 节点专门承载提示词，生成节点靠入边去取。取消了：一次生成要摆两个
  * 节点连一条线，agent 规划和用户操作都多一层；而生成节点本来就有 prompt 字段，让它自己
@@ -72,12 +72,16 @@ export function asApprovalMode(v: unknown): CanvasApprovalMode {
  */
 export type CanvasNodeType =
   | 'image_upload'
+  | 'video_upload'
+  | 'audio_upload'
   | 'image_gen'
   | 'video_gen'
   | 'video_concat';
 
 export const CANVAS_NODE_TYPES: readonly CanvasNodeType[] = [
   'image_upload',
+  'video_upload',
+  'audio_upload',
   'image_gen',
   'video_gen',
   'video_concat',
@@ -93,15 +97,38 @@ export function isCanvasNodeType(v: unknown): v is CanvasNodeType {
 /**
  * 节点端口上流动的资源类型。连线合法性与 outputs 形状都以它为单位。
  * 去掉 text 节点后没有任何节点再产出文本，故这里也不再有 'text'——提示词是生成节点
- * 自己的字段，不是端口上流动的资源。
+ * 自己的字段，不是端口上流动的资源。audio 只来自上传（画布没有生成音频的节点）。
  */
-export type CanvasIoType = 'image' | 'video';
+export type CanvasIoType = 'image' | 'video' | 'audio';
+
+/** 上传节点：每种只收一类文件，输出类型固定（连线合法性因此仍能按节点类型静态判断）。 */
+export type CanvasUploadNodeType =
+  | 'image_upload'
+  | 'video_upload'
+  | 'audio_upload';
+
+/** 上传节点 → 它收的资产类型（= 输出端口类型）。 */
+export const UPLOAD_NODE_ASSET: Record<CanvasUploadNodeType, CanvasIoType> = {
+  image_upload: 'image',
+  video_upload: 'video',
+  audio_upload: 'audio',
+};
+
+export function isUploadNodeType(v: string): v is CanvasUploadNodeType {
+  return v in UPLOAD_NODE_ASSET;
+}
+
+/** 资产类型 → 收它的上传节点（agent 把附件摆上画布时按附件类型选节点）。 */
+export function uploadNodeTypeFor(asset: CanvasIoType): CanvasUploadNodeType {
+  if (asset === 'video') return 'video_upload';
+  return asset === 'audio' ? 'audio_upload' : 'image_upload';
+}
 
 /**
  * 节点的一份输出。统一包成对象数组便于扩展——当前每个节点恒为 0 或 1 份。
- * content 的语义随 type 变：
- *  - image/video → MediaVersion.id（前端经带鉴权的 blob 接口取资产）；
- *  - 例外：image_upload 目前是 MVP 模拟上传，没有 MediaVersion，content 存 assetPath。
+ * content 恒为 MediaVersion.id（前端经带鉴权的 blob 接口取资产）。上传节点同样挂一个
+ * MediaGeneration（model=upload），与生成节点共用 mediaGenerationId。
+ * 早年 MVP 模拟上传的 image_upload 只存了 assetPath、没有版本，不产出任何输出。
  */
 export interface CanvasNodeOutput {
   type: CanvasIoType;
@@ -112,13 +139,9 @@ export interface CanvasNodeOutput {
  * 每种节点的输入/输出契约（后端权威，前端在 canvas/_lib/node-io.ts 镜像）。
  * 入边数量不限（多输入），outputs 也是数组（多输出）——当前生成管线一次只产一份。
  *
- * 生成节点的提示词是它**自己的 prompt 字段**；入边只提供参考图（上游 image 输出）。
- *
- * ⚠️ video_gen 的 video 输入只放开**连线**，不参与生成：底层管线吃不下视频参考——
- * media.processor 的 loadRefs 把参考版本按图片读盘（mimeForExt 不认 .mp4），media.service
- * 的 validateReferences 只放行 generation.type=image，且 Google SDK 的 GenerateVideosParameters
- * 里 image（首帧）与 video（延展源）互斥。故 video 上游可连、可用于串联画布流程，但
- * generate_media_node 会跳过它并在返回值的 skippedVideoInputs 里报出。
+ * 生成节点的提示词是它**自己的 prompt 字段**；入边提供参考素材（上游的 image / video / audio
+ * 输出，按入边顺序）。各类型能收几个看模型目录的 image/video/audio_input_number，超出的部分
+ * 在提交时丢掉（AigcService.submit），首帧模式的视频模型只取第一张图（MediaProcessor.loadRefUrls）。
  *
  * video_concat 是唯一**只吃视频**的节点：把多段上游视频按入边顺序接成一条。
  * 它不调生成模型，走本地 ffmpeg（见 media/video-concat.ts），但产出同样是一个
@@ -129,14 +152,16 @@ export const CANVAS_NODE_IO: Record<
   { inputs: readonly CanvasIoType[]; outputs: readonly CanvasIoType[] }
 > = {
   image_upload: { inputs: [], outputs: ['image'] },
+  video_upload: { inputs: [], outputs: ['video'] },
+  audio_upload: { inputs: [], outputs: ['audio'] },
   image_gen: { inputs: ['image'], outputs: ['image'] },
-  video_gen: { inputs: ['image', 'video'], outputs: ['video'] },
+  video_gen: { inputs: ['image', 'video', 'audio'], outputs: ['video'] },
   video_concat: { inputs: ['video'], outputs: ['video'] },
 };
 
 /**
  * 连线是否合法：source 的任一输出类型被 target 接受即可。
- * target 无输入端口（image_upload）→ 一律非法。
+ * target 无输入端口（上传节点）→ 一律非法。
  */
 export function canConnectNodeTypes(
   source: CanvasNodeType,
@@ -175,7 +200,7 @@ export interface CanvasNodeDto {
   mediaStatus: string | null;
   /**
    * 该节点当前可供下游消费的输出（派生，不落表）。未就绪时为空数组：
-   * image_upload 未上传、生成节点未 done 都是 []。
+   * 上传节点还没传文件、生成节点未 done 都是 []。
    * ⚠️ patch 事件里的 node 不带 media JOIN，生成节点的 outputs 会是 []——
    * 前端 applyPatch 的 upsertNode 已对此做保留旧值兜底，勿依赖 patch 里的 outputs。
    */
@@ -257,6 +282,12 @@ export interface AddNodeOp {
   label?: string;
   prompt?: string;
   assetPath?: string;
+  /** 上传节点建时就挂上已有资产（agent 把对话附件摆上画布）。 */
+  mediaGenerationId?: string;
+  /** 生成节点建时就定好模型与档位（agent 的 add_node，已过 prepareNodeConfig 校验）。 */
+  mediaChannel?: string;
+  mediaModel?: string;
+  mediaParams?: Record<string, string>;
 }
 
 export interface UpdateNodeOp {
@@ -352,17 +383,17 @@ export function shortNodeId(id: string): string {
 }
 
 /**
- * 生成节点从**入边**拿到的素材：只有参考图。提示词是节点自己的 prompt 字段，不走入边
- * （见本文件 CANVAS_NODE_IO 的说明）。agent 工具与用户手动触发共用这一份，
- * 避免两条路各算各的、"agent 生成的和自己点生成的不一样"。
+ * 生成节点从**入边**拿到的素材：上游已就绪的 image / video / audio 输出（目标节点收哪些类型
+ * 见 CANVAS_NODE_IO）。提示词是节点自己的 prompt 字段，不走入边。agent 工具与用户手动触发
+ * 共用这一份，避免两条路各算各的、"agent 生成的和自己点生成的不一样"。
  */
 export interface CanvasGenerationInputs {
-  /** 上游 image_gen 的产物版本 id（作参考图；只有 i2v-only 的视频模型才当首帧用，见 aigc.catalog 的 videoRefRole） */
+  /** 参考素材的版本 id，按入边顺序（提示词里的 Image 1 / Image 2 靠的就是这个顺序）。 */
   referenceVersionIds: string[];
-  /** 被跳过的上游 image_upload 数（MVP 模拟上传，没有可引用的版本 id） */
-  skippedImageUpload: number;
-  /** 被跳过的上游视频数（生成管线不吃视频参考，video 入边只用于串联画布） */
-  skippedVideoInputs: number;
+  /** 同上，按类型计数（给节点设模型时对照模型的各类素材上限）。 */
+  referenceCounts: Record<CanvasIoType, number>;
+  /** 连着但还没有产物的上游数（未生成完 / 还没传文件）：这次不参与生成。 */
+  waitingInputs: number;
 }
 
 export function collectGenerationInputs(
@@ -370,24 +401,23 @@ export function collectGenerationInputs(
   edges: readonly { source: string; target: string }[],
   nodeId: string,
 ): CanvasGenerationInputs {
-  const upstreamIds = edges
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const target = byId.get(nodeId);
+  const accepted = target ? CANVAS_NODE_IO[target.type].inputs : [];
+  // 按入边顺序（同 collectVideoSources），与前端附件栏的序号同源
+  const upstream = edges
     .filter((e) => e.target === nodeId)
-    .map((e) => e.source);
-  const upstream = nodes.filter((n) => upstreamIds.includes(n.id));
+    .map((e) => byId.get(e.source))
+    .filter((n): n is CanvasNodeDto => !!n);
+  const refs = upstream.flatMap((n) =>
+    n.outputs.filter((o) => accepted.includes(o.type)),
+  );
+  const referenceCounts = { image: 0, video: 0, audio: 0 };
+  for (const o of refs) referenceCounts[o.type]++;
   return {
-    // 只收 image_gen：image_upload 的 content 是 assetPath 不是 versionId（MVP 模拟上传），
-    // 传给 media 会被 validateReferences 拒。
-    referenceVersionIds: upstream
-      .filter((n) => n.type === 'image_gen')
-      .flatMap((n) =>
-        n.outputs.filter((o) => o.type === 'image').map((o) => o.content),
-      ),
-    skippedImageUpload: upstream.filter(
-      (n) => n.type === 'image_upload' && n.outputs.length > 0,
-    ).length,
-    skippedVideoInputs: upstream.filter((n) =>
-      n.outputs.some((o) => o.type === 'video'),
-    ).length,
+    referenceVersionIds: refs.map((o) => o.content),
+    referenceCounts,
+    waitingInputs: upstream.filter((n) => n.outputs.length === 0).length,
   };
 }
 

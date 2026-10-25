@@ -19,17 +19,26 @@ import {
   Loader2,
   Maximize2,
   MessagesSquare,
+  Music,
   RotateCcw,
   Trash2,
+  Upload,
 } from "lucide-react";
 import { useContext, useRef, useState } from "react";
 
-import type { CanvasNodeDto, CanvasNodeType } from "@/lib/api";
+import { Button } from "@/components/ui/button";
+import type {
+  CanvasNodeDto,
+  CanvasNodeType,
+  CanvasUploadNodeType,
+} from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 import { useMediaAsset } from "../_hooks/use-media-asset";
+import { useNodeUpload } from "../_hooks/use-node-upload";
 import {
   canConnectNodeTypes,
+  UPLOAD_NODE_ASSET,
   type NodeInputSource,
 } from "../_lib/node-io";
 import {
@@ -46,7 +55,11 @@ import {
 import { NodeTitleField } from "./node-inline-field";
 import { NodeMediaDialog } from "./node-media-dialog";
 import { NodeAttachments } from "./node-attachments";
-import { NodeGenerateButton, NodeModelControls } from "./node-model-controls";
+import {
+  NodeGenerateButton,
+  NodeModelControls,
+  useActiveModel,
+} from "./node-model-controls";
 import { NODE_META, NodeTypeIcon } from "./node-meta";
 import { VideoSequence } from "./video-sequence";
 
@@ -455,7 +468,7 @@ function HeroSkeleton({
   runningLabel = "Generating",
   full,
 }: {
-  kind: "image" | "video";
+  kind: "image" | "video" | "audio";
   /** 不传 = 只是资产在途（已 done，正在拉 blob），不必标注 */
   state?: "generating" | "queued";
   /** 「在跑」的措辞：生成说 Generating，拼接说 Merging */
@@ -465,7 +478,15 @@ function HeroSkeleton({
 }) {
   return (
     <HeroFrame busy full={full}>
-      <div className={kind === "video" ? "aspect-video" : "aspect-[4/3]"} />
+      <div
+        className={
+          kind === "video"
+            ? "aspect-video"
+            : kind === "audio"
+              ? "h-20"
+              : "aspect-[4/3]"
+        }
+      />
       {state && <BusyBadge state={state} runningLabel={runningLabel} />}
     </HeroFrame>
   );
@@ -566,7 +587,12 @@ function HeroMedia({
 }
 
 /** blob mime → 下载文件名后缀。拿不到 mime 时按类型给个合理缺省。 */
-function extFor(mime: string, kind: "image" | "video"): string {
+function extFor(mime: string, kind: "image" | "video" | "audio"): string {
+  if (kind === "audio") {
+    if (mime.includes("mpeg")) return "mp3";
+    if (mime.includes("wav")) return "wav";
+    return "m4a";
+  }
   if (mime.includes("jpeg")) return "jpg";
   if (mime.includes("png")) return "png";
   if (mime.includes("webp")) return "webp";
@@ -619,26 +645,261 @@ function InputSummary({ inputs }: { inputs: NodeInputSource[] }) {
   );
 }
 
-function ImageUploadNode({ data, selected, dragging }: NodeProps) {
-  const d = data as NodeData;
+/** 音频的主视觉：没有画面可看，放文件名 + 一条播放器。 */
+function AudioHero({ url, title }: { url: string; title: string }) {
   return (
-    <NodeShell
-      nodeId={d.id}
-      nodeType="image_upload"
+    <HeroFrame full>
+      <div className="flex flex-col gap-2 p-3">
+        <span className="flex min-w-0 items-center gap-1.5 text-xs text-muted-foreground">
+          <Music className="size-3.5 shrink-0" aria-hidden />
+          <span className="truncate">{title}</span>
+        </span>
+        {/* nodrag：拖进度条时别变成拖卡片 */}
+        <audio
+          src={url}
+          controls
+          preload="metadata"
+          className="nodrag h-8 w-full"
+        />
+      </div>
+    </HeroFrame>
+  );
+}
+
+/**
+ * 上传节点（图片 / 视频 / 音频共用一套）：用户自带的素材，传完即可连给下游作参考。
+ *
+ * 文件挂在节点上（后端落一个上传版本，与生成节点同走 mediaGenerationId），所以传完后的形态
+ * 与生成节点出片一致：卡面只剩画面、双击看大图、可下载；音频没有画面，主视觉换成播放器。
+ * 重传 = 换一个新文件（旧的不删，只是不再挂在这张卡上）。
+ *
+ * 没文件时卡上一枚「选文件」，也可以直接把文件拖到卡上；上传中骨架扫光 + 角标写进度。
+ * 运行期（readOnly）不让传：那时 agent 是唯一写者，服务端也会拒。
+ */
+function UploadNode({
+  data,
+  selected,
+  dragging,
+  nodeType,
+}: {
+  data: NodeData;
+  selected: boolean;
+  dragging: boolean;
+  nodeType: CanvasUploadNodeType;
+}) {
+  const { readOnly, uploadNodeFile } = useContext(CanvasEditorContext);
+  const kind = UPLOAD_NODE_ASSET[nodeType];
+  const upload = useNodeUpload(
+    data.id,
+    nodeType,
+    data.mediaVersionId,
+    uploadNodeFile,
+  );
+  const inputRef = useRef<HTMLInputElement>(null);
+  const [zoom, setZoom] = useState(false);
+  const [dropping, setDropping] = useState(false);
+  const title = data.label?.trim() || NODE_META[nodeType].label;
+
+  const done = data.mediaStatus === "done" && !!data.mediaVersionId;
+  const asset = useMediaAsset(done ? data.mediaVersionId : null);
+  const uploading = upload.isUploading;
+  const canUpload = !readOnly && !uploading;
+
+  const pick = () => inputRef.current?.click();
+  const download = () => {
+    if (asset.status !== "ready") return;
+    const a = document.createElement("a");
+    a.href = asset.url;
+    // 标题缺省就是原始文件名（已带后缀）；改过名的再补一个
+    a.download = /\.[a-z0-9]{2,4}$/i.test(title)
+      ? title
+      : `${title}.${extFor(asset.mime, kind)}`;
+    a.click();
+  };
+
+  let hero: React.ReactNode = null;
+  if (uploading) {
+    // 接口已返回、等节点数据换版本的那一小段按 100% 显示
+    const progress =
+      upload.state.status === "uploading" ? upload.state.progress : 1;
+    hero = (
+      <HeroSkeleton
+        kind={kind}
+        state="generating"
+        runningLabel={`Uploading ${Math.round(progress * 100)}%`}
+        full
+      />
+    );
+  } else if (done) {
+    hero =
+      asset.status === "ready" ? (
+        kind === "audio" ? (
+          <AudioHero url={asset.url} title={title} />
+        ) : (
+          <HeroMedia
+            url={asset.url}
+            kind={kind}
+            title={title}
+            onZoom={() => setZoom(true)}
+          />
+        )
+      ) : asset.status === "error" ? (
+        <HeroLoadError onRetry={asset.retry} />
+      ) : (
+        <HeroSkeleton kind={kind} />
+      );
+  }
+
+  const heroActions =
+    asset.status === "ready" ? (
+      <>
+        {kind !== "audio" && (
+          <CanvasToolbarButton
+            label={kind === "video" ? "Play full size" : "View full size"}
+            icon={<Maximize2 className="size-3.5" />}
+            onClick={() => setZoom(true)}
+          />
+        )}
+        <CanvasToolbarButton
+          label="Download"
+          icon={<Download className="size-3.5" />}
+          onClick={download}
+        />
+        {canUpload && (
+          <CanvasToolbarButton
+            label="Replace file"
+            icon={<Upload className="size-3.5" />}
+            onClick={pick}
+          />
+        )}
+      </>
+    ) : null;
+
+  let status: React.ReactNode = null;
+  if (upload.state.status === "error") {
+    status = (
+      <StatusLine
+        icon={<AlertTriangle className="size-3" aria-hidden />}
+        tone="danger"
+        text={upload.state.message}
+        action={{
+          label: "Retry",
+          icon: <RotateCcw className="size-3" aria-hidden />,
+          onClick: upload.retry,
+        }}
+      />
+    );
+  } else if (!done && !uploading && readOnly) {
+    status = <StatusLine text={`No ${kind} uploaded yet`} />;
+  }
+
+  return (
+    <div
+      // 拖文件到卡上即上传：只认带文件的拖拽，拖动卡片本身不经过这里
+      onDragOver={(e) => {
+        if (!canUpload || !e.dataTransfer.types.includes("Files")) return;
+        e.preventDefault();
+        setDropping(true);
+      }}
+      onDragLeave={() => setDropping(false)}
+      onDrop={(e) => {
+        setDropping(false);
+        const file = e.dataTransfer.files[0];
+        if (!canUpload || !file) return;
+        e.preventDefault();
+        upload.start(file);
+      }}
+      className={cn("rounded-lg", dropping && "ring-2 ring-ring")}
+    >
+      <NodeShell
+        nodeId={data.id}
+        nodeType={nodeType}
+        selected={selected}
+        dragging={dragging}
+        label={data.label ?? ""}
+        mediaOnly={(done && asset.status === "ready") || uploading}
+        hero={hero}
+        heroActions={heroActions}
+        status={status}
+        hasSource
+      >
+        {!done && !uploading && !readOnly && (
+          <div className="flex flex-col items-start gap-1">
+            <Button
+              variant="outline"
+              size="xs"
+              className="nodrag"
+              onClick={(e) => {
+                e.stopPropagation(); // 别顺带把节点选中、弹出编辑面板
+                pick();
+              }}
+            >
+              <Upload className="size-3" aria-hidden />
+              Choose {kind}
+            </Button>
+            <span className="text-[11px] text-muted-foreground">
+              or drop a file here
+            </span>
+          </div>
+        )}
+      </NodeShell>
+      <input
+        ref={inputRef}
+        type="file"
+        accept={upload.accept}
+        className="hidden"
+        onChange={(e) => {
+          const file = e.target.files?.[0];
+          if (file) upload.start(file);
+          // 清空值：同一个文件还能再选一次（重传 / 失败后重选）
+          e.target.value = "";
+        }}
+      />
+      {/* 灯箱挂在 NodeShell 外面，理由同 MediaGenNode */}
+      {asset.status === "ready" && kind !== "audio" && (
+        <NodeMediaDialog
+          open={zoom}
+          onOpenChange={setZoom}
+          url={asset.url}
+          kind={kind}
+          title={title}
+          onDownload={download}
+        />
+      )}
+    </div>
+  );
+}
+
+function ImageUploadNode({ data, selected, dragging }: NodeProps) {
+  return (
+    <UploadNode
+      data={data as NodeData}
       selected={!!selected}
       dragging={!!dragging}
-      label={d.label ?? ""}
-      status={
-        d.assetPath ? undefined : <StatusLine text="No image attached yet" />
-      }
-      hasSource
-    >
-      {d.assetPath && (
-        <p className="truncate font-mono text-[11px] text-muted-foreground">
-          {d.assetPath}
-        </p>
-      )}
-    </NodeShell>
+      nodeType="image_upload"
+    />
+  );
+}
+
+function VideoUploadNode({ data, selected, dragging }: NodeProps) {
+  return (
+    <UploadNode
+      data={data as NodeData}
+      selected={!!selected}
+      dragging={!!dragging}
+      nodeType="video_upload"
+    />
+  );
+}
+
+function AudioUploadNode({ data, selected, dragging }: NodeProps) {
+  return (
+    <UploadNode
+      data={data as NodeData}
+      selected={!!selected}
+      dragging={!!dragging}
+      nodeType="audio_upload"
+    />
   );
 }
 
@@ -664,6 +925,14 @@ function MediaGenNode({
   const { resolveInputs, retryMedia, readOnly } =
     useContext(CanvasEditorContext);
   const inputs = resolveInputs(data.id);
+  // 上游各路这次会不会提交（按所选模型的素材上限算），附件栏据此标序号 / 压淡
+  const { references } = useActiveModel(
+    data.id,
+    kind,
+    data.mediaChannel,
+    data.mediaModel,
+    data.mediaParams,
+  );
   // 提示词是这个节点自己的字段（入边只提供参考图）
   const prompt = data.prompt?.trim() ?? "";
   const title = data.label?.trim() || NODE_META[nodeType].label;
@@ -804,7 +1073,7 @@ function MediaGenNode({
       }
       // 上游素材以附件栏的形式排在提示词上方（取代参数条上的「From …」摘要胶囊——
       // 同一份信息出现两遍，且附件栏能直接看到素材、点了能跳过去）
-      attachments={<NodeAttachments inputs={inputs} />}
+      attachments={<NodeAttachments inputs={inputs} fates={references} />}
       mediaOnly={mediaOnly}
       hero={hero}
       heroActions={heroActions}
@@ -898,8 +1167,15 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
     a.click();
   };
 
-  // 合成后放成片；没合成但有上游就放连续预览；都没有就不占那块高度
-  let hero: React.ReactNode = null;
+  // 合成后放成片；没合成但有上游就放连续预览；都没有就放一块 16:9 的空画框——
+  // 先把成片的形状摆出来，连上视频后预览原地接替，卡片不会忽高忽低
+  let hero: React.ReactNode = (
+    <HeroFrame>
+      <div className="flex aspect-video items-center justify-center text-muted-foreground/60">
+        <Layers className="size-5" aria-hidden />
+      </div>
+    </HeroFrame>
+  );
   if (merged) {
     hero = (
       <HeroMedia
@@ -1035,6 +1311,8 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
 
 export const nodeTypes: NodeTypes = {
   image_upload: ImageUploadNode,
+  video_upload: VideoUploadNode,
+  audio_upload: AudioUploadNode,
   image_gen: ImageGenNode,
   video_gen: VideoGenNode,
   video_concat: VideoConcatNode,

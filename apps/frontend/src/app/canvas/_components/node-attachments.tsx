@@ -1,6 +1,14 @@
 "use client";
 
-import { AlertTriangle, Ban, Clock, Film, ImageOff, Loader2 } from "lucide-react";
+import {
+  AlertTriangle,
+  Ban,
+  Clock,
+  Film,
+  ImageOff,
+  Loader2,
+  Music,
+} from "lucide-react";
 import { useContext, useEffect, useRef } from "react";
 
 import {
@@ -12,7 +20,8 @@ import type { CanvasNodeOutput } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 import { useMediaAsset } from "../_hooks/use-media-asset";
-import type { NodeInputSource } from "../_lib/node-io";
+import type { ReferenceFate } from "../_lib/aigc-params";
+import { isUploadNodeType, type NodeInputSource } from "../_lib/node-io";
 
 import { CanvasEditorContext } from "./flow-canvas";
 import { NodeTypeIcon } from "./node-meta";
@@ -22,53 +31,57 @@ import { NodeTypeIcon } from "./node-meta";
  * 写提示词时要对着素材写（"让 Image 1 里的人回头"），素材得先在眼前。
  *
  * 两种形态，按上游此刻有没有可看的资产分：
- * - 出了图 / 片：资产缩略图。图片角上标序号，对应提交时的参考图顺序
- *   （= 入边顺序，提示词里按 `Image 1` / `Image 2` 引用的就是它）。指上去浮出大图；
- * - 还没产出（或是上传节点——MVP 模拟上传只存路径，拉不到资产）：节点本身——
- *   与缩略图同尺寸的一格（「将来出图的位置」），中间放它此刻的状态（在跑 / 排队 / 失败 / 未生成），
- *   标题与状态在指上去的浮层里。所有附件都是同一尺寸的正方形，排在一起读成同一排素材。
+ * - 有资产（生成的或上传的图 / 视频 / 音频）：缩略图（音频是一枚图标）。会提交的角上标序号，
+ *   按类型各自计数、= 入边顺序，提示词里按 `Image 1` / `Video 1` / `Audio 1` 引用的就是它；
+ *   不会提交的（超出模型上限 / 首帧模式多出来的图）去色压淡，浮层里写明原因。指上去浮出大图；
+ * - 还没产出：节点本身——与缩略图同尺寸的一格（「将来出图的位置」），中间放它此刻的状态
+ *   （在跑 / 排队 / 失败 / 未生成 / 没传文件），标题与状态在指上去的浮层里。
+ *   所有附件都是同一尺寸的正方形，排在一起读成同一排素材。
  *
  * 点任一枚都跳到那个上游节点；指上去（或 Tab 聚焦）时画布上那个节点先描一圈，
  * 点之前就知道要去哪。
  */
-export function NodeAttachments({ inputs }: { inputs: NodeInputSource[] }) {
+export function NodeAttachments({
+  inputs,
+  fates,
+}: {
+  inputs: NodeInputSource[];
+  /** 与 inputs 一一对应：这一路这次会不会提交（见 planReferences） */
+  fates: ReferenceFate[];
+}) {
   if (inputs.length === 0) return null;
-
-  // 参考图序号只数真会被提交的那些：image_gen 产出的图（image_upload 与视频不进生成，
-  // 见后端 collectGenerationInputs）
-  let imageIndex = 0;
-  const items = inputs.map((s) => {
-    const output = previewable(s);
-    const index =
-      output?.type === "image" && s.nodeType === "image_gen"
-        ? ++imageIndex
-        : null;
-    return { source: s, output, index };
-  });
 
   return (
     // 折行而不是横向滚动：上游通常就一两路，全摆出来最直观；横滚会把后几枚藏在面板边缘外
     <ul aria-label="Attachments" className="flex flex-wrap gap-1.5">
-      {items.map(({ source, output, index }) => (
-        <li key={source.nodeId} className="min-w-0">
-          {output ? (
-            <AssetTile source={source} output={output} index={index} />
-          ) : (
-            <NodeTile source={source} />
-          )}
-        </li>
-      ))}
+      {inputs.map((source, i) => {
+        // 有产物就能预览（content 都是版本 id）；每个节点至多一份输出
+        const output = source.outputs[0];
+        const fate = fates[i] ?? { used: false, reason: "pending" };
+        return (
+          <li key={source.nodeId} className="min-w-0">
+            {output ? (
+              <AssetTile source={source} output={output} fate={fate} />
+            ) : (
+              <NodeTile source={source} />
+            )}
+          </li>
+        );
+      })}
     </ul>
   );
 }
 
-/** 上游能拿来预览的那份输出：生成节点产出的图 / 视频（content 是版本 id） */
-function previewable(s: NodeInputSource): CanvasNodeOutput | null {
-  if (s.nodeType === "image_upload") return null;
-  return (
-    s.outputs.find((o) => o.type === "image" || o.type === "video") ?? null
-  );
-}
+/** 不提交的原因，写进浮层（只在去色的那几枚上出现） */
+const SKIP_REASON: Record<
+  Exclude<ReferenceFate, { used: true }>["reason"],
+  string
+> = {
+  pending: "Not ready yet",
+  type: "This node doesn't take this kind of input",
+  frame: "This model starts from one frame — only the first image is used",
+  limit: "Over this model's limit — not used",
+};
 
 /**
  * 指向某枚附件时，在画布上把对应节点描出来。直接切 DOM class、不走 state：
@@ -135,24 +148,27 @@ function Shimmer() {
   );
 }
 
-/** 已出资产的上游：缩略图 / 视频首帧；指上去浮出大图 */
+/** 已出资产的上游：缩略图 / 视频首帧 / 音频图标；指上去浮出大图 */
 function AssetTile({
   source,
   output,
-  index,
+  fate,
 }: {
   source: NodeInputSource;
   output: CanvasNodeOutput;
-  /** 参考图序号；视频等不进生成的附件没有 */
-  index: number | null;
+  fate: ReferenceFate;
 }) {
   const { focusNode } = useContext(CanvasEditorContext);
   const peek = usePeek(source.nodeId);
-  const asset = useMediaAsset(output.content);
+  const audio = output.type === "audio";
+  // 音频没有画面可缩略：不拉 blob，只摆一枚图标
+  const asset = useMediaAsset(audio ? null : output.content);
   const video = output.type === "video";
-  // 视频入边只用于串联画布、不参与生成（后端 CANVAS_NODE_IO）：照样展示，但去色压淡
-  const unused = video;
-  const name = index ? `Image ${index}` : source.title;
+  // 不会提交的照样展示，但去色压淡（原因写在浮层里）
+  const unused = !fate.used;
+  const name = fate.used ? fate.label : source.title;
+  // 角标只写序号：类型由视频 / 音频标记区分，提示词里的叫法在浮层里给全
+  const index = fate.used ? fate.label.split(" ")[1] : null;
 
   return (
     <Tooltip>
@@ -177,7 +193,9 @@ function AssetTile({
             unused && "opacity-60 saturate-0",
           )}
         >
-          {asset.status === "ready" ? (
+          {audio ? (
+            <Music className="size-4 text-muted-foreground" aria-hidden />
+          ) : asset.status === "ready" ? (
             video ? (
               <video
                 src={asset.url}
@@ -211,9 +229,13 @@ function AssetTile({
             {index}
           </span>
         )}
-        {video && (
+        {(video || audio) && (
           <span aria-hidden className={cn(BADGE, "right-1 bottom-1 px-0.5")}>
-            <Film className="size-2.5" />
+            {video ? (
+              <Film className="size-2.5" />
+            ) : (
+              <Music className="size-2.5" />
+            )}
           </span>
         )}
       </TooltipTrigger>
@@ -243,9 +265,9 @@ function AssetTile({
           ))}
         <span className="block px-1.5 pt-1.5 pb-1">
           <span className="block truncate text-xs text-foreground">
-            {index ? (
+            {fate.used ? (
               <>
-                <span className="font-medium">Image {index}</span>
+                <span className="font-medium">{fate.label}</span>
                 <span className="text-muted-foreground"> · {source.title}</span>
               </>
             ) : (
@@ -253,10 +275,10 @@ function AssetTile({
             )}
           </span>
           <span className="block text-[11px] text-muted-foreground">
-            {asset.status === "error"
-              ? "Preview unavailable · click to open the node"
-              : unused
-                ? "Videos aren't used for generation yet"
+            {!fate.used
+              ? SKIP_REASON[fate.reason]
+              : asset.status === "error"
+                ? "Preview unavailable · click to open the node"
                 : "Click to open the node"}
           </span>
         </span>
@@ -271,15 +293,12 @@ function nodeState(s: NodeInputSource): {
   text: string;
   tone?: "danger";
   busy?: boolean;
-  /** 有东西但不进生成（上传节点）：图标去色压淡，与不进生成的视频缩略图一致 */
-  unused?: boolean;
 } {
-  if (s.nodeType === "image_upload") {
+  // 没产物的上传节点：等用户传文件（有文件的走 AssetTile，到不了这里）
+  if (isUploadNodeType(s.nodeType)) {
     return {
       icon: <NodeTypeIcon type={s.nodeType} />,
-      // 上传节点即使有图也不进生成（MVP 模拟上传只存路径，后端跳过），照实说
-      text: s.outputs.length > 0 ? "Not used for generation" : "No image yet",
-      unused: s.outputs.length > 0,
+      text: "No file yet",
     };
   }
   switch (s.mediaStatus) {
@@ -347,9 +366,7 @@ function NodeTile({ source }: { source: NodeInputSource }) {
             <Shimmer />
           </span>
         )}
-        <span className={cn("relative", state.unused && "opacity-60 saturate-0")}>
-          {state.icon}
-        </span>
+        <span className="relative">{state.icon}</span>
         <span
           aria-hidden
           className={cn(HAIRLINE, "group-hover/tile:ring-foreground/25")}

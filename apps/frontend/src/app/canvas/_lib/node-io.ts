@@ -3,6 +3,7 @@ import type {
   CanvasNodeDto,
   CanvasNodeOutput,
   CanvasNodeType,
+  CanvasUploadNodeType,
 } from "@/lib/api";
 
 import type { CanvasState } from "./canvas-state";
@@ -15,15 +16,28 @@ export const CANVAS_NODE_IO: Record<
   CanvasNodeType,
   { inputs: readonly CanvasIoType[]; outputs: readonly CanvasIoType[] }
 > = {
+  // 上传节点：每种只收一类文件，输出类型固定
   image_upload: { inputs: [], outputs: ["image"] },
-  // 入边只提供参考图：提示词是生成节点自己的 prompt 字段，不走连线
+  video_upload: { inputs: [], outputs: ["video"] },
+  audio_upload: { inputs: [], outputs: ["audio"] },
+  // 入边只提供参考素材：提示词是生成节点自己的 prompt 字段，不走连线
   image_gen: { inputs: ["image"], outputs: ["image"] },
-  // video 输入只放开连线（可串联画布），不参与生成：底层管线吃不下视频参考
-  // （详见后端 canvas.types 的 CANVAS_NODE_IO 注释）
-  video_gen: { inputs: ["image", "video"], outputs: ["video"] },
+  // 各类型能收几个看所选模型（image/video/audio_input_number），超出的不提交（见 _lib/aigc-params）
+  video_gen: { inputs: ["image", "video", "audio"], outputs: ["video"] },
   // 唯一只吃视频的节点：把多段上游视频按入边顺序接成一条（本地 ffmpeg，非生成模型）
   video_concat: { inputs: ["video"], outputs: ["video"] },
 };
+
+/** 上传节点 → 它收的资产类型（= 输出端口类型）。 */
+export const UPLOAD_NODE_ASSET: Record<CanvasUploadNodeType, CanvasIoType> = {
+  image_upload: "image",
+  video_upload: "video",
+  audio_upload: "audio",
+};
+
+export function isUploadNodeType(t: CanvasNodeType): t is CanvasUploadNodeType {
+  return t in UPLOAD_NODE_ASSET;
+}
 
 /** 连线是否合法：source 的任一输出类型被 target 接受即可。target 无输入端口 → 一律非法。 */
 export function canConnectNodeTypes(
@@ -47,7 +61,9 @@ export interface NodeInputSource {
 
 /** 节点类型的缺省名：label 为空时顶上，同时也是各处「这是哪类节点」的措辞来源。 */
 export const NODE_TYPE_LABEL: Record<CanvasNodeType, string> = {
-  image_upload: "Upload",
+  image_upload: "Image upload",
+  video_upload: "Video upload",
+  audio_upload: "Audio upload",
   image_gen: "Image",
   video_gen: "Video",
   video_concat: "Merge",

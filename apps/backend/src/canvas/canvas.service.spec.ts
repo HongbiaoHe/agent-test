@@ -8,6 +8,7 @@
  * - moveNode：LWW，不占 revision，广播 move_node
  */
 import { getQueueToken } from '@nestjs/bullmq';
+import { Readable } from 'node:stream';
 import { Test } from '@nestjs/testing';
 import { AbortRegistry } from '../agent/abort-registry';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
@@ -16,6 +17,7 @@ import { CanvasService } from './canvas.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
+import { MediaUploadService } from '../media/media-upload.service';
 import { ErrorCodes } from '../common/errors/error-code';
 import type { AddNodeOp, UpdateNodeOp } from './canvas.types';
 
@@ -52,7 +54,11 @@ describe('CanvasService', () => {
   let tx: MockTx;
   const mockPrisma = {
     $transaction: jest.fn(),
-    canvasNode: { updateMany: jest.fn(), findMany: jest.fn() },
+    canvasNode: {
+      updateMany: jest.fn(),
+      findMany: jest.fn(),
+      findFirst: jest.fn(),
+    },
     canvasSession: {
       findFirst: jest.fn(),
       findMany: jest.fn(),
@@ -72,7 +78,11 @@ describe('CanvasService', () => {
   const mockCheckpointer = { deleteThread: jest.fn() };
   const mockStream = { publish: jest.fn() };
   const mockQueue = { add: jest.fn() };
-  const mockMedia = { cancelByConversation: jest.fn() };
+  const mockMedia = {
+    cancelByConversation: jest.fn(),
+    commitAttachments: jest.fn(),
+  };
+  const mockUploads = { store: jest.fn() };
 
   beforeEach(async () => {
     tx = makeTx();
@@ -87,6 +97,7 @@ describe('CanvasService', () => {
         { provide: StreamService, useValue: mockStream },
         { provide: getQueueToken('canvas-run'), useValue: mockQueue },
         { provide: MediaService, useValue: mockMedia },
+        { provide: MediaUploadService, useValue: mockUploads },
         { provide: CANVAS_ABORTS, useValue: new AbortRegistry() },
         { provide: CHECKPOINTER, useValue: mockCheckpointer },
       ],
@@ -309,7 +320,7 @@ describe('CanvasService', () => {
     );
   });
 
-  it('add_node：image_upload 的 outputs 由 assetPath 派生（没上传则为空数组）', async () => {
+  it('add_node：上传节点的 outputs 来自挂上的上传版本；只有遗留 assetPath 的不产出', async () => {
     tx.canvasSession.findUnique.mockResolvedValue({
       id: 's1',
       status: 'running',
@@ -318,7 +329,7 @@ describe('CanvasService', () => {
     tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
     const base = {
       id: 'n-new',
-      type: 'image_upload',
+      type: 'audio_upload',
       x: 0,
       y: 0,
       version: 0,
@@ -328,28 +339,207 @@ describe('CanvasService', () => {
       mediaGenerationId: null,
     };
 
-    tx.canvasNode.create.mockResolvedValue({ ...base, assetPath: '/a.png' });
-    const uploaded = await service.applyOp('s1', 'agent', {
-      op: 'add_node',
-      type: 'image_upload',
-      assetPath: '/a.png',
+    // agent 摆附件：建时就挂 generation，patch 里立刻带上 JOIN 出来的输出
+    tx.canvasNode.create.mockResolvedValue({
+      ...base,
+      mediaGenerationId: 'g-up',
     });
-    expect(uploaded.patch).toMatchObject({
+    mockPrisma.mediaVersion.findMany.mockResolvedValue([
+      { id: 'v-up', generationId: 'g-up', status: 'done' },
+    ]);
+    const attached = await service.applyOp('s1', 'agent', {
       op: 'add_node',
-      node: { outputs: [{ type: 'image', content: '/a.png' }] },
+      type: 'audio_upload',
+      mediaGenerationId: 'g-up',
+    });
+    expect(tx.canvasNode.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({ mediaGenerationId: 'g-up' }),
+    });
+    expect(attached.patch).toMatchObject({
+      op: 'add_node',
+      node: { outputs: [{ type: 'audio', content: 'v-up' }] },
     });
 
+    // 早年模拟上传的 image_upload 只有 assetPath：拿不出版本 id，当作还没传
     tx.canvasSession.findUnique.mockResolvedValue({
       id: 's1',
       status: 'running',
       revision: 2,
     });
-    tx.canvasNode.create.mockResolvedValue({ ...base, assetPath: null });
-    const blank = await service.applyOp('s1', 'agent', {
+    tx.canvasNode.create.mockResolvedValue({
+      ...base,
+      type: 'image_upload',
+      assetPath: '/a.png',
+    });
+    const legacy = await service.applyOp('s1', 'agent', {
       op: 'add_node',
       type: 'image_upload',
+      assetPath: '/a.png',
     });
-    expect(blank.patch).toMatchObject({ node: { outputs: [] } });
+    expect(legacy.patch).toMatchObject({ node: { outputs: [] } });
+  });
+
+  describe('uploadNodeFile（给上传节点传文件）', () => {
+    const file = {
+      contentType: 'video/mp4',
+      size: 1024,
+      filename: 'clip.mp4',
+      body: Readable.from([]),
+    };
+
+    beforeEach(() => {
+      mockPrisma.canvasSession.findFirst.mockResolvedValue({
+        id: 's1',
+        userId: 'u1',
+        status: 'idle',
+        revision: 3,
+      });
+    });
+
+    it('传完落 done 版本并挂到节点上；没起名的节点用文件名当标题', async () => {
+      mockPrisma.canvasNode.findFirst.mockResolvedValue({
+        type: 'video_upload',
+        label: null,
+      });
+      mockUploads.store.mockResolvedValue({
+        generationId: 'g-1',
+        versionId: 'v-1',
+        filename: 'clip.mp4',
+      });
+      const applyOp = jest.spyOn(service, 'applyOp').mockResolvedValue({
+        revision: 4,
+        patch: { op: 'clear', revision: 4 },
+      });
+
+      const r = await service.uploadNodeFile('s1', 't1', 'u1', 'n1', file);
+
+      expect(mockUploads.store).toHaveBeenCalledWith({
+        ...file,
+        conversationId: 's1',
+        userId: 'u1',
+        status: 'done',
+      });
+      expect(applyOp).toHaveBeenCalledWith('s1', 'user', {
+        op: 'update_node',
+        nodeId: 'n1',
+        mediaGenerationId: 'g-1',
+        label: 'clip.mp4',
+      });
+      expect(r).toEqual({ generationId: 'g-1', versionId: 'v-1' });
+    });
+
+    it('文件类型与节点不符 → CANVAS_UPLOAD_TYPE_MISMATCH，不中转', async () => {
+      mockPrisma.canvasNode.findFirst.mockResolvedValue({
+        type: 'image_upload',
+        label: null,
+      });
+      await expect(
+        service.uploadNodeFile('s1', 't1', 'u1', 'n1', file),
+      ).rejects.toMatchObject({
+        errCode: ErrorCodes.CANVAS_UPLOAD_TYPE_MISMATCH.code,
+      });
+      expect(mockUploads.store).not.toHaveBeenCalled();
+    });
+
+    it('不是上传节点 → CANVAS_UPLOAD_TYPE_MISMATCH，不中转', async () => {
+      mockPrisma.canvasNode.findFirst.mockResolvedValue({
+        type: 'video_gen',
+        label: null,
+      });
+      await expect(
+        service.uploadNodeFile('s1', 't1', 'u1', 'n1', file),
+      ).rejects.toMatchObject({
+        errCode: ErrorCodes.CANVAS_UPLOAD_TYPE_MISMATCH.code,
+      });
+      expect(mockUploads.store).not.toHaveBeenCalled();
+    });
+
+    it('运行期只读 → CANVAS_BUSY，不中转', async () => {
+      mockPrisma.canvasSession.findFirst.mockResolvedValue({
+        id: 's1',
+        userId: 'u1',
+        status: 'running',
+        revision: 3,
+      });
+      await expect(
+        service.uploadNodeFile('s1', 't1', 'u1', 'n1', file),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_BUSY.code });
+      expect(mockUploads.store).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('appendMessage 附件', () => {
+    beforeEach(() => {
+      mockPrisma.canvasSession.findFirst.mockResolvedValue({
+        id: 's1',
+        status: 'idle',
+      });
+      mockPrisma.canvasMessage.count.mockResolvedValue(2);
+    });
+
+    it('附件转正后存进消息 content；只发附件时本轮目标回退成文件名', async () => {
+      const attachment = {
+        versionId: 'v-a',
+        type: 'image',
+        url: 'https://cdn/x.png',
+        filename: 'x.png',
+        contentType: 'image/png',
+      };
+      mockMedia.commitAttachments.mockResolvedValue([attachment]);
+
+      await service.appendMessage(
+        's1',
+        '',
+        't1',
+        'u1',
+        undefined,
+        undefined,
+        undefined,
+        ['v-a'],
+      );
+
+      expect(mockMedia.commitAttachments).toHaveBeenCalledWith('s1', 'u1', [
+        'v-a',
+      ]);
+      expect(mockPrisma.canvasMessage.create).toHaveBeenCalledWith({
+        data: expect.objectContaining({
+          role: 'user',
+          content: { text: '', attachments: [attachment] },
+          seq: 2,
+        }),
+      });
+      expect(mockQueue.add).toHaveBeenCalledWith('run', {
+        sessionId: 's1',
+        goal: 'x.png',
+      });
+    });
+
+    it('正文与附件都没有 → CANVAS_GOAL_EMPTY，不写库', async () => {
+      await expect(
+        service.appendMessage('s1', '  ', 't1', 'u1'),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_GOAL_EMPTY.code });
+      expect(mockPrisma.canvasMessage.create).not.toHaveBeenCalled();
+    });
+
+    it('附件不合法 → 整条拒绝，会话状态不动', async () => {
+      mockMedia.commitAttachments.mockRejectedValue(
+        new Error('MEDIA_ATTACHMENT_INVALID'),
+      );
+      await expect(
+        service.appendMessage(
+          's1',
+          'hi',
+          't1',
+          'u1',
+          undefined,
+          undefined,
+          undefined,
+          ['v-x'],
+        ),
+      ).rejects.toThrow('MEDIA_ATTACHMENT_INVALID');
+      expect(mockPrisma.canvasSession.update).not.toHaveBeenCalled();
+      expect(mockQueue.add).not.toHaveBeenCalled();
+    });
   });
 
   it('add_edge：image_upload → image_gen 合法（参考图），落库并广播', async () => {

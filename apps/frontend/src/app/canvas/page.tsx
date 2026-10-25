@@ -1,12 +1,14 @@
 import {
   ArrowLeft,
   ArrowRight,
+  FileMusic,
+  FileVideoCamera,
   Film,
   Image as ImageIcon,
+  ImageUp,
   Layers,
   LayoutGrid,
   Type,
-  Upload,
 } from "lucide-react";
 import type { Metadata } from "next";
 import Link from "next/link";
@@ -46,8 +48,18 @@ const NODE_NOTES: {
 }[] = [
   {
     type: "image_upload",
-    Icon: Upload,
+    Icon: ImageUp,
     note: "A picture you bring in yourself.",
+  },
+  {
+    type: "video_upload",
+    Icon: FileVideoCamera,
+    note: "A clip you bring in — a reference for video, or a piece to merge.",
+  },
+  {
+    type: "audio_upload",
+    Icon: FileMusic,
+    note: "A track or voice you bring in, for video models that take audio.",
   },
   {
     type: "image_gen",
@@ -57,7 +69,7 @@ const NODE_NOTES: {
   {
     type: "video_gen",
     Icon: Film,
-    note: "Moves it. Same idea: its own prompt, plus upstream images.",
+    note: "Moves it. Same idea: its own prompt, plus upstream images, clips or audio.",
   },
   {
     type: "video_concat",

@@ -17,9 +17,12 @@ import {
   regenerateMedia,
   setCanvasFocus,
   stopCanvas,
+  uploadCanvasNodeFile,
   type CanvasNodeType,
   type CanvasOpInput,
   type CanvasPatch,
+  type MessageAttachment,
+  type UploadOptions,
 } from "@/lib/api";
 import {
   respondCanvasControl,
@@ -208,11 +211,12 @@ export function useCanvas(sessionId: string | null) {
     model?: string,
     thinkingLevel?: string,
     approvalMode?: string,
+    attachments: MessageAttachment[] = [],
   ) {
     if (!sessionId) return;
     setLiveChat((prev) => [
       ...prev,
-      { type: "message", role: "user", payload: { text } },
+      { type: "message", role: "user", payload: { text, attachments } },
     ]);
     setPending(true);
     await appendCanvasMessage(
@@ -221,6 +225,7 @@ export function useCanvas(sessionId: string | null) {
       model,
       thinkingLevel,
       approvalMode,
+      attachments.map((a) => a.versionId),
     );
   }
 
@@ -484,6 +489,26 @@ export function useCanvas(sessionId: string | null) {
   }
 
   /**
+   * 给上传节点传文件（卡片上的选择 / 拖入）。进度与失败由卡片自己显示；传完后端会广播
+   * update_node patch 让节点出图，这里再刷一次快照兜底（patch 漏了也不至于停在「没文件」）。
+   */
+  async function uploadNodeFile(
+    nodeId: string,
+    file: File,
+    opts: UploadOptions,
+  ): Promise<{ versionId: string }> {
+    if (!sessionId) throw new Error("Canvas not loaded");
+    const { versionId } = await uploadCanvasNodeFile(
+      sessionId,
+      nodeId,
+      file,
+      opts,
+    );
+    void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
+    return { versionId };
+  }
+
+  /**
    * 「加入对话」：把选中的节点圈给 agent（传空数组 = 取消圈定）。
    * 会话级持续生效，服务端存在 CanvasSession.focusNodeIds 上，注入上下文时据此裁剪。
    * 成功后重拉快照，画布上的圈定标记与输入框上的提示都跟着刷新。
@@ -551,6 +576,8 @@ export function useCanvas(sessionId: string | null) {
     generateNode,
     /** 触发视频拼接（video_concat 卡片上的 Merge） */
     mergeVideo,
+    /** 给上传节点传文件（卡片上的选择 / 拖入） */
+    uploadNodeFile,
     /** 敏感操作审批模式（会话级，后端已归一化） */
     approvalMode: snapQ.data?.approvalMode ?? "review",
     /** 「加入对话」圈定的节点 id（空 = 关注整块画布） */

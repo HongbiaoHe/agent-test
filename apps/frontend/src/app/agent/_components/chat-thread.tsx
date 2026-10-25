@@ -15,6 +15,9 @@ import { useRef, useState } from "react";
 
 import { ThinkingSwitcher } from "@/components/agent/thinking-switcher";
 import { TokenUsageDialog } from "@/components/agent/token-usage-dialog";
+import { ATTACHMENT_ACCEPT } from "@/components/attachments/attachments";
+import { ComposerAttachments } from "@/components/attachments/composer-attachments";
+import { useAttachments } from "@/components/attachments/use-attachments";
 import { Badge } from "@/components/ui/badge";
 import { JumpToLatest } from "@/components/chat/jump-to-latest";
 import { useChatScroll } from "@/components/chat/use-chat-scroll";
@@ -27,19 +30,17 @@ import {
   type MessageAttachment,
   type SkillKind,
   listCommands,
+  uploadAttachment,
 } from "@/lib/api";
 import type { ThinkingLevel } from "@/lib/thinking-level";
 import { cn } from "@/lib/utils";
 
-import { useAttachments } from "../_hooks/use-attachments";
-import { ATTACHMENT_ACCEPT } from "../_lib/attachments";
 import { modelDisplayName } from "../_lib/models";
 import type { Approval, ThreadItem } from "../_lib/thread";
 import { isSameDay } from "../_lib/time";
 import { ApprovalPanel } from "./approval-panel";
 import { isAskUserApproval, QuestionPanel } from "./question-panel";
 import { ChatMessage } from "./chat-message";
-import { ComposerAttachments } from "./composer-attachments";
 import { DayDivider } from "./day-divider";
 import { MediaGroup } from "./media-card";
 import { ModelSwitcher } from "./model-switcher";
@@ -120,7 +121,7 @@ export function ChatThread({
   const inputRef = useRef<HTMLTextAreaElement>(null);
   const fileInputRef = useRef<HTMLInputElement>(null);
   // 输入框附件：选中即上传；在传的、传失败的都会挡住发送（失败的要先移除）
-  const attachments = useAttachments(conversationId);
+  const attachments = useAttachments(conversationId, uploadAttachment);
   const [dragging, setDragging] = useState(false);
   const attachmentsBlocked =
     attachments.uploading || attachments.items.some((it) => it.status === "error");

@@ -10,6 +10,7 @@ import {
   normalize,
   RawEvent,
 } from '../agent/event-normalizer';
+import { userMessageText } from '../conversations/message-content';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -613,7 +614,11 @@ export class CanvasProcessor extends WorkerHost {
       }
       return {
         role: m.role,
-        content: (m.content as { text?: string })?.text ?? '',
+        // 用户消息带附件时，末尾拼一段「[附件]」清单（类型 / versionId / 文件名，见 userMessageText）
+        content:
+          m.role === 'user'
+            ? userMessageText(m.content)
+            : ((m.content as { text?: string })?.text ?? ''),
       };
     });
   }
