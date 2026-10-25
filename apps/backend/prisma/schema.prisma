@@ -353,6 +353,9 @@ model CanvasEdge {
   session   CanvasSession @relation(fields: [sessionId], references: [id])
   source    String
   target    String
+  // 同一终点的入边顺序（0 起）：拼接节点按它决定成片顺序，生成节点按它给参考素材编号。
+  // 新边接在末尾；重排改它（reorder_inputs op），不靠创建时间——同一步并发连线的落库先后不可控
+  position  Int           @default(0)
   createdAt DateTime      @default(now())
 
   @@unique([sessionId, source, target])

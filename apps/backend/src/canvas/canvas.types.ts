@@ -333,13 +333,24 @@ export interface ClearOp {
   op: 'clear';
 }
 
+/**
+ * 重排某节点的入边：sourceIds 里列出的上游按给定顺序排到最前，没列出的保持原有相对顺序接在后面。
+ * 拼接节点的入边顺序 = 成片顺序；生成节点的入边顺序 = 参考素材编号（Image 1 / Image 2…）。
+ */
+export interface ReorderInputsOp {
+  op: 'reorder_inputs';
+  nodeId: string;
+  sourceIds: string[];
+}
+
 export type CanvasOpInput =
   | AddNodeOp
   | UpdateNodeOp
   | RemoveNodeOp
   | AddEdgeOp
   | RemoveEdgeOp
-  | ClearOp;
+  | ClearOp
+  | ReorderInputsOp;
 
 /** 操作发起方。 */
 export type CanvasActor = 'agent' | 'user';
@@ -356,7 +367,14 @@ export type CanvasPatch =
   | { op: 'remove_node'; nodeId: string; revision: number }
   | { op: 'add_edge'; edge: CanvasEdgeDto; revision: number }
   | { op: 'remove_edge'; edgeId: string; revision: number }
-  | { op: 'clear'; revision: number };
+  | { op: 'clear'; revision: number }
+  /** 某节点入边的新顺序（edgeIds 为该节点的全部入边，按新顺序） */
+  | {
+      op: 'reorder_inputs';
+      nodeId: string;
+      edgeIds: string[];
+      revision: number;
+    };
 
 /** applyOp 的返回：新 revision + 广播出去的 patch。 */
 export interface ApplyOpResult {

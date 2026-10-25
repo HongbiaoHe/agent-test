@@ -37,14 +37,18 @@ const TRIGGER_TOOLS = new Set(['generate_media_node', 'merge_video_node']);
 /** 批内下游等上游落地的上限：上游被拒绝执行（审批里点了取消）时不至于一直挂着。 */
 const BATCH_WAIT_MS = 15_000;
 
+/** 同一条 AI 消息里的一批工具调用（各调用的参数是模型给的原值，节点 id 可能是短 id） */
+interface ToolCallBatch {
+  /** 同批所有调用算出同一个 key（各调用的 id 拼起来），换一批（哪怕节点相同）就是新 key */
+  key: string;
+  calls: { id?: string; name: string; args: Record<string, unknown> }[];
+}
+
 /**
- * 这次工具调用所在的那一批触发：同一条 AI 消息里所有 generate_media_node / merge_video_node
- * 的 nodeId（模型给的原值，可能是短 id）。ToolNode 把当前 state 放在 config.state 里传给工具，
+ * 这次工具调用所在的那一批：ToolNode 把当前 state 放在 config.state 里传给工具，
  * 最后一条消息就是发起这批调用的 AI 消息。拿不到（单测直调、非图内调用）返回 null。
  */
-function triggerBatch(
-  config: unknown,
-): { key: string; nodeIds: string[] } | null {
+function toolCallBatch(config: unknown): ToolCallBatch | null {
   if (typeof config !== 'object' || config === null || !('state' in config)) {
     return null;
   }
@@ -59,15 +63,43 @@ function triggerBatch(
   }
   const last: unknown = state.messages.at(-1);
   if (!isBaseMessage(last) || !isAIMessage(last)) return null;
-  const calls = (last.tool_calls ?? []).filter((c) =>
-    TRIGGER_TOOLS.has(c.name),
-  );
+  const calls = last.tool_calls ?? [];
+  return { key: calls.map((c) => c.id ?? c.name).join('|'), calls };
+}
+
+/** 本次调用自己的 tool call id（ToolNode 放在 config.toolCallId / config.toolCall.id） */
+function ownToolCallId(config: unknown): string | null {
+  if (typeof config !== 'object' || config === null) return null;
+  if ('toolCallId' in config && typeof config.toolCallId === 'string') {
+    return config.toolCallId;
+  }
+  if (
+    'toolCall' in config &&
+    typeof config.toolCall === 'object' &&
+    config.toolCall !== null &&
+    'id' in config.toolCall &&
+    typeof config.toolCall.id === 'string'
+  ) {
+    return config.toolCall.id;
+  }
+  return null;
+}
+
+/**
+ * 这次调用所在的那一批触发：同一条 AI 消息里所有 generate_media_node / merge_video_node
+ * 的 nodeId。不到两个触发调用时返回 null（无需排序）。
+ */
+function triggerBatch(
+  config: unknown,
+): { key: string; nodeIds: string[] } | null {
+  const batch = toolCallBatch(config);
+  if (!batch) return null;
+  const calls = batch.calls.filter((c) => TRIGGER_TOOLS.has(c.name));
   if (calls.length < 2) return null;
   const nodeIds = calls
     .map((c): unknown => c.args.nodeId)
     .filter((id): id is string => typeof id === 'string');
-  // 同批所有调用算出同一个 key（各调用的 id 拼起来），换一批（哪怕节点相同）就是新 key
-  return { key: calls.map((c) => c.id ?? c.name).join('|'), nodeIds };
+  return { key: batch.key, nodeIds };
 }
 
 /** 报错里点名节点：短 id + 标题（与注入的画布状态同一写法，模型能直接拿去用）。 */
@@ -115,6 +147,58 @@ export function createCanvasTools(
   };
 
   /**
+   * 包住 connect_nodes：同一条 AI 消息里指向**同一个节点**的多条连线，按它们在消息里的先后依次落库。
+   *
+   * 入边顺序就是拼接顺序（也是参考素材编号）。这些调用是并行执行的，谁先进 applyOp 的串行队列
+   * 不可控——实测 agent 按 镜1、镜2、镜3 写的连线落成了 镜2、镜3、镜1。所以每条连线先等同批里
+   * 排在它前面、且终点相同的那一条落地，再自己落库。
+   */
+  async function inConnectOrder(
+    config: unknown,
+    targetId: string,
+    run: () => Promise<string>,
+  ): Promise<string> {
+    const batch = toolCallBatch(config);
+    const callId = ownToolCallId(config);
+    if (!batch || !callId) return run();
+    try {
+      const connects = batch.calls.filter((c) => c.name === 'connect_nodes');
+      const mine = connects.findIndex((c) => c.id === callId);
+      const target = mine > 0 ? await resolveId(targetId) : null;
+      let prevId: string | undefined;
+      for (const c of connects.slice(0, Math.max(mine, 0)).reverse()) {
+        const t = c.args.targetId;
+        if (
+          typeof t === 'string' &&
+          target &&
+          (await resolveId(t)) === target
+        ) {
+          prevId = c.id;
+          break;
+        }
+      }
+      if (prevId)
+        await waitLanded([landing(`${batch.key}:call:${prevId}`).done]);
+      return await run();
+    } finally {
+      landing(`${batch.key}:call:${callId}`).land();
+    }
+  }
+
+  /** 等这些落地信号（最多 BATCH_WAIT_MS，前一个调用被拒绝执行时不至于一直挂着） */
+  async function waitLanded(signals: Promise<void>[]): Promise<void> {
+    if (signals.length === 0) return;
+    let timer: NodeJS.Timeout | undefined;
+    await Promise.race([
+      Promise.all(signals),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, BATCH_WAIT_MS);
+      }),
+    ]);
+    clearTimeout(timer);
+  }
+
+  /**
    * 包住触发类工具：同一条 AI 消息里一起调用的生成 / 拼接，在这里排成依赖顺序。
    *
    * 这些调用是并行执行的（每个 tool call 一个任务），下游可能先于上游跑到——那时上游还没挂上
@@ -139,16 +223,7 @@ export function createCanvasTools(
       const upstream = snap.edges
         .filter((e) => e.target === full && siblings.has(e.source))
         .map((e) => landing(`${batch.key}:${e.source}`).done);
-      if (upstream.length > 0) {
-        let timer: NodeJS.Timeout | undefined;
-        await Promise.race([
-          Promise.all(upstream),
-          new Promise<void>((resolve) => {
-            timer = setTimeout(resolve, BATCH_WAIT_MS);
-          }),
-        ]);
-        clearTimeout(timer);
-      }
+      await waitLanded(upstream);
       return await run();
     } finally {
       landing(`${batch.key}:${full}`).land();
@@ -351,30 +426,31 @@ export function createCanvasTools(
   );
 
   const connectNodes = tool(
-    async ({ sourceId, targetId }) => {
-      const [source, target] = await Promise.all([
-        resolveId(sourceId),
-        resolveId(targetId),
-      ]);
-      if (!source || !target) {
-        return JSON.stringify({
-          error: '节点不存在',
-          ...(source ? {} : { sourceId }),
-          ...(target ? {} : { targetId }),
+    async ({ sourceId, targetId }, config) =>
+      inConnectOrder(config, targetId, async () => {
+        const [source, target] = await Promise.all([
+          resolveId(sourceId),
+          resolveId(targetId),
+        ]);
+        if (!source || !target) {
+          return JSON.stringify({
+            error: '节点不存在',
+            ...(source ? {} : { sourceId }),
+            ...(target ? {} : { targetId }),
+          });
+        }
+        const r = await canvas.applyOp(ctx.sessionId, 'agent', {
+          op: 'add_edge',
+          source,
+          target,
         });
-      }
-      const r = await canvas.applyOp(ctx.sessionId, 'agent', {
-        op: 'add_edge',
-        source,
-        target,
-      });
-      const edge = 'edge' in r.patch ? r.patch.edge : null;
-      return JSON.stringify({ edgeId: edge?.id, revision: r.revision });
-    },
+        const edge = 'edge' in r.patch ? r.patch.edge : null;
+        return JSON.stringify({ edgeId: edge?.id, revision: r.revision });
+      }),
     {
       name: 'connect_nodes',
       description:
-        '用有向连线连接两个节点（sourceId → targetId，表示 source 是 target 的上游输入）。入边只提供**参考素材**——提示词是生成节点自己的 prompt 字段，不靠连线。类型契约：image_upload / video_upload / audio_upload 分别输出 image / video / audio；image_gen 接受 image 输出 image；video_gen 接受 image/video/audio 输出 video（各类型能用几个看节点所选模型，超出的不会提交）；video_concat 只吃 video。上传节点没有输入端口，任何指向它的连线都会被拒绝。',
+        '用有向连线连接两个节点（sourceId → targetId，表示 source 是 target 的上游输入）。连向同一节点的多条线按连接先后排序（同一步里按调用先后）：拼接节点的顺序就是成片顺序，生成节点的顺序就是参考素材编号，所以要按叙事顺序连。入边只提供**参考素材**——提示词是生成节点自己的 prompt 字段，不靠连线。类型契约：image_upload / video_upload / audio_upload 分别输出 image / video / audio；image_gen 接受 image 输出 image；video_gen 接受 image/video/audio 输出 video（各类型能用几个看节点所选模型，超出的不会提交）；video_concat 只吃 video。上传节点没有输入端口，任何指向它的连线都会被拒绝。',
       schema: z.object({ sourceId: z.string(), targetId: z.string() }),
     },
   );
@@ -592,11 +668,47 @@ export function createCanvasTools(
    * 触发视频拼接。与 generate_media_node 同一套交互（异步、回填 generationId、卡片自己更新状态），
    * 区别是素材全部是**上游视频**、且不调模型（本地 ffmpeg，见 media/video-concat.ts）。
    */
+  /** 拼接节点当前的顺序（= 成片顺序），写成「短 id「标题」」列表，回给模型核对 */
+  const clipOrder = (
+    snap: Awaited<ReturnType<CanvasService['agentSnapshot']>>,
+    nodeId: string,
+  ) =>
+    snap.edges
+      .filter((e) => e.target === nodeId)
+      .map((e) => snap.nodes.find((n) => n.id === e.source))
+      .filter((n): n is NonNullable<typeof n> => !!n)
+      .map((n) => `${shortNodeId(n.id)}「${n.label ?? n.type}」`);
+
+  /** 按 order 重排拼接节点的入边；order 里有不是它上游的 id 就回错误文案、不改动 */
+  const applyClipOrder = async (
+    snap: Awaited<ReturnType<CanvasService['agentSnapshot']>>,
+    nodeId: string,
+    order: string[],
+  ): Promise<string | null> => {
+    const ids = await Promise.all(order.map(resolveId));
+    const upstream = new Set(
+      snap.edges.filter((e) => e.target === nodeId).map((e) => e.source),
+    );
+    const bad = order.filter((o, i) => {
+      const id = ids[i];
+      return !id || !upstream.has(id);
+    });
+    if (bad.length > 0) {
+      return `这些不是该拼接节点的上游：${bad.join('、')}（当前上游：${clipOrder(snap, nodeId).join('、')}）`;
+    }
+    await canvas.applyOp(ctx.sessionId, 'agent', {
+      op: 'reorder_inputs',
+      nodeId,
+      sourceIds: ids.filter((id): id is string => !!id),
+    });
+    return null;
+  };
+
   const mergeVideoNode = tool(
-    async ({ nodeId }, config) =>
+    async ({ nodeId, order }, config) =>
       inBatch(config, nodeId, async () => {
         const full = await resolveId(nodeId);
-        const snap = await canvas.agentSnapshot(ctx.sessionId);
+        let snap = await canvas.agentSnapshot(ctx.sessionId);
         const node = full ? snap.nodes.find((n) => n.id === full) : undefined;
         if (!node) {
           return JSON.stringify({ error: '节点不存在', nodeId });
@@ -606,6 +718,12 @@ export function createCanvasTools(
             error: '只有 video_concat 节点可触发拼接',
             type: node.type,
           });
+        }
+        // 先按声明的顺序重排，再按入边顺序拼
+        if (order && order.length > 0) {
+          const err = await applyClipOrder(snap, node.id, order);
+          if (err) return JSON.stringify({ error: err });
+          snap = await canvas.agentSnapshot(ctx.sessionId);
         }
         // 顺序 = 入边顺序，与用户在卡片上看到的预览顺序同源（见 collectVideoSources）
         const { sources, pendingSources, missingSources } = collectVideoSources(
@@ -640,6 +758,8 @@ export function createCanvasTools(
           generationId,
           status: 'queued',
           clips: sources.length,
+          // 实际拼接顺序（= 成片顺序），和预期不一致就用 set_clip_order 改后重拼
+          order: clipOrder(snap, node.id),
           // 其中还在生成的片段：拼接会等它们都出结果再开始
           pendingClips: pendingSources,
         });
@@ -647,8 +767,46 @@ export function createCanvasTools(
     {
       name: 'merge_video_node',
       description:
-        '触发某个 video_concat 节点的视频拼接（异步）。把它的**上游视频按入边顺序**接成一条新视频；至少要两段。上游视频还在生成中也可以直接触发：会等它们都出结果再拼（数量见返回值 pendingClips）；可与上游的 generate_media_node 在同一步里一起调用（自动按依赖排序）。上游既没在同一步触发、之前也没触发过（或失败了）会报错。拼接不调用生成模型（本地完成），但产物与生成节点一样是一段视频，可继续连给下游使用。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。',
-      schema: z.object({ nodeId: z.string() }),
+        '触发某个 video_concat 节点的视频拼接（异步）。把它的**上游视频按入边顺序**接成一条新视频；至少要两段。上游视频还在生成中也可以直接触发：会等它们都出结果再拼（数量见返回值 pendingClips）；可与上游的 generate_media_node 在同一步里一起调用（自动按依赖排序）。上游既没在同一步触发、之前也没触发过（或失败了）会报错。拼接不调用生成模型（本地完成），但产物与生成节点一样是一段视频，可继续连给下游使用。触发后立即返回 queued，卡片状态自动更新，不要重复触发同一节点。**入边顺序就是成片顺序**：触发前核对画布状态里该节点的 <拼接顺序>，与叙事顺序不一致时传 order 纠正（返回值 order 是实际拼接顺序）。',
+      schema: z.object({
+        nodeId: z.string(),
+        order: z
+          .array(z.string())
+          .optional()
+          .describe(
+            '可选：按叙事顺序列出上游视频节点 id，先按它重排再拼；列出的排在最前，没列出的保持原顺序接在后面',
+          ),
+      }),
+    },
+  );
+
+  const setClipOrder = tool(
+    async ({ nodeId, order }) => {
+      const full = await resolveId(nodeId);
+      const snap = await canvas.agentSnapshot(ctx.sessionId);
+      const node = full ? snap.nodes.find((n) => n.id === full) : undefined;
+      if (!node) return JSON.stringify({ error: '节点不存在', nodeId });
+      if (node.type !== 'video_concat') {
+        return JSON.stringify({
+          error: '只有 video_concat 节点有拼接顺序',
+          type: node.type,
+        });
+      }
+      const err = await applyClipOrder(snap, node.id, order);
+      if (err) return JSON.stringify({ error: err });
+      return JSON.stringify({
+        ok: true,
+        order: clipOrder(await canvas.agentSnapshot(ctx.sessionId), node.id),
+      });
+    },
+    {
+      name: 'set_clip_order',
+      description:
+        '调整某个 video_concat 节点的拼接顺序（= 成片顺序），不触发拼接。order 按叙事顺序列出上游视频节点 id：列出的排在最前，没列出的保持原顺序接在后面。已拼好的成片要按新顺序重新出片，改完再调 merge_video_node。用户说「把片尾挪到最后」「镜 2 和镜 3 换一下」时用它。',
+      schema: z.object({
+        nodeId: z.string(),
+        order: z.array(z.string()).min(1),
+      }),
     },
   );
 
@@ -699,6 +857,7 @@ export function createCanvasTools(
     setNodeModel,
     generateMediaNode,
     mergeVideoNode,
+    setClipOrder,
     askUser,
   ];
 }

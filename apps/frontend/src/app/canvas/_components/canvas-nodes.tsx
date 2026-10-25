@@ -44,6 +44,7 @@ import {
   CANVAS_NODE_IO,
   canConnectNodeTypes,
   isInFlight,
+  isUploadNodeType,
   UPLOAD_NODE_ASSET,
   upstreamOutputType,
   type NodeInputSource,
@@ -531,6 +532,26 @@ function BusyBadge({
           : "Paused"}
     </span>
   );
+}
+
+/** 拼接面板里一段素材的状态：已有视频不标；没有的说清卡在哪（上传节点是没传文件） */
+function clipState(s: NodeInputSource): string | null {
+  if (s.outputs.some((o) => o.type === "video")) return null;
+  if (isUploadNodeType(s.nodeType)) return "No file yet";
+  switch (s.mediaStatus) {
+    case "queued":
+      return "Queued";
+    case "generating":
+      return s.nodeType === "video_concat" ? "Merging" : "Generating";
+    case "paused":
+      return "Paused";
+    case "failed":
+      return "Failed";
+    case "cancelled":
+      return "Cancelled";
+    default:
+      return "Not generated";
+  }
 }
 
 /**
@@ -1481,9 +1502,14 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
         label={d.label ?? ""}
         composerMeta={<InputsPill inputs={inputs} />}
         // 拼接节点没有提示词：面板里列的是待合成的视频序列（点一条跳到那个节点）
+        // 列出所有连进来的视频类上游（含还没生成的），顺序就是拼接顺序
         clips={inputs
-          .filter((s) => upstreamOutputType(s, ["video"]) === "video")
-          .map((s) => ({ nodeId: s.nodeId, title: s.title }))}
+          .filter((s) => CANVAS_NODE_IO[s.nodeType].outputs.includes("video"))
+          .map((s) => ({
+            nodeId: s.nodeId,
+            title: s.title,
+            state: clipState(s),
+          }))}
         hero={hero}
         heroActions={
           <>

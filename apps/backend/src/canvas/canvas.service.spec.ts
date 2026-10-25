@@ -13,7 +13,7 @@ import { Test } from '@nestjs/testing';
 import { AbortRegistry } from '../agent/abort-registry';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
 import { CANVAS_ABORTS } from './canvas.abort';
-import { CanvasService } from './canvas.service';
+import { CanvasService, clipOrderTag, reorderBySource } from './canvas.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
@@ -32,7 +32,13 @@ interface MockTx {
     update: jest.Mock;
     delete: jest.Mock;
   };
-  canvasEdge: { upsert: jest.Mock; deleteMany: jest.Mock };
+  canvasEdge: {
+    upsert: jest.Mock;
+    deleteMany: jest.Mock;
+    aggregate: jest.Mock;
+    findMany: jest.Mock;
+    update: jest.Mock;
+  };
   canvasOp: { create: jest.Mock };
 }
 
@@ -46,7 +52,14 @@ function makeTx(): MockTx {
       update: jest.fn(),
       delete: jest.fn(),
     },
-    canvasEdge: { upsert: jest.fn(), deleteMany: jest.fn() },
+    canvasEdge: {
+      upsert: jest.fn(),
+      deleteMany: jest.fn(),
+      // 新边接末尾：取该终点入边的最大序号（缺省没有入边）
+      aggregate: jest.fn().mockResolvedValue({ _max: { position: null } }),
+      findMany: jest.fn(),
+      update: jest.fn(),
+    },
     canvasOp: { create: jest.fn() },
   };
 }
@@ -606,6 +619,76 @@ describe('CanvasService', () => {
     expect(tx.canvasEdge.upsert).toHaveBeenCalled();
   });
 
+  it('add_edge：新边接在该终点入边的末尾（最大序号 + 1）', async () => {
+    tx.canvasSession.findUnique.mockResolvedValue({
+      id: 's1',
+      status: 'running',
+      revision: 3,
+    });
+    tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
+    tx.canvasNode.findMany.mockResolvedValue([
+      { id: 'v3', type: 'video_gen' },
+      { id: 'c', type: 'video_concat' },
+    ]);
+    tx.canvasEdge.aggregate.mockResolvedValue({ _max: { position: 1 } });
+    tx.canvasEdge.upsert.mockResolvedValue({
+      id: 'e3',
+      source: 'v3',
+      target: 'c',
+    });
+
+    await service.applyOp('s1', 'agent', {
+      op: 'add_edge',
+      source: 'v3',
+      target: 'c',
+    });
+
+    expect(tx.canvasEdge.aggregate).toHaveBeenCalledWith({
+      where: { sessionId: 's1', target: 'c' },
+      _max: { position: true },
+    });
+    expect(tx.canvasEdge.upsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        create: expect.objectContaining({ position: 2 }) as unknown,
+        update: {},
+      }),
+    );
+  });
+
+  it('reorder_inputs：按给定顺序改序号，只写变了的，patch 带全部入边的新顺序', async () => {
+    tx.canvasSession.findUnique.mockResolvedValue({
+      id: 's1',
+      status: 'running',
+      revision: 3,
+    });
+    tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
+    // 现状：镜2、镜3、镜1（并发连线落乱了）
+    tx.canvasEdge.findMany.mockResolvedValue([
+      { id: 'e2', source: 'v2', position: 0 },
+      { id: 'e3', source: 'v3', position: 1 },
+      { id: 'e1', source: 'v1', position: 2 },
+    ]);
+
+    const r = await service.applyOp('s1', 'agent', {
+      op: 'reorder_inputs',
+      nodeId: 'c',
+      sourceIds: ['v1', 'v2'],
+    });
+
+    // v1、v2 排最前，没列出的 v3 接在后面
+    expect(r.patch).toEqual({
+      op: 'reorder_inputs',
+      nodeId: 'c',
+      edgeIds: ['e1', 'e2', 'e3'],
+      revision: 4,
+    });
+    expect(tx.canvasEdge.update.mock.calls).toEqual([
+      [{ where: { id: 'e1' }, data: { position: 0 } }],
+      [{ where: { id: 'e2' }, data: { position: 1 } }],
+      [{ where: { id: 'e3' }, data: { position: 2 } }],
+    ]);
+  });
+
   it('add_edge：video_gen → image_gen 非法（image_gen 只收 image）', async () => {
     tx.canvasSession.findUnique.mockResolvedValue({
       id: 's1',
@@ -1152,5 +1235,37 @@ describe('CanvasService', () => {
       // 'aaaa' 同时是两个 id 的后缀 → 歧义，不能猜
       await expect(service.resolveNodeId('s1', 'aaaa')).resolves.toBeNull();
     });
+  });
+});
+
+describe('reorderBySource / clipOrderTag', () => {
+  const edges = [
+    { id: 'e2', source: 'v2', target: 'c' },
+    { id: 'e3', source: 'v3', target: 'c' },
+    { id: 'e1', source: 'v1', target: 'c' },
+  ];
+
+  it('列出的按给定顺序排最前，没列出的保持原相对顺序，不存在的 id 忽略、重复的只算一次', () => {
+    expect(
+      reorderBySource(edges, ['v1', 'ghost', 'v1', 'v3']).map((e) => e.id),
+    ).toEqual(['e1', 'e3', 'e2']);
+  });
+
+  it('拼接顺序标注：按入边顺序写「短 id「标题」」，没有入边为空', () => {
+    const nodes = [
+      { id: 'cmnodeaaaaaav1', label: '镜1', type: 'video_gen' },
+      { id: 'cmnodeaaaaaav2', label: null, type: 'video_gen' },
+    ];
+    expect(
+      clipOrderTag(
+        nodes,
+        [
+          { source: 'cmnodeaaaaaav2', target: 'c' },
+          { source: 'cmnodeaaaaaav1', target: 'c' },
+        ],
+        'c',
+      ),
+    ).toBe(' <拼接顺序: aaaav2「video_gen」 → aaaav1「镜1」>');
+    expect(clipOrderTag(nodes, [], 'c')).toBe('');
   });
 });

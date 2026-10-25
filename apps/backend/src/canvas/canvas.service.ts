@@ -535,7 +535,12 @@ export class CanvasService {
       const media = n.mediaStatus ? ` <生成:${n.mediaStatus}>` : '';
       // 只列显式设过的：没设 = 默认模型，不写省 token
       const model = n.mediaModel ? ` <模型:${n.mediaModel}>` : '';
-      return `- ${shortNodeId(n.id)} [${n.type}] "${desc}" @(${Math.round(n.x)},${Math.round(n.y)})${media}${model}`;
+      // 拼接节点标出当前顺序（= 成片顺序），agent 触发前能直接核对，不用从连线列表里推
+      const order =
+        n.type === 'video_concat'
+          ? clipOrderTag(snap.nodes, snap.edges, n.id)
+          : '';
+      return `- ${shortNodeId(n.id)} [${n.type}] "${desc}" @(${Math.round(n.x)},${Math.round(n.y)})${media}${model}${order}`;
     });
     const edgeLines = listedEdges.map(
       (e) => `- ${shortNodeId(e.source)} → ${shortNodeId(e.target)}`,
@@ -616,7 +621,8 @@ export class CanvasService {
       where: { id },
       include: {
         nodes: { orderBy: { createdAt: 'asc' } },
-        edges: { orderBy: { createdAt: 'asc' } },
+        // 入边顺序 = position（同一终点内有效）：拼接顺序、参考素材编号都按它
+        edges: { orderBy: [{ position: 'asc' }, { createdAt: 'asc' }] },
       },
     });
     if (!session) {
@@ -1185,7 +1191,12 @@ export class CanvasService {
             HttpStatus.BAD_REQUEST,
           );
         }
-        // 幂等：同 (sessionId,source,target) 已存在则复用（unique 约束）
+        // 新边接在该终点入边的末尾（applyOp 按会话串行，取最大序号 + 1 不会撞）
+        const last = await tx.canvasEdge.aggregate({
+          where: { sessionId, target: op.target },
+          _max: { position: true },
+        });
+        // 幂等：同 (sessionId,source,target) 已存在则复用（unique 约束），顺序不变
         const edge = await tx.canvasEdge.upsert({
           where: {
             sessionId_source_target: {
@@ -1194,7 +1205,12 @@ export class CanvasService {
               target: op.target,
             },
           },
-          create: { sessionId, source: op.source, target: op.target },
+          create: {
+            sessionId,
+            source: op.source,
+            target: op.target,
+            position: (last._max.position ?? -1) + 1,
+          },
           update: {},
         });
         return { op: 'add_edge', edge: this.toEdgeDto(edge), revision };
@@ -1210,6 +1226,27 @@ export class CanvasService {
         await tx.canvasEdge.deleteMany({ where: { sessionId } });
         await tx.canvasNode.deleteMany({ where: { sessionId } });
         return { op: 'clear', revision };
+      }
+      case 'reorder_inputs': {
+        const edges = await tx.canvasEdge.findMany({
+          where: { sessionId, target: op.nodeId },
+          orderBy: [{ position: 'asc' }, { createdAt: 'asc' }],
+        });
+        const ordered = reorderBySource(edges, op.sourceIds);
+        for (const [position, e] of ordered.entries()) {
+          if (e.position !== position) {
+            await tx.canvasEdge.update({
+              where: { id: e.id },
+              data: { position },
+            });
+          }
+        }
+        return {
+          op: 'reorder_inputs',
+          nodeId: op.nodeId,
+          edgeIds: ordered.map((e) => e.id),
+          revision,
+        };
       }
     }
   }
@@ -1342,4 +1379,35 @@ export class CanvasService {
 function readFocusIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((v): v is string => typeof v === 'string');
+}
+
+/**
+ * 按 sourceIds 重排入边：列出的上游按给定顺序排到最前（不存在的 id 忽略），
+ * 没列出的保持原有相对顺序接在后面。
+ */
+export function reorderBySource<T extends { source: string }>(
+  edges: readonly T[],
+  sourceIds: readonly string[],
+): T[] {
+  const bySource = new Map(edges.map((e) => [e.source, e]));
+  const listed = [...new Set(sourceIds)]
+    .map((id) => bySource.get(id))
+    .filter((e): e is T => !!e);
+  const picked = new Set(listed);
+  return [...listed, ...edges.filter((e) => !picked.has(e))];
+}
+
+/** 拼接顺序标注：`<拼接顺序: 短id「标题」 → …>`（按入边顺序）；没有入边返回空串 */
+export function clipOrderTag(
+  nodes: readonly { id: string; label: string | null; type: string }[],
+  edges: readonly { source: string; target: string }[],
+  nodeId: string,
+): string {
+  const byId = new Map(nodes.map((n) => [n.id, n]));
+  const clips = edges
+    .filter((e) => e.target === nodeId)
+    .map((e) => byId.get(e.source))
+    .filter((n): n is NonNullable<typeof n> => !!n)
+    .map((n) => `${shortNodeId(n.id)}「${n.label ?? n.type}」`);
+  return clips.length > 0 ? ` <拼接顺序: ${clips.join(' → ')}>` : '';
 }

@@ -61,6 +61,15 @@ export function applyPatch(state: CanvasState, patch: CanvasPatch): CanvasState 
       };
     case "clear":
       return { ...state, revision: patch.revision, nodes: [], edges: [] };
+    case "reorder_inputs": {
+      // 该节点的入边按新顺序排到末尾即可：各处都是按 target 过滤后取相对顺序（预览、合并面板、参考编号）
+      const order = new Map(patch.edgeIds.map((id, i) => [id, i]));
+      const others = state.edges.filter((e) => !order.has(e.id));
+      const inputs = state.edges
+        .filter((e) => order.has(e.id))
+        .sort((a, b) => (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0));
+      return { ...state, revision: patch.revision, edges: [...others, ...inputs] };
+    }
   }
 }
 

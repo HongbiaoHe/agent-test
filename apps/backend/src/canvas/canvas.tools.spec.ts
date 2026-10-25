@@ -913,3 +913,165 @@ describe('同一批触发按依赖顺序落地', () => {
     expect(h.createGeneration.mock.calls[1][4]).toEqual(['v-new-1']);
   });
 });
+
+/**
+ * 拼接顺序：入边顺序就是成片顺序。同一步里并发的连线要按调用先后落库；
+ * 拼接可以声明 order 先重排再拼；set_clip_order 只改顺序。
+ */
+describe('拼接顺序', () => {
+  it('同一步里连向同一节点的连线：后发先到也按调用顺序落库', async () => {
+    const landedOrder: string[] = [];
+    const applyOp = jest.fn(
+      (_s: string, _a: string, op: { source: string }) => {
+        landedOrder.push(op.source);
+        return Promise.resolve({
+          revision: landedOrder.length,
+          patch: { op: 'add_edge', edge: { id: `e-${op.source}` } },
+        });
+      },
+    );
+    const tools = createCanvasTools(
+      // cast-at-injection：只用到这两个方法
+      {
+        applyOp,
+        resolveNodeId: jest.fn((_s: string, id: string) => Promise.resolve(id)),
+      } as unknown as CanvasService,
+      {} as unknown as MediaService,
+      { sessionId: 's1', userId: 'u1' },
+    );
+    const connect = tools.find((t) => t.name === 'connect_nodes')!;
+    const calls = ['v1', 'v2', 'v3'].map((src) => ({
+      id: `c-${src}`,
+      name: 'connect_nodes',
+      args: { sourceId: src, targetId: 'concat' },
+    }));
+    const state = {
+      messages: [new AIMessage({ content: '', tool_calls: calls })],
+    };
+    const invoke = (i: number) =>
+      connect.invoke(calls[i].args, {
+        state,
+        toolCall: { ...calls[i], type: 'tool_call' as const },
+      });
+
+    // 倒着发起：v3 最先跑到、v1 最后
+    await Promise.all([invoke(2), invoke(1), invoke(0)]);
+
+    expect(landedOrder).toEqual(['v1', 'v2', 'v3']);
+  });
+
+  describe('merge_video_node 的 order / set_clip_order', () => {
+    const node = (id: string, type: string, label: string, done = true) => ({
+      id,
+      type,
+      label,
+      mediaMock: false,
+      mediaVersionId: done ? `ver-${id}` : null,
+      mediaStatus: done ? 'done' : null,
+      outputs: done ? [{ type: 'video', content: `ver-${id}` }] : [],
+    });
+
+    function harness() {
+      const nodes = [
+        node('cmshot0000001', 'video_gen', '镜1'),
+        node('cmshot0000002', 'video_gen', '镜2'),
+        node('cmshot0000003', 'video_gen', '镜3'),
+        node('cmconcat00001', 'video_concat', '成片', false),
+      ];
+      // 现状：镜2、镜3、镜1
+      let edges = ['cmshot0000002', 'cmshot0000003', 'cmshot0000001'].map(
+        (source) => ({ source, target: 'cmconcat00001' }),
+      );
+      const applyOp = jest.fn(
+        (_s: string, _a: string, op: { op: string; sourceIds?: string[] }) => {
+          if (op.op === 'reorder_inputs' && op.sourceIds) {
+            const listed = op.sourceIds;
+            edges = [
+              ...listed.map((source) => ({ source, target: 'cmconcat00001' })),
+              ...edges.filter((e) => !listed.includes(e.source)),
+            ];
+          }
+          return Promise.resolve({ revision: 1, patch: { op: op.op } });
+        },
+      );
+      const createConcat = jest
+        .fn()
+        .mockResolvedValue({ generationId: 'g-1', versionId: 'v-1' });
+      const tools = createCanvasTools(
+        // cast-at-injection：只用到这几个方法
+        {
+          applyOp,
+          resolveNodeId: jest.fn((_s: string, id: string) =>
+            Promise.resolve(nodes.find((n) => n.id.endsWith(id))?.id ?? null),
+          ),
+          agentSnapshot: jest.fn(() =>
+            Promise.resolve({ mockMedia: false, nodes, edges: [...edges] }),
+          ),
+        } as unknown as CanvasService,
+        { createConcat } as unknown as MediaService,
+        { sessionId: 's1', userId: 'u1' },
+      );
+      return {
+        merge: tools.find((t) => t.name === 'merge_video_node')!,
+        setOrder: tools.find((t) => t.name === 'set_clip_order')!,
+        createConcat,
+        applyOp,
+      };
+    }
+    const parse = (out: unknown) =>
+      JSON.parse(String(out)) as Record<string, unknown>;
+
+    it('带 order：先按叙事顺序重排再拼，返回实际顺序', async () => {
+      const h = harness();
+      const out = parse(
+        await h.merge.invoke({
+          nodeId: 'cmconcat00001',
+          order: ['0000001', '0000002', '0000003'],
+        }),
+      );
+      expect(h.createConcat).toHaveBeenCalledWith('s1', 'u1', [
+        'ver-cmshot0000001',
+        'ver-cmshot0000002',
+        'ver-cmshot0000003',
+      ]);
+      expect(out.order).toEqual([
+        '000001「镜1」',
+        '000002「镜2」',
+        '000003「镜3」',
+      ]);
+    });
+
+    it('不带 order：按现有入边顺序拼，返回值让模型能核对', async () => {
+      const h = harness();
+      const out = parse(await h.merge.invoke({ nodeId: 'cmconcat00001' }));
+      expect(out.order).toEqual([
+        '000002「镜2」',
+        '000003「镜3」',
+        '000001「镜1」',
+      ]);
+    });
+
+    it('set_clip_order：只改顺序不拼；不是上游的 id 拒绝且不改动', async () => {
+      const h = harness();
+      const ok = parse(
+        await h.setOrder.invoke({
+          nodeId: 'cmconcat00001',
+          order: ['0000001'],
+        }),
+      );
+      expect(ok.order).toEqual([
+        '000001「镜1」',
+        '000002「镜2」',
+        '000003「镜3」',
+      ]);
+      expect(h.createConcat).not.toHaveBeenCalled();
+
+      h.applyOp.mockClear();
+      const bad = parse(
+        await h.setOrder.invoke({ nodeId: 'cmconcat00001', order: ['ghost'] }),
+      );
+      expect(String(bad.error)).toContain('不是该拼接节点的上游');
+      expect(h.applyOp).not.toHaveBeenCalled();
+    });
+  });
+});

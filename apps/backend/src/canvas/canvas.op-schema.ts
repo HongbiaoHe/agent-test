@@ -44,5 +44,10 @@ export const canvasOpSchema: z.ZodType<CanvasOpInput> = z.discriminatedUnion(
     }),
     z.object({ op: z.literal('remove_edge'), edgeId: z.string() }),
     z.object({ op: z.literal('clear') }),
+    z.object({
+      op: z.literal('reorder_inputs'),
+      nodeId: z.string(),
+      sourceIds: z.array(z.string()),
+    }),
   ],
 ) as z.ZodType<CanvasOpInput>;

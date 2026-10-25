@@ -918,7 +918,9 @@ export type CanvasPatch =
   | { op: "remove_node"; nodeId: string; revision: number }
   | { op: "add_edge"; edge: CanvasEdgeDto; revision: number }
   | { op: "remove_edge"; edgeId: string; revision: number }
-  | { op: "clear"; revision: number };
+  | { op: "clear"; revision: number }
+  /** 某节点入边的新顺序（拼接顺序 / 参考素材编号）：edgeIds 是它的全部入边，按新顺序 */
+  | { op: "reorder_inputs"; nodeId: string; edgeIds: string[]; revision: number };
 
 /**
  * 手动触发 video_concat 节点的拼接。素材按入边顺序取（与卡片预览顺序同源），

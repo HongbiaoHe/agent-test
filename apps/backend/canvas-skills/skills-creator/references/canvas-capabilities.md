@@ -28,7 +28,8 @@
 | `delete_node(nodeId)` | 删除单个节点 | 搭错优先 update_node 修，不要删了重建 |
 | `clear_canvas()` | 清空整块画布 | 会请用户确认 |
 | `generate_media_node(nodeId)` | 触发 image_gen / video_gen 生成（异步） | 先写好 prompt；审批模式下会请用户确认；触发后立即返回 queued，不要轮询或重复触发 |
-| `merge_video_node(nodeId)` | 触发 video_concat 拼接（异步） | 上游视频在生成中也能触发，会等它们完成再拼 |
+| `merge_video_node(nodeId, order?)` | 触发 video_concat 拼接（异步） | 上游视频在生成中也能触发，会等它们完成再拼；`order` 可按叙事顺序列出上游节点 id，先重排再拼；返回实际拼接顺序 |
+| `set_clip_order(nodeId, order)` | 调整拼接顺序（= 成片顺序） | 只改顺序不拼；已拼好的要再调 merge_video_node 重拼 |
 | `ask_user(question, options?)` | 向用户提问并等待回答 | 只问关键选择 |
 | `read_file(path)` | 读文件 | 读技能：`/skills/<名>/SKILL.md` |
 | `save_skill(name, description, instructions)` | 保存 / 覆盖用户技能 | 只在创建或修改技能时用 |
@@ -52,7 +53,7 @@
 1. 关键帧：每个镜头一个 `image_gen`，写好画面提示词（主体 + 场景 + 构图 + 光线 + 风格）；需要统一角色 / 产品时，先做一张设定图，再让各镜头关键帧以它为参考（图生图）。
 2. 动起来：每个镜头一个 `video_gen`，从对应关键帧连一条线作参考图，提示词写动作、运镜、节奏与时长感。
 3. 续写：需要延续上一段动作时，再加一个 `video_gen`，以上一段视频为参考（模型要支持视频参考）。
-4. 成片：一个 `video_concat`，把各镜头视频按叙事顺序依次连进来；分段拼好的片段还可以再连进总拼接。
+4. 成片：一个 `video_concat`，把各镜头视频按叙事顺序依次连进来（入边顺序 = 成片顺序，画布状态里标为 `<拼接顺序: …>`）；触发前核对顺序，不对就给 merge_video_node 传 `order`。分段拼好的片段还可以再连进总拼接。
 5. 模型与档位：建生成节点时用 `model` / `params` 一次定好，同一条片子里各镜头的画幅与清晰度保持一致。
 6. 触发：结构全部搭好后，在同一步里一次触发所有生成和拼接节点。
 7. 布局：从左到右按依赖层级排开（关键帧 → 视频 → 拼接），同一层纵向错开；竖版画幅的卡片更高，纵向间距要留够。
