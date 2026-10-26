@@ -262,6 +262,67 @@ describe('CanvasService', () => {
       // 最右的 C 在 x=800，加卡宽 280 与间距 40 → 右侧安全线 1120
       expect(text).toContain('右侧 x ≥ 1120');
     });
+
+    /**
+     * 卡面 = 满宽画面，高度随画幅：9:16 的卡实测 457px，按固定 220 估高时下方安全线
+     * 落在卡片中段，agent 往下排的节点就叠上去了。
+     */
+    describe('下方安全线按节点画幅估高', () => {
+      function seedOne(
+        type: string,
+        mediaParams: Record<string, string> | null,
+      ) {
+        mockPrisma.canvasSession.findUnique.mockResolvedValue({
+          id: 's1',
+          title: 't',
+          status: 'idle',
+          model: null,
+          thinkingLevel: null,
+          revision: 1,
+          focusNodeIds: null,
+          nodes: [
+            {
+              id: 'aaaaaa1',
+              type,
+              x: 0,
+              y: 0,
+              version: 1,
+              label: 'A',
+              prompt: null,
+              assetPath: null,
+              mediaGenerationId: null,
+              mediaParams,
+            },
+          ],
+          edges: [],
+        });
+        mockPrisma.mediaVersion.findMany.mockResolvedValue([]);
+      }
+
+      it('9:16：卡高 ≈ 256×16/9 + 边框 = 458，下方安全线 498', async () => {
+        seedOne('video_gen', { aspect_ratio: '9:16' });
+        const text = await service.agentCanvasContext('s1');
+        expect(text).toContain('下方 y ≥ 498');
+      });
+
+      it('16:9：卡比旧估高矮，仍按 220 留位，下方安全线 260', async () => {
+        seedOne('image_gen', { aspect_ratio: '16:9' });
+        const text = await service.agentCanvasContext('s1');
+        expect(text).toContain('下方 y ≥ 260');
+      });
+
+      it('拿不到画幅（上传 / 拼接 / 未设画幅）按 9:16 保守估', async () => {
+        seedOne('video_concat', null);
+        const text = await service.agentCanvasContext('s1');
+        expect(text).toContain('下方 y ≥ 498');
+      });
+
+      it('同批纵向间隔按画幅给出', async () => {
+        seedOne('image_gen', { aspect_ratio: '16:9' });
+        const text = await service.agentCanvasContext('s1');
+        expect(text).toContain('9:16 ≥ 498px');
+      });
+    });
   });
 
   it('运行期 user 结构变更被拒（CANVAS_BUSY）', async () => {

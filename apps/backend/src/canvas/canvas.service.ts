@@ -513,9 +513,17 @@ export class CanvasService {
   async agentCanvasContext(sessionId: string): Promise<string> {
     const snap = await this.buildSnapshot(sessionId);
     const W = 280;
-    // 媒体型卡片改成「封面满宽置顶」后变高（128px 封面 + 标题/提示词约 60px），H 跟着抬到 220
+    // 卡面 = 满宽画面（w-64 = 256px），高度随画幅：9:16 实测 457px，统一按 220 估会叠在一起。
+    // 画幅取档位里的 aspect_ratio；上传 / 拼接 / 没设画幅的拿不到，按常见画幅里最高的 9:16 保守估。
+    // H 是下限：横版卡比它矮，仍按 220 留位，不压缩原有间距
     const H = 220;
     const GAP = 40;
+    const cardH = (aspect: number) => Math.max(H, Math.ceil(256 / aspect) + 2);
+    const heightOf = (n: CanvasNodeDto) =>
+      cardH(parseAspect(n.mediaParams?.aspect_ratio) ?? 9 / 16);
+    const strides =
+      `16:9 ≥ ${cardH(16 / 9) + GAP}px、1:1 ≥ ${cardH(1) + GAP}px、` +
+      `9:16 ≥ ${cardH(9 / 16) + GAP}px（画幅未定按 9:16）`;
 
     // 用户圈定了节点（「加入对话」）→ 本段只列这些节点。大画布上用户往往只想让 agent 动其中几张卡，
     // 全量列出既淹没重点、又每次变化都要重付一份长快照。
@@ -549,18 +557,18 @@ export class CanvasService {
     // 安全区始终按**全部**节点算：只按圈中的算会让新节点压在圈外的节点上
     let safe: string;
     if (snap.nodes.length === 0) {
-      safe = `画布为空。从 (40, 40) 开始布局：向右每列 +${W + GAP}px、向下每行 +${H + GAP}px。`;
+      safe = `画布为空。从 (40, 40) 开始布局：向右每列 +${W + GAP}px，向下每行按该行节点画幅：${strides}。`;
     } else {
       const rightX =
         Math.round(Math.max(...snap.nodes.map((n) => n.x + W))) + GAP;
       const belowY =
-        Math.round(Math.max(...snap.nodes.map((n) => n.y + H))) + GAP;
+        Math.round(Math.max(...snap.nodes.map((n) => n.y + heightOf(n)))) + GAP;
       const topY = Math.round(Math.min(...snap.nodes.map((n) => n.y)));
       const leftX = Math.round(Math.min(...snap.nodes.map((n) => n.x)));
       safe =
         `现有节点占据区域：x∈[${leftX}, ${rightX - GAP}]、y∈[${topY}, ${belowY - GAP}]。\n` +
         `**新增节点必须放到安全区**（否则会与现有节点重叠）：右侧 x ≥ ${rightX}，或下方 y ≥ ${belowY}。\n` +
-        `同批多个新节点之间：横向间隔 ≥ ${W + GAP}px、纵向间隔 ≥ ${H + GAP}px。` +
+        `同批多个新节点之间：横向间隔 ≥ ${W + GAP}px；纵向间隔按上面那个节点的画幅：${strides}。` +
         `建议：接着现有节点向右新开一列，从 (${rightX}, ${topY}) 起向下依次排列。`;
     }
 
@@ -1376,6 +1384,16 @@ export class CanvasService {
  * Prisma 的 Json 列读出来是 JsonValue，收窄成 string[]（非数组 / 混类型一律当没圈定）。
  * 不用断言：外部数据的形状要在边界上用守卫收窄（CLAUDE.md §8）。
  */
+/**
+ * 档位画幅（`9:16` / `9x16`）→ 宽 / 高；认不出（`auto`、没设）返回 null。
+ * 夹到 1:2 ～ 4:1，与前端占位画框（placeholderAspect）一致。
+ */
+function parseAspect(value: string | undefined): number | null {
+  const m = /^(\d+(?:\.\d+)?)\s*[:x]\s*(\d+(?:\.\d+)?)$/i.exec(value ?? '');
+  if (!m || Number(m[2]) <= 0) return null;
+  return Math.min(Math.max(Number(m[1]) / Number(m[2]), 1 / 2), 4);
+}
+
 function readFocusIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((v): v is string => typeof v === 'string');
