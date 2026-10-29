@@ -125,6 +125,15 @@ export function LandingNav({ isLoggedIn }: { isLoggedIn: boolean }) {
             >
               Canvas
             </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="hidden rounded-full sm:inline-flex"
+              nativeButton={false}
+              render={<Link href="/lab" />}
+            >
+              Lab
+            </Button>
             <ThemeToggle />
             {isLoggedIn ? (
               <Button

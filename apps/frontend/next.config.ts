@@ -3,6 +3,8 @@ import type { NextConfig } from "next";
 const BACKEND = process.env.BACKEND_INTERNAL_URL ?? "http://localhost:3101";
 
 const nextConfig: NextConfig = {
+  // Lab 的 3D 页面要求「无任何 UI 元素」，开发态左下角的 Next 指示器也一并关掉
+  devIndicators: false,
   // 允许经 ngrok 隧道域名访问 dev 资源（/_next/*）。否则 Next 16 dev 默认拦截跨源请求，
   // 导致隧道下页面拿不到 JS chunk、无法 hydrate（表现为按钮一直禁用、点击无反应）。
   // 通配子域：随机/固定 ngrok 域名均无需改配置重启（官方文档确认支持 *.）。

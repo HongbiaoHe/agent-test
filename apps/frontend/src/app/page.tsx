@@ -11,6 +11,7 @@ import { ThinkingGrid } from "./canvas/_components/thinking-indicator";
 import DotField from "./_components/dot-field";
 import { LandingFeatures } from "./_components/landing-features";
 import { LandingHero } from "./_components/landing-hero";
+import { LandingLab } from "./_components/landing-lab";
 import { LandingNav } from "./_components/landing-nav";
 import { ScrollReveal } from "./_components/scroll-reveal";
 
@@ -519,6 +520,11 @@ export default async function HomePage() {
         </div>
       </ScrollReveal>
 
+      {/* Lab：产品之外的实验展架，单独一个可视化入口 + 分类目录。 */}
+      <ScrollReveal id="lab" className="border-t border-border">
+        <LandingLab />
+      </ScrollReveal>
+
       {/* Final CTA：用 GlowBorder 强调收口。 */}
       <ScrollReveal className="border-t border-border bg-muted/30">
         <div className="mx-auto w-full max-w-6xl px-4 py-20 sm:px-6 sm:py-28">
@@ -549,7 +555,7 @@ export default async function HomePage() {
 
       <footer className="border-t border-border bg-muted/30">
         <div className="mx-auto w-full max-w-6xl px-4 py-12 sm:px-6 sm:py-16">
-          <div className="grid gap-8 sm:grid-cols-3">
+          <div className="grid gap-8 sm:grid-cols-2 lg:grid-cols-4">
             {/* Brand */}
             <div>
               <div className="flex items-center gap-2">
@@ -567,42 +573,20 @@ export default async function HomePage() {
               </p>
             </div>
 
-            {/* Framework links */}
+            {/* 产品入口：按「用 / 搭 / 逛」归类 */}
             <div>
               <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Powered by
+                Explore
               </h3>
               <ul className="space-y-2 text-sm">
-                {[
-                  ["deepagents (LangGraph)", "https://langchain-ai.github.io/langgraphjs/"],
-                  ["Gemini / DeepSeek", "https://deepmind.google/gemini/"],
-                  ["NestJS", "https://nestjs.com/"],
-                  ["Next.js", "https://nextjs.org/"],
-                  ["Prisma · MySQL", "https://prisma.io/"],
-                  ["Redis · BullMQ", "https://redis.io/"],
-                  ["LangSmith", "https://smith.langchain.com/"],
-                  ["Daytona", "https://daytona.io/"],
-                ].map(([name, href]) => (
-                  <li key={name}>
-                    <a
-                      href={href}
-                      target="_blank"
-                      rel="noopener noreferrer"
-                      className="text-muted-foreground transition-colors hover:text-foreground"
-                    >
-                      {name}
-                    </a>
-                  </li>
-                ))}
-              </ul>
-            </div>
-
-            {/* Resources */}
-            <div>
-              <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
-                Links
-              </h3>
-              <ul className="space-y-2 text-sm">
+                <li>
+                  <Link
+                    href={isLoggedIn ? "/agent" : "/login?next=/agent"}
+                    className="text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    Agent workspace
+                  </Link>
+                </li>
                 <li>
                   {/* 介绍页是公开的（middleware 只放行精确 /canvas），页脚照直链就行 */}
                   <Link
@@ -614,12 +598,29 @@ export default async function HomePage() {
                 </li>
                 <li>
                   <Link
+                    href="/lab"
+                    className="text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    Lab experiments
+                  </Link>
+                </li>
+                <li>
+                  <Link
                     href="/login"
                     className="text-muted-foreground transition-colors hover:text-foreground"
                   >
                     Sign in
                   </Link>
                 </li>
+              </ul>
+            </div>
+
+            {/* 文档 / 生态资源 */}
+            <div>
+              <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Resources
+              </h3>
+              <ul className="space-y-2 text-sm">
                 <li>
                   <a
                     href="https://next-auth.js.org/"
@@ -650,6 +651,36 @@ export default async function HomePage() {
                     Tailwind CSS
                   </a>
                 </li>
+              </ul>
+            </div>
+
+            {/* Framework links */}
+            <div>
+              <h3 className="mb-3 text-xs font-semibold uppercase tracking-wider text-muted-foreground">
+                Powered by
+              </h3>
+              <ul className="space-y-2 text-sm">
+                {[
+                  ["deepagents (LangGraph)", "https://langchain-ai.github.io/langgraphjs/"],
+                  ["Gemini / DeepSeek", "https://deepmind.google/gemini/"],
+                  ["NestJS", "https://nestjs.com/"],
+                  ["Next.js", "https://nextjs.org/"],
+                  ["Prisma · MySQL", "https://prisma.io/"],
+                  ["Redis · BullMQ", "https://redis.io/"],
+                  ["LangSmith", "https://smith.langchain.com/"],
+                  ["Daytona", "https://daytona.io/"],
+                ].map(([name, href]) => (
+                  <li key={name}>
+                    <a
+                      href={href}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="text-muted-foreground transition-colors hover:text-foreground"
+                    >
+                      {name}
+                    </a>
+                  </li>
+                ))}
               </ul>
             </div>
           </div>
