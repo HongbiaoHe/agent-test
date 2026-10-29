@@ -11,6 +11,7 @@
 - 首页入口：悬浮导航 `Lab`、首页「AgentSpark Lab」区块、页脚 `Explore > Lab experiments`
 - 当前实现：
   - [`/lab/rainy-store`](./rainy-store/page.tsx) —— 雨夜便利店街角微缩 3D 场景
+  - [`/lab/island`](./island/page.tsx) —— 低多边形悬浮岛（glTF + 程序化动物动画）
 
 ## 约定
 

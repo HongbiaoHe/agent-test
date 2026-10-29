@@ -27,4 +27,14 @@ export const LAB_ENTRIES: LabEntry[] = [
     tags: ["Three.js", "三渲二", "微缩模型", "入场动画"],
     preview: "/lab/rainy-store.jpg",
   },
+  {
+    id: "002",
+    title: "低多边形悬浮岛",
+    description:
+      "程序化建模的低多边形悬浮岛：岛体、树、飞鸟、山羊与奶牛全部由 bpy 在对话里生成后导出 glTF。四套配色可实时切换，动物带对角步态行走、低头吃草与甩尾；拖拽旋转、滚轮缩放查看。",
+    href: "/lab/island",
+    category: "3D 场景",
+    tags: ["Three.js", "React Three Fiber", "glTF", "程序化建模"],
+    preview: "/lab/island.jpg",
+  },
 ];
