@@ -18,6 +18,7 @@ import { TokenUsageDialog } from "@/components/agent/token-usage-dialog";
 import { ATTACHMENT_ACCEPT } from "@/components/attachments/attachments";
 import { ComposerAttachments } from "@/components/attachments/composer-attachments";
 import { useAttachments } from "@/components/attachments/use-attachments";
+import { McpAppCard, McpReconnectCard } from "@/components/mcp";
 import { Badge } from "@/components/ui/badge";
 import { JumpToLatest } from "@/components/chat/jump-to-latest";
 import { useChatScroll } from "@/components/chat/use-chat-scroll";
@@ -39,6 +40,8 @@ import { modelDisplayName } from "../_lib/models";
 import type { Approval, ThreadItem } from "../_lib/thread";
 import { isSameDay } from "../_lib/time";
 import { ApprovalPanel } from "./approval-panel";
+import { AskUserAnswers } from "./ask-user-answers";
+import { BackgroundTaskCard, TaskNotificationRow } from "./background-task-card";
 import { isAskUserApproval, QuestionPanel } from "./question-panel";
 import { ChatMessage } from "./chat-message";
 import { DayDivider } from "./day-divider";
@@ -371,6 +374,27 @@ export function ChatThread({
                     </div>
                   ) : r.item.kind === "preview" ? (
                     <PreviewCard key={r.item.id} spec={r.item.spec} />
+                  ) : r.item.kind === "mcp_app" ? (
+                    <McpAppCard
+                      key={r.item.id}
+                      app={r.item.app}
+                      conversationId={conversationId ?? undefined}
+                      toolCallId={r.item.callId}
+                      busy={busy}
+                      onSendMessage={(text) => onSend(text, [])}
+                    />
+                  ) : r.item.kind === "mcp_auth" ? (
+                    <McpReconnectCard key={r.item.id} auth={r.item.auth} />
+                  ) : r.item.kind === "bg_task" ? (
+                    <BackgroundTaskCard
+                      key={r.item.id}
+                      conversationId={conversationId as string}
+                      taskId={r.item.taskId}
+                    />
+                  ) : r.item.kind === "qa" ? (
+                    <AskUserAnswers key={r.item.id} answers={r.item.answers} />
+                  ) : r.item.kind === "notification" ? (
+                    <TaskNotificationRow key={r.item.id} notification={r.item.notification} />
                   ) : r.item.kind === "reasoning" ? (
                     <ReasoningBlock key={r.item.id} item={r.item} />
                   ) : r.item.kind === "turn" ? (
