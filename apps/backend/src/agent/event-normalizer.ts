@@ -46,6 +46,9 @@ function normalizeMessage(data: unknown): RawEvent | null {
         content: msg.content,
         status: msg.status,
         toolCallId: msg.tool_call_id,
+        // MCP 工具的 App 卡片数据 / 需重新授权提示（见 mcp-agent-tools）：随 tool_end 落库，刷新可重建卡片。
+        // 只透出这两个约定字段，其它工具的 artifact 不进事件（可能很大且前端用不到）。
+        ...mcpArtifactFields(msg.artifact),
       },
     };
   }
@@ -64,6 +67,16 @@ function normalizeMessage(data: unknown): RawEvent | null {
     return msg.text ? { type: 'token', payload: { text: msg.text } } : null;
   }
   return null;
+}
+
+function mcpArtifactFields(artifact: unknown): Record<string, unknown> {
+  if (!artifact || typeof artifact !== 'object') return {};
+  const out: Record<string, unknown> = {};
+  if ('mcpApp' in artifact && artifact.mcpApp) out.mcpApp = artifact.mcpApp;
+  if ('mcpAuthRequired' in artifact && artifact.mcpAuthRequired) {
+    out.mcpAuthRequired = artifact.mcpAuthRequired;
+  }
+  return out;
 }
 
 /** Gemini 的思考块：`{ type: 'thinking', thinking: '...' }`（正文在 thinking 字段，不是 text）。 */

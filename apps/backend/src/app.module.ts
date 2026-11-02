@@ -13,6 +13,8 @@ import { AuthModule } from './auth/auth.module';
 import { CanvasModule } from './canvas/canvas.module';
 import { CommandsModule } from './commands/commands.module';
 import { ConversationsModule } from './conversations/conversations.module';
+import { BackgroundModule } from './background/background.module';
+import { McpModule } from './mcp/mcp.module';
 import { MediaModule } from './media/media.module';
 import { SandboxModule } from './sandbox/sandbox.module';
 import { SkillsModule } from './skills/skills.module';
@@ -48,6 +50,8 @@ import { WorkerModule } from './worker/worker.module';
     RedisModule,
     CommandsModule,
     SkillsModule,
+    McpModule,
+    BackgroundModule,
     EventsModule,
     WorkerModule,
     ConversationsModule,

@@ -71,6 +71,9 @@ model Conversation {
   pinnedAt      DateTime?
   // 软删除时刻；非 NULL = 已删除：列表 / 详情 / 订阅 / 续聊都不再可见，数据留库可恢复
   deletedAt     DateTime?
+  // MCP App 经 ui/update-model-context 交给模型的上下文：{ [toolCallId]: { server, text, at } }，
+  // 每个 App 只留最新一份，下一轮运行时注入系统提示（见 mcp/mcp-prompt.ts）
+  mcpAppContext Json?
   tenantId      String
   userId        String
   messages      Message[]
@@ -428,4 +431,69 @@ model MediaAnalysis {
   outputTokens Int          @default(0)
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
+}
+
+/// 用户接入的远程 MCP server（/settings/mcp）。只支持 Streamable HTTP；鉴权只有 none / oauth 两种。
+/// 工具列表落快照（tools），agent 每轮按快照装配工具、调用时才短连 server（见 mcp 模块）。
+model McpServer {
+  id               String    @id @default(cuid())
+  userId           String
+  /// 工具名前缀（<slug>__<tool>），同一用户内唯一
+  slug             String    @db.VarChar(32)
+  name             String    @db.VarChar(200)
+  url              String    @db.VarChar(512)
+  /// 推荐连接器的 key（如 buzzvideo）；自定义连接器为 null
+  presetKey        String?   @db.VarChar(64)
+  enabled          Boolean   @default(true)
+  /// disconnected | connected | needs_auth | error
+  status           String    @default("disconnected") @db.VarChar(32)
+  lastError        String?   @db.Text
+  /// none | oauth（探测时 server 回 401 即转 oauth）
+  authType         String    @default("none") @db.VarChar(16)
+  /// AES-256-GCM 密文：DCR 注册得到的 client 信息 + 注册时的 redirect_uri
+  oauthClient      String?   @db.Text
+  /// AES-256-GCM 密文：access / refresh token
+  oauthTokens      String?   @db.Text
+  /// initialize 返回的 serverInfo（title / icons / version / websiteUrl）
+  serverInfo       Json?
+  /// initialize 返回的 instructions（注入系统提示前截断）
+  instructions     String?   @db.Text
+  /// tools/list 快照（含清洗后的 schema、annotations、UI 元数据）
+  tools            Json?
+  /// 用户为每个工具设的权限覆盖：{ [toolName]: allow | ask | deny }；没设的按 readOnlyHint 推默认
+  toolPermissions  Json?
+  toolsRefreshedAt DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([userId, slug])
+  @@index([userId])
+}
+
+/// 会话的后台任务（agent 用 watch_until / run_in_background / schedule_wakeup 创建）。
+/// 由 bg-task 队列在服务端推进，不占模型调用；结束后（notify=true）往会话写一条通知并唤醒 agent。
+model BackgroundTask {
+  id             String    @id @default(cuid())
+  conversationId String
+  userId         String
+  /// watch（轮询 MCP 工具直到条件满足）| command（沙箱后台命令）| wakeup（定时唤醒）
+  kind           String    @db.VarChar(16)
+  title          String    @db.VarChar(200)
+  /// 按 kind 不同的参数（见 background/background.types.ts）
+  spec           Json
+  /// running | succeeded | failed | timeout | cancelled
+  status         String    @default("running") @db.VarChar(16)
+  /// 结束时的摘要（给模型的文本 + 关键字段）
+  result         Json?
+  notify         Boolean   @default(true)
+  /// 结束通知是否已写进会话（会话忙时先挂着，等这一轮结束再投递）
+  delivered      Boolean   @default(false)
+  /// 已轮询次数
+  polls          Int       @default(0)
+  deadlineAt     DateTime
+  finishedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([conversationId, status])
 }

@@ -11,6 +11,11 @@ import {
 import { respondControl, subscribeConversation } from "@/lib/socket";
 
 import {
+  applyTaskUpdate,
+  type BackgroundTask,
+  bgTasksKey,
+} from "../_lib/background-tasks";
+import {
   applyMediaUpdate,
   buildBaseState,
   emptyState,
@@ -91,6 +96,13 @@ export function useConversation(
           void queryClient.invalidateQueries({ queryKey: key });
           return;
         }
+        // 后台任务状态：写进任务列表缓存（卡片从缓存读），不进 thread
+        if (e.type === "bg_task_update") {
+          queryClient.setQueryData<BackgroundTask[]>(bgTasksKey(conversationId), (prev) =>
+            applyTaskUpdate(prev, e.payload),
+          );
+          return;
+        }
         // token 用量：只更新累计数并让详情报表失效（弹窗开着才会真去重拉），不进 thread
         if (e.type === "token_usage") {
           const p = (e.payload ?? {}) as { cumulativeTotal?: unknown };
@@ -105,6 +117,8 @@ export function useConversation(
           { type: e.type, payload: (e.payload ?? {}) as Record<string, unknown>, at: e.ts },
         ]);
         if (e.type === "result" || e.type === "error") setPending(false);
+        // 后台任务通知唤醒了 agent：新的一轮开始了
+        if (e.type === "task_notification") setPending(true);
         if (e.type === "tool_end") {
           const payload = (e.payload ?? {}) as Record<string, unknown>;
           const spec =

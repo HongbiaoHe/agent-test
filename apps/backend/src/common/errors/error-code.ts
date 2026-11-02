@@ -197,4 +197,39 @@ export const ErrorCodes = {
     message:
       'This file does not fit the node (image upload nodes take images, video upload nodes take videos, audio upload nodes take audio)',
   },
+  MCP_SERVER_NOT_FOUND: { code: 80001, message: 'MCP connector not found' },
+  MCP_INVALID_URL: {
+    code: 80002,
+    message: 'Connector URL must be https (http is only allowed for localhost)',
+  },
+  MCP_SERVER_EXISTS: {
+    code: 80003,
+    message: 'A connector with this URL already exists',
+  },
+  MCP_PRESET_NOT_FOUND: { code: 80004, message: 'Unknown connector preset' },
+  MCP_TOOL_NOT_FOUND: {
+    code: 80005,
+    message: 'Tool not found on this connector — try refreshing its tools',
+  },
+  MCP_TOOL_NOT_ALLOWED: {
+    code: 80006,
+    message: 'This tool is disabled or not callable from the app',
+  },
+  MCP_TOOL_NEEDS_CONFIRM: {
+    code: 80007,
+    message: 'This tool requires your confirmation before it runs',
+  },
+  MCP_AUTH_REQUIRED: {
+    code: 80008,
+    message: 'The connector needs to be reconnected',
+  },
+  MCP_OAUTH_STATE_INVALID: {
+    code: 80009,
+    message: 'Authorization expired or was already used, please try again',
+  },
+  MCP_REQUEST_FAILED: { code: 80010, message: 'MCP server request failed' },
+  BACKGROUND_TASK_NOT_FOUND: {
+    code: 90001,
+    message: 'Background task not found',
+  },
 } as const satisfies Record<string, ErrorDef>;

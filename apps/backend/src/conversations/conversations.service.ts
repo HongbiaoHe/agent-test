@@ -9,6 +9,7 @@ import {
   type TokenCall,
   type TokenReport,
 } from '../agent/token-usage';
+import { BackgroundService } from '../background/background.service';
 import { parseCommand } from '../commands/parse-command';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
@@ -31,6 +32,7 @@ export class ConversationsService {
     private readonly media: MediaService,
     @Inject(AGENT_ABORTS) private readonly aborts: AbortRegistry,
     private readonly sandboxSettings: SandboxSettingsService,
+    private readonly background: BackgroundService,
   ) {}
 
   /**
@@ -188,6 +190,8 @@ export class ConversationsService {
     const aborted = this.aborts.abort(id);
     // 会话级取消媒体任务（含上一轮仍在生成中的视频——「停止所有操作」的有意语义）
     await this.media.cancelByConversation(id);
+    // 后台任务同理一并取消（沙箱后台进程会被 kill；取消不发通知，不会再唤醒 agent）
+    await this.background.cancelByConversation(id);
 
     const cas = await this.prisma.conversation.updateMany({
       where: { id, status: { in: ['queued', 'running', 'waiting_approval'] } },

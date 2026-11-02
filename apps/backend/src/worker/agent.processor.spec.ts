@@ -16,13 +16,29 @@ import { getUserSandbox, uploadSkillsToSandbox } from '../agent/sandbox';
 import type { SkillDef } from '../skills/skills.service';
 import { SkillsService } from '../skills/skills.service';
 import { AbortRegistry } from '../agent/abort-registry';
+import type { BackgroundService } from '../background/background.service';
+import type { McpService } from '../mcp/mcp.service';
 import type { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
 import { AgentProcessor } from './agent.processor';
+
+// 后台任务工具另有专门单测（background.tools.spec）；这里的用例断言的是其余工具的装配
+jest.mock('../background/background.tools', () => ({
+  createBackgroundTools: jest.fn(() => []),
+  backgroundPrompt: jest.fn(() => ''),
+}));
 
 /** 沙箱提供方偏好 mock：固定解析为 daytona（sandbox 模块已整体 mock，取值不影响行为）。 */
 const sandboxSettingsMock = {
   resolve: jest.fn().mockResolvedValue('daytona'),
 } as unknown as SandboxSettingsService;
+// 无 MCP 连接器：不装任何 MCP 工具
+const mcpMock = {
+  runtimeServers: jest.fn().mockResolvedValue([]),
+} as unknown as McpService;
+// 后台任务：本轮结束后的通知投递在这些用例里无事可做
+const backgroundMock = {
+  deliverPending: jest.fn().mockResolvedValue(undefined),
+} as unknown as BackgroundService;
 
 // 避免加载 deepagents / google-genai 等重依赖，并能捕获传给 agent 的 input
 jest.mock('../agent/agent.factory', () => ({ buildAgent: jest.fn() }));
@@ -126,6 +142,8 @@ describe('AgentProcessor 多轮重放', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'c1', kind: 'run' },
@@ -215,6 +233,8 @@ describe('AgentProcessor 多轮重放', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'c3', kind: 'run' },
@@ -298,6 +318,8 @@ describe('AgentProcessor 多轮重放', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'c4', kind: 'run' },
@@ -368,6 +390,8 @@ describe('AgentProcessor 多轮重放', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'c2', kind: 'run' },
@@ -447,6 +471,8 @@ describe('AgentProcessor 多轮重放', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'seed1', kind: 'run' },
@@ -513,6 +539,8 @@ describe('AgentProcessor 多轮重放', () => {
         makeMediaService(),
         new AbortRegistry(),
         sandboxSettingsMock,
+        mcpMock,
+        backgroundMock,
       );
       const done = proc.process({
         data: { conversationId: 'c1', kind: 'run' },
@@ -584,6 +612,8 @@ describe('AgentProcessor 多轮重放', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'no-sbx', kind: 'run' },
@@ -648,6 +678,8 @@ describe('AgentProcessor 多轮重放', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'no-sbx', kind: 'run' },
@@ -723,6 +755,8 @@ describe('AgentProcessor 多轮重放', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'no-sbx', kind: 'run' },
@@ -801,6 +835,8 @@ describe('AgentProcessor 多轮重放', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'uid1', kind: 'run' },
@@ -872,6 +908,8 @@ describe('AgentProcessor 多轮重放', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: {
@@ -934,6 +972,8 @@ describe('AgentProcessor 多轮重放', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'ha1', kind: 'run' },
@@ -995,6 +1035,8 @@ describe('AgentProcessor 多轮重放', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'mt1', kind: 'run' },
@@ -1065,6 +1107,8 @@ describe('AgentProcessor 多轮重放', () => {
       makeMediaService(fakeGenerations),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'media1', kind: 'run' },
@@ -1122,6 +1166,8 @@ describe('AgentProcessor 多轮重放', () => {
       makeMediaService([]),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'media2', kind: 'run' },
@@ -1227,6 +1273,8 @@ describe('AgentProcessor 流式聚合落库', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'agg1', kind: 'run' },
@@ -1346,6 +1394,8 @@ describe('AgentProcessor 思考深度与思考过程', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'th1', kind: opts.kind ?? 'run' },
@@ -1473,6 +1523,8 @@ describe('AgentProcessor 网页预览工具注入', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'pv1', kind: 'run' },
@@ -1555,6 +1607,8 @@ describe('AgentProcessor 主动停止', () => {
       makeMediaService(),
       reg,
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'c-stop', kind: 'run' },
@@ -1604,6 +1658,8 @@ describe('AgentProcessor 主动停止', () => {
       makeMediaService(),
       reg,
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'c-gate', kind: 'run' },
@@ -1634,6 +1690,8 @@ describe('AgentProcessor 主动停止', () => {
       makeMediaService(),
       reg,
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'c-quiet', kind: 'run' },
@@ -1672,6 +1730,8 @@ describe('AgentProcessor 超时按 toolName 分叉', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
 
   const timeoutJob = (toolName?: string) =>
@@ -1818,6 +1878,8 @@ describe('AgentProcessor token 会计', () => {
       makeMediaService(),
       new AbortRegistry(),
       sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
     );
     await proc.process({
       data: { conversationId: 'c1', kind: 'run' },

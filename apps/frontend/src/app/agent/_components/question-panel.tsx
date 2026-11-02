@@ -22,12 +22,13 @@ interface AskUserOption {
   description?: string;
 }
 
+/** 与 ask-user.tool.ts 一致：question / suggested 模型可能漏传（后端已放宽校验），这里同样兜底 */
 interface AskUserQuestion {
-  question: string;
+  question?: string;
   header: string;
   multiSelect?: boolean;
   options: AskUserOption[];
-  suggested: string[];
+  suggested?: string[];
 }
 
 /**
@@ -73,7 +74,7 @@ export function QuestionPanel({
       // 防御性归一化（与 ask-user.tool.ts 的 normalizeSuggested 同规则）：
       // suggested 过滤到合法 label，全无效回退首选项；单选只取第一个
       const labels = new Set(q.options.map((o) => o.label));
-      const valid = q.suggested.filter((s) => labels.has(s));
+      const valid = (q.suggested ?? []).filter((s) => labels.has(s));
       const picks = valid.length > 0 ? valid : [q.options[0]?.label ?? ""];
       return {
         selected: q.multiSelect ? picks : [picks[0]],
@@ -165,7 +166,7 @@ export function QuestionPanel({
           const a = answers[i];
           return (
             <div key={i} className="space-y-2 text-sm">
-              <div className="font-medium text-foreground">{q.question}</div>
+              <div className="font-medium text-foreground">{q.question || q.header}</div>
               {q.multiSelect ? (
                 <div className="space-y-1.5">
                   {q.options.map((opt) => (
@@ -186,7 +187,7 @@ export function QuestionPanel({
                       />
                       <OptionText
                         option={opt}
-                        suggested={q.suggested.includes(opt.label)}
+                        suggested={(q.suggested ?? []).includes(opt.label)}
                       />
                     </label>
                   ))}
@@ -222,7 +223,7 @@ export function QuestionPanel({
                       <RadioGroupItem value={opt.label} className="mt-0.5" />
                       <OptionText
                         option={opt}
-                        suggested={q.suggested.includes(opt.label)}
+                        suggested={(q.suggested ?? []).includes(opt.label)}
                       />
                     </label>
                   ))}

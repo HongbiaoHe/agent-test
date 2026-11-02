@@ -30,7 +30,7 @@ function redirectToLogin() {
 }
 
 /** 统一请求：Authorization header 由 middleware 注入；解析 {code,message,data}。 */
-async function request<T>(path: string, init?: RequestInit): Promise<T> {
+export async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${API_BASE}${path}`, {
     ...init,
     headers: {
