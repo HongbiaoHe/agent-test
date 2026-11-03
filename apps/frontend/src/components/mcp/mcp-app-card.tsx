@@ -120,14 +120,13 @@ export function McpAppCard({
   app,
   conversationId,
   toolCallId,
-  busy,
-  onSendMessage,
+  onFillPrompt,
 }: {
   app: McpAppArtifact;
   conversationId: string | undefined;
   toolCallId: string;
-  busy: boolean;
-  onSendMessage: (text: string) => void;
+  /** View 的 ui/message：填进输入框等用户确认发送，不直接开新一轮 */
+  onFillPrompt: (text: string) => void;
 }) {
   const resource = useQuery({
     queryKey: ["mcp-app-resource", app.serverId, app.resourceUri],
@@ -154,8 +153,7 @@ export function McpAppCard({
       resource={resource.data}
       conversationId={conversationId}
       toolCallId={toolCallId}
-      busy={busy}
-      onSendMessage={onSendMessage}
+      onFillPrompt={onFillPrompt}
     />
   );
 }
@@ -165,15 +163,13 @@ function McpAppFrame({
   resource,
   conversationId,
   toolCallId,
-  busy,
-  onSendMessage,
+  onFillPrompt,
 }: {
   app: McpAppArtifact;
   resource: McpAppResource;
   conversationId: string | undefined;
   toolCallId: string;
-  busy: boolean;
-  onSendMessage: (text: string) => void;
+  onFillPrompt: (text: string) => void;
 }) {
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const bridgeRef = useRef<AppBridge | null>(null);
@@ -182,9 +178,9 @@ function McpAppFrame({
   const [confirm, setConfirm] = useState<PendingConfirm | null>(null);
 
   // 回调里要读最新值，但不能因它们变化而重建 bridge（重建 = iframe 重新加载）
-  const live = useRef({ busy, onSendMessage, conversationId });
+  const live = useRef({ onFillPrompt, conversationId });
   useEffect(() => {
-    live.current = { busy, onSendMessage, conversationId };
+    live.current = { onFillPrompt, conversationId };
   });
 
   const permissions = resource.meta?.ui?.permissions;
@@ -263,9 +259,8 @@ function McpAppFrame({
     };
     bridge.onmessage = async ({ content }) => {
       const text = textOf(content);
-      const { busy: running, onSendMessage: send, conversationId: cid } = live.current;
-      if (!text || !cid || running) return { isError: true };
-      send(text);
+      if (!text) return { isError: true };
+      live.current.onFillPrompt(text);
       return {};
     };
     bridge.onupdatemodelcontext = async ({ content, structuredContent }) => {

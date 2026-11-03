@@ -380,8 +380,10 @@ export function ChatThread({
                       app={r.item.app}
                       conversationId={conversationId ?? undefined}
                       toolCallId={r.item.callId}
-                      busy={busy}
-                      onSendMessage={(text) => onSend(text, [])}
+                      onFillPrompt={(text) => {
+                        setDraft(text);
+                        inputRef.current?.focus({ preventScroll: true });
+                      }}
                     />
                   ) : r.item.kind === "mcp_auth" ? (
                     <McpReconnectCard key={r.item.id} auth={r.item.auth} />
