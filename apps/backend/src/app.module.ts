@@ -12,6 +12,7 @@ import { AigcModule } from './aigc/aigc.module';
 import { AuthModule } from './auth/auth.module';
 import { CanvasModule } from './canvas/canvas.module';
 import { CommandsModule } from './commands/commands.module';
+import { DesignModule } from './design/design.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { BackgroundModule } from './background/background.module';
 import { McpModule } from './mcp/mcp.module';
@@ -60,6 +61,7 @@ import { WorkerModule } from './worker/worker.module';
     PreviewModule,
     UsersModule,
     CanvasModule,
+    DesignModule,
   ],
   controllers: [AppController],
   providers: [AppService],

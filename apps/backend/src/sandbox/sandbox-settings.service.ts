@@ -16,6 +16,12 @@ import {
   type SandboxProviderName,
   type UserSandboxConfig,
 } from '../agent/sandbox-providers';
+import {
+  DEFAULT_SANDBOX_SIZE,
+  isSandboxSizeId,
+  SANDBOX_SIZES,
+  type SandboxSizeId,
+} from '../agent/sandbox-providers/sizes';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
 import { PrismaService } from '../prisma/prisma.service';
@@ -38,7 +44,13 @@ export interface SandboxSettings {
     supportsEgressControl: boolean;
     supportsDomainAllowList: boolean;
     supportsPublicTrafficToggle: boolean;
+    /** 能否切换配置档位（目前只有 E2B） */
+    supportsSizes: boolean;
   }>;
+  /** 生效的配置档位（未选过 = 默认档） */
+  size: SandboxSizeId;
+  /** 可选档位 */
+  sizes: Array<{ id: SandboxSizeId; cpuCount: number; memoryMB: number }>;
   /** 生效的生命周期设置（未设置项取默认） */
   lifecycle: SandboxLifecycle;
   lifecycleDefaults: SandboxLifecycle;
@@ -65,6 +77,7 @@ interface StoredSettings {
   sandboxNetworkMode: string | null;
   sandboxNetworkAllowList: Prisma.JsonValue;
   sandboxPublicTraffic: boolean | null;
+  sandboxSize: string | null;
 }
 
 function isEgressMode(v: string): v is SandboxEgressMode {
@@ -99,6 +112,7 @@ export class SandboxSettingsService {
       network: getSandboxProvider(provider).supportsEgressControl
         ? network
         : { ...network, egress: 'open' },
+      size: this.effectiveSize(row),
     };
   }
 
@@ -276,7 +290,10 @@ export class SandboxSettingsService {
         supportsEgressControl: p.supportsEgressControl,
         supportsDomainAllowList: p.supportsDomainAllowList,
         supportsPublicTrafficToggle: p.supportsPublicTrafficToggle,
+        supportsSizes: p.supportsSizes,
       })),
+      size: this.effectiveSize(row),
+      sizes: SANDBOX_SIZES.map((z) => ({ ...z })),
       lifecycle: this.effectiveLifecycle(row),
       lifecycleDefaults: getSandboxProvider(this.effectiveProvider(row))
         .lifecycleDefaults,
@@ -311,6 +328,12 @@ export class SandboxSettingsService {
     };
   }
 
+  /** 配置档位：只能经换档迁移写入（SandboxMigrationService），历史脏值按默认档处理。 */
+  private effectiveSize(row: StoredSettings | null): SandboxSizeId {
+    const raw = row?.sandboxSize;
+    return isSandboxSizeId(raw) ? raw : DEFAULT_SANDBOX_SIZE;
+  }
+
   /** 历史脏值（非法模式 / 非字符串数组）按未设置处理。 */
   private effectiveNetwork(row: StoredSettings | null): SandboxNetwork {
     const mode = row?.sandboxNetworkMode;
@@ -336,6 +359,7 @@ export class SandboxSettingsService {
         sandboxNetworkMode: true,
         sandboxNetworkAllowList: true,
         sandboxPublicTraffic: true,
+        sandboxSize: true,
       },
     });
   }

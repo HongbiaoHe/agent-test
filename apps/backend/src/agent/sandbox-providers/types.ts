@@ -6,6 +6,7 @@
 
 import type { BaseSandbox } from 'deepagents';
 import type { SandboxNetwork } from './network';
+import type { SandboxSizeId } from './sizes';
 
 export type SandboxProviderName = 'daytona' | 'e2b';
 
@@ -32,6 +33,8 @@ export interface SandboxListing {
   cpuCount?: number;
   memoryMB?: number;
   diskGB?: number;
+  /** 配置档位（仅支持档位的提供方）：metadata.size，旧沙箱按规格反推；都对不上为缺省 */
+  size?: SandboxSizeId;
 }
 
 /**
@@ -76,6 +79,8 @@ export interface UserSandboxConfig {
   provider: SandboxProviderName;
   lifecycle: SandboxLifecycle;
   network: SandboxNetwork;
+  /** 配置档位（只对 supportsSizes 的提供方有意义）：选沙箱时优先同档、新建时用该档模板 */
+  size: SandboxSizeId;
 }
 
 /** 已连接（且处于运行态）的沙箱 + 其 home 目录（工作区建在 home 下）。 */
@@ -99,6 +104,8 @@ export interface SandboxProvider {
   readonly supportsDomainAllowList: boolean;
   /** 是否可配置端口公网地址免鉴权（Daytona 预览链接始终需令牌，不提供） */
   readonly supportsPublicTrafficToggle: boolean;
+  /** 是否支持切换配置档位（E2B：每档一个模板；Daytona 用账号默认规格，不支持） */
+  readonly supportsSizes: boolean;
   /** 凭据是否已配置；未配置时上层回退 StateBackend（无沙箱）。 */
   isConfigured(): boolean;
   /** 列出该用户的全部沙箱。只读：不唤醒、不续命（状态心跳每 15s 调一次）。 */
@@ -108,11 +115,12 @@ export interface SandboxProvider {
     listing: SandboxListing,
     lifecycle: SandboxLifecycle,
   ): Promise<ConnectedSandbox>;
-  /** 为该用户新建沙箱（绑 user_id 标签/元数据）。 */
+  /** 为该用户新建沙箱（绑 user_id 标签/元数据）；支持档位的提供方按 size 选模板并打标。 */
   create(
     userId: string,
     lifecycle: SandboxLifecycle,
     network: SandboxNetwork,
+    size?: SandboxSizeId,
   ): Promise<ConnectedSandbox>;
   /** 用户网络设置对应的出站策略指纹；与 listing.egress 相等即远端已同步。 */
   desiredEgress(network: SandboxNetwork): string;
@@ -140,6 +148,27 @@ export interface SandboxProvider {
    * （2026-10-17 实测 E2B：持续访问端口预览，到期时间照样线性减少），不续就会在用户操作中途停机/暂停。
    */
   keepAlive(sandboxId: string, lifecycle: SandboxLifecycle): Promise<void>;
+  /**
+   * 换档迁移用的底层操作（只有 supportsSizes 的提供方提供）：旧沙箱打包、新沙箱拉下载直链解包，
+   * 迁移完把新沙箱的到期时间调回闲置设置、删掉旧沙箱。
+   */
+  migration?: {
+    /** 下载沙箱内文件的直链（GET，带签名，不需要额外鉴权头；另一台沙箱里 curl 即可） */
+    downloadUrl(sandboxId: string, path: string): Promise<string>;
+    /**
+     * 在沙箱里跑一条（可能很久的）命令：打包 / 拉取解包几个 GB 要几分钟，不受 agent 命令的 4 分钟上限约束。
+     * 非零退出码不抛，按 exitCode 返回。
+     */
+    run(
+      sandboxId: string,
+      command: string,
+      timeoutMs: number,
+    ): Promise<{ exitCode: number; output: string }>;
+    /** 把（运行中）沙箱的到期时间设为「现在 + 闲置时长」 */
+    resetIdle(sandboxId: string, lifecycle: SandboxLifecycle): Promise<void>;
+    /** 删除沙箱（不可恢复） */
+    kill(sandboxId: string): Promise<void>;
+  };
   /** 图形桌面（noVNC）。不支持的提供方不提供该字段。 */
   desktop?: {
     /** 启动桌面并返回 noVNC 地址（沙箱须已运行）。 */

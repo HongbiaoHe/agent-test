@@ -9,22 +9,18 @@ import {
   FolderOpen,
   FolderSearch,
   ListTodo,
-  Loader,
   Mail,
   SquareTerminal,
   TextSearch,
-  Wrench,
   type LucideIcon,
 } from "lucide-react";
 
-import { cn } from "@/lib/utils";
-
 import type { ThreadItem } from "../_lib/thread";
-import { Elapsed } from "./elapsed";
 
 export type ToolItem = Extract<ThreadItem, { kind: "tool" }>;
 
-const TOOL_ICON: Record<string, LucideIcon> = {
+/** 工具名 → 图标（对话页活动组的工具行用） */
+export const TOOL_ICON: Record<string, LucideIcon> = {
   ls: FolderOpen,
   read_file: FileText,
   write_file: FilePlus2,
@@ -37,6 +33,13 @@ const TOOL_ICON: Record<string, LucideIcon> = {
   send_email: Mail,
   get_weather: CloudSun,
 };
+
+/** 界面上显示的工具名：后端名字保持不变，只换给人看的叫法（execute 实际跑的就是 bash 命令）。 */
+const TOOL_LABEL: Record<string, string> = { execute: "bash" };
+
+export function toolLabel(name: string): string {
+  return TOOL_LABEL[name] ?? name;
+}
 
 /**
  * chip 上紧跟工具名的摘要：
@@ -51,62 +54,4 @@ export function toolSummary(name: string, args: unknown): string | null {
     return typeof a.command === "string" ? a.command.replace(/\s+/g, " ").trim() || null : null;
   }
   return typeof a.file_path === "string" ? a.file_path : null;
-}
-
-/** 单个工具调用 chip：点击打开右侧详情面板；done=false 时图标转圈、标签显示「cooking…」。 */
-export function ToolChip({
-  item,
-  active,
-  onOpenDetail,
-}: {
-  item: ToolItem;
-  active: boolean;
-  onOpenDetail: (id: string) => void;
-}) {
-  const Icon = TOOL_ICON[item.name] ?? Wrench;
-  const summary = toolSummary(item.name, item.args);
-  return (
-    <button
-      type="button"
-      onClick={() => onOpenDetail(item.id)}
-      className={cn(
-        "inline-flex max-w-full cursor-pointer items-center gap-2 rounded-lg border px-2.5 py-1.5 text-left text-xs transition-colors",
-        active
-          ? "border-ring bg-accent"
-          : "bg-card hover:bg-accent hover:text-accent-foreground",
-      )}
-    >
-      {item.done ? (
-        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-      ) : (
-        <Loader className="size-3.5 shrink-0 animate-spin text-muted-foreground" />
-      )}
-      <span className="shrink-0 font-medium">{item.name}</span>
-      {summary && (
-        <span className="min-w-0 truncate font-mono text-muted-foreground" title={summary}>
-          {summary}
-        </span>
-      )}
-      {/* 耗时常显：进行中「cooking… 5s」，完成后换成执行耗时；没有 tool_end 的（被 result 收尾）仍显示 TOOL */}
-      <span className="shrink-0 text-[10px] tracking-wide text-muted-foreground uppercase">
-        {item.done ? (
-          item.startedAt != null && item.endedAt != null ? (
-            <Elapsed startedAt={item.startedAt} endedAt={item.endedAt} />
-          ) : (
-            "tool"
-          )
-        ) : (
-          <>
-            cooking…
-            {item.startedAt != null && (
-              <>
-                {" "}
-                <Elapsed startedAt={item.startedAt} />
-              </>
-            )}
-          </>
-        )}
-      </span>
-    </button>
-  );
 }

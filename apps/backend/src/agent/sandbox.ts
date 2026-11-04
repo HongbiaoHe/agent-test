@@ -35,6 +35,10 @@ import {
   type SandboxProviderName,
   type UserSandboxConfig,
 } from './sandbox-providers';
+import {
+  DEFAULT_SANDBOX_SIZE,
+  type SandboxSizeId,
+} from './sandbox-providers/sizes';
 
 export type {
   PortUpstream,
@@ -48,11 +52,13 @@ function withDefaults(config?: UserSandboxConfig): {
   provider?: SandboxProviderName;
   lifecycle: SandboxLifecycle;
   network: SandboxNetwork;
+  size?: SandboxSizeId;
 } {
   return {
     provider: config?.provider,
     lifecycle: config?.lifecycle ?? DEFAULT_SANDBOX_LIFECYCLE,
     network: config?.network ?? DEFAULT_SANDBOX_NETWORK,
+    size: config?.size,
   };
 }
 
@@ -118,13 +124,31 @@ export function pickPreferredSandbox<T extends SandboxListing>(
   )[0];
 }
 
+/**
+ * 按档位筛选（纯函数）：换档迁移期间同一用户会同时有新旧两台沙箱，用户设置在迁移校验通过后才切到新档，
+ * 所以「同档优先」保证切换前读写都落在旧沙箱、切换后都落在新沙箱。没有同档的（旧沙箱规格对不上任何档、
+ * 或模板被换过）就退回全部——宁可用一台规格不同的旧沙箱，也不能因为对不上而新建一台空的（文件「消失」）。
+ */
+export function filterBySize<T extends SandboxListing>(
+  all: T[],
+  size: SandboxSizeId | undefined,
+): T[] {
+  if (!size) return all;
+  const same = all.filter((s) => (s.size ?? DEFAULT_SANDBOX_SIZE) === size);
+  return same.length ? same : all;
+}
+
 /** list 该用户全部沙箱并确定性选择（getUserSandbox / findUserSandbox / 状态接口共用）。 */
 export async function pickUserSandbox(
   userId: string,
   provider?: SandboxProviderName,
+  size?: SandboxSizeId,
 ): Promise<SandboxListing | null> {
   return pickPreferredSandbox(
-    await getSandboxProvider(provider).listUserSandboxes(userId),
+    filterBySize(
+      await getSandboxProvider(provider).listUserSandboxes(userId),
+      size,
+    ),
   );
 }
 
@@ -168,13 +192,20 @@ export async function getUserSandbox(
   userId: string,
   config?: UserSandboxConfig,
 ): Promise<GuardedSandbox | null> {
-  const { provider: providerName, lifecycle, network } = withDefaults(config);
+  const {
+    provider: providerName,
+    lifecycle,
+    network,
+    size,
+  } = withDefaults(config);
   const provider = getSandboxProvider(providerName);
   if (!provider.isConfigured()) return null;
 
-  const existing = await pickUserSandbox(userId, provider.name);
+  const existing = await pickUserSandbox(userId, provider.name, size);
   if (!existing) {
-    return openWorkspace(await provider.create(userId, lifecycle, network));
+    return openWorkspace(
+      await provider.create(userId, lifecycle, network, size),
+    );
   }
   const conn = await provider.connect(existing, lifecycle);
   if (existing.egress !== provider.desiredEgress(network)) {
@@ -546,10 +577,10 @@ export async function keepUserSandboxAlive(
   userId: string,
   config?: UserSandboxConfig,
 ): Promise<void> {
-  const { provider: name, lifecycle } = withDefaults(config);
+  const { provider: name, lifecycle, size } = withDefaults(config);
   const provider = getSandboxProvider(name);
   if (!provider.isConfigured()) return;
-  const existing = await pickUserSandbox(userId, provider.name);
+  const existing = await pickUserSandbox(userId, provider.name, size);
   if (!existing || existing.state !== 'started') return;
   await provider.keepAlive(existing.id, lifecycle);
 }
@@ -585,13 +616,13 @@ export async function findUserSandbox(
   userId: string,
   config?: UserSandboxConfig,
 ): Promise<GuardedSandbox | null> {
-  const { provider: providerName, lifecycle } = withDefaults(config);
+  const { provider: providerName, lifecycle, size } = withDefaults(config);
   const provider = getSandboxProvider(providerName);
   if (!provider.isConfigured()) return null;
 
   try {
     // 与 getUserSandbox / 状态接口共用同一确定性选择，保证各处看到同一个沙箱
-    const existing = await pickUserSandbox(userId, provider.name);
+    const existing = await pickUserSandbox(userId, provider.name, size);
     if (!existing) return null;
     return await openWorkspace(await provider.connect(existing, lifecycle));
   } catch {

@@ -17,8 +17,16 @@
  */
 
 import { Sandbox, type SandboxInfo } from 'e2b';
+import { randomUUID } from 'node:crypto';
 import { E2BSandbox } from './e2b-sandbox';
 import { egressSignature, type SandboxNetwork, toE2bEgress } from './network';
+import {
+  DEFAULT_SANDBOX_SIZE,
+  e2bTemplateFor,
+  isSandboxSizeId,
+  type SandboxSizeId,
+  sizeFromSpecs,
+} from './sizes';
 import {
   type ConnectedSandbox,
   DEFAULT_SANDBOX_LIFECYCLE,
@@ -29,15 +37,17 @@ import {
 } from './types';
 
 const idleMs = (lifecycle: SandboxLifecycle) => lifecycle.idleMinutes * 60_000;
+
+/** 单引号包住任意字符串给 shell 用 */
+const shellQuote = (s: string) => `'${s.replace(/'/g, `'\\''`)}'`;
 /** base 模板默认用户 `user` 的 home（实测 $HOME=/home/user、whoami=user）。 */
 const E2B_HOME = '/home/user';
 
 /**
- * 新建沙箱用的模板（懒读 env）：规格（vCPU / 内存）由模板决定，见 scripts/build-e2b-template.ts。
- * 只影响新建：已有沙箱沿用创建时的模板，不迁移。未设置 = E2B 默认 base（2 vCPU / 512 MB）。
+ * 默认档用的模板（懒读 env）：规格（vCPU / 内存）由模板决定，见 scripts/build-e2b-template.ts。
+ * 其余档位的模板见 sizes.ts e2bTemplateFor。未设置 E2B_TEMPLATE = E2B 自带 base（2 vCPU / 512 MB）。
  */
-export const e2bTemplate = (): string =>
-  process.env.E2B_TEMPLATE?.trim() || 'base';
+export const e2bTemplate = (): string => e2bTemplateFor(DEFAULT_SANDBOX_SIZE);
 
 /** E2B SandboxInfo → 统一 listing（state 映射到 Daytona 口径，见 types.ts）。 */
 export function toListing(info: SandboxInfo): SandboxListing {
@@ -49,6 +59,10 @@ export function toListing(info: SandboxInfo): SandboxListing {
     // 规格来自创建时的模板（base = 2 vCPU / 512MB），list 结果自带
     cpuCount: info.cpuCount,
     memoryMB: info.memoryMB,
+    // 档位：新建时打的 metadata.size；改造前建的没有，按规格反推
+    size: isSandboxSizeId(info.metadata?.size)
+      ? info.metadata.size
+      : sizeFromSpecs(info.cpuCount, info.memoryMB),
     // 不带 egress / publicTraffic：Sandbox.list 的结果不含网络信息（2026-10-14 实测只有
     // getInfo 才有），缺省即「未知」——出站按需要同步处理，入站由 inspectPublicTraffic 现查
     // 闲置时长不在 SandboxInfo 里（E2B 只有绝对到期时间 endAt），状态接口回退用用户设置
@@ -73,6 +87,7 @@ export const e2bProvider: SandboxProvider = {
   supportsEgressControl: true,
   supportsDomainAllowList: true,
   supportsPublicTrafficToggle: true,
+  supportsSizes: true,
 
   isConfigured: () => !!process.env.E2B_API_KEY,
 
@@ -104,9 +119,10 @@ export const e2bProvider: SandboxProvider = {
     userId: string,
     lifecycle: SandboxLifecycle,
     network: SandboxNetwork,
+    size: SandboxSizeId = DEFAULT_SANDBOX_SIZE,
   ): Promise<ConnectedSandbox> {
-    const sbx = await Sandbox.create(e2bTemplate(), {
-      metadata: { user_id: userId },
+    const sbx = await Sandbox.create(e2bTemplateFor(size), {
+      metadata: { user_id: userId, size },
       timeoutMs: idleMs(lifecycle),
       lifecycle: { onTimeout: 'pause', autoResume: false },
       network: {
@@ -115,6 +131,47 @@ export const e2bProvider: SandboxProvider = {
       },
     });
     return wrap(sbx, lifecycle);
+  },
+
+  migration: {
+    async downloadUrl(sandboxId: string, path: string): Promise<string> {
+      return (await Sandbox.connect(sandboxId)).downloadUrl(path);
+    },
+    /**
+     * 长命令放沙箱后台跑（输出与退出码写文件），每 3s 用一条短命令查结果：不挂长连接——
+     * 经本机代理的长连接跑几分钟会被掐断（换档迁移实测 fetch failed）。单次查询失败只重试，不判失败。
+     */
+    async run(sandboxId: string, command: string, timeoutMs: number) {
+      const sbx = await Sandbox.connect(sandboxId);
+      const tag = `/tmp/spark-run-${randomUUID()}`;
+      await sbx.commands.run(
+        `bash -c ${shellQuote(`${command}`)} > ${tag}.out 2>&1; echo $? > ${tag}.exit`,
+        { background: true },
+      );
+      const deadline = Date.now() + timeoutMs;
+      while (Date.now() < deadline) {
+        await new Promise((r) => setTimeout(r, 3000));
+        const probe = await sbx.commands
+          .run(`cat ${tag}.exit 2>/dev/null || echo PENDING`, {
+            timeoutMs: 30_000,
+          })
+          .catch(() => null);
+        const out = probe?.stdout.trim();
+        if (!out || out === 'PENDING') continue;
+        const tail = await sbx.commands.run(
+          `tail -c 8000 ${tag}.out; rm -f ${tag}.out ${tag}.exit`,
+          { timeoutMs: 30_000 },
+        );
+        return { exitCode: Number(out), output: tail.stdout };
+      }
+      throw new Error(`沙箱命令超时（${Math.round(timeoutMs / 60_000)} 分钟）`);
+    },
+    async resetIdle(sandboxId: string, lifecycle: SandboxLifecycle) {
+      await Sandbox.setTimeout(sandboxId, idleMs(lifecycle));
+    },
+    async kill(sandboxId: string) {
+      await Sandbox.kill(sandboxId);
+    },
   },
 
   desiredEgress(network: SandboxNetwork): string {

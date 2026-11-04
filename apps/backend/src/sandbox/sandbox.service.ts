@@ -87,7 +87,7 @@ export class SandboxStatusService {
 
     try {
       // 与 worker（getUserSandbox）共用同一确定性选择：状态面板与文件写入看同一个沙箱
-      const sb = await pickUserSandbox(userId, provider);
+      const sb = await pickUserSandbox(userId, provider, config.size);
       if (!sb) return { exists: false };
 
       const base: SandboxStatus = {

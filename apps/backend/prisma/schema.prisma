@@ -32,6 +32,8 @@ model User {
   sandboxNetworkAllowList  Json?
   /// 沙箱端口公网地址是否免鉴权访问（仅 E2B，创建时生效）；null = 默认 false（需鉴权）
   sandboxPublicTraffic     Boolean?
+  /// 沙箱配置档位（2c2g | 4c4g | 4c8g | 8c8g，仅 E2B）；null = 默认 2c2g。只经换档迁移写入
+  sandboxSize              String?         @db.VarChar(16)
   createdAt                DateTime        @default(now())
 
   @@index([tenantId])
@@ -496,4 +498,75 @@ model BackgroundTask {
   updatedAt      DateTime  @updatedAt
 
   @@index([conversationId, status])
+}
+
+/**
+ * 分图层设计稿（design 模块，独立于 canvas / 主 agent）。
+ * 整份文档存一个 JSON 列（读写两头都过 @agent-test/design-schema 的 designDocumentSchema），
+ * 图层量级几十个，一行 JSON 比「一层一行」简单得多。人和 agent 的每批 op 在事务里
+ * CAS revision+1 后广播；不建 op 日志表（不需要按 op 回放历史）。
+ */
+model DesignDoc {
+  id         String  @id @default(cuid())
+  title      String  @default("未命名设计")
+  tenantId   String
+  userId     String
+  // idle | running | done | failed | stopped（agent 运行状态）
+  status     String  @default("idle")
+  // agent 模型（DESIGN_MODELS 之一）；空 = 默认
+  model      String?
+  // 生图模型选择 { channel, model, resolution }；空 = 目录里支持透明的首选模型
+  imageModel Json?
+  document   Json
+  revision   Int     @default(0)
+
+  messages DesignMessage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, updatedAt])
+}
+
+/**
+ * 设计 agent 的对话记录（同时是每轮重放给模型的历史；不接 checkpointer）。
+ */
+model DesignMessage {
+  id        String    @id @default(cuid())
+  docId     String
+  doc       DesignDoc @relation(fields: [docId], references: [id], onDelete: Cascade)
+  runId     String?
+  role      String // user | assistant | tool
+  type      String // message | reasoning | tool_start | tool_end | result | error
+  content   Json
+  seq       Int
+  createdAt DateTime  @default(now())
+
+  @@index([docId, seq])
+}
+
+/// 沙箱换档迁移（/settings/sandbox「沙箱配置」）：新档建新沙箱 → 搬工作区（不含依赖目录）→ 校验 → 切换 → 删旧沙箱。
+/// 每次换档一行；status=running 期间禁止该用户再换档或发起 agent 运行。
+model SandboxMigration {
+  id           String    @id @default(cuid())
+  userId       String
+  provider     String    @db.VarChar(16)
+  fromSize     String    @db.VarChar(16)
+  toSize       String    @db.VarChar(16)
+  /// running | done | failed
+  status       String    @default("running") @db.VarChar(16)
+  /// 当前步骤：prepare | pack | create | transfer | unpack | verify | switch | cleanup | done
+  phase        String    @default("prepare") @db.VarChar(16)
+  /// 失败原因 / 提示（如「旧沙箱删除失败，需手动清理」）
+  message      String?   @db.Text
+  oldSandboxId String?   @db.VarChar(128)
+  newSandboxId String?   @db.VarChar(128)
+  /// 迁移的文件数与总字节数（打包前在旧沙箱统计，解包后在新沙箱复核）
+  fileCount    Int?
+  totalBytes   BigInt?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  finishedAt   DateTime?
+
+  @@index([userId, createdAt])
 }

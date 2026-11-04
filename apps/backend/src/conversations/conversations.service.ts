@@ -19,6 +19,7 @@ import { PrismaService } from '../prisma/prisma.service';
 import { SkillsService } from '../skills/skills.service';
 import { assertSafeEntryPath } from '../skills/skill-installer';
 import { findUserSandbox, listWorkspaceFiles } from '../agent/sandbox';
+import { SandboxMigrationService } from '../sandbox/sandbox-migration.service';
 import { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
 import { userMessageSummary } from './message-content';
 
@@ -33,6 +34,7 @@ export class ConversationsService {
     @Inject(AGENT_ABORTS) private readonly aborts: AbortRegistry,
     private readonly sandboxSettings: SandboxSettingsService,
     private readonly background: BackgroundService,
+    private readonly sandboxMigration: SandboxMigrationService,
   ) {}
 
   /**
@@ -70,6 +72,8 @@ export class ConversationsService {
       return { conversationId: conv.id };
     }
     await this.assertKnownCommand(goal, userId);
+    // 沙箱换档迁移中：新的运行会写进即将被替换的旧沙箱，拒绝
+    await this.sandboxMigration.assertNotMigrating(userId);
     const conv = await this.prisma.conversation.create({
       data: { goal, status: 'queued', tenantId, userId, model, thinkingLevel },
     });
@@ -106,6 +110,7 @@ export class ConversationsService {
       throw new BusinessException(ErrorCodes.CONVERSATION_GOAL_EMPTY);
     }
     if (content.trim()) await this.assertKnownCommand(content, userId);
+    await this.sandboxMigration.assertNotMigrating(userId);
     // 租户隔离：只能往自己租户的会话追加（已删除的视同不存在）
     const conv = await this.prisma.conversation.findFirst({
       where: { id, tenantId, deletedAt: null },

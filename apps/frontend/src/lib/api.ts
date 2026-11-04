@@ -185,7 +185,7 @@ export function uploadAttachment(
  * 把文件 POST 到某个同源上传路由（路由再流式转给后端）。用 XHR 而不是 fetch：要上传进度（fetch 拿不到）。
  * 不走 /api-backend：那条路径的 middleware 会把 >10MB 的请求体截断（见 app/api/_lib/proxy-upload.ts）。
  */
-function uploadFile<T>(
+export function uploadFile<T>(
   path: string,
   file: File,
   opts: UploadOptions,
@@ -324,7 +324,13 @@ export interface SandboxSettings {
     supportsDomainAllowList: boolean;
     /** 可配置端口公网地址免鉴权（仅 E2B） */
     supportsPublicTrafficToggle: boolean;
+    /** 能切换配置档位（仅 E2B） */
+    supportsSizes: boolean;
   }[];
+  /** 生效的配置档位 */
+  size: SandboxSizeId;
+  /** 可选档位 */
+  sizes: { id: SandboxSizeId; cpuCount: number; memoryMB: number }[];
   lifecycle: SandboxLifecycle;
   lifecycleDefaults: SandboxLifecycle;
   network: SandboxNetwork;
@@ -344,6 +350,82 @@ export interface SandboxSettingsPatch {
   /** 整体替换白名单 */
   allowList?: string[];
   publicTraffic?: boolean;
+}
+
+/** 沙箱配置档位（vCPU / 内存），与后端 sandbox-providers/sizes.ts 一致 */
+export type SandboxSizeId = "2c2g" | "4c4g" | "4c8g" | "8c8g";
+
+/** 换档迁移记录（GET /sandbox/migration、POST /sandbox/size） */
+export interface SandboxMigration {
+  id: string;
+  fromSize: string;
+  toSize: string;
+  status: "running" | "done" | "failed";
+  /** prepare | pack | create | transfer | unpack | verify | switch | cleanup | done */
+  phase: string;
+  /** 失败原因 / 提示 */
+  message: string | null;
+  fileCount: number | null;
+  totalBytes: number | null;
+  createdAt: string;
+  finishedAt: string | null;
+}
+
+/** 迁移时排除的文件 / 文件夹（相对工作区）与扩展名（不带点） */
+export interface MigrationExcludes {
+  paths: string[];
+  exts: string[];
+}
+
+/** 换到这一档：建新沙箱、按排除项迁移工作区、校验后删旧沙箱。异步执行。 */
+export function switchSandboxSize(args: {
+  size: SandboxSizeId;
+  excludes: MigrationExcludes;
+}): Promise<SandboxMigration> {
+  return request("/sandbox/size", { method: "POST", body: JSON.stringify(args) });
+}
+
+/** 盘点里的一项：文件夹的 bytes / files 是其下全部内容 */
+export interface InventoryEntry {
+  name: string;
+  type: "dir" | "file" | "link";
+  bytes: number;
+  files: number;
+}
+
+/** GET /sandbox/inventory：某一层目录的占用；根目录额外带依赖目录、按类型汇总与总量 */
+export interface SandboxInventory {
+  path: string;
+  entries: InventoryEntry[];
+  /** 单层超过 300 项时，其余项的汇总 */
+  truncated: { count: number; bytes: number } | null;
+  root?: {
+    /** 找到的依赖目录（任意层级），默认建议排除 */
+    dependencies: { path: string; bytes: number }[];
+    /** 按扩展名汇总（不含依赖目录），大到小前 20 */
+    types: { ext: string; bytes: number; files: number }[];
+    total: { files: number; bytes: number };
+  };
+}
+
+/** 盘点工作区某一层（path 相对工作区，缺省 = 根）。会唤醒暂停的沙箱。 */
+export function fetchSandboxInventory(path = ""): Promise<SandboxInventory> {
+  return request(`/sandbox/inventory${path ? `?path=${encodeURIComponent(path)}` : ""}`);
+}
+
+/** 按排除项精确统计将迁移的文件数与总大小 */
+export function estimateSandboxMigration(
+  excludes: MigrationExcludes,
+): Promise<{ files: number; bytes: number }> {
+  return request("/sandbox/inventory/estimate", {
+    method: "POST",
+    body: JSON.stringify({ excludes }),
+  });
+}
+
+/** 最近一次换档迁移；没有则 null */
+export function fetchSandboxMigration(): Promise<SandboxMigration | null> {
+  return request("/sandbox/migration");
 }
 
 export function fetchSandboxSettings(): Promise<SandboxSettings> {

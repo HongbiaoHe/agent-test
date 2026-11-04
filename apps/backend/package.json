@@ -24,6 +24,7 @@
     "test:e2e:spark-media": "node test/spark-media.e2e.mjs"
   },
   "dependencies": {
+    "@agent-test/design-schema": "workspace:*",
     "@daytonaio/sdk": "^0.185.0",
     "@google/genai": "^2.8.0",
     "@langchain/core": "^1.1.48",
@@ -49,6 +50,7 @@
     "deepagents": "^1.10.2",
     "e2b": "2.51.0",
     "ioredis": "^5.11.0",
+    "konva": "^10.9.1",
     "langchain": "^1.4.2",
     "nestjs-pino": "^4.6.1",
     "pino-http": "^11.0.0",
@@ -57,6 +59,7 @@
     "resend": "^6.12.4",
     "rxjs": "^7.8.1",
     "sharp": "0.34.5",
+    "skia-canvas": "^3.0.8",
     "socket.io": "^4.8.3",
     "tar": "^7.5.16",
     "zod": "^4.4.3"

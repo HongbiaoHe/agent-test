@@ -9,6 +9,7 @@ import { GlowBorder } from "@/components/ui/glow-border";
 import { ThinkingGrid } from "./canvas/_components/thinking-indicator";
 
 import DotField from "./_components/dot-field";
+import { LandingDesign } from "./_components/landing-design";
 import { LandingFeatures } from "./_components/landing-features";
 import { LandingHero } from "./_components/landing-hero";
 import { LandingLab } from "./_components/landing-lab";
@@ -298,6 +299,11 @@ export default async function HomePage() {
             </div>
           </div>
         </div>
+      </ScrollReveal>
+
+      {/* Layer Design：分图层设计（/design）的入口区。 */}
+      <ScrollReveal id="design" className="border-t border-border">
+        <LandingDesign isLoggedIn={isLoggedIn} />
       </ScrollReveal>
 
       {/* Built on a real stack：诚实列出端到端用到的技术。 */}
@@ -594,6 +600,14 @@ export default async function HomePage() {
                     className="text-muted-foreground transition-colors hover:text-foreground"
                   >
                     Canvas tour
+                  </Link>
+                </li>
+                <li>
+                  <Link
+                    href={isLoggedIn ? "/design" : "/login?next=/design"}
+                    className="text-muted-foreground transition-colors hover:text-foreground"
+                  >
+                    Layer design
                   </Link>
                 </li>
                 <li>

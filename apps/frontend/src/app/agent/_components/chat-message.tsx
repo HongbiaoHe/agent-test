@@ -43,7 +43,7 @@ export function ChatMessage({ item }: { item: ThreadItem }) {
     );
   }
 
-  // 工具调用（含连续多个的聚合）由 ChatThread 收集后交给 ToolGroup 渲染，此处不处理。
+  // 思考与工具调用（含相邻多项的聚合）由 ChatThread 收集后交给 ActivityGroup 渲染，此处不处理。
 
   if (item.kind === "error") {
     return <ErrorNotice message={item.text} />;

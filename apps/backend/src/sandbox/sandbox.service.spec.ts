@@ -53,7 +53,8 @@ describe('SandboxStatusService', () => {
     await service.status('u1');
     expect(prefs.resolve).toHaveBeenCalledWith('u1');
     expect(mockIsSandboxConfigured).toHaveBeenCalledWith('e2b');
-    expect(mockPickUserSandbox).toHaveBeenCalledWith('u1', 'e2b');
+    // 第三个参数 = 档位（resolve 的 mock 没给 size → undefined，即不按档位筛）
+    expect(mockPickUserSandbox).toHaveBeenCalledWith('u1', 'e2b', undefined);
   });
 
   it('列表不带闲置时长（E2B）→ autoStopMinutes 回退用户设置；文件列举透传完整配置', async () => {

@@ -51,6 +51,17 @@
      选中的那条要一眼认出来，所以给一个高饱和的蓝——与四种节点身份色（210/292/12/165）
      都拉开了色相距离，不会被误读成"某类节点的线"。 */
   --edge-selected: oklch(0.58 0.21 255);
+
+  /* 设计编辑器（/design）：agent = 智能体在做事的语义色（光标、聚焦光晕、生成中扫光），
+     暖调朱橙，与暖中性底同族；selection = 画板上的选中框 / 吸附参考线。 */
+  --agent: oklch(0.63 0.18 42);
+  --agent-foreground: oklch(0.985 0.002 80);
+  --selection: oklch(0.58 0.2 255);
+  /* 透明区域棋盘格的两色 */
+  --checker-a: oklch(0.96 0.003 75);
+  --checker-b: oklch(0.9 0.004 75);
+  /* 画板之外的工作区底 */
+  --workspace: oklch(0.945 0.004 75);
   --node-upload: oklch(0.66 0.11 210);
   --node-image: oklch(0.62 0.17 292);
   --node-video: oklch(0.63 0.19 12);
@@ -118,6 +129,13 @@
 
   /* 暗色下节点类型色：提亮以在深卡上醒目，chroma 保持一致（见 :root 说明）。 */
   --edge-selected: oklch(0.74 0.18 255);
+
+  --agent: oklch(0.74 0.15 50);
+  --agent-foreground: oklch(0.2 0.01 50);
+  --selection: oklch(0.72 0.16 255);
+  --checker-a: oklch(0.3 0.004 60);
+  --checker-b: oklch(0.25 0.004 60);
+  --workspace: oklch(0.14 0.004 60);
   --node-upload: oklch(0.74 0.1 210);
   --node-image: oklch(0.72 0.15 292);
   --node-video: oklch(0.73 0.17 12);
@@ -165,6 +183,10 @@
   --color-ring: var(--ring);
   --color-success: var(--success);
   --color-warning: var(--warning);
+  --color-agent: var(--agent);
+  --color-agent-foreground: var(--agent-foreground);
+  --color-selection: var(--selection);
+  --color-workspace: var(--workspace);
 
   --radius-sm: calc(var(--radius) - 4px);
   --radius-md: calc(var(--radius) - 2px);
@@ -1514,3 +1536,75 @@
   }
 }
 
+
+/* ——— 设计编辑器（/design）的状态动效：只表达状态（生成中 / 新图层出现），不做装饰。
+   keyframe 必须全局声明（见上文 media shimmer 注释）——— */
+
+/* 生成中的图层：一道低对比高光缓慢扫过（加载态） */
+@keyframes design-scan {
+  0% {
+    transform: translateX(-120%);
+  }
+  100% {
+    transform: translateX(220%);
+  }
+}
+.design-scan {
+  animation: design-scan 1.6s cubic-bezier(0.25, 1, 0.5, 1) infinite;
+}
+
+/* agent 光标沿图层四周绕圈一次（外扩 8px 的圆角矩形）；生成中的随机游走见 stage/wander.ts */
+@keyframes design-orbit {
+  from {
+    offset-distance: 0%;
+  }
+  to {
+    offset-distance: 100%;
+  }
+}
+.design-orbit {
+  offset-path: inset(0 round 8px);
+  offset-anchor: 4px 3px;
+  offset-rotate: 0deg;
+  animation: design-orbit linear 1 forwards;
+}
+/* agent 新加的图层：由上而下显影一次后消失（「这是新出现的」） */
+@keyframes design-materialize {
+  0% {
+    opacity: 1;
+    clip-path: inset(0 0 100% 0);
+  }
+  55% {
+    opacity: 1;
+    clip-path: inset(0 0 0 0);
+  }
+  100% {
+    opacity: 0;
+    clip-path: inset(0 0 0 0);
+  }
+}
+.design-materialize {
+  animation: design-materialize 0.9s cubic-bezier(0.22, 1, 0.36, 1) forwards;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .design-scan {
+    animation: none;
+    opacity: 0;
+  }
+  /* 不绕圈：光标停在图层左上角 */
+  .design-orbit {
+    animation: none;
+  }
+  .design-materialize {
+    animation: design-materialize-fade 0.4s linear forwards;
+  }
+}
+@keyframes design-materialize-fade {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}

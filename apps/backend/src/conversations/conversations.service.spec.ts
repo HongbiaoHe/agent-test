@@ -16,6 +16,7 @@ import { AbortRegistry, AGENT_ABORTS } from '../agent/abort-registry';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
 import { ConversationsService } from './conversations.service';
+import { SandboxMigrationService } from '../sandbox/sandbox-migration.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SkillsService } from '../skills/skills.service';
 import { BusinessException } from '../common/errors/business.exception';
@@ -54,6 +55,12 @@ describe('ConversationsService – downloadFile 路径校验', () => {
       providers: [
         ConversationsService,
         { provide: PrismaService, useValue: mockPrisma },
+        {
+          provide: SandboxMigrationService,
+          useValue: {
+            assertNotMigrating: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         { provide: SkillsService, useValue: mockSkills },
         { provide: getQueueToken('agent-run'), useValue: mockQueue },
         { provide: StreamService, useValue: { publish: jest.fn() } },
@@ -115,6 +122,12 @@ describe('ConversationsService – 空会话创建与续聊', () => {
       providers: [
         ConversationsService,
         { provide: PrismaService, useValue: mockPrisma },
+        {
+          provide: SandboxMigrationService,
+          useValue: {
+            assertNotMigrating: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         { provide: SkillsService, useValue: mockSkills },
         { provide: getQueueToken('agent-run'), useValue: mockQueue },
         { provide: StreamService, useValue: { publish: jest.fn() } },
@@ -351,6 +364,12 @@ describe('ConversationsService – stop（主动停止）', () => {
       providers: [
         ConversationsService,
         { provide: PrismaService, useValue: prisma },
+        {
+          provide: SandboxMigrationService,
+          useValue: {
+            assertNotMigrating: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         { provide: SkillsService, useValue: mockSkills },
         { provide: getQueueToken('agent-run'), useValue: mockQueue },
         { provide: StreamService, useValue: mockStream },
@@ -436,6 +455,12 @@ describe('ConversationsService – 置顶与删除', () => {
       providers: [
         ConversationsService,
         { provide: PrismaService, useValue: prisma },
+        {
+          provide: SandboxMigrationService,
+          useValue: {
+            assertNotMigrating: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         { provide: SkillsService, useValue: mockSkills },
         { provide: getQueueToken('agent-run'), useValue: mockQueue },
         { provide: StreamService, useValue: { publish: jest.fn() } },
@@ -609,6 +634,12 @@ describe('ConversationsService – token 报表', () => {
       providers: [
         ConversationsService,
         { provide: PrismaService, useValue: prisma },
+        {
+          provide: SandboxMigrationService,
+          useValue: {
+            assertNotMigrating: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         { provide: SkillsService, useValue: mockSkills },
         { provide: getQueueToken('agent-run'), useValue: mockQueue },
         { provide: StreamService, useValue: { publish: jest.fn() } },

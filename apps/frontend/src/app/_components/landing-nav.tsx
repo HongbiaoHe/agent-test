@@ -130,6 +130,15 @@ export function LandingNav({ isLoggedIn }: { isLoggedIn: boolean }) {
               size="sm"
               className="hidden rounded-full sm:inline-flex"
               nativeButton={false}
+              render={<a href="#design" />}
+            >
+              Design
+            </Button>
+            <Button
+              variant="ghost"
+              size="sm"
+              className="hidden rounded-full sm:inline-flex"
+              nativeButton={false}
               render={<Link href="/lab" />}
             >
               Lab
