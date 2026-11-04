@@ -1,0 +1,3210 @@
+[
+ {
+  "name": "list_models",
+  "title": "List BuzzVideo models",
+  "description": "List the image, video and audio generation models available on BuzzVideo, and whether the connected account can use each one. Call this before generating to pick a modelID.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "modelType": {
+     "description": "Only return models of this type.",
+     "type": "string",
+     "enum": [
+      "image",
+      "video",
+      "audio"
+     ]
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "models": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "modelID": {
+        "type": "string"
+       },
+       "name": {
+        "type": "string"
+       },
+       "description": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "modelType": {
+        "type": "string",
+        "enum": [
+         "image",
+         "video",
+         "audio"
+        ]
+       },
+       "isDefault": {
+        "type": "boolean"
+       },
+       "isAvailable": {
+        "type": "boolean",
+        "description": "Whether the connected account can use this model on its current plan."
+       },
+       "requiredPlan": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "description": "When isAvailable is false: the lowest plan that unlocks this model."
+       },
+       "maxReferenceImages": {
+        "type": "number"
+       },
+       "maxReferenceVideos": {
+        "type": "number"
+       },
+       "maxReferenceAudios": {
+        "type": "number"
+       },
+       "referenceAudioNeedsImageOrVideo": {
+        "type": "boolean",
+        "description": "When true, reference audio only works together with at least one reference image or video."
+       },
+       "aspectRatios": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Values accepted for aspectRatio. Empty = not configurable."
+       },
+       "defaultAspectRatio": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "resolutions": {
+        "type": "array",
+        "items": {
+         "type": "string"
+        },
+        "description": "Values accepted for resolution. Empty = not configurable."
+       },
+       "defaultResolution": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "durationsSeconds": {
+        "type": "array",
+        "items": {
+         "type": "number"
+        },
+        "description": "Values accepted for durationSeconds (video). Empty = not configurable."
+       },
+       "defaultDurationSeconds": {
+        "anyOf": [
+         {
+          "type": "number"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "soundCanBeTurnedOff": {
+        "type": "boolean",
+        "description": "Video: whether withAudio can be false. When false, omit withAudio."
+       }
+      },
+      "required": [
+       "modelID",
+       "name",
+       "description",
+       "modelType",
+       "isDefault",
+       "isAvailable",
+       "requiredPlan",
+       "maxReferenceImages",
+       "maxReferenceVideos",
+       "maxReferenceAudios",
+       "referenceAudioNeedsImageOrVideo",
+       "aspectRatios",
+       "defaultAspectRatio",
+       "resolutions",
+       "defaultResolution",
+       "durationsSeconds",
+       "defaultDurationSeconds",
+       "soundCanBeTurnedOff"
+      ],
+      "additionalProperties": false
+     }
+    }
+   },
+   "required": [
+    "models"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "get_task",
+  "title": "Get a BuzzVideo task",
+  "description": "Get the status and result of a generation task. Generation is asynchronous: keep calling this tool (waiting pollAfterMs between calls) until status is completed or failed, then reply to the user with the result — unless a BuzzVideo card in this chat already shows the result (the generate tool's next says so); then one call is enough to answer the user. A failed task is refunded automatically.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "taskId": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 100,
+     "description": "The taskId returned by a generate_* tool."
+    },
+    "includeWordTimestamps": {
+     "description": "Audio tasks only: also return word-level timestamps (large). Sentence-level timestamps are always included.",
+     "type": "boolean"
+    }
+   },
+   "required": [
+    "taskId"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "taskId": {
+     "type": "string"
+    },
+    "mediaType": {
+     "type": "string",
+     "enum": [
+      "image",
+      "video",
+      "audio"
+     ]
+    },
+    "status": {
+     "type": "string",
+     "enum": [
+      "pending",
+      "generating",
+      "completed",
+      "failed"
+     ]
+    },
+    "resultUrls": {
+     "type": "array",
+     "items": {
+      "type": "string"
+     },
+     "description": "Download URLs of the result. Present only when status is completed."
+    },
+    "creditsCharged": {
+     "type": "number",
+     "description": "Credits charged for this task. 0 when the task failed and was refunded."
+    },
+    "refunded": {
+     "type": "boolean",
+     "description": "Whether the credits were returned to the workspace they came from."
+    },
+    "failureReason": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "failureCategory": {
+     "description": "When failed: why, if known. service_unavailable means this model is temporarily down — another model may work.",
+     "type": "string",
+     "enum": [
+      "service_unavailable",
+      "busy",
+      "content_policy",
+      "invalid_input"
+     ]
+    },
+    "next": {
+     "description": "When failed and failureCategory is set: what to do next. Follow it when telling the user.",
+     "type": "string"
+    },
+    "pollAfterMs": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "When not finished yet: wait this long before calling get_task again."
+    },
+    "watermarked": {
+     "type": "boolean",
+     "description": "Image / video: the delivered file carries a BuzzVideo watermark. False once the plan includes watermark removal (the original is delivered)."
+    },
+    "hint": {
+     "description": "Present when the task is taking far longer than usual: stop polling and follow it.",
+     "type": "string"
+    },
+    "webUrl": {
+     "type": "string"
+    },
+    "subtitle": {
+     "description": "Audio tasks with subtitles enabled. Times are in milliseconds; convert to SRT if the user wants a subtitle file.",
+     "type": "object",
+     "properties": {
+      "text": {
+       "type": "string"
+      },
+      "sentences": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "startMs": {
+          "type": "number"
+         },
+         "endMs": {
+          "type": "number"
+         },
+         "text": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "startMs",
+         "endMs",
+         "text"
+        ],
+        "additionalProperties": false
+       }
+      },
+      "hasWordTimestamps": {
+       "type": "boolean"
+      },
+      "words": {
+       "type": "array",
+       "items": {
+        "type": "object",
+        "properties": {
+         "startMs": {
+          "type": "number"
+         },
+         "endMs": {
+          "type": "number"
+         },
+         "text": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "startMs",
+         "endMs",
+         "text"
+        ],
+        "additionalProperties": false
+       }
+      }
+     },
+     "required": [
+      "text",
+      "sentences",
+      "hasWordTimestamps"
+     ],
+     "additionalProperties": false
+    },
+    "modelName": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Display name of the model used."
+    },
+    "aspectRatio": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    },
+    "resolution": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Image / video tasks: the resolution generated, as shown by list_models (e.g. 2K, 1080p)."
+    },
+    "durationSeconds": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Video tasks: the requested length in seconds."
+    },
+    "references": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "type": {
+        "type": "string",
+        "enum": [
+         "image",
+         "video",
+         "avatar",
+         "audio"
+        ]
+       },
+       "url": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "type",
+       "url"
+      ],
+      "additionalProperties": false
+     },
+     "description": "Reference files used for this generation (images, videos, avatars, audio)."
+    }
+   },
+   "required": [
+    "taskId",
+    "mediaType",
+    "status",
+    "resultUrls",
+    "creditsCharged",
+    "refunded",
+    "failureReason",
+    "pollAfterMs",
+    "watermarked",
+    "modelName",
+    "aspectRatio",
+    "resolution",
+    "durationSeconds",
+    "references"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "get_tasks",
+  "title": "Get several BuzzVideo tasks",
+  "description": "Get the status and results of several generation tasks at once (up to 15), for example all the tasks of a batch. Each task has the same fields as get_task. Keep calling it (waiting pollAfterMs between calls) until every task is completed or failed — unless a BuzzVideo card in this chat already shows the results (the generate tool's next says so). A failed task is refunded automatically.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "taskIds": {
+     "minItems": 1,
+     "maxItems": 15,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 100
+     },
+     "description": "Up to 15 taskIds, for example all the taskIds of a batch (the generate tool's tasks)."
+    }
+   },
+   "required": [
+    "taskIds"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "tasks": {
+     "type": "array",
+     "items": {
+      "anyOf": [
+       {
+        "type": "object",
+        "properties": {
+         "taskId": {
+          "type": "string"
+         },
+         "mediaType": {
+          "type": "string",
+          "enum": [
+           "image",
+           "video",
+           "audio"
+          ]
+         },
+         "status": {
+          "type": "string",
+          "enum": [
+           "pending",
+           "generating",
+           "completed",
+           "failed"
+          ]
+         },
+         "resultUrls": {
+          "type": "array",
+          "items": {
+           "type": "string"
+          },
+          "description": "Download URLs of the result. Present only when status is completed."
+         },
+         "creditsCharged": {
+          "type": "number",
+          "description": "Credits charged for this task. 0 when the task failed and was refunded."
+         },
+         "refunded": {
+          "type": "boolean",
+          "description": "Whether the credits were returned to the workspace they came from."
+         },
+         "failureReason": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ]
+         },
+         "failureCategory": {
+          "description": "When failed: why, if known. service_unavailable means this model is temporarily down — another model may work.",
+          "type": "string",
+          "enum": [
+           "service_unavailable",
+           "busy",
+           "content_policy",
+           "invalid_input"
+          ]
+         },
+         "next": {
+          "description": "When failed and failureCategory is set: what to do next. Follow it when telling the user.",
+          "type": "string"
+         },
+         "pollAfterMs": {
+          "anyOf": [
+           {
+            "type": "number"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "description": "When not finished yet: wait this long before calling get_task again."
+         },
+         "watermarked": {
+          "type": "boolean",
+          "description": "Image / video: the delivered file carries a BuzzVideo watermark. False once the plan includes watermark removal (the original is delivered)."
+         },
+         "hint": {
+          "description": "Present when the task is taking far longer than usual: stop polling and follow it.",
+          "type": "string"
+         },
+         "webUrl": {
+          "type": "string"
+         },
+         "subtitle": {
+          "description": "Audio tasks with subtitles enabled. Times are in milliseconds; convert to SRT if the user wants a subtitle file.",
+          "type": "object",
+          "properties": {
+           "text": {
+            "type": "string"
+           },
+           "sentences": {
+            "type": "array",
+            "items": {
+             "type": "object",
+             "properties": {
+              "startMs": {
+               "type": "number"
+              },
+              "endMs": {
+               "type": "number"
+              },
+              "text": {
+               "type": "string"
+              }
+             },
+             "required": [
+              "startMs",
+              "endMs",
+              "text"
+             ],
+             "additionalProperties": false
+            }
+           },
+           "hasWordTimestamps": {
+            "type": "boolean"
+           },
+           "words": {
+            "type": "array",
+            "items": {
+             "type": "object",
+             "properties": {
+              "startMs": {
+               "type": "number"
+              },
+              "endMs": {
+               "type": "number"
+              },
+              "text": {
+               "type": "string"
+              }
+             },
+             "required": [
+              "startMs",
+              "endMs",
+              "text"
+             ],
+             "additionalProperties": false
+            }
+           }
+          },
+          "required": [
+           "text",
+           "sentences",
+           "hasWordTimestamps"
+          ],
+          "additionalProperties": false
+         },
+         "modelName": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "description": "Display name of the model used."
+         },
+         "aspectRatio": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ]
+         },
+         "resolution": {
+          "anyOf": [
+           {
+            "type": "string"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "description": "Image / video tasks: the resolution generated, as shown by list_models (e.g. 2K, 1080p)."
+         },
+         "durationSeconds": {
+          "anyOf": [
+           {
+            "type": "number"
+           },
+           {
+            "type": "null"
+           }
+          ],
+          "description": "Video tasks: the requested length in seconds."
+         },
+         "references": {
+          "type": "array",
+          "items": {
+           "type": "object",
+           "properties": {
+            "type": {
+             "type": "string",
+             "enum": [
+              "image",
+              "video",
+              "avatar",
+              "audio"
+             ]
+            },
+            "url": {
+             "type": "string"
+            }
+           },
+           "required": [
+            "type",
+            "url"
+           ],
+           "additionalProperties": false
+          },
+          "description": "Reference files used for this generation (images, videos, avatars, audio)."
+         }
+        },
+        "required": [
+         "taskId",
+         "mediaType",
+         "status",
+         "resultUrls",
+         "creditsCharged",
+         "refunded",
+         "failureReason",
+         "pollAfterMs",
+         "watermarked",
+         "modelName",
+         "aspectRatio",
+         "resolution",
+         "durationSeconds",
+         "references"
+        ],
+        "additionalProperties": false
+       },
+       {
+        "type": "object",
+        "properties": {
+         "taskId": {
+          "type": "string"
+         },
+         "error": {
+          "type": "string",
+          "const": "task_not_found"
+         },
+         "message": {
+          "type": "string"
+         }
+        },
+        "required": [
+         "taskId",
+         "error",
+         "message"
+        ],
+        "additionalProperties": false
+       }
+      ]
+     },
+     "description": "One entry per requested taskId, in the same order: the task (same fields as get_task), or error task_not_found."
+    }
+   },
+   "required": [
+    "tasks"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "upload_media",
+  "title": "Upload media to BuzzVideo",
+  "description": "Copy an image, video or audio file into BuzzVideo so it can be used as a reference for generation: either a file the user attached in this chat (file) or a public URL (url). Generation tools only accept BuzzVideo URLs, so upload attached or external files with this tool first. If the user attached a file but you have neither a file object nor a public URL for it, call request_upload instead. The file is also added to the user's BuzzVideo asset library.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "url": {
+     "description": "A public HTTPS URL pointing directly to an image (JPEG, PNG, WebP), a video (MP4, MOV, WebM) or an audio file (MP3, WAV, M4A, AAC). Omit when passing file.",
+     "type": "string",
+     "maxLength": 2048,
+     "format": "uri"
+    },
+    "file": {
+     "description": "An image, video or audio file the user attached in this chat, as the file object provided by the host. Omit when passing url.",
+     "type": "object",
+     "properties": {
+      "download_url": {
+       "type": "string",
+       "maxLength": 8192
+      },
+      "file_id": {
+       "type": "string",
+       "maxLength": 512
+      },
+      "mime_type": {
+       "type": "string",
+       "maxLength": 255
+      },
+      "file_name": {
+       "type": "string",
+       "maxLength": 1024
+      }
+     },
+     "required": [
+      "download_url",
+      "file_id"
+     ]
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": true
+  },
+  "_meta": {
+   "ui": {
+    "resourceUri": "ui://buzzvideo/upload_media.v44.html"
+   },
+   "ui/resourceUri": "ui://buzzvideo/upload_media.v44.html",
+   "openai/fileParams": [
+    "file"
+   ]
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "url": {
+     "type": "string",
+     "description": "The BuzzVideo URL of the uploaded file. Pass this URL as a reference to generate_* tools."
+    },
+    "mediaType": {
+     "type": "string",
+     "enum": [
+      "image",
+      "video",
+      "audio"
+     ]
+    },
+    "mimeType": {
+     "type": "string"
+    },
+    "sizeBytes": {
+     "type": "number"
+    }
+   },
+   "required": [
+    "url",
+    "mediaType",
+    "mimeType",
+    "sizeBytes"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "generate_image",
+  "title": "Generate an image with BuzzVideo",
+  "description": "For ads, sets of creatives or multi-step productions, first call list_skills; if a guide matches, call get_skill and follow it before generating. For a single simple image, video or voiceover, generate directly. Generate an image (text-to-image, or image-to-image with referenceImageUrls). Uses the connected workspace's credits. To make several images, pass items (up to 15) in one call instead of calling this tool repeatedly — the whole batch shows in one BuzzVideo card. This tool returns a taskId immediately — call get_task until the task is completed before replying to the user with the result, unless the next field of the result says the BuzzVideo card shows the result by itself. A submitted task cannot be cancelled. The taskId stays valid, so you can check it again later, even in a new conversation. The result is also saved to the user's BuzzVideo asset library. If status is action_required, nothing was generated or charged: tell the user the message and next.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "prompt": {
+     "description": "What to generate. Required unless items is given.",
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 102400
+    },
+    "items": {
+     "description": "Generate several images in one call (up to 15), one per item, each with its own prompt and optional own reference images. modelID, aspectRatio, resolution and the shared referenceImageUrls apply to every item. For several versions of the same idea, repeat the same prompt. Omit prompt when items is given.",
+     "minItems": 1,
+     "maxItems": 15,
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "prompt": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 102400,
+        "description": "What this image should show."
+       },
+       "referenceImageUrls": {
+        "description": "This item's own reference images, added to the shared ones. Same rules as the shared field.",
+        "maxItems": 50,
+        "type": "array",
+        "items": {
+         "type": "string",
+         "maxLength": 2048,
+         "format": "uri"
+        }
+       }
+      },
+      "required": [
+       "prompt"
+      ]
+     }
+    },
+    "modelID": {
+     "description": "A modelID from list_models (modelType \"image\"). Omit to use the default model.",
+     "type": "string",
+     "maxLength": 50
+    },
+    "referenceImageUrls": {
+     "description": "Reference images, up to the model's maxReferenceImages from list_models. Must be BuzzVideo URLs — upload images the user attached in the chat, or external images, with upload_media first (request_upload if you cannot access an attached image).",
+     "maxItems": 50,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "maxLength": 2048,
+      "format": "uri"
+     }
+    },
+    "aspectRatio": {
+     "description": "One of the model's aspectRatios from list_models. Omit to use the model default.",
+     "type": "string",
+     "maxLength": 20
+    },
+    "resolution": {
+     "description": "One of the model's resolutions from list_models. Omit to use the model default.",
+     "type": "string",
+     "maxLength": 20
+    },
+    "idempotencyKey": {
+     "type": "string",
+     "minLength": 8,
+     "maxLength": 100,
+     "description": "A unique string (e.g. a UUID) for this generation. Reuse the same key when retrying the same request, so it is never generated or charged twice."
+    }
+   },
+   "required": [
+    "idempotencyKey"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": false
+  },
+  "_meta": {
+   "ui": {
+    "resourceUri": "ui://buzzvideo/generate_image.v44.html"
+   },
+   "ui/resourceUri": "ui://buzzvideo/generate_image.v44.html"
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "status": {
+     "type": "string",
+     "enum": [
+      "pending",
+      "action_required"
+     ],
+     "description": "pending: submitted — poll get_task with taskId. action_required: nothing was generated or charged — tell the user message and next."
+    },
+    "taskId": {
+     "type": "string"
+    },
+    "estimatedSeconds": {
+     "type": "number"
+    },
+    "pollAfterMs": {
+     "type": "number"
+    },
+    "aspectRatio": {
+     "description": "pending only (image / video): the aspect ratio being generated — the model default when none was given.",
+     "type": "string"
+    },
+    "next": {
+     "type": "string"
+    },
+    "error": {
+     "description": "action_required only: why.",
+     "type": "string",
+     "enum": [
+      "insufficient_credits",
+      "allocation_exhausted",
+      "model_locked"
+     ]
+    },
+    "message": {
+     "description": "action_required only: why, in plain English — relay it to the user.",
+     "type": "string"
+    },
+    "requiredPlan": {
+     "description": "model_locked: the lowest plan that includes it.",
+     "type": "string"
+    },
+    "availableCredits": {
+     "description": "insufficient_credits: credits the workspace can spend now.",
+     "type": "number"
+    },
+    "modelID": {
+     "description": "model_locked: the model that was requested.",
+     "type": "string"
+    },
+    "url": {
+     "description": "action_required only: the link to show the user — the top-up page for insufficient_credits, where plan details are for model_locked (the BuzzVideo home page on ChatGPT). Absent for insufficient_credits on a team workspace or ChatGPT, and for allocation_exhausted.",
+     "type": "string"
+    },
+    "pricingUrl": {
+     "description": "insufficient_credits only: the pricing page, as a second link.",
+     "type": "string"
+    },
+    "tasks": {
+     "description": "Batch only (items was given): one entry per item, in order. taskId is the first submitted one.",
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "item": {
+        "type": "number",
+        "description": "1-based position in items."
+       },
+       "taskId": {
+        "type": "string"
+       },
+       "error": {
+        "description": "Set when this item was not submitted.",
+        "type": "string"
+       },
+       "message": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "item"
+      ],
+      "additionalProperties": false
+     }
+    }
+   },
+   "required": [
+    "status",
+    "next"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "generate_video",
+  "title": "Generate a video with BuzzVideo",
+  "description": "For ads, sets of creatives or multi-step productions, first call list_skills; if a guide matches, call get_skill and follow it before generating. For a single simple image, video or voiceover, generate directly. Generate a video (text-to-video, image-to-video with referenceImageUrls, AI avatar video with avatarIDs, or video editing with referenceVideoUrls). To make several videos (for example the shots of an edit), pass items (up to 8) in one call instead of calling this tool repeatedly — the whole batch shows in one BuzzVideo card. Uses the connected workspace's credits. This tool returns a taskId immediately — call get_task until the task is completed before replying to the user with the result, unless the next field of the result says the BuzzVideo card shows the result by itself. A submitted task cannot be cancelled. The taskId stays valid, so you can check it again later, even in a new conversation. The result is also saved to the user's BuzzVideo asset library. If status is action_required, nothing was generated or charged: tell the user the message and next.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "prompt": {
+     "description": "What the video should show. Required unless items is given.",
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 102400
+    },
+    "items": {
+     "description": "Generate several videos in one call (up to 8), one per item — for example the shots of an edit — each with its own prompt and optional own references. modelID, aspectRatio, resolution, durationSeconds, withAudio and the shared reference fields apply to every item. For several versions of the same idea, repeat the same prompt. Omit prompt when items is given.",
+     "minItems": 1,
+     "maxItems": 8,
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "prompt": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 102400,
+        "description": "What this video (for example one shot) should show."
+       },
+       "referenceImageUrls": {
+        "description": "This item's own reference images, added to the shared ones. Same rules as the shared field.",
+        "maxItems": 50,
+        "type": "array",
+        "items": {
+         "type": "string",
+         "maxLength": 2048,
+         "format": "uri"
+        }
+       },
+       "referenceVideoUrls": {
+        "description": "This item's own reference videos, added to the shared ones. Same rules as the shared field.",
+        "maxItems": 50,
+        "type": "array",
+        "items": {
+         "type": "string",
+         "maxLength": 2048,
+         "format": "uri"
+        }
+       },
+       "referenceAudioUrls": {
+        "description": "This item's own reference audios, added to the shared ones. Same rules as the shared field.",
+        "maxItems": 50,
+        "type": "array",
+        "items": {
+         "type": "string",
+         "maxLength": 2048,
+         "format": "uri"
+        }
+       },
+       "avatarIDs": {
+        "description": "This item's own avatars, added to the shared avatarIDs.",
+        "maxItems": 50,
+        "type": "array",
+        "items": {
+         "type": "string",
+         "maxLength": 64
+        }
+       }
+      },
+      "required": [
+       "prompt"
+      ]
+     }
+    },
+    "modelID": {
+     "description": "A modelID from list_models (modelType \"video\"). Omit to use the default model.",
+     "type": "string",
+     "maxLength": 50
+    },
+    "referenceImageUrls": {
+     "description": "Reference images (e.g. the first frame or a product image), up to the model's maxReferenceImages from list_models. Must be BuzzVideo URLs — upload attached or external files with upload_media first (request_upload if you cannot access an attached file).",
+     "maxItems": 50,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "maxLength": 2048,
+      "format": "uri"
+     }
+    },
+    "referenceVideoUrls": {
+     "description": "Reference videos (for video editing / restyling), up to the model's maxReferenceVideos from list_models. Must be BuzzVideo URLs — upload attached or external files with upload_media first (request_upload if you cannot access an attached file).",
+     "maxItems": 50,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "maxLength": 2048,
+      "format": "uri"
+     }
+    },
+    "referenceAudioUrls": {
+     "description": "Reference audios, up to the model's maxReferenceAudios from list_models. Must be BuzzVideo URLs — use audio assets from list_assets (mediaType \"audio\"), or upload attached or external audio files with upload_media first (request_upload if you cannot access an attached file).",
+     "maxItems": 50,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "maxLength": 2048,
+      "format": "uri"
+     }
+    },
+    "avatarIDs": {
+     "description": "AI avatars to appear in the video: humanID values from list_avatars. Each counts as one reference image.",
+     "maxItems": 50,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "maxLength": 64
+     }
+    },
+    "aspectRatio": {
+     "description": "One of the model's aspectRatios from list_models. Omit to use the model default.",
+     "type": "string",
+     "maxLength": 20
+    },
+    "resolution": {
+     "description": "One of the model's resolutions from list_models. Omit to use the model default.",
+     "type": "string",
+     "maxLength": 20
+    },
+    "durationSeconds": {
+     "description": "Video length in seconds: one of the model's durationsSeconds from list_models. Omit to use the model default. If the user asks for a longer video than the model's longest durationsSeconds, do not shorten it on your own: tell the user the model's maximum and ask whether to make it shorter, use another model that supports a longer duration, or make it as several clips.",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 600
+    },
+    "withAudio": {
+     "description": "Generate sound with the video. On by default. Pass false only for models whose soundCanBeTurnedOff is true in list_models.",
+     "type": "boolean"
+    },
+    "idempotencyKey": {
+     "type": "string",
+     "minLength": 8,
+     "maxLength": 100,
+     "description": "A unique string (e.g. a UUID) for this generation. Reuse the same key when retrying the same request, so it is never generated or charged twice."
+    }
+   },
+   "required": [
+    "idempotencyKey"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": false
+  },
+  "_meta": {
+   "ui": {
+    "resourceUri": "ui://buzzvideo/generate_video.v44.html"
+   },
+   "ui/resourceUri": "ui://buzzvideo/generate_video.v44.html"
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "status": {
+     "type": "string",
+     "enum": [
+      "pending",
+      "action_required"
+     ],
+     "description": "pending: submitted — poll get_task with taskId. action_required: nothing was generated or charged — tell the user message and next."
+    },
+    "taskId": {
+     "type": "string"
+    },
+    "estimatedSeconds": {
+     "type": "number"
+    },
+    "pollAfterMs": {
+     "type": "number"
+    },
+    "aspectRatio": {
+     "description": "pending only (image / video): the aspect ratio being generated — the model default when none was given.",
+     "type": "string"
+    },
+    "next": {
+     "type": "string"
+    },
+    "error": {
+     "description": "action_required only: why.",
+     "type": "string",
+     "enum": [
+      "insufficient_credits",
+      "allocation_exhausted",
+      "model_locked"
+     ]
+    },
+    "message": {
+     "description": "action_required only: why, in plain English — relay it to the user.",
+     "type": "string"
+    },
+    "requiredPlan": {
+     "description": "model_locked: the lowest plan that includes it.",
+     "type": "string"
+    },
+    "availableCredits": {
+     "description": "insufficient_credits: credits the workspace can spend now.",
+     "type": "number"
+    },
+    "modelID": {
+     "description": "model_locked: the model that was requested.",
+     "type": "string"
+    },
+    "url": {
+     "description": "action_required only: the link to show the user — the top-up page for insufficient_credits, where plan details are for model_locked (the BuzzVideo home page on ChatGPT). Absent for insufficient_credits on a team workspace or ChatGPT, and for allocation_exhausted.",
+     "type": "string"
+    },
+    "pricingUrl": {
+     "description": "insufficient_credits only: the pricing page, as a second link.",
+     "type": "string"
+    },
+    "tasks": {
+     "description": "Batch only (items was given): one entry per item, in order. taskId is the first submitted one.",
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "item": {
+        "type": "number",
+        "description": "1-based position in items."
+       },
+       "taskId": {
+        "type": "string"
+       },
+       "error": {
+        "description": "Set when this item was not submitted.",
+        "type": "string"
+       },
+       "message": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "item"
+      ],
+      "additionalProperties": false
+     }
+    }
+   },
+   "required": [
+    "status",
+    "next"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "generate_audio",
+  "title": "Generate speech audio with BuzzVideo",
+  "description": "For ads, sets of creatives or multi-step productions, first call list_skills; if a guide matches, call get_skill and follow it before generating. For a single simple image, video or voiceover, generate directly. Turn text into speech (text-to-speech), optionally with word-level timestamped subtitles. To make several audios (for example the voiceover lines of an edit), pass items (up to 4) in one call instead of calling this tool repeatedly — the whole batch shows in one BuzzVideo card. When the user asked for audio based on an image (for example a script written from a picture), pass that image in referenceImageUrls. Uses the connected workspace's credits; charged by the length of the audio produced. This tool returns a taskId immediately — call get_task until the task is completed before replying to the user with the result, unless the next field of the result says the BuzzVideo card shows the result by itself. A submitted task cannot be cancelled. The taskId stays valid, so you can check it again later, even in a new conversation. The result is also saved to the user's BuzzVideo asset library. If status is action_required, nothing was generated or charged: tell the user the message and next.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "text": {
+     "description": "The text to speak. Required unless items is given.",
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 102400
+    },
+    "items": {
+     "description": "Generate several audios in one call (up to 4), one per item, each with its own text. modelID, voiceID and the other settings apply to every item. Omit text when items is given.",
+     "minItems": 1,
+     "maxItems": 4,
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "text": {
+        "type": "string",
+        "minLength": 1,
+        "maxLength": 102400,
+        "description": "The text this audio speaks (for example one voiceover line)."
+       },
+       "referenceAudioUrls": {
+        "description": "This item's own reference audios, added to the shared ones. Same rules as the shared field.",
+        "maxItems": 50,
+        "type": "array",
+        "items": {
+         "type": "string",
+         "maxLength": 2048,
+         "format": "uri"
+        }
+       },
+       "referenceImageUrls": {
+        "description": "This item's own reference image, added to the shared ones. Same rules as the shared field.",
+        "maxItems": 50,
+        "type": "array",
+        "items": {
+         "type": "string",
+         "maxLength": 2048,
+         "format": "uri"
+        }
+       }
+      },
+      "required": [
+       "text"
+      ]
+     }
+    },
+    "modelID": {
+     "description": "A modelID from list_models (modelType \"audio\"). Omit to use the default model.",
+     "type": "string",
+     "maxLength": 50
+    },
+    "voiceID": {
+     "description": "A voiceID from list_voices (only voices marked usable). Omit to use the default voice.",
+     "type": "string",
+     "maxLength": 50
+    },
+    "referenceAudioUrls": {
+     "description": "Reference audios whose voice or style to follow, up to the model's maxReferenceAudios from list_models. Must be BuzzVideo URLs — use audio assets from list_assets (mediaType \"audio\"), or upload attached or external audio files with upload_media first (request_upload if you cannot access an attached file).",
+     "maxItems": 50,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "maxLength": 2048,
+      "format": "uri"
+     }
+    },
+    "referenceImageUrls": {
+     "description": "Reference image the audio is based on, when the user gave one (image-to-audio). Used only when no voiceID and no referenceAudioUrls are given; still shown on the card, up to the model's maxReferenceImages from list_models. Must be BuzzVideo URLs — upload attached or external files with upload_media first (request_upload if you cannot access an attached file).",
+     "maxItems": 50,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "maxLength": 2048,
+      "format": "uri"
+     }
+    },
+    "enableSubtitle": {
+     "description": "Return timestamped subtitles with the result (get_task). On by default.",
+     "type": "boolean"
+    },
+    "speechRate": {
+     "description": "Speaking speed adjustment. 0 is normal.",
+     "type": "integer",
+     "minimum": -50,
+     "maximum": 100
+    },
+    "loudnessRate": {
+     "description": "Volume adjustment. 0 is normal.",
+     "type": "integer",
+     "minimum": -50,
+     "maximum": 100
+    },
+    "pitchRate": {
+     "description": "Pitch adjustment. 0 is normal.",
+     "type": "integer",
+     "minimum": -12,
+     "maximum": 12
+    },
+    "outputFormat": {
+     "type": "string",
+     "enum": [
+      "mp3",
+      "wav",
+      "ogg_opus"
+     ]
+    },
+    "idempotencyKey": {
+     "type": "string",
+     "minLength": 8,
+     "maxLength": 100,
+     "description": "A unique string (e.g. a UUID) for this generation. Reuse the same key when retrying the same request, so it is never generated or charged twice."
+    }
+   },
+   "required": [
+    "idempotencyKey"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": false
+  },
+  "_meta": {
+   "ui": {
+    "resourceUri": "ui://buzzvideo/generate_audio.v44.html"
+   },
+   "ui/resourceUri": "ui://buzzvideo/generate_audio.v44.html"
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "status": {
+     "type": "string",
+     "enum": [
+      "pending",
+      "action_required"
+     ],
+     "description": "pending: submitted — poll get_task with taskId. action_required: nothing was generated or charged — tell the user message and next."
+    },
+    "taskId": {
+     "type": "string"
+    },
+    "estimatedSeconds": {
+     "type": "number"
+    },
+    "pollAfterMs": {
+     "type": "number"
+    },
+    "aspectRatio": {
+     "description": "pending only (image / video): the aspect ratio being generated — the model default when none was given.",
+     "type": "string"
+    },
+    "next": {
+     "type": "string"
+    },
+    "error": {
+     "description": "action_required only: why.",
+     "type": "string",
+     "enum": [
+      "insufficient_credits",
+      "allocation_exhausted",
+      "model_locked"
+     ]
+    },
+    "message": {
+     "description": "action_required only: why, in plain English — relay it to the user.",
+     "type": "string"
+    },
+    "requiredPlan": {
+     "description": "model_locked: the lowest plan that includes it.",
+     "type": "string"
+    },
+    "availableCredits": {
+     "description": "insufficient_credits: credits the workspace can spend now.",
+     "type": "number"
+    },
+    "modelID": {
+     "description": "model_locked: the model that was requested.",
+     "type": "string"
+    },
+    "url": {
+     "description": "action_required only: the link to show the user — the top-up page for insufficient_credits, where plan details are for model_locked (the BuzzVideo home page on ChatGPT). Absent for insufficient_credits on a team workspace or ChatGPT, and for allocation_exhausted.",
+     "type": "string"
+    },
+    "pricingUrl": {
+     "description": "insufficient_credits only: the pricing page, as a second link.",
+     "type": "string"
+    },
+    "tasks": {
+     "description": "Batch only (items was given): one entry per item, in order. taskId is the first submitted one.",
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "item": {
+        "type": "number",
+        "description": "1-based position in items."
+       },
+       "taskId": {
+        "type": "string"
+       },
+       "error": {
+        "description": "Set when this item was not submitted.",
+        "type": "string"
+       },
+       "message": {
+        "type": "string"
+       }
+      },
+      "required": [
+       "item"
+      ],
+      "additionalProperties": false
+     }
+    }
+   },
+   "required": [
+    "status",
+    "next"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "get_usage",
+  "title": "Get BuzzVideo credit usage",
+  "description": "Get the credits available in the connected BuzzVideo workspace, the plan name, the credits used this billing period, and which features the plan includes. Call this when the user asks what they can do, or before a generation that may need a different plan. The user can reconnect a different account or workspace at any time, so call this again whenever they ask which account, workspace or plan they are using — do not answer from an earlier result.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {},
+   "additionalProperties": false
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "_meta": {
+   "ui": {
+    "resourceUri": "ui://buzzvideo/get_usage.v44.html"
+   },
+   "ui/resourceUri": "ui://buzzvideo/get_usage.v44.html"
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "workspace": {
+     "type": "string",
+     "enum": [
+      "personal",
+      "team"
+     ]
+    },
+    "plan": {
+     "type": "string"
+    },
+    "availableCredits": {
+     "type": "number",
+     "description": "Credits that can be spent now in the connected workspace."
+    },
+    "allocationRemaining": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Team workspace only: your remaining allocation in this team (null = no hard limit set; availableCredits is still the amount you can spend)."
+    },
+    "periodStart": {
+     "type": "string"
+    },
+    "periodEnd": {
+     "type": "string"
+    },
+    "creditsUsedThisPeriod": {
+     "type": "number"
+    },
+    "features": {
+     "type": "object",
+     "properties": {
+      "imageGeneration": {
+       "type": "boolean"
+      },
+      "videoGeneration": {
+       "type": "boolean"
+      },
+      "watermarkFree": {
+       "type": "boolean",
+       "description": "Results are delivered without a BuzzVideo watermark."
+      }
+     },
+     "required": [
+      "imageGeneration",
+      "videoGeneration",
+      "watermarkFree"
+     ],
+     "additionalProperties": false,
+     "description": "What the connected workspace's plan includes. false means it needs a different plan; plan details are at pricingUrl. true means the plan includes the feature, but individual models may still need a higher plan — check isAvailable in list_models."
+    },
+    "pricingUrl": {
+     "type": "string",
+     "description": "Where plan details are on the BuzzVideo website."
+    },
+    "next": {
+     "description": "How to reply to the user about this result.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "workspace",
+    "plan",
+    "availableCredits",
+    "allocationRemaining",
+    "periodStart",
+    "periodEnd",
+    "creditsUsedThisPeriod",
+    "features",
+    "pricingUrl"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "list_assets",
+  "title": "List BuzzVideo assets",
+  "description": "Search the user's own assets (generated and uploaded) in the connected BuzzVideo workspace. The returned url can be reused as a reference file for generation.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "mediaType": {
+     "type": "string",
+     "enum": [
+      "image",
+      "video",
+      "audio",
+      "document"
+     ]
+    },
+    "origin": {
+     "type": "string",
+     "enum": [
+      "generated",
+      "uploaded"
+     ]
+    },
+    "keyword": {
+     "description": "Match against the asset title (for generated assets, the start of the prompt).",
+     "type": "string",
+     "maxLength": 100
+    },
+    "favoriteOnly": {
+     "description": "Only return favorited assets.",
+     "type": "boolean"
+    },
+    "sort": {
+     "description": "Sort order. Defaults to most recently modified.",
+     "type": "string",
+     "enum": [
+      "modified",
+      "created",
+      "alpha"
+     ]
+    },
+    "page": {
+     "description": "Page number, starting from 1.",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 9007199254740991
+    },
+    "pageSize": {
+     "description": "Items per page (default 24, at most 60; larger values are capped).",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 9007199254740991
+    }
+   }
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "_meta": {
+   "ui": {
+    "resourceUri": "ui://buzzvideo/list_assets.v44.html"
+   },
+   "ui/resourceUri": "ui://buzzvideo/list_assets.v44.html"
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "assets": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "assetId": {
+        "type": "string"
+       },
+       "mediaType": {
+        "type": "string"
+       },
+       "origin": {
+        "type": "string"
+       },
+       "title": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "url": {
+        "type": "string",
+        "description": "Can be passed directly as a reference file to the generate_* tools."
+       },
+       "thumbnailUrl": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "width": {
+        "anyOf": [
+         {
+          "type": "number"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "height": {
+        "anyOf": [
+         {
+          "type": "number"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "durationSeconds": {
+        "anyOf": [
+         {
+          "type": "number"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "isFavorite": {
+        "type": "boolean"
+       },
+       "createdAt": {
+        "type": "string",
+        "description": "When the asset was created, so the user can find recent assets."
+       }
+      },
+      "required": [
+       "assetId",
+       "mediaType",
+       "origin",
+       "title",
+       "url",
+       "thumbnailUrl",
+       "width",
+       "height",
+       "durationSeconds",
+       "isFavorite",
+       "createdAt"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "total": {
+     "type": "number"
+    },
+    "page": {
+     "type": "number"
+    },
+    "pageSize": {
+     "type": "number"
+    },
+    "hasMore": {
+     "type": "boolean"
+    },
+    "nextPage": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Pass this as page to get the next page; null when there are no more."
+    },
+    "next": {
+     "description": "How to reply to the user about this result.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "assets",
+    "total",
+    "page",
+    "pageSize",
+    "hasMore",
+    "nextPage"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "favorite_asset",
+  "title": "Favorite BuzzVideo assets",
+  "description": "Favorite or unfavorite the user's own assets in the connected BuzzVideo workspace.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "assetIds": {
+     "minItems": 1,
+     "maxItems": 100,
+     "type": "array",
+     "items": {
+      "type": "string",
+      "maxLength": 64
+     },
+     "description": "assetId values from list_assets."
+    },
+    "favorite": {
+     "type": "boolean",
+     "description": "true to favorite, false to unfavorite."
+    }
+   },
+   "required": [
+    "assetIds",
+    "favorite"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "updated": {
+     "type": "number",
+     "description": "Assets actually changed. Assets already in the requested state, or not the user's own, are not counted."
+    }
+   },
+   "required": [
+    "updated"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "list_voices",
+  "title": "List BuzzVideo voices",
+  "description": "List the voices that can be passed as voiceID to generate_audio: BuzzVideo preset voices, or the voices the user cloned.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "type": {
+     "type": "string",
+     "enum": [
+      "preset",
+      "cloned"
+     ],
+     "description": "\"preset\" for BuzzVideo voices, \"cloned\" for voices the user cloned in the connected workspace."
+    },
+    "keyword": {
+     "description": "Matches the voice name only. To pick by language, gender or style (e.g. \"a lively Chinese female voice\"), omit keyword and choose from the language / gender / style fields of the returned voices.",
+     "type": "string",
+     "maxLength": 100
+    },
+    "page": {
+     "description": "Page number, starting from 1.",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 9007199254740991
+    },
+    "pageSize": {
+     "description": "Items per page (default 50, at most 50; larger values are capped).",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 9007199254740991
+    }
+   },
+   "required": [
+    "type"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "_meta": {
+   "ui": {
+    "resourceUri": "ui://buzzvideo/list_voices.v44.html"
+   },
+   "ui/resourceUri": "ui://buzzvideo/list_voices.v44.html"
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "voices": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "voiceID": {
+        "type": "string"
+       },
+       "name": {
+        "type": "string"
+       },
+       "type": {
+        "type": "string"
+       },
+       "language": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "gender": {
+        "anyOf": [
+         {
+          "type": "string",
+          "enum": [
+           "male",
+           "female",
+           "other"
+          ]
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "style": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "sampleUrl": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "description": "A short sample to listen to."
+       },
+       "status": {
+        "type": "string",
+        "enum": [
+         "cloning",
+         "ready",
+         "failed"
+        ],
+        "description": "Cloning progress. Preset voices are always \"ready\". A \"failed\" voice can be cloned again with clone_voice and the same recording."
+       },
+       "usable": {
+        "type": "boolean",
+        "description": "Whether this voice can be used with generate_audio now (a cloned voice may still be processing)."
+       }
+      },
+      "required": [
+       "voiceID",
+       "name",
+       "type",
+       "language",
+       "gender",
+       "style",
+       "sampleUrl",
+       "status",
+       "usable"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "total": {
+     "type": "number"
+    },
+    "page": {
+     "type": "number"
+    },
+    "pageSize": {
+     "type": "number"
+    },
+    "hasMore": {
+     "type": "boolean"
+    },
+    "nextPage": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Pass this as page to get the next page; null when there are no more."
+    },
+    "next": {
+     "description": "How to reply to the user about this result.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "voices",
+    "total",
+    "page",
+    "pageSize",
+    "hasMore",
+    "nextPage"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "rename_voice",
+  "title": "Rename a cloned BuzzVideo voice",
+  "description": "Rename a voice the user cloned in the connected BuzzVideo workspace. Preset voices cannot be renamed.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "voiceID": {
+     "type": "string",
+     "maxLength": 50,
+     "description": "A voiceID from list_voices with type \"cloned\"."
+    },
+    "name": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 100,
+     "description": "The new name."
+    }
+   },
+   "required": [
+    "voiceID",
+    "name"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "voiceID": {
+     "type": "string"
+    },
+    "name": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "voiceID",
+    "name"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "list_avatars",
+  "title": "List BuzzVideo avatars",
+  "description": "List AI avatars (digital humans) that can appear in generated videos, and whether the connected account can use each one. Pass the humanID in avatarIDs of generate_video.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "type": {
+     "type": "string",
+     "enum": [
+      "public",
+      "mine"
+     ],
+     "description": "\"public\" for BuzzVideo avatars, \"mine\" for avatars the user created."
+    },
+    "category": {
+     "type": "string",
+     "maxLength": 100
+    },
+    "gender": {
+     "type": "string",
+     "enum": [
+      "male",
+      "female",
+      "other"
+     ]
+    },
+    "page": {
+     "description": "Page number, starting from 1.",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 9007199254740991
+    },
+    "pageSize": {
+     "description": "Items per page (default 20, at most 50; larger values are capped).",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 9007199254740991
+    }
+   },
+   "required": [
+    "type"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "_meta": {
+   "ui": {
+    "resourceUri": "ui://buzzvideo/list_avatars.v44.html"
+   },
+   "ui/resourceUri": "ui://buzzvideo/list_avatars.v44.html"
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "avatars": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "humanID": {
+        "type": "string",
+        "description": "Pass in avatarIDs of generate_video."
+       },
+       "name": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "imageUrl": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "description": "null = this avatar has no image and cannot be used in avatarIDs."
+       },
+       "category": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "gender": {
+        "anyOf": [
+         {
+          "type": "string",
+          "enum": [
+           "male",
+           "female",
+           "other"
+          ]
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "age": {
+        "anyOf": [
+         {
+          "type": "number"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "nationality": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "occupation": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ]
+       },
+       "isAvailable": {
+        "type": "boolean",
+        "description": "Whether the connected account can use this avatar on its current plan."
+       },
+       "requiredPlan": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "null"
+         }
+        ],
+        "description": "When isAvailable is false: the lowest plan that unlocks this avatar."
+       }
+      },
+      "required": [
+       "humanID",
+       "name",
+       "imageUrl",
+       "category",
+       "gender",
+       "age",
+       "nationality",
+       "occupation",
+       "isAvailable",
+       "requiredPlan"
+      ],
+      "additionalProperties": false
+     }
+    },
+    "total": {
+     "type": "number"
+    },
+    "page": {
+     "type": "number"
+    },
+    "pageSize": {
+     "type": "number"
+    },
+    "hasMore": {
+     "type": "boolean"
+    },
+    "nextPage": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Pass this as page to get the next page; null when there are no more."
+    },
+    "next": {
+     "description": "How to reply to the user about this result.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "avatars",
+    "total",
+    "page",
+    "pageSize",
+    "hasMore",
+    "nextPage"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "open_in_buzzvideo",
+  "title": "Get a BuzzVideo link",
+  "description": "Get a link to a BuzzVideo web page for the user to open. Only builds the link — nothing is changed.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "target": {
+     "type": "string",
+     "enum": [
+      "home",
+      "assets",
+      "pricing",
+      "top_up",
+      "credits",
+      "connected_apps"
+     ],
+     "description": "home: the BuzzVideo home page; assets: the asset library; pricing: plan details; top_up: where credits are added; credits: the credit balance and usage history; connected_apps: manage or disconnect AI apps connected to BuzzVideo."
+    }
+   },
+   "required": [
+    "target"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "url": {
+     "type": "string"
+    },
+    "note": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ]
+    }
+   },
+   "required": [
+    "url",
+    "note"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "request_upload",
+  "title": "Ask the user to upload files",
+  "description": "Show an upload card in the chat so the user can upload images, videos or audio files from their device into BuzzVideo (several at once). Use it when the user attached a file, or wants to use a local file, and you cannot pass it to upload_media (no file object from the host and no public URL) — for example files attached in Claude. Never describe an attached image in the prompt instead of uploading it. After calling it, tell the user the next step in the same reply: once the files are uploaded in the card, they only need to reply \"start\" (in their language) and you will create what they asked for with them; if they have not said what to create yet, ask them to say it when they reply. When they reply, call get_latest_upload to get the files they just uploaded, and pass images in referenceImageUrls, videos in referenceVideoUrls and audio in referenceAudioUrls.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {}
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "_meta": {
+   "ui": {
+    "resourceUri": "ui://buzzvideo/request_upload.v44.html"
+   },
+   "ui/resourceUri": "ui://buzzvideo/request_upload.v44.html"
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "status": {
+     "type": "string",
+     "const": "waiting_for_upload"
+    },
+    "next": {
+     "type": "string"
+    }
+   },
+   "required": [
+    "status",
+    "next"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "upload_media_data",
+  "title": "Upload an image from the upload card",
+  "description": "Used by the BuzzVideo upload card only. Stores an image the user picked in the card and adds it to their asset library.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "data": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 4900000,
+     "description": "The image file content, base64-encoded (no data: prefix)."
+    },
+    "batchId": {
+     "description": "Groups the files the user picked together in the card.",
+     "type": "string",
+     "maxLength": 64
+    },
+    "batchIndex": {
+     "description": "Position of this file among the files picked together.",
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 99
+    },
+    "fileName": {
+     "description": "The file's original name on the user's device.",
+     "type": "string",
+     "maxLength": 255
+    }
+   },
+   "required": [
+    "data"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": false
+  },
+  "_meta": {
+   "ui": {
+    "visibility": [
+     "app"
+    ]
+   }
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "url": {
+     "type": "string",
+     "description": "The BuzzVideo URL of the uploaded file. Pass this URL as a reference to generate_* tools."
+    },
+    "mediaType": {
+     "type": "string",
+     "enum": [
+      "image",
+      "video",
+      "audio"
+     ]
+    },
+    "mimeType": {
+     "type": "string"
+    },
+    "sizeBytes": {
+     "type": "number"
+    }
+   },
+   "required": [
+    "url",
+    "mediaType",
+    "mimeType",
+    "sizeBytes"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "get_latest_upload",
+  "title": "Get the latest uploaded files",
+  "description": "Get the files the user uploaded most recently to the connected BuzzVideo workspace (for example with request_upload's upload card). Their urls can be passed directly as references: images in referenceImageUrls, videos in referenceVideoUrls, audio in referenceAudioUrls.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {}
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "uploads": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "url": {
+        "type": "string"
+       },
+       "mediaType": {
+        "type": "string",
+        "enum": [
+         "image",
+         "video",
+         "audio"
+        ]
+       }
+      },
+      "required": [
+       "url",
+       "mediaType"
+      ],
+      "additionalProperties": false
+     },
+     "description": "The files the user uploaded most recently, in the order they picked them. Pass images in referenceImageUrls, videos in referenceVideoUrls and audio in referenceAudioUrls. Empty when the user has not uploaded anything yet."
+    },
+    "url": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "The first of uploads. null when the user has not uploaded anything yet."
+    },
+    "createdAt": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "When it was uploaded."
+    }
+   },
+   "required": [
+    "uploads",
+    "url",
+    "createdAt"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "start_upload",
+  "title": "Start an upload from the upload card",
+  "description": "Used by the BuzzVideo upload card only. Returns a signed URL the card uploads the file to directly.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "mimeType": {
+     "type": "string",
+     "maxLength": 100,
+     "description": "The file type the browser reports, e.g. video/mp4."
+    },
+    "sizeBytes": {
+     "type": "integer",
+     "exclusiveMinimum": 0,
+     "maximum": 9007199254740991,
+     "description": "The file size in bytes."
+    },
+    "origin": {
+     "description": "The upload card page's own origin (window.location.origin); required — the upload URL only accepts uploads from it.",
+     "type": "string",
+     "maxLength": 200
+    }
+   },
+   "required": [
+    "mimeType",
+    "sizeBytes"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": false
+  },
+  "_meta": {
+   "ui": {
+    "visibility": [
+     "app"
+    ]
+   }
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "uploadId": {
+     "type": "string"
+    },
+    "uploadUrl": {
+     "type": "string",
+     "description": "Upload session URL: PUT the file once (exactly sizeBytes); finish_upload within 15 minutes."
+    }
+   },
+   "required": [
+    "uploadId",
+    "uploadUrl"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "finish_upload",
+  "title": "Finish an upload from the upload card",
+  "description": "Used by the BuzzVideo upload card only. Checks the uploaded file and adds it to the asset library.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "uploadId": {
+     "type": "string",
+     "maxLength": 100
+    },
+    "batchId": {
+     "description": "Groups the files the user picked together in the card.",
+     "type": "string",
+     "maxLength": 64
+    },
+    "batchIndex": {
+     "description": "Position of this file among the files picked together.",
+     "type": "integer",
+     "minimum": 0,
+     "maximum": 99
+    },
+    "fileName": {
+     "description": "The file's original name on the user's device.",
+     "type": "string",
+     "maxLength": 255
+    }
+   },
+   "required": [
+    "uploadId"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": false,
+   "openWorldHint": false
+  },
+  "_meta": {
+   "ui": {
+    "visibility": [
+     "app"
+    ]
+   }
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "url": {
+     "type": "string",
+     "description": "The BuzzVideo URL of the uploaded file. Pass this URL as a reference to generate_* tools."
+    },
+    "mediaType": {
+     "type": "string",
+     "enum": [
+      "image",
+      "video",
+      "audio"
+     ]
+    },
+    "mimeType": {
+     "type": "string"
+    },
+    "sizeBytes": {
+     "type": "number"
+    }
+   },
+   "required": [
+    "url",
+    "mediaType",
+    "mimeType",
+    "sizeBytes"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "clone_voice",
+  "title": "Clone a voice with BuzzVideo",
+  "description": "Clone a voice from a recording, so it can be used as voiceID in generate_audio. Only clone the user's own voice or a voice they have the right to use. The recording should be clear English speech (cloning supports English only). If the user attached the recording, upload it first (upload_media, or request_upload when you cannot access the file) and pass the returned URL. Uses the connected workspace's credits; charged when the clone finishes. Cloning the same recording again returns the existing voice instead of charging twice. If status is action_required, nothing was cloned or charged: tell the user the message and next.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "audioUrl": {
+     "type": "string",
+     "maxLength": 500,
+     "format": "uri",
+     "description": "BuzzVideo URL of the recording to clone: from upload_media, get_latest_upload (after request_upload), or list_assets (mediaType \"audio\"). Upload attached or external audio first."
+    },
+    "name": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 100,
+     "description": "A name for the new voice, e.g. what the user calls it. Can be changed later with rename_voice."
+    }
+   },
+   "required": [
+    "audioUrl",
+    "name"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "voiceID": {
+     "description": "Pass this as voiceID to generate_audio once the voice is ready.",
+     "type": "string"
+    },
+    "name": {
+     "type": "string"
+    },
+    "status": {
+     "type": "string",
+     "enum": [
+      "cloning",
+      "ready",
+      "failed",
+      "action_required"
+     ],
+     "description": "action_required: nothing was cloned or charged — tell the user message and next."
+    },
+    "next": {
+     "type": "string"
+    },
+    "error": {
+     "description": "action_required only: why.",
+     "type": "string",
+     "enum": [
+      "insufficient_credits",
+      "allocation_exhausted",
+      "model_locked"
+     ]
+    },
+    "message": {
+     "description": "action_required only: why, in plain English — relay it to the user.",
+     "type": "string"
+    },
+    "availableCredits": {
+     "description": "insufficient_credits: credits the workspace can spend now.",
+     "type": "number"
+    },
+    "url": {
+     "description": "insufficient_credits only: the top-up page to show the user. Absent on a team workspace or ChatGPT.",
+     "type": "string"
+    },
+    "pricingUrl": {
+     "description": "insufficient_credits only: the pricing page, as a second link.",
+     "type": "string"
+    }
+   },
+   "required": [
+    "status",
+    "next"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "get_download_url",
+  "title": "Get the download file for a result card",
+  "description": "Used by BuzzVideo result cards only. Returns the file to download for a completed task, following the current plan.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "taskId": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 100,
+     "description": "The taskId of a completed generation."
+    }
+   },
+   "required": [
+    "taskId"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": false,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "_meta": {
+   "ui": {
+    "visibility": [
+     "app"
+    ]
+   }
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "url": {
+     "type": "string",
+     "description": "The file to download: the original when the plan includes watermark removal, otherwise the watermarked file."
+    }
+   },
+   "required": [
+    "url"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "estimate_credits",
+  "title": "Estimate BuzzVideo credits",
+  "description": "Quote how many credits a generation will cost, using the same prices BuzzVideo charges. Call this when the user asks what a generation costs, or wants to know the price before generating. Settings left out use the model defaults. The result lists in missing only the settings that change the price and were not given, with the price of each option: ask the user about those (unless they said the defaults are fine), then call again with their choices. Read-only: nothing is generated or charged. Models charged by output length return a per-unit rate instead of a fixed price.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "mediaType": {
+     "type": "string",
+     "enum": [
+      "image",
+      "video",
+      "audio"
+     ],
+     "description": "What will be generated."
+    },
+    "modelID": {
+     "description": "A modelID from list_models. Omit to quote the default model.",
+     "type": "string",
+     "maxLength": 50
+    },
+    "aspectRatio": {
+     "description": "As in generate_image / generate_video. Omit if the user has not said.",
+     "type": "string",
+     "maxLength": 20
+    },
+    "resolution": {
+     "description": "As in generate_image / generate_video. Omit if the user has not said.",
+     "type": "string",
+     "maxLength": 20
+    },
+    "durationSeconds": {
+     "description": "Video length, as in generate_video. Omit if the user has not said.",
+     "type": "number",
+     "exclusiveMinimum": 0,
+     "maximum": 600
+    },
+    "withAudio": {
+     "description": "Video: whether the generated video has sound, as in generate_video. Omit if the user has not said.",
+     "type": "boolean"
+    },
+    "hasReferenceVideo": {
+     "description": "Video: true if the generation will use referenceVideoUrls (some models charge more for it). Omit if unknown.",
+     "type": "boolean"
+    },
+    "count": {
+     "description": "How many to generate with these settings (default 1; at most 15 images, 8 videos or 4 audios per call).",
+     "type": "integer",
+     "minimum": 1,
+     "maximum": 15
+    }
+   },
+   "required": [
+    "mediaType"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "modelID": {
+     "type": "string"
+    },
+    "modelName": {
+     "type": "string"
+    },
+    "mediaType": {
+     "type": "string",
+     "enum": [
+      "image",
+      "video",
+      "audio"
+     ]
+    },
+    "defaultModelUsed": {
+     "type": "boolean",
+     "description": "true when no modelID was given and the default model was quoted."
+    },
+    "isAvailable": {
+     "type": "boolean",
+     "description": "Whether the connected workspace's plan can use this model."
+    },
+    "requiredPlan": {
+     "anyOf": [
+      {
+       "type": "string"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "When isAvailable is false: the lowest plan that unlocks this model."
+    },
+    "pricing": {
+     "type": "string",
+     "enum": [
+      "per_generation",
+      "metered"
+     ],
+     "description": "metered: charged after generation by the actual length of the output."
+    },
+    "credits": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "per_generation: credits for one generation with these settings. null for metered."
+    },
+    "count": {
+     "type": "number"
+    },
+    "totalCredits": {
+     "anyOf": [
+      {
+       "type": "number"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "credits × count. null for metered."
+    },
+    "metered": {
+     "description": "metered only: the rate, e.g. credits per second of audio.",
+     "type": "object",
+     "properties": {
+      "unit": {
+       "type": "string",
+       "enum": [
+        "second",
+        "char"
+       ]
+      },
+      "creditsPerUnit": {
+       "type": "number"
+      }
+     },
+     "required": [
+      "unit",
+      "creditsPerUnit"
+     ],
+     "additionalProperties": false
+    },
+    "missing": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "param": {
+        "type": "string",
+        "enum": [
+         "aspectRatio",
+         "resolution",
+         "durationSeconds",
+         "withAudio",
+         "hasReferenceVideo"
+        ]
+       },
+       "assumed": {
+        "anyOf": [
+         {
+          "type": "string"
+         },
+         {
+          "type": "number"
+         },
+         {
+          "type": "boolean"
+         }
+        ],
+        "description": "The default this quote used."
+       },
+       "options": {
+        "type": "array",
+        "items": {
+         "type": "object",
+         "properties": {
+          "value": {
+           "anyOf": [
+            {
+             "type": "string"
+            },
+            {
+             "type": "number"
+            },
+            {
+             "type": "boolean"
+            }
+           ]
+          },
+          "credits": {
+           "type": "number"
+          }
+         },
+         "required": [
+          "value",
+          "credits"
+         ],
+         "additionalProperties": false
+        },
+        "description": "Price of one generation with each value, other settings unchanged."
+       }
+      },
+      "required": [
+       "param",
+       "assumed",
+       "options"
+      ],
+      "additionalProperties": false
+     },
+     "description": "Settings that change the price and were not given. Empty = the quote is exact for these settings."
+    },
+    "complete": {
+     "type": "boolean",
+     "description": "true when missing is empty."
+    },
+    "availableCredits": {
+     "type": "number",
+     "description": "Credits that can be spent now in the connected workspace."
+    },
+    "enoughCredits": {
+     "anyOf": [
+      {
+       "type": "boolean"
+      },
+      {
+       "type": "null"
+      }
+     ],
+     "description": "Whether availableCredits covers totalCredits. null for metered."
+    },
+    "next": {
+     "type": "string",
+     "description": "How to reply to the user about this quote."
+    }
+   },
+   "required": [
+    "modelID",
+    "modelName",
+    "mediaType",
+    "defaultModelUsed",
+    "isAvailable",
+    "requiredPlan",
+    "pricing",
+    "credits",
+    "count",
+    "totalCredits",
+    "missing",
+    "complete",
+    "availableCredits",
+    "enoughCredits",
+    "next"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "list_skills",
+  "title": "List BuzzVideo creation guides",
+  "description": "Before making ads, sets of creatives or multi-step productions, call this tool first; read a matching guide with get_skill before generating. List the BuzzVideo creation guides available in the connected workspace: the name of each and when to use it. Guides describe step-by-step ways to make specific content with BuzzVideo tools, such as product ads. Get one with get_skill.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {},
+   "additionalProperties": false
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "skills": {
+     "type": "array",
+     "items": {
+      "type": "object",
+      "properties": {
+       "name": {
+        "type": "string"
+       },
+       "description": {
+        "type": "string",
+        "description": "When to use this guide."
+       }
+      },
+      "required": [
+       "name",
+       "description"
+      ],
+      "additionalProperties": false
+     },
+     "description": "The guides available in the connected workspace."
+    }
+   },
+   "required": [
+    "skills"
+   ],
+   "additionalProperties": false
+  }
+ },
+ {
+  "name": "get_skill",
+  "title": "Get a BuzzVideo creation guide",
+  "description": "Get one BuzzVideo creation guide's full text by its name from list_skills.",
+  "inputSchema": {
+   "type": "object",
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "properties": {
+    "name": {
+     "type": "string",
+     "minLength": 1,
+     "maxLength": 64,
+     "description": "The guide name from list_skills."
+    }
+   },
+   "required": [
+    "name"
+   ]
+  },
+  "annotations": {
+   "readOnlyHint": true,
+   "destructiveHint": false,
+   "idempotentHint": true,
+   "openWorldHint": false
+  },
+  "outputSchema": {
+   "$schema": "https://json-schema.org/draft/2020-12/schema",
+   "type": "object",
+   "properties": {
+    "name": {
+     "type": "string"
+    },
+    "description": {
+     "type": "string",
+     "description": "When to use this guide."
+    },
+    "content": {
+     "type": "string",
+     "description": "The full text of the guide."
+    }
+   },
+   "required": [
+    "name",
+    "description",
+    "content"
+   ],
+   "additionalProperties": false
+  }
+ }
+]

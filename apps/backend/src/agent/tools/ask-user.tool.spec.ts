@@ -89,9 +89,50 @@ describe('askUserTool', () => {
     expect(parsed.answers).toEqual([
       {
         header: '数据库',
+        question: '用哪个数据库？',
         selected: ['MySQL', '自定义：用 SQLite'],
         auto: false,
       },
     ]);
+  });
+
+  // 回归：DeepSeek 实测漏传 question（只给 header），用户作答后续跑 invoke 校验失败、整轮报错
+  it('模型漏传 question / suggested 时续跑不报错：question 用 header 顶上，建议答案回退首选项', async () => {
+    const noQuestion = {
+      header: 'Light',
+      multiSelect: false,
+      options: [
+        {
+          label: 'Warmer, more golden-hour drama',
+          description: 'Deeper orange',
+        },
+        { label: 'Softer pastel dusk', description: 'Soft pink' },
+      ],
+    };
+    const edited = JSON.parse(
+      await askUserTool.invoke({
+        questions: [noQuestion],
+        answers: [{ header: 'Light', selected: ['Softer pastel dusk'] }],
+      }),
+    ) as { answers: { question: string; selected: string[] }[] };
+    expect(edited.answers[0]).toMatchObject({
+      question: 'Light',
+      selected: ['Softer pastel dusk'],
+    });
+
+    const approved = JSON.parse(
+      await askUserTool.invoke({ questions: [noQuestion] }),
+    ) as { answers: { question: string; selected: string[] }[] };
+    expect(approved.answers[0]).toMatchObject({
+      question: 'Light',
+      selected: ['Warmer, more golden-hour drama'],
+    });
+  });
+
+  it('只有 1 个选项也能续跑', async () => {
+    const raw = await askUserTool.invoke({
+      questions: [q({ options: [{ label: 'OK' }], suggested: ['OK'] })],
+    });
+    expect(JSON.parse(raw)).toMatchObject({ answers: [{ selected: ['OK'] }] });
   });
 });

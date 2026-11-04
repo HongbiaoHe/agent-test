@@ -14,7 +14,12 @@ import {
 import type { Response } from 'express';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { type AuthUser, JwtAuthGuard } from '../auth/jwt-auth.guard';
+import {
+  EstimateMigrationDto,
+  SwitchSandboxSizeDto,
+} from './dto/switch-sandbox-size.dto';
 import { UpdateSandboxSettingsDto } from './dto/update-sandbox-settings.dto';
+import { SandboxMigrationService } from './sandbox-migration.service';
 import { SandboxSettingsService } from './sandbox-settings.service';
 import { SandboxStatusService } from './sandbox.service';
 
@@ -25,6 +30,7 @@ export class SandboxController {
   constructor(
     private readonly sandbox: SandboxStatusService,
     private readonly settings: SandboxSettingsService,
+    private readonly migration: SandboxMigrationService,
   ) {}
 
   /** 沙箱设置：提供方（生效/偏好/默认/可选项）+ 生命周期（/settings/sandbox 用）。 */
@@ -40,6 +46,33 @@ export class SandboxController {
     @Body() dto: UpdateSandboxSettingsDto,
   ) {
     return this.settings.update(user.userId, dto);
+  }
+
+  /**
+   * 换配置档位：建新档沙箱、迁移工作区（不含依赖目录）、校验后删旧沙箱。异步执行，
+   * 立即返回迁移记录；进度用 GET /sandbox/migration 轮询。有运行中的会话 / 后台任务时 409。
+   */
+  @Post('size')
+  switchSize(@CurrentUser() user: AuthUser, @Body() dto: SwitchSandboxSizeDto) {
+    return this.migration.start(user.userId, dto.size, dto.excludes);
+  }
+
+  /** 迁移前盘点：某一层目录（path 相对工作区，缺省 = 根）的文件 / 文件夹占用。会唤醒暂停的沙箱。 */
+  @Get('inventory')
+  inventory(@CurrentUser() user: AuthUser, @Query('path') path?: string) {
+    return this.migration.inventory(user.userId, path ?? '');
+  }
+
+  /** 按排除项精确统计将迁移的文件数与总大小。 */
+  @Post('inventory/estimate')
+  estimate(@CurrentUser() user: AuthUser, @Body() dto: EstimateMigrationDto) {
+    return this.migration.estimate(user.userId, dto.excludes);
+  }
+
+  /** 最近一次换档迁移（没有则 null）。 */
+  @Get('migration')
+  latestMigration(@CurrentUser() user: AuthUser) {
+    return this.migration.latest(user.userId);
   }
 
   /** ?files=1 才连沙箱列工作区文件（会刷新 Daytona 活动事件，见 service 注释）。 */

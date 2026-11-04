@@ -8,12 +8,31 @@
  *
  * 用法（在 apps/backend 下，先切 node 22）：
  *   node --env-file=.env --import tsx scripts/build-e2b-template.ts                   # spark-2c2g（2 vCPU / 2048 MB）
+ *   node --env-file=.env --import tsx scripts/build-e2b-template.ts all               # 设置页的全部档位 spark-<档位>（见 sizes.ts）
  *   node --env-file=.env --import tsx scripts/build-e2b-template.ts my-tpl 4 4096     # 自定义名字 / vCPU / 内存 MB
  * 走代理时加 NODE_USE_ENV_PROXY=1（Node 22 的 fetch 默认不认 HTTPS_PROXY）。
  */
 import { Template } from 'e2b';
+import { SANDBOX_SIZES } from '../src/agent/sandbox-providers/sizes';
+
+async function build(name: string, cpuCount: number, memoryMB: number) {
+  console.log(`构建 ${name}：${cpuCount} vCPU / ${memoryMB} MB（基于 base）…`);
+  // 内容与 base 完全一致，只改规格：agent 依赖的工具（python3 等）都来自 base
+  const info = await Template.build(Template().fromTemplate('base'), name, {
+    cpuCount,
+    memoryMB,
+  });
+  console.log(`完成 ${name} templateId=${info.templateId}`);
+}
 
 async function main(): Promise<void> {
+  if (process.argv[2] === 'all') {
+    // 设置页「沙箱配置」的全部档位：名字与 sizes.ts e2bTemplateFor 的默认命名一致
+    for (const s of SANDBOX_SIZES) {
+      await build(`spark-${s.id}`, s.cpuCount, s.memoryMB);
+    }
+    return;
+  }
   const [name = 'spark-2c2g', cpu = '2', memory = '2048'] =
     process.argv.slice(2);
   const cpuCount = Number(cpu);
@@ -22,15 +41,8 @@ async function main(): Promise<void> {
     throw new Error(`vCPU / 内存必须是整数：${cpu} / ${memory}`);
   }
 
-  console.log(`构建 ${name}：${cpuCount} vCPU / ${memoryMB} MB（基于 base）…`);
-  // 内容与 base 完全一致，只改规格：agent 依赖的工具（python3 等）都来自 base
-  const info = await Template.build(Template().fromTemplate('base'), name, {
-    cpuCount,
-    memoryMB,
-  });
-  console.log(
-    `完成 templateId=${info.templateId}。在 .env 设 E2B_TEMPLATE=${name}`,
-  );
+  await build(name, cpuCount, memoryMB);
+  console.log(`在 .env 设 E2B_TEMPLATE=${name}`);
 }
 
 main().catch((e: unknown) => {

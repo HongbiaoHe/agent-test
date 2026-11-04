@@ -101,6 +101,8 @@ export const daytonaProvider: SandboxProvider = {
   supportsDomainAllowList: false,
   // 预览链接在 public 未设为 true 时需令牌；我们从不设 public，入站始终私有
   supportsPublicTrafficToggle: false,
+  // 用账号默认规格（创建时不传 resources），暂不支持切换档位
+  supportsSizes: false,
 
   isConfigured: () => !!process.env.DAYTONA_API_KEY,
 

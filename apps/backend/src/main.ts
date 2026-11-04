@@ -6,6 +6,7 @@ import { AppModule } from './app.module';
 import { pinEnvProxyDispatcher } from './common/env-proxy-dispatcher';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
+import { mcpSandboxHttp } from './mcp/mcp-sandbox';
 import { PreviewProxy } from './preview/preview-proxy';
 
 async function bootstrap() {
@@ -33,6 +34,8 @@ async function bootstrap() {
   // 不能被 CORS / 日志 / 鉴权 / 响应包装处理；其余请求直接 next() 放行（见 PreviewProxy）
   const preview = app.get(PreviewProxy);
   app.use(preview.http);
+  // MCP App 的 sandbox 代理页（m-<hash>.<基域名>）同理：另一个源，在这里终结（见 mcp-sandbox.ts）
+  app.use(mcpSandboxHttp);
   app.enableCors({
     origin: process.env.CORS_ORIGIN ?? 'http://localhost:3100',
     credentials: true,

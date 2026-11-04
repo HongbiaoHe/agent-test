@@ -1,5 +1,13 @@
 import type { Todo } from "@/components/agent/todo-list";
 import { parseAttachments } from "@/components/attachments/attachments";
+import type { McpAppArtifact, McpAuthRequired } from "@/components/mcp/api";
+
+import {
+  BACKGROUND_TOOLS,
+  parseNotification,
+  parseStartedTaskId,
+  type TaskNotification,
+} from "./background-tasks";
 import type {
   Conversation,
   ConversationMessage,
@@ -81,6 +89,18 @@ export type ThreadItem =
   // 网页预览卡片：agent 调 preview_page 成功后（tool_end）在工具 chip 之后追加，可再次打开预览。
   // 只存「预览什么」——预览地址带短期令牌/会话 id，打开时现签，不进 thread 状态。
   | { kind: "preview"; id: string; spec: PreviewSpec }
+  // MCP App 卡片：MCP 工具结果带 UI 资源时（tool_end.mcpApp）在工具 chip 之后追加，iframe 渲染 App。
+  // callId 是对应的 tool call id：App 的 ui/update-model-context 按它归档，去重也按它。
+  | { kind: "mcp_app"; id: string; callId: string; app: McpAppArtifact }
+  // MCP 连接器授权失效：tool_end.mcpAuthRequired → 「重新连接」卡片
+  | { kind: "mcp_auth"; id: string; callId: string; auth: McpAuthRequired }
+  // 后台任务卡片：watch_until / run_in_background / schedule_wakeup 成功发起后（tool_end 带 taskId）追加；
+  // 状态一律从 bg-tasks query 读（bg_task_update 事件实时写入缓存），这里只存锚点
+  | { kind: "bg_task"; id: string; taskId: string }
+  // 后台任务结束唤醒 agent 的通知（落库为 role=user 消息，content.notification）：渲染成系统行，不是用户气泡
+  | { kind: "notification"; id: string; notification: TaskNotification; at?: number }
+  // ask_user 作答结果（tool_end）：对话里展示「问题 → 回答」，对齐 Claude Code 的 "User answered Claude's questions"
+  | { kind: "qa"; id: string; callId: string; answers: AskUserAnswer[] }
   // 一轮结束的总耗时（墙钟：用户发送 → result/error，含排队与等审批），由 result/error 追加
   | {
       kind: "turn";
@@ -150,6 +170,86 @@ export function parsePreviewResult(content: unknown): PreviewSpec | null {
     // 非 JSON：不是成功结果
   }
   return null;
+}
+
+/** ask_user 的一条作答：auto = 倒计时到点 / 超时自动采用了建议答案。 */
+export interface AskUserAnswer {
+  question: string;
+  selected: string[];
+  auto: boolean;
+}
+
+/**
+ * 解析 ask_user 的工具结果 `{answers:[{header, question?, selected, auto}]}`。
+ * 旧结果（用户手动作答的 edit 路径）不带 question，按 header 去工具调用参数里找问题原文，再找不到就用 header。
+ */
+export function parseAskUserAnswers(content: unknown, args: unknown): AskUserAnswer[] {
+  let parsed: unknown;
+  try {
+    parsed = typeof content === "string" ? JSON.parse(content) : content;
+  } catch {
+    return [];
+  }
+  if (!parsed || typeof parsed !== "object" || !("answers" in parsed) || !Array.isArray(parsed.answers)) {
+    return [];
+  }
+  const questions =
+    args && typeof args === "object" && "questions" in args && Array.isArray(args.questions)
+      ? args.questions
+      : [];
+  const textOf = (header: string): string => {
+    for (const q of questions) {
+      if (q && typeof q === "object" && "header" in q && q.header === header) {
+        if ("question" in q && typeof q.question === "string" && q.question) return q.question;
+      }
+    }
+    return header;
+  };
+  return parsed.answers.flatMap((a: unknown): AskUserAnswer[] => {
+    if (!a || typeof a !== "object" || !("selected" in a) || !Array.isArray(a.selected)) return [];
+    const header = "header" in a && typeof a.header === "string" ? a.header : "";
+    const question =
+      "question" in a && typeof a.question === "string" && a.question ? a.question : textOf(header);
+    return [
+      {
+        question,
+        selected: a.selected.filter((x: unknown): x is string => typeof x === "string"),
+        auto: "auto" in a && a.auto === true,
+      },
+    ];
+  });
+}
+
+/** tool_end.mcpApp（后端 McpAppArtifact）：字段不全的旧 / 脏数据不出卡片。 */
+export function parseMcpApp(v: unknown): McpAppArtifact | null {
+  if (!v || typeof v !== "object") return null;
+  if (
+    !("serverId" in v) || typeof v.serverId !== "string" ||
+    !("serverName" in v) || typeof v.serverName !== "string" ||
+    !("toolName" in v) || typeof v.toolName !== "string" ||
+    !("resourceUri" in v) || typeof v.resourceUri !== "string" ||
+    !("toolInput" in v) || !v.toolInput || typeof v.toolInput !== "object" ||
+    !("toolResult" in v) || !v.toolResult || typeof v.toolResult !== "object" ||
+    !("content" in v.toolResult) || !Array.isArray(v.toolResult.content)
+  ) {
+    return null;
+  }
+  return {
+    serverId: v.serverId,
+    serverName: v.serverName,
+    toolName: v.toolName,
+    resourceUri: v.resourceUri,
+    // 后端原样存的 MCP 工具入参 / CallToolResult（content 已校验为数组），交给 App 自己解释
+    toolInput: v.toolInput as Record<string, unknown>,
+    toolResult: v.toolResult as McpAppArtifact["toolResult"],
+  };
+}
+
+function parseMcpAuth(v: unknown): McpAuthRequired | null {
+  if (!v || typeof v !== "object") return null;
+  if (!("serverId" in v) || typeof v.serverId !== "string") return null;
+  if (!("serverName" in v) || typeof v.serverName !== "string") return null;
+  return { serverId: v.serverId, serverName: v.serverName };
 }
 
 /** 工具结果可能是字符串或对象，统一转成可读文本（对象做缩进 JSON），避免渲染成 [object Object]。 */
@@ -246,8 +346,19 @@ function reduceEvent(input: ThreadState, ev: NormalizedEvent): ThreadState {
       }
       return { ...state, items, nextId };
     }
+    case "task_notification":
     case "message": {
       const text = String(ev.payload?.text ?? "");
+      // 后台任务通知：历史里是 role=user 的消息，实时是 task_notification 事件；都开启新的一轮
+      const notification =
+        ev.role === "user" || ev.type === "task_notification"
+          ? parseNotification(ev.payload?.notification)
+          : null;
+      if (notification) {
+        items.push({ kind: "notification", id: id(), notification, at: ev.at });
+        return { ...state, items, nextId, turnStartedAt: ev.at ?? null };
+      }
+      if (ev.type === "task_notification") return state;
       if (ev.role === "user") {
         // 只发附件的消息正文为空，照样成一条气泡
         const attachments = parseAttachments(ev.payload?.attachments);
@@ -348,6 +459,32 @@ function reduceEvent(input: ThreadState, ev: NormalizedEvent): ThreadState {
       if (name === "preview_page") {
         const spec = parsePreviewResult(ev.payload?.content);
         if (spec) items.push({ kind: "preview", id: id(), spec });
+      }
+      // MCP 工具：卡片锚点按 tool call id 去重（历史折叠后 live 又收到同一个 tool_end 时不重复插）
+      const mcpCallId = typeof callId === "string" ? callId : "";
+      const mcpApp = parseMcpApp(ev.payload?.mcpApp);
+      if (mcpApp && !items.some((it) => it.kind === "mcp_app" && it.callId === mcpCallId)) {
+        items.push({ kind: "mcp_app", id: id(), callId: mcpCallId, app: mcpApp });
+      }
+      if (name === "ask_user" && typeof callId === "string") {
+        const chip = items.find((it) => it.kind === "tool" && it.callId === callId);
+        const answers = parseAskUserAnswers(
+          ev.payload?.content,
+          chip?.kind === "tool" ? chip.args : undefined,
+        );
+        if (answers.length > 0 && !items.some((it) => it.kind === "qa" && it.callId === callId)) {
+          items.push({ kind: "qa", id: id(), callId, answers });
+        }
+      }
+      if (typeof name === "string" && BACKGROUND_TOOLS.includes(name)) {
+        const taskId = parseStartedTaskId(ev.payload?.content);
+        if (taskId && !items.some((it) => it.kind === "bg_task" && it.taskId === taskId)) {
+          items.push({ kind: "bg_task", id: id(), taskId });
+        }
+      }
+      const mcpAuth = parseMcpAuth(ev.payload?.mcpAuthRequired);
+      if (mcpAuth && !items.some((it) => it.kind === "mcp_auth" && it.callId === mcpCallId)) {
+        items.push({ kind: "mcp_auth", id: id(), callId: mcpCallId, auth: mcpAuth });
       }
       return { ...state, items, nextId };
     }

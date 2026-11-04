@@ -32,6 +32,8 @@ model User {
   sandboxNetworkAllowList  Json?
   /// 沙箱端口公网地址是否免鉴权访问（仅 E2B，创建时生效）；null = 默认 false（需鉴权）
   sandboxPublicTraffic     Boolean?
+  /// 沙箱配置档位（2c2g | 4c4g | 4c8g | 8c8g，仅 E2B）；null = 默认 2c2g。只经换档迁移写入
+  sandboxSize              String?         @db.VarChar(16)
   createdAt                DateTime        @default(now())
 
   @@index([tenantId])
@@ -71,6 +73,9 @@ model Conversation {
   pinnedAt      DateTime?
   // 软删除时刻；非 NULL = 已删除：列表 / 详情 / 订阅 / 续聊都不再可见，数据留库可恢复
   deletedAt     DateTime?
+  // MCP App 经 ui/update-model-context 交给模型的上下文：{ [toolCallId]: { server, text, at } }，
+  // 每个 App 只留最新一份，下一轮运行时注入系统提示（见 mcp/mcp-prompt.ts）
+  mcpAppContext Json?
   tenantId      String
   userId        String
   messages      Message[]
@@ -428,4 +433,140 @@ model MediaAnalysis {
   outputTokens Int          @default(0)
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
+}
+
+/// 用户接入的远程 MCP server（/settings/mcp）。只支持 Streamable HTTP；鉴权只有 none / oauth 两种。
+/// 工具列表落快照（tools），agent 每轮按快照装配工具、调用时才短连 server（见 mcp 模块）。
+model McpServer {
+  id               String    @id @default(cuid())
+  userId           String
+  /// 工具名前缀（<slug>__<tool>），同一用户内唯一
+  slug             String    @db.VarChar(32)
+  name             String    @db.VarChar(200)
+  url              String    @db.VarChar(512)
+  /// 推荐连接器的 key（如 buzzvideo）；自定义连接器为 null
+  presetKey        String?   @db.VarChar(64)
+  enabled          Boolean   @default(true)
+  /// disconnected | connected | needs_auth | error
+  status           String    @default("disconnected") @db.VarChar(32)
+  lastError        String?   @db.Text
+  /// none | oauth（探测时 server 回 401 即转 oauth）
+  authType         String    @default("none") @db.VarChar(16)
+  /// AES-256-GCM 密文：DCR 注册得到的 client 信息 + 注册时的 redirect_uri
+  oauthClient      String?   @db.Text
+  /// AES-256-GCM 密文：access / refresh token
+  oauthTokens      String?   @db.Text
+  /// initialize 返回的 serverInfo（title / icons / version / websiteUrl）
+  serverInfo       Json?
+  /// initialize 返回的 instructions（注入系统提示前截断）
+  instructions     String?   @db.Text
+  /// tools/list 快照（含清洗后的 schema、annotations、UI 元数据）
+  tools            Json?
+  /// 用户为每个工具设的权限覆盖：{ [toolName]: allow | ask | deny }；没设的按 readOnlyHint 推默认
+  toolPermissions  Json?
+  toolsRefreshedAt DateTime?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  @@unique([userId, slug])
+  @@index([userId])
+}
+
+/// 会话的后台任务（agent 用 watch_until / run_in_background / schedule_wakeup 创建）。
+/// 由 bg-task 队列在服务端推进，不占模型调用；结束后（notify=true）往会话写一条通知并唤醒 agent。
+model BackgroundTask {
+  id             String    @id @default(cuid())
+  conversationId String
+  userId         String
+  /// watch（轮询 MCP 工具直到条件满足）| command（沙箱后台命令）| wakeup（定时唤醒）
+  kind           String    @db.VarChar(16)
+  title          String    @db.VarChar(200)
+  /// 按 kind 不同的参数（见 background/background.types.ts）
+  spec           Json
+  /// running | succeeded | failed | timeout | cancelled
+  status         String    @default("running") @db.VarChar(16)
+  /// 结束时的摘要（给模型的文本 + 关键字段）
+  result         Json?
+  notify         Boolean   @default(true)
+  /// 结束通知是否已写进会话（会话忙时先挂着，等这一轮结束再投递）
+  delivered      Boolean   @default(false)
+  /// 已轮询次数
+  polls          Int       @default(0)
+  deadlineAt     DateTime
+  finishedAt     DateTime?
+  createdAt      DateTime  @default(now())
+  updatedAt      DateTime  @updatedAt
+
+  @@index([conversationId, status])
+}
+
+/**
+ * 分图层设计稿（design 模块，独立于 canvas / 主 agent）。
+ * 整份文档存一个 JSON 列（读写两头都过 @agent-test/design-schema 的 designDocumentSchema），
+ * 图层量级几十个，一行 JSON 比「一层一行」简单得多。人和 agent 的每批 op 在事务里
+ * CAS revision+1 后广播；不建 op 日志表（不需要按 op 回放历史）。
+ */
+model DesignDoc {
+  id         String  @id @default(cuid())
+  title      String  @default("未命名设计")
+  tenantId   String
+  userId     String
+  // idle | running | done | failed | stopped（agent 运行状态）
+  status     String  @default("idle")
+  // agent 模型（DESIGN_MODELS 之一）；空 = 默认
+  model      String?
+  // 生图模型选择 { channel, model, resolution }；空 = 目录里支持透明的首选模型
+  imageModel Json?
+  document   Json
+  revision   Int     @default(0)
+
+  messages DesignMessage[]
+
+  createdAt DateTime @default(now())
+  updatedAt DateTime @updatedAt
+
+  @@index([tenantId, updatedAt])
+}
+
+/**
+ * 设计 agent 的对话记录（同时是每轮重放给模型的历史；不接 checkpointer）。
+ */
+model DesignMessage {
+  id        String    @id @default(cuid())
+  docId     String
+  doc       DesignDoc @relation(fields: [docId], references: [id], onDelete: Cascade)
+  runId     String?
+  role      String // user | assistant | tool
+  type      String // message | reasoning | tool_start | tool_end | result | error
+  content   Json
+  seq       Int
+  createdAt DateTime  @default(now())
+
+  @@index([docId, seq])
+}
+
+/// 沙箱换档迁移（/settings/sandbox「沙箱配置」）：新档建新沙箱 → 搬工作区（不含依赖目录）→ 校验 → 切换 → 删旧沙箱。
+/// 每次换档一行；status=running 期间禁止该用户再换档或发起 agent 运行。
+model SandboxMigration {
+  id           String    @id @default(cuid())
+  userId       String
+  provider     String    @db.VarChar(16)
+  fromSize     String    @db.VarChar(16)
+  toSize       String    @db.VarChar(16)
+  /// running | done | failed
+  status       String    @default("running") @db.VarChar(16)
+  /// 当前步骤：prepare | pack | create | transfer | unpack | verify | switch | cleanup | done
+  phase        String    @default("prepare") @db.VarChar(16)
+  /// 失败原因 / 提示（如「旧沙箱删除失败，需手动清理」）
+  message      String?   @db.Text
+  oldSandboxId String?   @db.VarChar(128)
+  newSandboxId String?   @db.VarChar(128)
+  /// 迁移的文件数与总字节数（打包前在旧沙箱统计，解包后在新沙箱复核）
+  fileCount    Int?
+  totalBytes   BigInt?
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  finishedAt   DateTime?
+
+  @@index([userId, createdAt])
 }

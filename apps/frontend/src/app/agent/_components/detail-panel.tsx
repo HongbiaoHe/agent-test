@@ -20,6 +20,7 @@ import {
   langFromPath,
   stripLineNumbers,
 } from "./highlight";
+import { toolLabel } from "./tool-chip";
 
 type ToolItem = Extract<ThreadItem, { kind: "tool" }>;
 
@@ -158,7 +159,7 @@ export function DetailPanel({
           <span className="text-[11px] tracking-wide text-muted-foreground uppercase">
             Tool call
           </span>
-          <span className="truncate text-sm font-medium">{tool.name}</span>
+          <span className="truncate text-sm font-medium">{toolLabel(tool.name)}</span>
         </div>
         <div className="flex shrink-0 items-center gap-1">
           {file && (
@@ -189,7 +190,7 @@ export function DetailPanel({
         <div className="space-y-2 pb-3">
           <div className="flex flex-wrap items-center gap-2">
             <code className="rounded-md bg-muted px-1.5 py-0.5 font-mono text-sm font-medium">
-              {tool.name}
+              {toolLabel(tool.name)}
             </code>
             {tool.done ? (
               <Badge variant="outline">

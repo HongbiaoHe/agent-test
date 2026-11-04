@@ -1,5 +1,6 @@
 packages:
   - apps/*
+  - packages/*
 
 allowBuilds:
   # @google/genai 无需 postinstall 构建（纯 JS SDK，已实测生图/生视频可用）
@@ -13,6 +14,8 @@ allowBuilds:
   prisma: true
   protobufjs: false
   sharp: true
+  # skia-canvas：后端设计模块的 Konva 同构渲染器，postinstall 下载预编译原生二进制
+  skia-canvas: true
   unrs-resolver: true
 
 # 允许这些包运行构建/postinstall 脚本：
@@ -21,4 +24,5 @@ allowBuilds:
 onlyBuiltDependencies:
   - '@nestjs/core'
   - sharp
+  - skia-canvas
   - unrs-resolver

@@ -12,8 +12,14 @@ import { z } from 'zod';
  * - approve：采纳建议答案——按原参数执行，返回 suggested 并标记 auto:true。
  *   前端 60s 倒计时到点与服务端兜底超时（agent.processor）都走 approve。
  */
+// ⚠️ 凡是会让 zod 校验失败的约束都只会炸在**续跑**：HITL 中断发生在校验之前（面板已渲染、用户已作答），
+// 模型漏传 / 传错的字段在用户答完后才报错、整轮失败（DeepSeek 实测漏传 question）。
+// 所以除 header / options / label 外一律可选，由下方归一化兜底；description 仍按必填引导模型。
 const questionSchema = z.object({
-  question: z.string().describe('The complete question to ask the user.'),
+  question: z
+    .string()
+    .optional()
+    .describe('Required: the complete question to ask the user.'),
   header: z
     .string()
     .describe('Short label (2-6 chars) shown as the question group title.'),
@@ -34,12 +40,12 @@ const questionSchema = z.object({
           .describe('What this choice means or implies.'),
       }),
     )
-    .min(2),
+    .min(1),
   suggested: z
     .array(z.string())
-    .min(1)
+    .optional()
     .describe(
-      'Recommended answer(s); every item must be an option label. Exactly 1 for single-select. Adopted automatically if the user does not respond in time.',
+      'Required: recommended answer(s); every item must be an option label. Exactly 1 for single-select. Adopted automatically if the user does not respond in time.',
     ),
 });
 
@@ -66,24 +72,39 @@ function normalizeSuggested(
   question: z.infer<typeof questionSchema>,
 ): string[] {
   const labels = new Set(question.options.map((o) => o.label));
-  const valid = question.suggested.filter((s) => labels.has(s));
+  const valid = (question.suggested ?? []).filter((s) => labels.has(s));
   const picks = valid.length > 0 ? valid : [question.options[0].label];
   return question.multiSelect ? picks : [picks[0]];
 }
 
+/** 模型漏传 question 时用 header 顶上（见 questionSchema 注释）。 */
+function questionText(
+  q: z.infer<typeof questionSchema> | undefined,
+): string | undefined {
+  return q?.question?.trim() || q?.header;
+}
+
 export const askUserTool = tool(
   ({ questions, answers }: z.infer<typeof askUserSchema>) => {
-    // edit 路径：前端已把用户答案写进 answers → 原样返回（auto:false）
+    // edit 路径：前端已把用户答案写进 answers → 原样返回（auto:false），按 header 补上问题原文，
+    // 模型看得清「哪个问题答了什么」，前端也据此在对话里展示问答
     if (answers && answers.length > 0) {
       return JSON.stringify({
-        answers: answers.map((a) => ({ ...a, auto: false })),
+        answers: answers.map((a) => ({
+          header: a.header,
+          question:
+            questionText(questions.find((q) => q.header === a.header)) ??
+            a.header,
+          selected: a.selected,
+          auto: false,
+        })),
       });
     }
     // approve 路径（含超时自动采纳）：返回归一化后的建议答案（auto:true）
     return JSON.stringify({
       answers: questions.map((question) => ({
         header: question.header,
-        question: question.question,
+        question: questionText(question) ?? question.header,
         selected: normalizeSuggested(question),
         auto: true,
       })),

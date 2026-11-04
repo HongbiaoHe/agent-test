@@ -45,6 +45,7 @@ jest.mock('../agent/sandbox-providers', () => ({
       supportsEgressControl: false,
       supportsDomainAllowList: false,
       supportsPublicTrafficToggle: false,
+      supportsSizes: false,
     },
     {
       name: 'e2b',
@@ -53,6 +54,7 @@ jest.mock('../agent/sandbox-providers', () => ({
       supportsEgressControl: true,
       supportsDomainAllowList: true,
       supportsPublicTrafficToggle: true,
+      supportsSizes: true,
     },
   ],
 }));
@@ -74,6 +76,7 @@ const row = (
     sandboxNetworkMode: string | null;
     sandboxNetworkAllowList: unknown;
     sandboxPublicTraffic: boolean | null;
+    sandboxSize: string | null;
   }> = {},
 ) => ({
   sandboxProvider: null,
@@ -107,7 +110,15 @@ describe('SandboxSettingsService', () => {
       provider: 'daytona',
       lifecycle: { idleMinutes: 5, autoDeleteMinutes: 10 },
       network: OPEN,
+      size: '2c2g',
     });
+  });
+
+  it('档位：库里存的合法档位生效；历史脏值按默认档', async () => {
+    findUnique.mockResolvedValue(row({ sandboxSize: '4c8g' }));
+    expect((await svc.resolve('u1')).size).toBe('4c8g');
+    findUnique.mockResolvedValue(row({ sandboxSize: '64c' }));
+    expect((await svc.resolve('u1')).size).toBe('2c2g');
   });
 
   it('选了 e2b 且未设闲置 → 取 E2B 自己的默认（1 分钟），设置页默认值也随提供方', async () => {
@@ -116,6 +127,7 @@ describe('SandboxSettingsService', () => {
       provider: 'e2b',
       lifecycle: { idleMinutes: 1, autoDeleteMinutes: 10 },
       network: OPEN,
+      size: '2c2g',
     });
     mockPickUserSandbox.mockResolvedValue(null);
     expect(await svc.getSettings('u1')).toMatchObject({
@@ -143,6 +155,7 @@ describe('SandboxSettingsService', () => {
       provider: 'e2b',
       lifecycle: { idleMinutes: 30, autoDeleteMinutes: -1 },
       network: OPEN,
+      size: '2c2g',
     });
   });
 
@@ -175,6 +188,7 @@ describe('SandboxSettingsService', () => {
           supportsEgressControl: false,
           supportsDomainAllowList: false,
           supportsPublicTrafficToggle: false,
+          supportsSizes: false,
         },
         {
           name: 'e2b',
@@ -184,7 +198,15 @@ describe('SandboxSettingsService', () => {
           supportsEgressControl: true,
           supportsDomainAllowList: true,
           supportsPublicTrafficToggle: true,
+          supportsSizes: true,
         },
+      ],
+      size: '2c2g',
+      sizes: [
+        { id: '2c2g', cpuCount: 2, memoryMB: 2048 },
+        { id: '4c4g', cpuCount: 4, memoryMB: 4096 },
+        { id: '4c8g', cpuCount: 4, memoryMB: 8192 },
+        { id: '8c8g', cpuCount: 8, memoryMB: 8192 },
       ],
       lifecycle: { idleMinutes: 5, autoDeleteMinutes: 10 },
       lifecycleDefaults: { idleMinutes: 5, autoDeleteMinutes: 10 },

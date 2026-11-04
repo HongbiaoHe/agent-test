@@ -33,6 +33,33 @@ describe('normalize', () => {
     });
   });
 
+  it('MCP 工具的 artifact：只透出 mcpApp / mcpAuthRequired 两个约定字段', () => {
+    const mcpApp = {
+      serverId: 's1',
+      serverName: 'BuzzVideo',
+      toolName: 'generate_image',
+      resourceUri: 'ui://buzzvideo/generate_image.v44.html',
+      toolInput: { prompt: 'cat' },
+      toolResult: { content: [], structuredContent: { taskId: 't1' } },
+    };
+    const ev = normalize(['tools:x'], 'messages', [
+      new ToolMessage({
+        name: 'buzzvideo__generate_image',
+        content: 'queued',
+        tool_call_id: 'tc-9',
+        status: 'success',
+        artifact: { mcpApp, other: 'dropped' },
+      }),
+    ]);
+    expect(ev?.payload).toEqual({
+      name: 'buzzvideo__generate_image',
+      content: 'queued',
+      status: 'success',
+      toolCallId: 'tc-9',
+      mcpApp,
+    });
+  });
+
   it('messages + AIMessageChunk(文本) → token', () => {
     const ev = normalize(['model_request:x'], 'messages', [aiMsg('你好')]);
     expect(ev).toEqual({ type: 'token', payload: { text: '你好' } });

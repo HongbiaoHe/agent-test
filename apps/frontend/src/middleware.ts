@@ -11,6 +11,8 @@ const PROTECTED_PREFIXES = [
   "/canvas/",
   // 索引页是「我的画布」，得登录；它不被 "/canvas/" 命中，必须单列
   "/canvas-list",
+  // 分图层设计：列表与编辑器都要登录
+  "/design",
   "/conversations",
   "/skills",
   "/settings",
@@ -71,6 +73,8 @@ export const config = {
     "/canvas/:path*",
     // /canvas-list 不被 "/canvas/:path*" 命中（差一个分隔符），要单列一条才会进中间件
     "/canvas-list",
+    "/design",
+    "/design/:path*",
     "/conversations/:path*",
     "/skills/:path*",
     "/settings/:path*",

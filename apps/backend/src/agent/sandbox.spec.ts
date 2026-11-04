@@ -16,6 +16,7 @@ jest.mock('./sandbox-providers', () => ({
 }));
 
 import {
+  filterBySize,
   findUserSandbox,
   getUserSandbox,
   listDir,
@@ -344,6 +345,7 @@ describe('提供方编排（getUserSandbox / findUserSandbox / desktop）', () =
       'u1',
       { idleMinutes: 5, autoDeleteMinutes: 10 },
       { egress: 'open', allowList: [], publicTraffic: false },
+      undefined,
     );
     expect(provider.connect).not.toHaveBeenCalled();
     const setup = String(inner.execute.mock.calls[0][0]);
@@ -403,9 +405,19 @@ describe('提供方编排（getUserSandbox / findUserSandbox / desktop）', () =
       allowList: [],
       publicTraffic: false,
     };
-    await getUserSandbox('u1', { provider: 'e2b', lifecycle, network });
+    await getUserSandbox('u1', {
+      provider: 'e2b',
+      lifecycle,
+      network,
+      size: '4c8g',
+    });
     expect(mockGetProvider).toHaveBeenCalledWith('e2b');
-    expect(provider.create).toHaveBeenCalledWith('u1', lifecycle, network);
+    expect(provider.create).toHaveBeenCalledWith(
+      'u1',
+      lifecycle,
+      network,
+      '4c8g',
+    );
   });
 
   describe('出站规则同步（已有沙箱）', () => {
@@ -424,6 +436,7 @@ describe('提供方编排（getUserSandbox / findUserSandbox / desktop）', () =
         provider: 'e2b',
         lifecycle,
         network: blocked,
+        size: '2c2g',
       });
       expect(provider.applyEgress).not.toHaveBeenCalled();
     });
@@ -436,6 +449,7 @@ describe('提供方编排（getUserSandbox / findUserSandbox / desktop）', () =
         provider: 'e2b',
         lifecycle,
         network: blocked,
+        size: '2c2g',
       });
       expect(provider.applyEgress).toHaveBeenCalledWith(
         expect.objectContaining({ id: 'a', state: 'started' }),
@@ -450,7 +464,12 @@ describe('提供方编排（getUserSandbox / findUserSandbox / desktop）', () =
       });
       provider.applyEgress.mockRejectedValue(new Error('tier not allowed'));
       await expect(
-        getUserSandbox('u1', { provider: 'e2b', lifecycle, network: blocked }),
+        getUserSandbox('u1', {
+          provider: 'e2b',
+          lifecycle,
+          network: blocked,
+          size: '2c2g',
+        }),
       ).rejects.toThrow('tier not allowed');
     });
   });
@@ -514,5 +533,16 @@ describe('提供方编排（getUserSandbox / findUserSandbox / desktop）', () =
     });
     await keepUserSandboxAlive('u1');
     expect(stopped.provider.keepAlive).not.toHaveBeenCalled();
+  });
+});
+
+describe('filterBySize（换档迁移期间新旧沙箱并存）', () => {
+  it('同档优先；没有同档就退回全部（不能因为对不上而新建空沙箱）；未标档位的按默认档', () => {
+    const old = { id: 'old', size: undefined };
+    const big = { id: 'new', size: '4c8g' as const };
+    expect(filterBySize([old, big], '2c2g').map((s) => s.id)).toEqual(['old']);
+    expect(filterBySize([old, big], '4c8g').map((s) => s.id)).toEqual(['new']);
+    expect(filterBySize([old], '8c8g').map((s) => s.id)).toEqual(['old']);
+    expect(filterBySize([old, big], undefined)).toHaveLength(2);
   });
 });

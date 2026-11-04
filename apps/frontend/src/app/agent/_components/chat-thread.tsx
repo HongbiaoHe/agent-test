@@ -18,6 +18,7 @@ import { TokenUsageDialog } from "@/components/agent/token-usage-dialog";
 import { ATTACHMENT_ACCEPT } from "@/components/attachments/attachments";
 import { ComposerAttachments } from "@/components/attachments/composer-attachments";
 import { useAttachments } from "@/components/attachments/use-attachments";
+import { McpAppCard, McpReconnectCard } from "@/components/mcp";
 import { Badge } from "@/components/ui/badge";
 import { JumpToLatest } from "@/components/chat/jump-to-latest";
 import { useChatScroll } from "@/components/chat/use-chat-scroll";
@@ -39,18 +40,18 @@ import { modelDisplayName } from "../_lib/models";
 import type { Approval, ThreadItem } from "../_lib/thread";
 import { isSameDay } from "../_lib/time";
 import { ApprovalPanel } from "./approval-panel";
+import { AskUserAnswers } from "./ask-user-answers";
+import { BackgroundTaskCard, TaskNotificationRow } from "./background-task-card";
 import { isAskUserApproval, QuestionPanel } from "./question-panel";
 import { ChatMessage } from "./chat-message";
 import { DayDivider } from "./day-divider";
 import { MediaGroup } from "./media-card";
 import { ModelSwitcher } from "./model-switcher";
 import { PreviewCard } from "./preview-card";
-import { ReasoningBlock } from "./reasoning-block";
 import { SandboxStatusButton } from "./sandbox-panel";
 import { TaskPlanPanel } from "./task-plan-panel";
 import { ThinkingIndicator } from "./thinking-indicator";
-import type { ToolItem } from "./tool-chip";
-import { ToolGroup } from "./tool-group";
+import { type ActivityItem, ActivityGroup } from "./activity-group";
 import { TurnFooter } from "./turn-footer";
 
 /** `/` 补全面板分组标签与顺序（Built-in 在前，与设置页一致） */
@@ -227,13 +228,13 @@ export function ChatThread({
   );
   const streamItems = items.filter((it) => it.kind !== "plan");
 
-  // 把相邻的工具调用收成一组，交给 ToolGroup 渲染（≥2 折叠、单个仍按原 chip）；
+  // 把相邻的思考与工具调用收成一个活动组，交给 ActivityGroup 渲染（单项不加组头）；
   // 其余消息照常一条一条交给 ChatMessage。
   // 用户消息与上一条用户消息不在同一天时，前面插一条日期分隔线；第一条用户消息前也插，
   // 但标 first —— 是今天就不显示（全是今天的会话不出分隔线）。
   type Row =
     | { row: "msg"; item: ThreadItem }
-    | { row: "tools"; id: string; tools: ToolItem[] }
+    | { row: "activity"; id: string; items: ActivityItem[] }
     | { row: "day"; id: string; at: number; first: boolean };
   const rows: Row[] = [];
   let prevUserAt: number | null = null;
@@ -245,9 +246,9 @@ export function ChatThread({
       prevUserAt = it.at;
     }
     const last = rows[rows.length - 1];
-    if (it.kind === "tool") {
-      if (last?.row === "tools") last.tools.push(it);
-      else rows.push({ row: "tools", id: it.id, tools: [it] });
+    if (it.kind === "tool" || it.kind === "reasoning") {
+      if (last?.row === "activity") last.items.push(it);
+      else rows.push({ row: "activity", id: it.id, items: [it] });
     } else {
       rows.push({ row: "msg", item: it });
     }
@@ -350,13 +351,15 @@ export function ChatThread({
               </div>
             ) : (
               <>
-                {rows.map((r) =>
+                {rows.map((r, i) =>
                   r.row === "day" ? (
                     <DayDivider key={r.id} at={r.at} hideIfToday={r.first} />
-                  ) : r.row === "tools" ? (
-                    <ToolGroup
+                  ) : r.row === "activity" ? (
+                    <ActivityGroup
                       key={r.id}
-                      tools={r.tools}
+                      items={r.items}
+                      // 末尾那组且本轮还在跑：组头显示「Working」
+                      live={busy && i === rows.length - 1}
                       activeDetailId={activeDetailId}
                       onOpenDetail={onOpenDetail}
                     />
@@ -371,8 +374,29 @@ export function ChatThread({
                     </div>
                   ) : r.item.kind === "preview" ? (
                     <PreviewCard key={r.item.id} spec={r.item.spec} />
-                  ) : r.item.kind === "reasoning" ? (
-                    <ReasoningBlock key={r.item.id} item={r.item} />
+                  ) : r.item.kind === "mcp_app" ? (
+                    <McpAppCard
+                      key={r.item.id}
+                      app={r.item.app}
+                      conversationId={conversationId ?? undefined}
+                      toolCallId={r.item.callId}
+                      onFillPrompt={(text) => {
+                        setDraft(text);
+                        inputRef.current?.focus({ preventScroll: true });
+                      }}
+                    />
+                  ) : r.item.kind === "mcp_auth" ? (
+                    <McpReconnectCard key={r.item.id} auth={r.item.auth} />
+                  ) : r.item.kind === "bg_task" ? (
+                    <BackgroundTaskCard
+                      key={r.item.id}
+                      conversationId={conversationId as string}
+                      taskId={r.item.taskId}
+                    />
+                  ) : r.item.kind === "qa" ? (
+                    <AskUserAnswers key={r.item.id} answers={r.item.answers} />
+                  ) : r.item.kind === "notification" ? (
+                    <TaskNotificationRow key={r.item.id} notification={r.item.notification} />
                   ) : r.item.kind === "turn" ? (
                     <TurnFooter key={r.item.id} item={r.item} />
                   ) : (

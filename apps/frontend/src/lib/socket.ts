@@ -19,7 +19,11 @@ export type ConversationEventType =
   // 媒体生成状态变更（不落 messages 表，仅实时下发）；前端据此 invalidate media query。
   | "media_update"
   // 单次模型调用 token 用量（不落 messages 表）；payload.cumulativeTotal = 会话累计
-  | "token_usage";
+  | "token_usage"
+  // 后台任务状态变更（不落 messages 表）；前端写进 bg-tasks query 缓存
+  | "bg_task_update"
+  // 后台任务结束通知（已作为 role=user 消息落库），随后 agent 被唤醒开始新一轮
+  | "task_notification";
 
 export interface ConversationEvent {
   seq: string;

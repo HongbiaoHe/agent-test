@@ -1,0 +1,28 @@
+{
+  "name": "@agent-test/design-schema",
+  "version": "0.0.1",
+  "private": true,
+  "description": "图层设计模块的共享 zod schema：图层 / 文档 / op / 字体白名单 / 模型白名单（前端、后端、agent 工具三方共用）",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "test": "node --import tsx --test src/*.test.ts",
+    "prepare": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.22.3",
+    "typescript": "^5.7.3"
+  }
+}

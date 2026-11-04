@@ -5,7 +5,7 @@ export interface ErrorDef {
 
 /**
  * 业务错误集中定义，按域分段：
- * 1xxxx 会话域 / 2xxxx agent 域 / 3xxxx 认证域(passkey) / 4xxxx 技能与沙箱域 / 5xxxx 系统域 / 6xxxx 媒体生成域 / 7xxxx 画布域
+ * 1xxxx 会话域 / 2xxxx agent 域 / 3xxxx 认证域(passkey) / 4xxxx 技能与沙箱域 / 5xxxx 系统域 / 6xxxx 媒体生成域 / 7xxxx 画布域 / 11xxxx 设计域
  * 新增业务错误只需往这里加一条。
  */
 export const ErrorCodes = {
@@ -92,6 +92,33 @@ export const ErrorCodes = {
     code: 40010,
     message:
       "Outbound network on this Daytona account is managed by Daytona (Tier 1–2) and can't be limited per sandbox. Use E2B for outbound limits.",
+  },
+  SANDBOX_SIZE_UNSUPPORTED: {
+    code: 40016,
+    message:
+      'The current sandbox provider does not support switching sandbox size',
+  },
+  SANDBOX_SIZE_INVALID: {
+    code: 40017,
+    message: 'Unknown sandbox size, or it is already the current size',
+  },
+  SANDBOX_MIGRATION_BLOCKED: {
+    code: 40018,
+    message:
+      'An agent run or background task is still active; wait for it to finish (or stop it) before switching sandbox size',
+  },
+  SANDBOX_EXCLUDES_INVALID: {
+    code: 40020,
+    message: 'Invalid exclusion list (paths must be inside the workspace)',
+  },
+  SANDBOX_INVENTORY_UNAVAILABLE: {
+    code: 40021,
+    message: 'Could not reach your sandbox to list its files; try again',
+  },
+  SANDBOX_MIGRATING: {
+    code: 40019,
+    message:
+      'Your sandbox is being migrated to a new size; try again when it finishes',
   },
   PREVIEW_SANDBOX_NOT_RUNNING: {
     code: 40011,
@@ -196,5 +223,73 @@ export const ErrorCodes = {
     code: 70011,
     message:
       'This file does not fit the node (image upload nodes take images, video upload nodes take videos, audio upload nodes take audio)',
+  },
+  MCP_SERVER_NOT_FOUND: { code: 80001, message: 'MCP connector not found' },
+  MCP_INVALID_URL: {
+    code: 80002,
+    message: 'Connector URL must be https (http is only allowed for localhost)',
+  },
+  MCP_SERVER_EXISTS: {
+    code: 80003,
+    message: 'A connector with this URL already exists',
+  },
+  MCP_PRESET_NOT_FOUND: { code: 80004, message: 'Unknown connector preset' },
+  MCP_TOOL_NOT_FOUND: {
+    code: 80005,
+    message: 'Tool not found on this connector — try refreshing its tools',
+  },
+  MCP_TOOL_NOT_ALLOWED: {
+    code: 80006,
+    message: 'This tool is disabled or not callable from the app',
+  },
+  MCP_TOOL_NEEDS_CONFIRM: {
+    code: 80007,
+    message: 'This tool requires your confirmation before it runs',
+  },
+  MCP_AUTH_REQUIRED: {
+    code: 80008,
+    message: 'The connector needs to be reconnected',
+  },
+  MCP_OAUTH_STATE_INVALID: {
+    code: 80009,
+    message: 'Authorization expired or was already used, please try again',
+  },
+  MCP_REQUEST_FAILED: { code: 80010, message: 'MCP server request failed' },
+  BACKGROUND_TASK_NOT_FOUND: {
+    code: 90001,
+    message: 'Background task not found',
+  },
+  // 设计域（design 模块，11xxxx）
+  DESIGN_NOT_FOUND: { code: 110001, message: 'Design not found' },
+  DESIGN_OP_INVALID: { code: 110002, message: 'Invalid design operation' },
+  DESIGN_CONFLICT: {
+    code: 110003,
+    message: 'Design changed concurrently, please retry',
+  },
+  DESIGN_BUSY: {
+    code: 110004,
+    message:
+      'The design agent is already running, wait for it or stop it first',
+  },
+  DESIGN_LAYER_LOCKED: {
+    code: 110005,
+    message:
+      'This image layer is generating: its image source is locked until it finishes',
+  },
+  DESIGN_UPLOAD_INVALID: {
+    code: 110006,
+    message: 'Only PNG / JPEG / WebP images up to 20MB are supported',
+  },
+  DESIGN_NO_IMAGE_MODEL: {
+    code: 110007,
+    message: 'No image model with transparent background is available',
+  },
+  DESIGN_LAYER_NOT_IMAGE: {
+    code: 110008,
+    message: 'Only image layers can be generated',
+  },
+  DESIGN_DECOMPOSE_UNAVAILABLE: {
+    code: 110009,
+    message: 'Layer decomposition is not configured (BYTEPLUS_ARK_API_KEY)',
   },
 } as const satisfies Record<string, ErrorDef>;

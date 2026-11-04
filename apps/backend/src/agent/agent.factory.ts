@@ -200,6 +200,11 @@ export interface BuildAgentOptions {
    * 耦合点收敛在 worker，保持 agent.factory 的低耦合边界。
    */
   extraTools?: unknown[];
+  /**
+   * 额外需要审批的工具（如用户设为「需审批」的 MCP 工具），并进 interruptOn，
+   * 复用 send_email 那套 HITL 审批流。
+   */
+  extraInterruptOn?: Record<string, true>;
 }
 
 /**
@@ -281,6 +286,7 @@ export async function buildAgent(
     // 写进 args.answers 后执行（本版 langchain HITL 无 respond，用 edit 承载用户答案）。
     // 不提供 reject——对「提问」语义无意义（设计 §已确认的需求决策）。
     interruptOn: {
+      ...opts.extraInterruptOn,
       send_email: true,
       ask_user: { allowedDecisions: ['approve', 'edit'] },
     },

@@ -16,10 +16,12 @@ import { AbortRegistry, AGENT_ABORTS } from '../agent/abort-registry';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
 import { ConversationsService } from './conversations.service';
+import { SandboxMigrationService } from '../sandbox/sandbox-migration.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { SkillsService } from '../skills/skills.service';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
+import { BackgroundService } from '../background/background.service';
 import { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
 
 // 最小 Mock：只需 conversation.findFirst 返回一条记录，不触及队列/沙箱
@@ -53,6 +55,12 @@ describe('ConversationsService – downloadFile 路径校验', () => {
       providers: [
         ConversationsService,
         { provide: PrismaService, useValue: mockPrisma },
+        {
+          provide: SandboxMigrationService,
+          useValue: {
+            assertNotMigrating: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         { provide: SkillsService, useValue: mockSkills },
         { provide: getQueueToken('agent-run'), useValue: mockQueue },
         { provide: StreamService, useValue: { publish: jest.fn() } },
@@ -64,6 +72,10 @@ describe('ConversationsService – downloadFile 路径校验', () => {
         {
           provide: SandboxSettingsService,
           useValue: { resolve: jest.fn().mockResolvedValue('daytona') },
+        },
+        {
+          provide: BackgroundService,
+          useValue: { cancelByConversation: jest.fn() },
         },
       ],
     }).compile();
@@ -110,6 +122,12 @@ describe('ConversationsService – 空会话创建与续聊', () => {
       providers: [
         ConversationsService,
         { provide: PrismaService, useValue: mockPrisma },
+        {
+          provide: SandboxMigrationService,
+          useValue: {
+            assertNotMigrating: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         { provide: SkillsService, useValue: mockSkills },
         { provide: getQueueToken('agent-run'), useValue: mockQueue },
         { provide: StreamService, useValue: { publish: jest.fn() } },
@@ -121,6 +139,10 @@ describe('ConversationsService – 空会话创建与续聊', () => {
         {
           provide: SandboxSettingsService,
           useValue: { resolve: jest.fn().mockResolvedValue('daytona') },
+        },
+        {
+          provide: BackgroundService,
+          useValue: { cancelByConversation: jest.fn() },
         },
       ],
     }).compile();
@@ -324,6 +346,7 @@ describe('ConversationsService – stop（主动停止）', () => {
   let aborts: AbortRegistry;
   let mockStream: { publish: jest.Mock };
   let mockMedia: { cancelByConversation: jest.Mock };
+  const mockBackground = { cancelByConversation: jest.fn() };
   const updateMany = jest.fn();
 
   beforeEach(async () => {
@@ -341,6 +364,12 @@ describe('ConversationsService – stop（主动停止）', () => {
       providers: [
         ConversationsService,
         { provide: PrismaService, useValue: prisma },
+        {
+          provide: SandboxMigrationService,
+          useValue: {
+            assertNotMigrating: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         { provide: SkillsService, useValue: mockSkills },
         { provide: getQueueToken('agent-run'), useValue: mockQueue },
         { provide: StreamService, useValue: mockStream },
@@ -349,6 +378,10 @@ describe('ConversationsService – stop（主动停止）', () => {
         {
           provide: SandboxSettingsService,
           useValue: { resolve: jest.fn().mockResolvedValue('daytona') },
+        },
+        {
+          provide: BackgroundService,
+          useValue: mockBackground,
         },
       ],
     }).compile();
@@ -366,6 +399,8 @@ describe('ConversationsService – stop（主动停止）', () => {
     expect(r).toEqual({ stopped: true });
     expect(signal.aborted).toBe(true);
     expect(mockMedia.cancelByConversation).toHaveBeenCalledWith('conv-1');
+    // 停止 = 停止所有操作：会话的后台任务一并取消
+    expect(mockBackground.cancelByConversation).toHaveBeenCalledWith('conv-1');
     expect(updateMany).toHaveBeenCalledWith(
       expect.objectContaining({ data: { status: 'stopped' } }),
     );
@@ -420,6 +455,12 @@ describe('ConversationsService – 置顶与删除', () => {
       providers: [
         ConversationsService,
         { provide: PrismaService, useValue: prisma },
+        {
+          provide: SandboxMigrationService,
+          useValue: {
+            assertNotMigrating: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         { provide: SkillsService, useValue: mockSkills },
         { provide: getQueueToken('agent-run'), useValue: mockQueue },
         { provide: StreamService, useValue: { publish: jest.fn() } },
@@ -428,6 +469,10 @@ describe('ConversationsService – 置顶与删除', () => {
         {
           provide: SandboxSettingsService,
           useValue: { resolve: jest.fn().mockResolvedValue('daytona') },
+        },
+        {
+          provide: BackgroundService,
+          useValue: { cancelByConversation: jest.fn() },
         },
       ],
     }).compile();
@@ -589,12 +634,22 @@ describe('ConversationsService – token 报表', () => {
       providers: [
         ConversationsService,
         { provide: PrismaService, useValue: prisma },
+        {
+          provide: SandboxMigrationService,
+          useValue: {
+            assertNotMigrating: jest.fn().mockResolvedValue(undefined),
+          },
+        },
         { provide: SkillsService, useValue: mockSkills },
         { provide: getQueueToken('agent-run'), useValue: mockQueue },
         { provide: StreamService, useValue: { publish: jest.fn() } },
         { provide: MediaService, useValue: {} },
         { provide: AGENT_ABORTS, useValue: new AbortRegistry() },
         { provide: SandboxSettingsService, useValue: {} },
+        {
+          provide: BackgroundService,
+          useValue: { cancelByConversation: jest.fn() },
+        },
       ],
     }).compile();
     service = module.get(ConversationsService);

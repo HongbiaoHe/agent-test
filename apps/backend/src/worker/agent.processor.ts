@@ -26,6 +26,14 @@ import { UPLOAD_MODEL } from '../media/media-upload.service';
 import { createSyncMediaTool } from '../media/media-sandbox.tool';
 import { createMediaTools } from '../media/media.tools';
 import { createPreviewPageTool } from '../agent/tools/preview-page.tool';
+import { BackgroundService } from '../background/background.service';
+import {
+  backgroundPrompt,
+  createBackgroundTools,
+} from '../background/background.tools';
+import { appContextOf } from '../mcp/mcp-app-context';
+import { buildMcpAgentTools, buildMcpPrompt } from '../mcp/mcp-agent-tools';
+import { McpService } from '../mcp/mcp.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { absolutizeRefPaths } from '../skills/skill-files';
 import type { SkillDef } from '../skills/skills.service';
@@ -80,6 +88,8 @@ export class AgentProcessor extends WorkerHost {
     private readonly media: MediaService,
     @Inject(AGENT_ABORTS) private readonly aborts: AbortRegistry,
     private readonly sandboxSettings: SandboxSettingsService,
+    private readonly mcp: McpService,
+    private readonly background: BackgroundService,
   ) {
     super();
   }
@@ -224,6 +234,12 @@ export class AgentProcessor extends WorkerHost {
       // ③ 装配：media 工具闭包注入——conversationId/userId 由 worker 上下文提供，不经模型传递（无注入风险）
       // 网页预览、媒体同步工具只在有沙箱时注入：没有沙箱就没有工作区可预览 / 可写入
       const mediaCtx = { conversationId, userId: conv.userId };
+      // MCP 连接器：按工具快照装配（不连 server），调用时才短连；需审批的并进 interruptOn。
+      // run 与 resume 都要装：审批通过后的续跑得能执行被批准的 MCP 工具。
+      const mcpServers = await this.mcp.runtimeServers(conv.userId);
+      const mcp = buildMcpAgentTools(mcpServers, (serverId, name, args) =>
+        this.mcp.callTool(conv.userId, serverId, name, args),
+      );
       const extraTools = [
         ...createMediaTools(this.media, mediaCtx),
         ...(sandbox
@@ -232,10 +248,21 @@ export class AgentProcessor extends WorkerHost {
               createSyncMediaTool(this.media, sandbox, mediaCtx),
             ]
           : []),
+        ...mcp.tools,
+        // 后台任务：等异步结果时由服务端轮询 / 后台跑，结束后通知唤醒，不让模型自己反复调工具
+        ...createBackgroundTools(this.background, {
+          ...mediaCtx,
+          sandbox,
+          mcpServers,
+        }),
       ];
       const agent = await buildAgent({
         checkpointer: this.checkpointer,
-        systemPromptExtra,
+        systemPromptExtra:
+          systemPromptExtra +
+          buildMcpPrompt(mcpServers, appContextOf(conv.mcpAppContext)) +
+          backgroundPrompt(!!sandbox),
+        extraInterruptOn: mcp.interruptOn,
         model: conv.model ?? undefined,
         thinkingLevel: asThinkingLevel(conv.thinkingLevel),
         defaultBackend,
@@ -410,6 +437,12 @@ export class AgentProcessor extends WorkerHost {
       await this.stream.publish(conversationId, resultEvt);
       await this.persist(conversationId, resultEvt, seq++);
       this.logger.log(`agent 完成: conversation=${conversationId}`);
+      // 本轮运行期间结束的后台任务：通知当时挂着没投（会话忙），现在空闲了投递并唤醒下一轮
+      await this.background
+        .deliverPending(conversationId)
+        .catch((e: unknown) =>
+          this.logger.warn(`投递后台任务通知失败：${String(e)}`),
+        );
     } catch (e) {
       // 用户主动停止：AbortError 不是失败——flush 残余文本 + 发 stopped result（状态已由端点置好）
       if (signal.aborted) {
