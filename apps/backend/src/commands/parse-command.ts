@@ -1,8 +1,2 @@
-/** 解析以 / 开头的命令输入：`/email-compose 周报` → { name:"email-compose", args:"周报" }。非命令返回 null。 */
-export function parseCommand(
-  text: string,
-): { name: string; args: string } | null {
-  const m = text.trimStart().match(/^\/([A-Za-z0-9_-]+)\s*([\s\S]*)$/);
-  if (!m) return null;
-  return { name: m[1], args: m[2].trim() };
-}
+// 已移到 packages/agent-core（不依赖 Nest / Prisma / Redis），这里保留原路径供既有调用方引用
+export * from '@agent-test/agent-core/commands/parse-command';

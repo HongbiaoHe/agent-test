@@ -1011,17 +1011,19 @@ describe('AgentProcessor 多轮重放', () => {
 
     const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
 
-    let capturedOpts: { extraTools?: unknown[] } | undefined;
+    type Captured = {
+      extraTools?: unknown[];
+      extraInterruptOn?: Record<string, true>;
+    };
+    let capturedOpts: Captured | undefined;
     const fakeAgent = {
       stream: jest.fn(async () => (async function* () {})()),
       getState: jest.fn(async () => ({ tasks: [] })),
     };
-    (buildAgent as jest.Mock).mockImplementation(
-      (opts: { extraTools?: unknown[] }) => {
-        capturedOpts = opts;
-        return fakeAgent;
-      },
-    );
+    (buildAgent as jest.Mock).mockImplementation((opts: Captured) => {
+      capturedOpts = opts;
+      return fakeAgent;
+    });
 
     // createMediaTools mock 已在顶层 jest.mock 返回 2 个工具占位对象
     (createMediaTools as jest.Mock).mockClear();
@@ -1042,8 +1044,9 @@ describe('AgentProcessor 多轮重放', () => {
       data: { conversationId: 'mt1', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
 
-    // worker 闭包注入的媒体工具必须传给 buildAgent
-    expect(capturedOpts?.extraTools).toHaveLength(2);
+    // worker 注入 send_email + 闭包注入的 2 个媒体工具；send_email 仍须走审批
+    expect(capturedOpts?.extraTools).toHaveLength(3);
+    expect(capturedOpts?.extraInterruptOn).toMatchObject({ send_email: true });
     expect(createMediaTools).toHaveBeenCalledTimes(1);
   });
 
@@ -1534,6 +1537,7 @@ describe('AgentProcessor 网页预览工具注入', () => {
 
   it('有沙箱 → 媒体工具之外再注入 preview_page 与 sync_media_to_sandbox', async () => {
     expect(await toolNamesWith({ id: 'sbx-1' })).toEqual([
+      'send_email',
       'generate_image',
       'generate_video',
       'preview_page',
@@ -1548,6 +1552,7 @@ describe('AgentProcessor 网页预览工具注入', () => {
 
   it('无沙箱 → 不注入 preview_page / sync_media_to_sandbox（没有工作区）', async () => {
     expect(await toolNamesWith(null)).toEqual([
+      'send_email',
       'generate_image',
       'generate_video',
     ]);

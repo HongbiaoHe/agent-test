@@ -1,0 +1,14 @@
+{
+  "compilerOptions": {
+    "target": "ES2023",
+    "module": "ESNext",
+    "moduleResolution": "bundler",
+    "strict": true,
+    "esModuleInterop": true,
+    "skipLibCheck": true,
+    "isolatedModules": true,
+    "noEmit": true,
+    "types": ["node"]
+  },
+  "include": ["src/main", "src/preload", "src/agent-host", "src/shared", "e2e", "scripts", "electron.vite.config.mts", "vitest.config.mts", "playwright.config.ts"]
+}

@@ -1,0 +1,742 @@
+
+import { useQuery } from "@tanstack/react-query";
+import {
+  AlertCircle,
+  AudioLines,
+  Ban,
+  CheckCircle2,
+  ChevronDown,
+  ChevronLeft,
+  ChevronRight,
+  Image as ImageIcon,
+  Loader2,
+  Mic,
+  Music,
+  RefreshCw,
+  Video as VideoIcon,
+  X,
+} from "lucide-react";
+import { useEffect, useMemo, useState } from "react";
+
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Skeleton } from "@/components/ui/skeleton";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  fetchMediaAssetBlob,
+  listConversationMedia,
+  type MediaGeneration,
+  type MediaStatus,
+  type MediaType,
+  type MediaVersion,
+  regenerateMedia,
+} from "@/lib/api";
+
+/** 类型 → 图标 / 文案 / 工具名 / 重新生成输入框提示。卡片头部、生成中占位与失败态共用。 */
+const TYPE_META = {
+  image: {
+    Icon: ImageIcon,
+    label: "Image",
+    tool: "generate_image",
+    placeholder: "Describe the image you want…",
+  },
+  video: {
+    Icon: VideoIcon,
+    label: "Video",
+    tool: "generate_video",
+    placeholder: "Describe the video you want…",
+  },
+  audio: {
+    Icon: AudioLines,
+    label: "Audio",
+    tool: "generate_audio",
+    placeholder: "Text to speak…",
+  },
+  voice: {
+    Icon: Mic,
+    label: "Voice clone",
+    tool: "clone_voice",
+    placeholder: "Demo line spoken in the cloned voice (4–80 chars)…",
+  },
+} as const;
+
+/** 产物是音频（配音 / 克隆音色）：资产区用播放条，不占 16:9 的画面高度。 */
+function isAudioType(mediaType: MediaType): boolean {
+  return mediaType === "audio" || mediaType === "voice";
+}
+
+/** 资产区（占位 / 失败 / 取消 / 加载中）的尺寸：音频一条矮栏，图片视频 16:9。 */
+function surfaceSize(mediaType: MediaType): string {
+  return isAudioType(mediaType) ? "h-20" : "aspect-video";
+}
+
+/** objectURL 引用计数：同一个 URL 此刻被几个已挂载的组件用着。 */
+const objectUrlRefs = new Map<string, number>();
+
+/**
+ * blob → objectURL，组件真正卸载后才 revoke。
+ *
+ * 不能在卸载 effect 里直接 revoke：开发模式 StrictMode 会把 effect 先清理一次再重跑，清理时吊销的
+ * 正是这次渲染已交给 <img> 的 URL，而重跑时 useMemo 不会再建新的。blob 已在缓存里时（参考图那张卡片
+ * 先加载过），新卡片一挂载就拿到 URL、随即被吊销 → 缩略图成坏图，刷新才好（2026-10-18 无头 Chrome 复现）。
+ * 所以 effect 里只登记 / 减引用，延到下一个宏任务再看：StrictMode 重跑已把计数加回去就不吊销。
+ * 渲染期仍用 useMemo 派生（set-state-in-effect 是 error 级，不能在 effect 里 setUrl）。
+ */
+function useObjectUrl(blob: Blob | undefined): string | null {
+  const url = useMemo(() => (blob ? URL.createObjectURL(blob) : null), [blob]);
+  useEffect(() => {
+    if (!url) return;
+    objectUrlRefs.set(url, (objectUrlRefs.get(url) ?? 0) + 1);
+    return () => {
+      objectUrlRefs.set(url, (objectUrlRefs.get(url) ?? 1) - 1);
+      setTimeout(() => {
+        if ((objectUrlRefs.get(url) ?? 0) > 0) return;
+        objectUrlRefs.delete(url);
+        URL.revokeObjectURL(url);
+      }, 0);
+    };
+  }, [url]);
+  return url;
+}
+
+/**
+ * 会话媒体列表（卡片状态的唯一数据源）。单卡与批量组共用同一 query key，
+ * use-conversation 收到 media_update 时就地改状态 + invalidate 的也是它。
+ */
+function useConversationMedia(conversationId: string) {
+  return useQuery({
+    queryKey: ["conversation-media", conversationId],
+    queryFn: () => listConversationMedia(conversationId),
+    // 卡片首次出现时（live 锚点先于 query 落地）可能尚无该 generation，靠 media_update invalidate 补齐。
+    staleTime: 0,
+    refetchOnWindowFocus: false,
+    // 桌面端不连 Web 的 socket（没有 media_update 推送）：还有排队 / 生成中的版本就每 3 秒重拉一次
+    refetchInterval: (q) =>
+      (q.state.data ?? []).some((g) =>
+        g.versions.some((v) => v.status === "queued" || v.status === "generating"),
+      ) || !q.state.data
+        ? 3000
+        : false,
+  });
+}
+
+/**
+ * 一次 generate_* 调用产出的卡片：1 个 → 单卡；批量（count>1）→ 组头（提示词/模型/参数/进度只写一次）
+ * + 网格紧凑卡，每张卡各自独立显示状态、各自可重新生成。
+ */
+export function MediaGroup({
+  conversationId,
+  generationIds,
+  mediaType,
+}: {
+  conversationId: string;
+  generationIds: string[];
+  mediaType: MediaType;
+}) {
+  const { data } = useConversationMedia(conversationId);
+  if (generationIds.length === 1) {
+    return (
+      <MediaCard
+        conversationId={conversationId}
+        generationId={generationIds[0]}
+        mediaType={mediaType}
+      />
+    );
+  }
+
+  const latest = generationIds
+    .map((id) => data?.find((g) => g.id === id)?.versions[0])
+    .filter((v): v is MediaVersion => v !== undefined);
+  const count = (status: MediaStatus) => latest.filter((v) => v.status === status).length;
+  const done = count("done");
+  const failed = count("failed");
+  const cancelled = count("cancelled");
+  const settled = done + failed + cancelled === generationIds.length;
+  const first = latest[0];
+  const { Icon, tool } = TYPE_META[mediaType];
+
+  return (
+    <div className="overflow-hidden rounded-xl border bg-card">
+      <div className="flex items-center gap-2 border-b px-3 py-2">
+        <Icon className="size-4 shrink-0 text-muted-foreground" />
+        <span className="font-mono text-xs text-foreground">{tool}</span>
+        <Badge variant="secondary" className="tabular-nums">
+          ×{generationIds.length}
+        </Badge>
+        {first?.model && (
+          <Badge variant="outline" className="min-w-0 shrink font-mono">
+            <span className="truncate">{first.model}</span>
+          </Badge>
+        )}
+        <Badge variant="outline" className="ml-auto tabular-nums">
+          {settled ? <CheckCircle2 /> : <Loader2 className="animate-spin" />}
+          {done}/{generationIds.length} done
+          {failed > 0 && ` · ${failed} failed`}
+          {cancelled > 0 && ` · ${cancelled} cancelled`}
+        </Badge>
+      </div>
+      {first && <PromptBlock prompt={first.prompt} />}
+      {first && <ParamsRow params={first.params} />}
+      {first && (
+        <ReferenceRow
+          conversationId={conversationId}
+          referenceVersionIds={first.referenceVersionIds}
+        />
+      )}
+      <div className="grid grid-cols-1 gap-2 border-t p-2 sm:grid-cols-2">
+        {generationIds.map((id) => (
+          <MediaCard
+            key={id}
+            conversationId={conversationId}
+            generationId={id}
+            mediaType={mediaType}
+            compact
+          />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 对话内生图/生视频卡片。
+ *
+ * 数据流：卡片状态的唯一数据源是 React Query（GET /conversations/:id/media）；
+ * 锚点（thread item）只带 generationId，状态全从 query 里按 id 取（设计 §前端职责）。
+ * live media_update 由 use-conversation 钩子负责就地更新 + invalidate 该 query，卡片自动刷新。
+ * compact：批量组里的子卡——提示词/参数/参考图由组头统一展示，卡内不再重复。
+ */
+export function MediaCard({
+  conversationId,
+  generationId,
+  mediaType,
+  compact = false,
+}: {
+  conversationId: string;
+  generationId: string;
+  mediaType: MediaType;
+  compact?: boolean;
+}) {
+  const { data, isLoading, refetch } = useConversationMedia(conversationId);
+
+  const generation = data?.find((g) => g.id === generationId);
+
+  // 查询加载中、或锚点已出现但 generation 尚未进入 query 数据（query 滞后）→ shimmer 占位。
+  if (isLoading || !generation) {
+    return <ShimmerPlaceholder mediaType={mediaType} prompt={null} />;
+  }
+
+  return (
+    <MediaCardBody
+      conversationId={conversationId}
+      generation={generation}
+      mediaType={mediaType}
+      compact={compact}
+      onAfterRegenerate={() => void refetch()}
+    />
+  );
+}
+
+/** 卡片主体：版本切换 / 资产展示 / 重新生成。generation 已确定存在。 */
+function MediaCardBody({
+  conversationId,
+  generation,
+  mediaType,
+  compact,
+  onAfterRegenerate,
+}: {
+  conversationId: string;
+  generation: MediaGeneration;
+  mediaType: MediaType;
+  compact: boolean;
+  onAfterRegenerate: () => void;
+}) {
+  // versions 按 createdAt desc，versions[0] 为最新版。当前查看的版本索引。
+  const versions = generation.versions;
+  const [versionIndex, setVersionIndex] = useState(0);
+
+  // 重新生成后版本数变化 → 自动跳到最新版（index 0）。用渲染期校正而非 effect（避免 set-state-in-effect）。
+  const [trackedCount, setTrackedCount] = useState(versions.length);
+  if (trackedCount !== versions.length) {
+    setTrackedCount(versions.length);
+    setVersionIndex(0);
+  }
+
+  // 防御：versions 长度变化导致索引越界时夹到合法范围。
+  const safeIndex = Math.min(versionIndex, versions.length - 1);
+  const version = versions[safeIndex];
+
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState("");
+  const [submitting, setSubmitting] = useState(false);
+
+  function openRegenerate() {
+    setDraft(version.prompt); // 默认值 = 当前所看版本的 prompt
+    setEditing(true);
+  }
+
+  async function submitRegenerate() {
+    if (submitting) return;
+    setSubmitting(true);
+    try {
+      // 总是回传输入框当前值（即使未改动，语义一致——后端 prompt? 缺省路径只服务 API 直调）。
+      // 沿用当前版本的参考图，让重生成行为可预期（不传则后端继承上一版，但显式传更明确）。
+      await regenerateMedia(generation.id, draft, version.referenceVersionIds);
+      setEditing(false);
+      onAfterRegenerate();
+    } finally {
+      setSubmitting(false);
+    }
+  }
+
+  const { Icon, label } = TYPE_META[mediaType];
+
+  return (
+    <div className="overflow-hidden rounded-xl border bg-card">
+      {/* 头部（常驻）：工具名 + 模型 + 状态。信息随当前查看的 version 联动。 */}
+      <CardHeader version={version} mediaType={mediaType} compact={compact} />
+
+      {/* 资产 / 状态区 */}
+      <MediaSurface version={version} mediaType={mediaType} />
+
+      {!compact && (
+        <>
+          {/* prompt（常驻）：当前版本完整传参，默认折叠 2 行可展开。 */}
+          <PromptBlock prompt={version.prompt} />
+
+          {/* 档位：本版本实际提交的比例 / 清晰度 / 时长等（约束收窄后的真实值）。 */}
+          <ParamsRow params={version.params} />
+
+          {/* 参考图（仅当前版本有引用时）：调用参数的一部分，缩略展示每张参考图。 */}
+          <ReferenceRow
+            conversationId={conversationId}
+            referenceVersionIds={version.referenceVersionIds}
+          />
+        </>
+      )}
+
+      {/* 底栏：类型徽标 + 版本切换 + 重新生成 */}
+      <div className="flex items-center gap-2 border-t px-3 py-2">
+        <Icon className="size-3.5 shrink-0 text-muted-foreground" />
+        <span className="text-xs font-medium text-muted-foreground">{label}</span>
+
+        {versions.length > 1 && (
+          <div className="ml-1 flex items-center gap-0.5">
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Previous version"
+              disabled={safeIndex >= versions.length - 1}
+              onClick={() => setVersionIndex((i) => Math.min(i + 1, versions.length - 1))}
+            >
+              <ChevronLeft />
+            </Button>
+            <span className="min-w-[3rem] text-center text-xs tabular-nums text-muted-foreground">
+              v{versions.length - safeIndex} / {versions.length}
+            </span>
+            <Button
+              variant="ghost"
+              size="icon-sm"
+              aria-label="Next version"
+              disabled={safeIndex <= 0}
+              onClick={() => setVersionIndex((i) => Math.max(i - 1, 0))}
+            >
+              <ChevronRight />
+            </Button>
+          </div>
+        )}
+
+        {!editing && (
+          <Button
+            variant="ghost"
+            size="sm"
+            className="ml-auto h-7 gap-1.5 text-xs"
+            onClick={openRegenerate}
+          >
+            <RefreshCw className="size-3.5" />
+            Regenerate
+          </Button>
+        )}
+      </div>
+
+      {/* 重新生成：行内展开 Textarea + 生成/取消 */}
+      {editing && (
+        <div className="space-y-2 border-t px-3 py-3">
+          <Textarea
+            value={draft}
+            onChange={(e) => setDraft(e.target.value)}
+            rows={3}
+            maxLength={2000}
+            placeholder={TYPE_META[mediaType].placeholder}
+            // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
+            className="resize-none text-base md:text-sm"
+            autoFocus
+          />
+          <div className="flex items-center justify-end gap-2">
+            <Button
+              variant="ghost"
+              size="sm"
+              className="h-7 gap-1 text-xs"
+              disabled={submitting}
+              onClick={() => setEditing(false)}
+            >
+              <X className="size-3.5" />
+              Cancel
+            </Button>
+            <Button
+              size="sm"
+              className="h-7 gap-1 text-xs"
+              disabled={submitting || !draft.trim()}
+              onClick={() => void submitRegenerate()}
+            >
+              {submitting ? (
+                <Loader2 className="size-3.5 animate-spin" />
+              ) : (
+                <RefreshCw className="size-3.5" />
+              )}
+              Generate
+            </Button>
+          </div>
+        </div>
+      )}
+    </div>
+  );
+}
+
+/** 状态 → 指示图标 + 文案 + badge 变体。头部状态指示共用。 */
+const STATUS_META: Record<
+  MediaStatus,
+  { label: string; variant: "secondary" | "outline" | "destructive"; spin?: boolean }
+> = {
+  queued: { label: "Queued", variant: "secondary", spin: true },
+  generating: { label: "Generating", variant: "secondary", spin: true },
+  done: { label: "Done", variant: "outline" },
+  failed: { label: "Failed", variant: "destructive" },
+  cancelled: { label: "Cancelled", variant: "outline" },
+};
+
+/**
+ * 卡片头部（所有状态常驻）：类型图标 + 工具名（等宽小字）+ 模型 badge + 状态指示。
+ * 让用户一眼看清这是一次什么工具调用、用的哪个模型。信息全部取自当前查看的 version，
+ * 故版本切换时随之联动。
+ */
+function CardHeader({
+  version,
+  mediaType,
+  compact,
+}: {
+  version: MediaVersion;
+  mediaType: MediaType;
+  compact: boolean;
+}) {
+  const { Icon, tool } = TYPE_META[mediaType];
+  const status = STATUS_META[version.status];
+  const StatusIcon = status.spin
+    ? Loader2
+    : version.status === "failed"
+      ? AlertCircle
+      : version.status === "cancelled"
+        ? Ban
+        : CheckCircle2;
+
+  return (
+    <div className="flex items-center gap-2 border-b px-3 py-2">
+      <Icon className="size-4 shrink-0 text-muted-foreground" />
+      {/* 批量子卡：工具名与模型已在组头，这里只留状态 */}
+      {!compact && <span className="font-mono text-xs text-foreground">{tool}</span>}
+      {!compact && version.model && (
+        // shrink（覆盖 Badge 基础类的 shrink-0）+ min-w-0 + 内层 truncate：
+        // 窄屏（手机）下长模型名截断省略，不把状态徽标挤出卡片
+        <Badge variant="outline" className="min-w-0 shrink font-mono">
+          <span className="truncate">{version.model}</span>
+        </Badge>
+      )}
+      <Badge variant={status.variant} className="ml-auto">
+        <StatusIcon className={status.spin ? "animate-spin" : undefined} />
+        {status.label}
+      </Badge>
+    </div>
+  );
+}
+
+/**
+ * prompt 区（所有状态常驻）：当前版本的完整 prompt（传参/参考资源主体）。
+ * 默认折叠为 2 行（line-clamp），可展开看全文。
+ */
+function PromptBlock({ prompt }: { prompt: string }) {
+  const [expanded, setExpanded] = useState(false);
+  if (!prompt) return null;
+
+  return (
+    <div className="border-t px-3 py-2.5">
+      <button
+        type="button"
+        onClick={() => setExpanded((v) => !v)}
+        aria-expanded={expanded}
+        className="flex w-full items-start gap-1.5 text-left"
+      >
+        <ChevronDown
+          className={`mt-0.5 size-3.5 shrink-0 text-muted-foreground transition-transform ${
+            expanded ? "" : "-rotate-90"
+          }`}
+        />
+        <p
+          className={`text-xs leading-relaxed text-muted-foreground ${
+            expanded ? "" : "line-clamp-2"
+          }`}
+        >
+          <span className="font-medium text-foreground">Prompt: </span>
+          {prompt}
+        </p>
+      </button>
+    </div>
+  );
+}
+
+/** 档位展示顺序：画幅 → 清晰度 → 时长 → 音频，其余按原顺序排在后面。 */
+const PARAM_ORDER = ["aspect_ratio", "resolution", "duration", "with_audio"];
+
+/** 档位取值的展示文本：时长补单位、布尔维度写成人话，其余原样（16:9 / 2K / 16x9）。 */
+function paramText(key: string, value: string): string {
+  if (key === "duration") return value === "-1" ? "Auto length" : `${value}s`;
+  if (key === "with_audio") return value === "true" ? "Audio on" : "No audio";
+  if (key === "background") return `${value} background`;
+  if (key === "quality") return `${value} quality`;
+  return value;
+}
+
+/**
+ * 档位区（调用参数的一部分）：本版本实际提交给 aigc 的比例 / 清晰度 / 时长等。
+ * 拼接产物与旧数据没有档位（null / 空对象）时整行不出。
+ */
+function ParamsRow({ params }: { params: Record<string, string> | null }) {
+  const entries = Object.entries(params ?? {}).sort(([a], [b]) => {
+    const ia = PARAM_ORDER.indexOf(a);
+    const ib = PARAM_ORDER.indexOf(b);
+    return (ia === -1 ? PARAM_ORDER.length : ia) - (ib === -1 ? PARAM_ORDER.length : ib);
+  });
+  if (entries.length === 0) return null;
+
+  return (
+    <div className="flex items-center gap-2 border-t px-3 py-2.5">
+      <span className="shrink-0 text-xs font-medium text-foreground">Settings</span>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {entries.map(([key, value]) => (
+          <Badge key={key} variant="secondary" className="font-mono">
+            {paramText(key, value)}
+          </Badge>
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 参考素材区（调用参数的一部分）：当前版本引用了素材时展示一行小缩略图。
+ * 图片用 <img>；视频 / 音频（用户上传的参考素材）只显示类型图标。悬停 title 显示 versionId。
+ */
+function ReferenceRow({
+  conversationId,
+  referenceVersionIds,
+}: {
+  conversationId: string;
+  referenceVersionIds: string[];
+}) {
+  if (referenceVersionIds.length === 0) return null;
+
+  return (
+    <div className="flex items-center gap-2 border-t px-3 py-2.5">
+      <span className="shrink-0 text-xs font-medium text-foreground">Reference</span>
+      <div className="flex flex-wrap items-center gap-1.5">
+        {referenceVersionIds.map((id) => (
+          <ReferenceThumb key={id} conversationId={conversationId} versionId={id} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
+/**
+ * 单张参考图缩略：复用 fetchMediaAssetBlob 取 blob → objectURL。28px 方块，加载中 shimmer。
+ *
+ * 参考图常常和本卡同一批生成、此刻还没完成：那时去拉资产只会拿到 409，重试 3 次就放弃，
+ * 之后参考图完成了也不会再拉，只能刷新。所以按会话媒体列表里的状态（media_update 实时更新）
+ * 等它 done 再拉；列表里找不到该版本（引用了别的会话的图）时直接拉，同以前。
+ */
+function ReferenceThumb({
+  conversationId,
+  versionId,
+}: {
+  conversationId: string;
+  versionId: string;
+}) {
+  const { data: media } = useConversationMedia(conversationId);
+  const owner = media?.find((g) => g.versions.some((v) => v.id === versionId));
+  const ref = owner?.versions.find((v) => v.id === versionId);
+  // 视频 / 音频参考不拉资产（整段下载只为一个 28px 方块不值得），列表里找不到的按图片处理（同以前）
+  const isImage = !owner || owner.type === "image";
+  const { data: blob } = useQuery({
+    queryKey: ["media-asset", versionId],
+    queryFn: () => fetchMediaAssetBlob(versionId),
+    staleTime: Infinity, // 同一 version 资产不可变
+    refetchOnWindowFocus: false,
+    enabled: isImage && media !== undefined && (!ref || ref.status === "done"),
+  });
+  const url = useObjectUrl(blob);
+
+  if (!isImage) {
+    // voice（克隆音色产物）作参考时就是一段参考音频，和上传的音频一样显示
+    const isAudio = owner?.type === "audio" || owner?.type === "voice";
+    const Icon = isAudio ? Music : VideoIcon;
+    return (
+      <span
+        title={versionId}
+        aria-label={isAudio ? "Reference audio" : "Reference video"}
+        className="flex size-7 items-center justify-center rounded-md border bg-muted"
+      >
+        <Icon className="size-3.5 text-muted-foreground" />
+      </span>
+    );
+  }
+
+  if (!url) {
+    return <Skeleton className="size-7 rounded-md" />;
+  }
+  return (
+    // 参考图同样是带鉴权 fetch 的 blob objectURL，next/image 无法优化，用原生 <img>。
+    <img
+      src={url}
+      alt="Reference image"
+      title={versionId}
+      className="size-7 rounded-md border object-cover"
+    />
+  );
+}
+
+/** 按版本状态渲染资产区：queued/generating → shimmer；done → 资产；failed → 错误。 */
+function MediaSurface({
+  version,
+  mediaType,
+}: {
+  version: MediaVersion;
+  mediaType: MediaType;
+}) {
+  if (version.status === "queued" || version.status === "generating") {
+    // prompt 已由卡片的 PromptBlock 常驻展示，这里不再重复一行摘要。
+    return <ShimmerPlaceholder mediaType={mediaType} prompt={null} />;
+  }
+  if (version.status === "failed") {
+    return <FailedSurface error={version.error} mediaType={mediaType} />;
+  }
+  if (version.status === "cancelled") {
+    return <CancelledSurface mediaType={mediaType} />;
+  }
+  return <AssetSurface key={version.id} versionId={version.id} mediaType={mediaType} />;
+}
+
+/** 生成中：shimmer 渐变 + 转圈 + 类型图标 + prompt 摘要一行。 */
+function ShimmerPlaceholder({
+  mediaType,
+  prompt,
+}: {
+  mediaType: MediaType;
+  prompt: string | null;
+}) {
+  const { Icon } = TYPE_META[mediaType];
+  return (
+    <div
+      className={`relative flex ${surfaceSize(mediaType)} w-full flex-col items-center justify-center gap-3 overflow-hidden bg-muted`}
+    >
+      {/* shimmer：左右扫过的高光渐变。keyframe + 动画类在 globals.css（组件内 <style> 客户端不注入）。 */}
+      <span
+        className="animate-media-shimmer pointer-events-none absolute inset-0 -translate-x-full"
+        style={{
+          backgroundImage:
+            "linear-gradient(90deg, transparent, var(--color-foreground), transparent)",
+          opacity: 0.06,
+        }}
+      />
+      <div className="flex items-center gap-2 text-muted-foreground">
+        <Icon className="size-5" />
+        <Loader2 className="size-4 animate-spin" />
+      </div>
+      {prompt && (
+        <p className="line-clamp-1 max-w-[80%] px-4 text-center text-xs text-muted-foreground">
+          {prompt}
+        </p>
+      )}
+    </div>
+  );
+}
+
+/** 失败：destructive 边框 + 错误文案。重试由底栏「重新生成」承担（设计 §操作）。 */
+function FailedSurface({ error, mediaType }: { error: string | null; mediaType: MediaType }) {
+  return (
+    <div
+      className={`flex ${surfaceSize(mediaType)} w-full flex-col items-center justify-center gap-2 border-2 border-destructive/40 bg-destructive/5 px-4 text-center`}
+    >
+      <p className="text-sm font-medium text-destructive">Generation failed</p>
+      <p className="line-clamp-3 text-xs text-muted-foreground">
+        {error || "Unknown error. Click “Regenerate” below to retry."}
+      </p>
+    </div>
+  );
+}
+
+/** 已取消（用户停止 / aigc 侧取消）：中性弱化，不用危险色——这不是错误。 */
+function CancelledSurface({ mediaType }: { mediaType: MediaType }) {
+  return (
+    <div
+      className={`flex ${surfaceSize(mediaType)} w-full flex-col items-center justify-center gap-2 bg-muted px-4 text-center`}
+    >
+      <Ban className="size-5 text-muted-foreground" />
+      <p className="text-sm font-medium text-muted-foreground">Generation cancelled</p>
+    </div>
+  );
+}
+
+/** 完成：fetch 带 token 的二进制资产 → blob objectURL → <img>/<video>/<audio>。cleanup 时 revoke。 */
+function AssetSurface({
+  versionId,
+  mediaType,
+}: {
+  versionId: string;
+  mediaType: MediaType;
+}) {
+  const { data: blob, isLoading } = useQuery({
+    queryKey: ["media-asset", versionId],
+    queryFn: () => fetchMediaAssetBlob(versionId),
+    staleTime: Infinity, // 同一 version 资产不可变，缓存到内存即可
+    refetchOnWindowFocus: false,
+  });
+
+  // 一个 AssetSurface 只服务单个 versionId（版本切换会换 key → 整卡卸载重建）；吊销时机见 useObjectUrl
+  const url = useObjectUrl(blob);
+
+  if (isLoading || !url) {
+    return <Skeleton className={`${surfaceSize(mediaType)} w-full rounded-none`} />;
+  }
+
+  if (isAudioType(mediaType)) {
+    return (
+      <div className="flex h-20 items-center bg-muted px-3">
+        <audio src={url} controls preload="metadata" className="w-full" />
+      </div>
+    );
+  }
+
+  if (mediaType === "video") {
+    // bg-black：视频 letterbox 黑边的行业惯例，非设计 token 范畴，刻意保留
+    return (
+      <video
+        src={url}
+        controls
+        className="aspect-video w-full bg-black object-contain"
+      />
+    );
+  }
+  return (
+    // 资产是 blob objectURL（运行时生成、带鉴权 fetch），next/image 无法优化此类源，故用原生 <img>。
+    <img src={url} alt="Generated image" className="w-full bg-muted object-contain" />
+  );
+}

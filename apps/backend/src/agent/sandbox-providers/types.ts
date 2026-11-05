@@ -4,7 +4,7 @@
  * sandbox.ts 的函数与 GuardedSandbox，不感知具体提供方。
  */
 
-import type { BaseSandbox } from 'deepagents';
+import type { GuardableSandbox } from '@agent-test/agent-core/agent/guardable-sandbox';
 import type { SandboxNetwork } from './network';
 import type { SandboxSizeId } from './sizes';
 
@@ -37,23 +37,8 @@ export interface SandboxListing {
   size?: SandboxSizeId;
 }
 
-/**
- * GuardedSandbox 能包装的 inner：deepagents BaseSandbox（execute/upload/download +
- * 基于 shell 的文件工具）+ 宿主侧生命周期方法。DaytonaSandbox 与 E2BSandbox 均满足。
- */
-export type GuardableSandbox = BaseSandbox & {
-  readonly isRunning: boolean;
-  start(timeout?: number): Promise<void>;
-  stop(): Promise<void>;
-  close(): Promise<void>;
-  /**
-   * 一轮 agent 运行期间由 worker 定期调用（30s），把闲置计时推到「现在 + 闲置时长」。
-   * E2B 的超时是绝对时长、只在文件/命令操作前续期：模型思考或长命令执行超过闲置时长，
-   * 沙箱会在轮内暂停、后续工具调用全部失败——闲置 1 分钟时这是常态而非偶发。
-   * 不需要的提供方（Daytona 由服务端按活动计时）不实现。
-   */
-  heartbeat?(): Promise<void>;
-};
+// GuardableSandbox 定义已移到 agent-core（GuardedSandbox 与之同包），这里保留导出
+export type { GuardableSandbox };
 
 /**
  * 沙箱生命周期设置（用户在 /settings/sandbox 配置）。

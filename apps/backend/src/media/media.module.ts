@@ -3,6 +3,7 @@ import { Module } from '@nestjs/common';
 import { AbortModule } from '../agent/abort.module';
 import { AigcModule } from '../aigc/aigc.module';
 import { EventsModule } from '../events/events.module';
+import { MediaApiController } from './media-api.controller';
 import { MediaCallbackController } from './media-callback.controller';
 import { MediaController } from './media.controller';
 import { MediaPollProcessor } from './media-poll.processor';
@@ -17,6 +18,7 @@ import { MediaService } from './media.service';
  * imports AigcModule —— 图片/视频生成统一走 aigc 服务（接单 + 回调），本模块只管状态流转与资产。
  * exports MediaService —— worker 模块将 imports 本模块并注入 MediaService 构造媒体工具。
  * exports MediaUploadService —— 用户文件上传（签发 + 中转到 GCS）；画布接真实上传时可直接复用。
+ * MediaApiController —— Spark 桌面端（登录 Web 账号后）的媒体接口，调同一个 MediaService。
  */
 @Module({
   imports: [
@@ -25,7 +27,7 @@ import { MediaService } from './media.service';
     AbortModule,
     AigcModule,
   ],
-  controllers: [MediaController, MediaCallbackController],
+  controllers: [MediaController, MediaCallbackController, MediaApiController],
   providers: [
     MediaService,
     MediaProcessor,
