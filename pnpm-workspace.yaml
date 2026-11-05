@@ -5,6 +5,8 @@ packages:
 allowBuilds:
   # desktop：Electron 的 postinstall 下载二进制（需 NODE_USE_ENV_PROXY=1 才走代理）
   electron: true
+  # electron-winstaller：electron-builder 的 Windows 安装包依赖，mac 打包用不到，不跑其构建脚本
+  electron-winstaller: false
   # @google/genai 无需 postinstall 构建（纯 JS SDK，已实测生图/生视频可用）
   '@google/genai': false
   '@nestjs/core': true
