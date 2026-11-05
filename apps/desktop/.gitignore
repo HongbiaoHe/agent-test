@@ -1,0 +1,6 @@
+out
+release
+node_modules
+test-results
+playwright-report
+release-next

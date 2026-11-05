@@ -14,6 +14,17 @@ const PATH_WITH_NODE22 = `${NODE_BIN}:${process.env.PATH ?? ''}`;
 module.exports = {
   apps: [
     {
+      // agent-core 构建到 dist、backend 吃 dist：nest --watch 不监听 packages/，这里持续增量编译。
+      // 注意 nest 也不监听 node_modules 下的 dist，改了 agent-core 后需重启 backend（pnpm dev:restart）。
+      name: 'agent-core',
+      cwd: __dirname,
+      script: 'pnpm',
+      args: '--filter @agent-test/agent-core dev',
+      interpreter: 'none',
+      watch: false,
+      env: { NODE_ENV: 'development', PATH: PATH_WITH_NODE22 },
+    },
+    {
       name: 'backend',
       cwd: __dirname,
       script: 'pnpm',

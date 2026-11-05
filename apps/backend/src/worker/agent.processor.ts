@@ -6,6 +6,11 @@ import { Inject, Logger } from '@nestjs/common';
 import { Job, Queue } from 'bullmq';
 import { AbortRegistry, AGENT_ABORTS } from '../agent/abort-registry';
 import { buildAgent } from '../agent/agent.factory';
+import {
+  BACKEND_HOST_SECTIONS,
+  SANDBOX_SYSTEM_PROMPT_BLOCK,
+} from '../agent/backend-prompt';
+import { sendEmailTool } from '../agent/tools/send-email.tool';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
 import { getUserSandbox, uploadSkillsToSandbox } from '../agent/sandbox';
 import { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
@@ -241,6 +246,7 @@ export class AgentProcessor extends WorkerHost {
         this.mcp.callTool(conv.userId, serverId, name, args),
       );
       const extraTools = [
+        sendEmailTool,
         ...createMediaTools(this.media, mediaCtx),
         ...(sandbox
           ? [
@@ -258,11 +264,13 @@ export class AgentProcessor extends WorkerHost {
       ];
       const agent = await buildAgent({
         checkpointer: this.checkpointer,
+        hostPromptSections: BACKEND_HOST_SECTIONS,
+        workspacePromptBlock: SANDBOX_SYSTEM_PROMPT_BLOCK,
         systemPromptExtra:
           systemPromptExtra +
           buildMcpPrompt(mcpServers, appContextOf(conv.mcpAppContext)) +
           backgroundPrompt(!!sandbox),
-        extraInterruptOn: mcp.interruptOn,
+        extraInterruptOn: { ...mcp.interruptOn, send_email: true },
         model: conv.model ?? undefined,
         thinkingLevel: asThinkingLevel(conv.thinkingLevel),
         defaultBackend,

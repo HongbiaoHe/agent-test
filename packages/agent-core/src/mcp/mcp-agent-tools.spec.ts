@@ -4,7 +4,7 @@ import { isToolMessage } from '@langchain/core/messages';
 import type { Tool } from '@modelcontextprotocol/sdk/types.js';
 import { buildMcpAgentTools, buildMcpPrompt } from './mcp-agent-tools';
 import { toToolSnapshot } from './mcp-result';
-import { McpAuthRequiredError, type RuntimeServer } from './mcp.service';
+import { McpAuthRequiredError, type RuntimeServer } from './mcp-types';
 
 const buzzTools = (
   JSON.parse(

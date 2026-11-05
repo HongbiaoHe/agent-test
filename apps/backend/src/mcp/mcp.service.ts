@@ -71,25 +71,10 @@ export type ConnectResult =
   | { status: 'needs_auth'; server: McpServerView; authorizationUrl: string }
   | { status: 'error'; server: McpServerView; error: string };
 
-/** 运行期给 agent 装配工具用的连接器快照（只含已启用、已连接的）。 */
-export interface RuntimeServer {
-  id: string;
-  slug: string;
-  name: string;
-  instructions: string | null;
-  tools: McpToolSnapshot[];
-  permissions: Record<string, ToolPermission>;
-}
+import { McpAuthRequiredError, type RuntimeServer } from './mcp-types';
 
-/** token 失效且无法刷新：调用方转成「需要重新连接」。 */
-export class McpAuthRequiredError extends Error {
-  constructor(
-    readonly serverId: string,
-    readonly serverName: string,
-  ) {
-    super(`${serverName} needs to be reconnected`);
-  }
-}
+// 定义已移到 mcp-types.ts（不依赖 Nest / Prisma），这里保留导出供既有调用方使用
+export { McpAuthRequiredError, type RuntimeServer };
 
 function errorMessage(e: unknown): string {
   return e instanceof Error ? e.message : String(e);

@@ -1,0 +1,14 @@
+appId: com.agentspark.desktop
+productName: Spark
+directories:
+  output: release
+files:
+  - out/**
+  - package.json
+# 内置技能（create-skills 等）：打包后在 Contents/Resources/skills，agent-host 经 SPARK_BUILTIN_SKILLS 读取
+extraResources:
+  - from: resources/skills
+    to: skills
+mac:
+  target: dir
+  category: public.app-category.productivity
