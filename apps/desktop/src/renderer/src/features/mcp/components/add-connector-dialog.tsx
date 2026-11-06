@@ -1,6 +1,7 @@
 
 import { Loader2 } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { createMcpServer, useMcpConnect } from "@/components/mcp";
 import { Button } from "@/components/ui/button";
@@ -25,6 +26,7 @@ export function AddConnectorDialog({
   open: boolean;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const [name, setName] = useState("");
   const [url, setUrl] = useState("");
   const { connect, pendingId } = useMcpConnect();
@@ -46,11 +48,8 @@ export function AddConnectorDialog({
     <Dialog open={open} onOpenChange={(o) => !o && onClose()}>
       <DialogContent>
         <DialogHeader>
-          <DialogTitle>Add custom connector</DialogTitle>
-          <DialogDescription>
-            Paste the URL of a remote MCP server (Streamable HTTP). If it
-            requires sign-in, a window opens to authorize Spark.
-          </DialogDescription>
+          <DialogTitle>{t("extensions.mcp.add.title")}</DialogTitle>
+          <DialogDescription>{t("extensions.mcp.add.description")}</DialogDescription>
         </DialogHeader>
         <form
           className="space-y-3"
@@ -60,16 +59,16 @@ export function AddConnectorDialog({
           }}
         >
           <label className="block space-y-1.5">
-            <span className="text-sm font-medium">Name</span>
+            <span className="text-sm font-medium">{t("extensions.mcp.add.nameLabel")}</span>
             <Input
-              placeholder="Optional — defaults to the server's own name"
+              placeholder={t("extensions.mcp.add.namePlaceholder")}
               value={name}
               onChange={(e) => setName(e.target.value)}
               maxLength={200}
             />
           </label>
           <label className="block space-y-1.5">
-            <span className="text-sm font-medium">Server URL</span>
+            <span className="text-sm font-medium">{t("extensions.mcp.add.urlLabel")}</span>
             <Input
               placeholder="https://example.com/mcp"
               value={url}
@@ -80,11 +79,11 @@ export function AddConnectorDialog({
           </label>
           <DialogFooter>
             <Button type="button" variant="ghost" onClick={onClose}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button type="submit" disabled={!canSubmit}>
               {pending && <Loader2 className="animate-spin" />}
-              Connect
+              {t("extensions.mcp.connect")}
             </Button>
           </DialogFooter>
         </form>

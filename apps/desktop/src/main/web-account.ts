@@ -4,13 +4,14 @@
  */
 import { net } from 'electron';
 import { z } from 'zod';
+import { mainI18n } from './i18n';
 
 const envelope = z.object({ code: z.number(), message: z.string().optional(), data: z.unknown() });
 
 /** 后端地址：http(s)、去掉末尾斜杠 */
 export function normalizeApiUrl(raw: string): string {
   const u = new URL(raw.trim());
-  if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error('Web 后端地址必须是 http(s)');
+  if (u.protocol !== 'https:' && u.protocol !== 'http:') throw new Error(mainI18n.t('errors.web.invalidUrl'));
   return u.toString().replace(/\/+$/, '');
 }
 
@@ -23,16 +24,18 @@ async function post(apiUrl: string, path: string, body: object): Promise<unknown
       body: JSON.stringify(body),
     });
   } catch (e) {
-    throw new Error(`连不上 Web 后端 ${apiUrl}：${e instanceof Error ? e.message : String(e)}`);
+    throw new Error(
+      mainI18n.t('errors.web.unreachable', { url: apiUrl, error: e instanceof Error ? e.message : String(e) }),
+    );
   }
   const text = await res.text();
   let parsed: z.infer<typeof envelope>;
   try {
     parsed = envelope.parse(JSON.parse(text));
   } catch {
-    throw new Error(`Web 后端返回了无法识别的响应（HTTP ${res.status}）`);
+    throw new Error(mainI18n.t('errors.web.badResponse', { status: res.status }));
   }
-  if (parsed.code !== 0) throw new Error(parsed.message ?? `请求失败（${parsed.code}）`);
+  if (parsed.code !== 0) throw new Error(parsed.message ?? mainI18n.t('errors.web.requestFailed', { code: parsed.code }));
   return parsed.data;
 }
 

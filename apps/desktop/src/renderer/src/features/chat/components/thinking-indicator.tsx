@@ -1,6 +1,7 @@
 "use client";
 
 import { useEffect, useState, useSyncExternalStore } from "react";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 
@@ -10,14 +11,14 @@ import { formatDuration } from "../lib/time";
 const FRAMES = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
 // 轮换的趣味动词短语，营造「正在动脑」的交互感。
 const WORDS = [
-  "Pondering",
-  "Brewing ideas",
-  "Connecting the dots",
-  "Cooking up a plan",
-  "Herding thoughts",
-  "Polishing words",
-  "Reticulating splines",
-];
+  "pondering",
+  "brewing",
+  "connecting",
+  "cooking",
+  "herding",
+  "polishing",
+  "reticulating",
+] as const;
 
 function subscribeReducedMotion(callback: () => void) {
   const mql = window.matchMedia("(prefers-reduced-motion: reduce)");
@@ -49,6 +50,7 @@ export function ThinkingIndicator({
   visible: boolean;
   startedAt: number | null;
 }) {
+  const { t } = useTranslation();
   const reduced = usePrefersReducedMotion();
   // 惰性初始化（useState 初始化器里调用 Date.now 是允许的，渲染体内则不行）
   const [mountedAt] = useState(() => Date.now());
@@ -71,7 +73,7 @@ export function ThinkingIndicator({
     <div className="flex items-center gap-2 text-sm">
       {/* 给屏幕阅读器一条稳定播报，避免逐帧/逐秒刷屏 */}
       <span role="status" className="sr-only">
-        Agent is thinking…
+        {t("chat.thinkingIndicator.status")}
       </span>
       <span aria-hidden className="font-mono text-primary">
         {frame}
@@ -80,7 +82,7 @@ export function ThinkingIndicator({
         aria-hidden
         className={cn("text-foreground", !reduced && "animate-pulse")}
       >
-        {word}
+        {t(`chat.thinkingIndicator.words.${word}`)}
       </span>
       <span aria-hidden className="tabular-nums text-muted-foreground">
         · {elapsed}

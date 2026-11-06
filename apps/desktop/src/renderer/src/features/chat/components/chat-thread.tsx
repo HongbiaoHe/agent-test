@@ -3,14 +3,14 @@ import {
   ArrowUp,
   Folder,
   Loader,
-  PanelLeft,
   Paperclip,
   Plus,
   Slash,
   Sparkles,
   Square,
 } from "lucide-react";
-import { useRef, useState } from "react";
+import { type ReactNode, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { ThinkingSwitcher } from "@/components/agent/thinking-switcher";
 import { TokenUsageDialog } from "@/components/agent/token-usage-dialog";
@@ -25,6 +25,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { getConversationTokenUsage, type SkillKind, listCommands } from "@/lib/api";
+import { currentLocale } from "@/lib/i18n";
 import type { ThinkingLevel } from "@/lib/thinking-level";
 import { cn } from "@/lib/utils";
 
@@ -41,18 +42,14 @@ import { DayDivider } from "./day-divider";
 import { MediaGroup } from "./media-card";
 import { ModelSwitcher } from "./model-switcher";
 import { PermissionSwitcher } from "./permission-switcher";
+import { PreviewCard } from "./preview-card";
 import { WorkspaceFilesButton } from "./workspace-panel";
 import { TaskPlanPanel } from "./task-plan-panel";
 import { ThinkingIndicator } from "./thinking-indicator";
 import { type ActivityItem, ActivityGroup } from "./activity-group";
 import { TurnFooter } from "./turn-footer";
 
-/** `/` 补全面板分组标签与顺序（Built-in 在前，与设置页一致） */
-const CMD_KIND_LABEL: Record<SkillKind, string> = {
-  builtin: "Built-in",
-  github: "GitHub",
-  custom: "Custom",
-};
+/** `/` 补全面板分组顺序（Built-in 在前，与设置页一致） */
 const CMD_KIND_ORDER: SkillKind[] = ["builtin", "github", "custom"];
 
 export function ChatThread({
@@ -76,7 +73,9 @@ export function ChatThread({
   onModelChange,
   thinkingLevel,
   onThinkingLevelChange,
-  onOpenSidebar,
+  headerInset,
+  headerTitle,
+  headerTools,
   tokens,
   workspaceDir,
   permission,
@@ -110,7 +109,12 @@ export function ChatThread({
   /** 思考深度（对当前模型生效的档位） */
   thinkingLevel: ThinkingLevel;
   onThinkingLevelChange: (level: ThinkingLevel) => void;
-  onOpenSidebar: () => void;
+  /** 侧栏收起时顶栏左侧让出红绿灯与侧栏开关的位置（padding 类名） */
+  headerInset?: string;
+  /** 顶栏标题位（桌面端：标题 + 会话菜单）；缺省渲染纯文本标题 */
+  headerTitle?: ReactNode;
+  /** 顶栏右侧、token 徽标之前的工具图标（任务计划 / 网页预览） */
+  headerTools?: ReactNode;
   /** 会话累计 token（顶栏徽标，点开看详情） */
   tokens: number;
   /** 会话工作区（本机目录）与权限档位（桌面端独有） */
@@ -121,6 +125,7 @@ export function ChatThread({
   canChangeWorkspace: boolean;
   onChangeWorkspace: () => void;
 }) {
+  const { t } = useTranslation();
   const [usageOpen, setUsageOpen] = useState(false);
   const [draft, setDraft] = useState("");
   const [activeIndex, setActiveIndex] = useState(0);
@@ -274,32 +279,32 @@ export function ChatThread({
   return (
     <section className="flex h-full min-w-0 flex-1 flex-col bg-background">
       {/* 顶栏 */}
-      <header className="app-drag flex h-14 shrink-0 items-center justify-between gap-3 border-b px-4 lg:px-5">
+      {/* h-12：与侧栏顶部（红绿灯那一行）同高，收起侧栏后标题和开关在一条线上 */}
+      <header
+        className={cn(
+          "app-drag flex h-12 shrink-0 items-center justify-between gap-3 border-b px-4 lg:px-5",
+          headerInset,
+        )}
+      >
         <div className="flex min-w-0 items-center gap-1.5">
-          <Button
-            variant="ghost"
-            size="icon-sm"
-            className="lg:hidden"
-            aria-label="Open conversations"
-            onClick={onOpenSidebar}
-          >
-            <PanelLeft />
-          </Button>
-          <h1 className="truncate text-sm font-semibold tracking-tight">
-            {title}
-          </h1>
+          {headerTitle ?? (
+            <h1 className="truncate text-sm font-semibold tracking-tight">
+              {title}
+            </h1>
+          )}
         </div>
-        <div className="flex shrink-0 items-center gap-1.5">
+        <div className="flex shrink-0 items-center gap-1">
+          {headerTools}
           {/* token 用量：点开看按模型 / 每轮 / 每次调用 + 缓存命中率（与画布同一个弹窗） */}
           {conversationId && (
             <Badge
               variant="secondary"
               render={<button type="button" />}
               className="cursor-pointer tabular-nums hover:bg-accent"
-              title="Total tokens for this conversation (click for the breakdown)"
+              title={t("chat.thread.tokensTitle")}
               onClick={() => setUsageOpen(true)}
             >
-              {tokens.toLocaleString()} tokens
+              {t("chat.thread.tokens", { total: tokens.toLocaleString(currentLocale()) })}
             </Badge>
           )}
           {conversationId && workspaceDir && (
@@ -340,15 +345,13 @@ export function ChatThread({
                 <div className="flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
                   <Sparkles className="size-6" />
                 </div>
-                <p className="text-base font-medium">Start a new conversation</p>
+                <p className="text-base font-medium">{t("chat.thread.newTitle")}</p>
                 <p className="max-w-sm text-sm text-muted-foreground">
-                  Create a conversation to start chatting — the agent breaks
-                  your goal down and works through it step by step, asking for
-                  your sign-off before sensitive actions.
+                  {t("chat.thread.newDescription")}
                 </p>
                 <Button onClick={onNewChat} disabled={creating} className="mt-1">
                   {creating ? <Loader className="animate-spin" /> : <Plus />}
-                  New conversation
+                  {t("chat.thread.newButton")}
                 </Button>
               </div>
             ) : showEmpty ? (
@@ -356,11 +359,9 @@ export function ChatThread({
                 <div className="flex size-12 items-center justify-center rounded-2xl bg-primary text-primary-foreground">
                   <Sparkles className="size-6" />
                 </div>
-                <p className="text-base font-medium">Start chatting</p>
+                <p className="text-base font-medium">{t("chat.thread.emptyTitle")}</p>
                 <p className="max-w-sm text-sm text-muted-foreground">
-                  Tell the agent your goal in the box below — it works inside
-                  the folder you pick for this conversation, with the permission
-                  level you choose.
+                  {t("chat.thread.emptyDescription")}
                 </p>
               </div>
             ) : (
@@ -387,8 +388,7 @@ export function ChatThread({
                       />
                     </div>
                   ) : r.item.kind === "preview" ? (
-                    // 桌面端没有网页预览工具，这类条目不会出现
-                    null
+                    <PreviewCard key={r.item.id} spec={r.item.spec} />
                   ) : r.item.kind === "bg_task" ? (
                     <BackgroundTaskCard
                       key={r.item.id}
@@ -456,7 +456,7 @@ export function ChatThread({
               {groupedKinds.map(([kind, cmds]) => (
                 <div key={kind}>
                   <div className="px-2 py-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
-                    {CMD_KIND_LABEL[kind]}
+                    {t(`chat.commandKind.${kind}`)}
                   </div>
                   {cmds.map((c) => {
                     const idx = flat.indexOf(c);
@@ -510,13 +510,13 @@ export function ChatThread({
             />
             <Textarea
               ref={inputRef}
-              aria-label="Message"
+              aria-label={t("chat.thread.message")}
               rows={1}
               value={draft}
               onChange={(e) => setDraft(e.target.value)}
               onKeyDown={onKeyDown}
               onPaste={onPaste}
-              placeholder={busy ? "Agent is on the case…" : "Message the agent… (try typing /)"}
+              placeholder={busy ? t("chat.thread.placeholderBusy") : t("chat.thread.placeholder")}
               // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
               className="max-h-40 min-h-0 resize-none border-0 bg-transparent px-4 pt-3.5 pb-1.5 text-base shadow-none focus-visible:border-0 focus-visible:ring-0 md:text-sm dark:bg-transparent"
             />
@@ -526,8 +526,8 @@ export function ChatThread({
                 <Button
                   variant="ghost"
                   size="icon-sm"
-                  aria-label="Attach files"
-                  title="Attach files"
+                  aria-label={t("chat.thread.attachFiles")}
+                  title={t("chat.thread.attachFiles")}
                   disabled={busy}
                   onClick={() => void window.desktop.pickFiles().then(addAttachments)}
                 >
@@ -538,11 +538,11 @@ export function ChatThread({
                     type="button"
                     variant="ghost"
                     size="xs"
-                    aria-label="Workspace folder"
+                    aria-label={t("chat.thread.workspaceFolder")}
                     title={
                       canChangeWorkspace
-                        ? `${workspaceDir} — click to choose another folder`
-                        : `${workspaceDir} — the folder can't be changed after the conversation starts`
+                        ? t("chat.thread.workspaceChange", { dir: workspaceDir })
+                        : t("chat.thread.workspaceLocked", { dir: workspaceDir })
                     }
                     disabled={busy || !canChangeWorkspace}
                     onClick={onChangeWorkspace}
@@ -575,7 +575,7 @@ export function ChatThread({
                 <Button
                   size="icon-sm"
                   variant="destructive"
-                  aria-label="Stop"
+                  aria-label={t("chat.thread.stop")}
                   disabled={stopping}
                   onClick={onStop}
                   className="rounded-lg"
@@ -589,7 +589,7 @@ export function ChatThread({
               ) : (
                 <Button
                   size="icon-sm"
-                  aria-label="Send"
+                  aria-label={t("chat.thread.send")}
                   disabled={!canSend}
                   onClick={submit}
                   className="rounded-lg"
@@ -600,7 +600,7 @@ export function ChatThread({
             </div>
           </div>
           <p className="mt-2 text-center text-xs text-muted-foreground">
-            The agent can make mistakes — double-check important info.
+            {t("chat.thread.disclaimer")}
           </p>
         </div>
       </div>

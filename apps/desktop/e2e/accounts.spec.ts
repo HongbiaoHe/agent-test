@@ -71,7 +71,7 @@ test('会话与技能按账号隔离，访客数据留在访客空间', async ()
   await expect(conversations(page)).toContainText('user-ok');
   await openSettings(page, '技能');
   await stubOpenDialog(app, [skillDir]);
-  await page.getByRole('button', { name: 'Import folder' }).click();
+  await page.getByRole('button', { name: '从文件夹导入' }).click();
   await expect(page.getByText('user-only-skill', { exact: true })).toBeVisible();
   await closeSettings(page);
   await page.screenshot({ path: join(screens, '19-account-space.png') });

@@ -7,6 +7,7 @@
 import { createReadStream } from 'node:fs';
 import { stat } from 'node:fs/promises';
 import { z } from 'zod';
+import { hostI18n } from '../i18n';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const UPLOAD_TIMEOUT_MS = 5 * 60_000;
@@ -69,7 +70,7 @@ export class WebApi {
     try {
       res = await fetch(`${this.baseUrl}${path}`, init);
     } catch (e) {
-      throw new WebApiError(0, null, `上传到 Web 后端失败：${e instanceof Error ? e.message : String(e)}`);
+      throw new WebApiError(0, null, hostI18n.t('errors.web.uploadFailed', { error: e instanceof Error ? e.message : String(e) }));
     }
     return this.parse('POST', path, res);
   }
@@ -87,7 +88,7 @@ export class WebApi {
         signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
       });
     } catch (e) {
-      throw new WebApiError(0, null, `连不上 Web 后端 ${this.baseUrl}：${e instanceof Error ? e.message : String(e)}`);
+      throw new WebApiError(0, null, hostI18n.t('errors.web.unreachable', { url: this.baseUrl, error: e instanceof Error ? e.message : String(e) }));
     }
     return this.parse(method, path, res);
   }
@@ -102,13 +103,13 @@ export class WebApi {
       parsed = null;
     }
     if (res.status === 401) {
-      throw new WebApiError(401, parsed?.code ?? null, 'Web 账号登录已过期，请在 Spark 设置里重新登录');
+      throw new WebApiError(401, parsed?.code ?? null, hostI18n.t('errors.web.sessionExpired'));
     }
     if (!parsed) {
-      throw new WebApiError(res.status, null, `Web 后端 ${method} ${path} 返回无法识别的响应（HTTP ${res.status}）：${text.slice(0, 200)}`);
+      throw new WebApiError(res.status, null, hostI18n.t('errors.web.badResponseDetail', { method, path, status: res.status, body: text.slice(0, 200) }));
     }
     if (parsed.code !== 0) {
-      throw new WebApiError(res.status, parsed.code, parsed.message ?? `请求失败（${parsed.code}）`);
+      throw new WebApiError(res.status, parsed.code, parsed.message ?? hostI18n.t('errors.web.requestFailed', { code: parsed.code }));
     }
     return parsed.data;
   }

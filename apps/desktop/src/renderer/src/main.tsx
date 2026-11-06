@@ -5,6 +5,8 @@ import { MutationCache, QueryClient, QueryClientProvider } from '@tanstack/react
 import { StrictMode } from 'react';
 import { createRoot } from 'react-dom/client';
 import { Toaster } from '@/components/ui/sonner';
+import { initI18n } from '@/lib/i18n';
+import { LocaleSync } from '@/lib/locale-sync';
 import { useSystemTheme } from '@/lib/use-system-theme';
 import { App } from './app';
 
@@ -17,14 +19,17 @@ function Root() {
   const theme = useSystemTheme();
   return (
     <QueryClientProvider client={queryClient}>
+      <LocaleSync />
       <App />
       <Toaster theme={theme} position="top-center" />
     </QueryClientProvider>
   );
 }
 
+// 先拿到界面语言再渲染，首屏不会闪一下别的语言
+await initI18n();
 const el = document.getElementById('root');
-if (!el) throw new Error('#root 不存在');
+if (!el) throw new Error('#root missing');
 createRoot(el).render(
   <StrictMode>
     <Root />

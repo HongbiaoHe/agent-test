@@ -15,6 +15,7 @@ import { tmpdir } from 'node:os';
 import { join, relative, sep } from 'node:path';
 import { parseSkillMd } from '@agent-test/agent-core/skills/skill-parser';
 import * as tar from 'tar';
+import { hostI18n } from '../i18n';
 
 const MAX_FILE_BYTES = 512 * 1024;
 /** 整个仓库解压后的上限（只统计保留下来的文件） */
@@ -71,7 +72,7 @@ export function parseSkillSource(input: string): GithubSkillSource {
     if (t.startsWith('-')) continue;
     target ??= t;
   }
-  if (!target) throw new GithubInstallError('缺少要安装的仓库，例如 /skills add anthropics/skills');
+  if (!target) throw new GithubInstallError(hostI18n.t('errors.github.missingRepo'));
 
   let rest = target.replace(/^git@github\.com:/, 'https://github.com/');
   let ref: string | undefined;
@@ -85,11 +86,11 @@ export function parseSkillSource(input: string): GithubSkillSource {
   if (/^https?:\/\//.test(rest)) {
     const u = new URL(rest);
     if (u.hostname !== 'github.com' && u.hostname !== 'www.github.com') {
-      throw new GithubInstallError(`目前只支持 GitHub 仓库：${u.hostname}`);
+      throw new GithubInstallError(hostI18n.t('errors.github.githubOnly', { host: u.hostname }));
     }
     parts = u.pathname.split('/').filter(Boolean);
     const [owner, repo, kind, r, ...sub] = parts;
-    if (!owner || !repo) throw new GithubInstallError(`无法识别的仓库地址：${target}`);
+    if (!owner || !repo) throw new GithubInstallError(hostI18n.t('errors.github.badRepoUrl', { target }));
     if ((kind === 'tree' || kind === 'blob') && r) {
       ref = r;
       const p = sub.join('/');
@@ -103,10 +104,10 @@ export function parseSkillSource(input: string): GithubSkillSource {
   }
   const [owner, repo] = parts;
   if (!owner || !repo || !NAME.test(owner) || !NAME.test(repo)) {
-    throw new GithubInstallError(`无法识别的仓库：${target}（写法如 owner/repo）`);
+    throw new GithubInstallError(hostI18n.t('errors.github.badRepo', { target }));
   }
   if (path && path.split('/').some((seg) => seg === '..' || seg === '.')) {
-    throw new GithubInstallError('路径不能包含 . 或 ..');
+    throw new GithubInstallError(hostI18n.t('errors.github.dotPath'));
   }
   return { owner, repo: repo.replace(/\.git$/, ''), ref, path: path || undefined, skills };
 }
@@ -119,17 +120,21 @@ async function download(src: GithubSkillSource): Promise<{ tarball: Buffer; ref:
     const resp = await fetch(url);
     if (resp.ok) return { tarball: Buffer.from(await resp.arrayBuffer()), ref };
     if (resp.status !== 404) {
-      throw new GithubInstallError(`下载失败（HTTP ${resp.status}）：${src.owner}/${src.repo}@${ref}`);
+      throw new GithubInstallError(
+        hostI18n.t('errors.github.downloadFailed', { status: resp.status, repo: `${src.owner}/${src.repo}`, ref }),
+      );
     }
   }
   throw new GithubInstallError(
-    `找不到仓库或分支：${src.owner}/${src.repo}${src.ref ? `@${src.ref}` : '（试过 main / master）'}`,
+    src.ref
+      ? hostI18n.t('errors.github.repoNotFound', { repo: `${src.owner}/${src.repo}@${src.ref}` })
+      : hostI18n.t('errors.github.repoNotFoundDefault', { repo: `${src.owner}/${src.repo}` }),
   );
 }
 
 function assertSafeEntryPath(p: string): void {
   if (p.startsWith('/') || p.replace(/\\/g, '/').split('/').some((seg) => seg === '..')) {
-    throw new GithubInstallError(`压缩包里有越界路径：${p}`);
+    throw new GithubInstallError(hostI18n.t('errors.github.unsafePath', { path: p }));
   }
 }
 
@@ -182,7 +187,7 @@ export async function fetchGithubSkills(
         if ('type' in entry && entry.type === 'File') {
           if ((entry.size ?? 0) > MAX_FILE_BYTES) return false;
           total += entry.size ?? 0;
-          if (total > MAX_EXTRACT_BYTES) throw new GithubInstallError('仓库内容超过 50MB，请用 --skill 或子路径缩小范围');
+          if (total > MAX_EXTRACT_BYTES) throw new GithubInstallError(hostI18n.t('errors.github.tooLarge'));
         }
         return true;
       },
@@ -191,7 +196,9 @@ export async function fetchGithubSkills(
     let dirs = await findSkillDirs(base).catch(() => []);
     if (dirs.length === 0) {
       throw new GithubInstallError(
-        `在 ${src.owner}/${src.repo}${src.path ? `/${src.path}` : ''} 里没有找到 SKILL.md`,
+        hostI18n.t('errors.github.noSkillMd', {
+          location: `${src.owner}/${src.repo}${src.path ? `/${src.path}` : ''}`,
+        }),
       );
     }
     if (src.skills.length > 0) {
@@ -203,14 +210,12 @@ export async function fetchGithubSkills(
         if (wanted.has(md.name.toLowerCase()) || wanted.has(dirName.toLowerCase())) named.push(d);
       }
       if (named.length === 0) {
-        throw new GithubInstallError(`仓库里没有名为 ${src.skills.join(', ')} 的技能`);
+        throw new GithubInstallError(hostI18n.t('errors.github.noNamedSkill', { names: src.skills.join(', ') }));
       }
       dirs = named;
     }
     if (dirs.length > MAX_SKILLS_PER_INSTALL) {
-      throw new GithubInstallError(
-        `仓库里有 ${dirs.length} 个技能，请用 --skill <名字> 指定要装哪些`,
-      );
+      throw new GithubInstallError(hostI18n.t('errors.github.tooMany', { count: dirs.length }));
     }
     return {
       skills: dirs.map((d) => ({

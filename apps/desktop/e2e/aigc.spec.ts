@@ -53,9 +53,9 @@ test('登录 Web 账号 → 带参考图生图 → 卡片出图 → 同步进工
 
   // 对话：自动档位（sync 下载进工作区不用审批），带参考图生图
   await newChat(page);
-  await setPermission(page, 'Auto');
+  await setPermission(page, '自动');
   await stubOpenDialog(app, [refImage]);
-  await page.getByRole('button', { name: 'Attach files' }).click();
+  await page.getByRole('button', { name: '添加附件' }).click();
   await sendAndWait(
     page,
     '我确认要生成：用 generate_image 生成 1 张图，提示词「a red apple on a white table, studio light」，用默认模型，把我附件里的图作为参考图（referenceVersionIds 用附件的 versionId）。不用再问我，直接调用。',

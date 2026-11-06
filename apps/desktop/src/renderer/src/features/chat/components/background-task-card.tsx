@@ -13,9 +13,11 @@ import {
   X,
 } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { currentLocale } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
 
 import {
@@ -35,21 +37,10 @@ const KIND_ICON: Record<BackgroundKind, LucideIcon> = {
   wakeup: AlarmClock,
 };
 
-const KIND_LABEL: Record<BackgroundKind, string> = {
-  watch: "Watching",
-  command: "Background command",
-  wakeup: "Scheduled wakeup",
-};
-
-const STATUS_LABEL: Record<BackgroundStatus, string> = {
-  running: "Running",
-  succeeded: "Done",
-  failed: "Failed",
-  timeout: "Timed out",
-  cancelled: "Cancelled",
-};
+const STATUSES: readonly BackgroundStatus[] = ["running", "succeeded", "failed", "timeout", "cancelled"];
 
 function StatusBadge({ status }: { status: BackgroundStatus }) {
+  const { t } = useTranslation();
   const Icon =
     status === "running"
       ? Loader2
@@ -72,7 +63,7 @@ function StatusBadge({ status }: { status: BackgroundStatus }) {
           status === "succeeded" && "text-success",
         )}
       />
-      {STATUS_LABEL[status]}
+      {t(`chat.background.status.${status}`)}
     </Badge>
   );
 }
@@ -97,6 +88,7 @@ export function BackgroundTaskCard({
   conversationId: string;
   taskId: string;
 }) {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const query = useBackgroundTasks(conversationId);
   const task = query.data?.find((t) => t.id === taskId);
@@ -124,10 +116,10 @@ export function BackgroundTaskCard({
         <div className="min-w-0 flex-1">
           <p className="truncate text-sm font-medium">{task.title}</p>
           <p className="text-xs text-muted-foreground">
-            {KIND_LABEL[task.kind]} · <Elapsed startedAt={startedAt} endedAt={endedAt} />
-            {task.kind !== "wakeup" && task.polls > 0 && ` · ${task.polls} checks`}
+            {t(`chat.background.kind.${task.kind}`)} · <Elapsed startedAt={startedAt} endedAt={endedAt} />
+            {task.kind !== "wakeup" && task.polls > 0 && ` · ${t("chat.background.checks", { count: task.polls })}`}
             {task.kind === "wakeup" && running &&
-              ` · wakes at ${new Date(task.deadlineAt).toLocaleTimeString()}`}
+              ` · ${t("chat.background.wakesAt", { time: new Date(task.deadlineAt).toLocaleTimeString(currentLocale()) })}`}
           </p>
         </div>
         <StatusBadge status={task.status} />
@@ -135,7 +127,7 @@ export function BackgroundTaskCard({
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label="Cancel background task"
+            aria-label={t("chat.background.cancel")}
             disabled={cancel.isPending}
             onClick={() => cancel.mutate()}
           >
@@ -150,7 +142,7 @@ export function BackgroundTaskCard({
             className="text-xs text-muted-foreground hover:text-foreground"
             onClick={() => setOpen((v) => !v)}
           >
-            {open ? "Hide result" : "Show result"}
+            {open ? t("chat.background.hideResult") : t("chat.background.showResult")}
           </button>
           {open && (
             <pre className="mt-2 max-h-60 overflow-auto rounded-lg bg-muted p-2 font-mono text-xs whitespace-pre-wrap text-foreground/90">
@@ -165,12 +157,16 @@ export function BackgroundTaskCard({
 
 /** 后台任务结束、唤醒 agent 的那条通知：不是用户发言，渲染成居中的系统行。 */
 export function TaskNotificationRow({ notification }: { notification: TaskNotification }) {
+  const { t } = useTranslation();
   const ok = notification.status === "succeeded";
+  const known = STATUSES.find((s) => s === notification.status);
   return (
     <div className="flex items-center justify-center gap-2 py-1 text-xs text-muted-foreground">
       <BellRing className={cn("size-3.5", ok ? "text-success" : "text-warning")} />
       <span>
-        Background task {ok ? "finished" : notification.status}:{" "}
+        {known
+          ? t(`chat.background.notification.${known}`)
+          : t("chat.background.notification.other", { status: notification.status })}
         <span className="font-medium text-foreground">{notification.title}</span>
       </span>
     </div>

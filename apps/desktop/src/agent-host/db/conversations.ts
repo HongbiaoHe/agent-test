@@ -14,10 +14,12 @@ import { z } from 'zod';
 import {
   CONVERSATION_STATUSES,
   type ConversationStatus,
+  type ConversationSearchHit,
   type ConversationSummary,
   type StoredMessage,
 } from '../../shared/rpc';
 import { WORKSPACE_PERMISSIONS, type WorkspacePermission } from '../../shared/workspace';
+import { hostI18n } from '../i18n';
 import { type Db, transaction } from './database';
 
 const conversationRow = z.object({
@@ -31,6 +33,7 @@ const conversationRow = z.object({
   permission: z.enum(WORKSPACE_PERMISSIONS),
   created_at: z.number(),
   updated_at: z.number(),
+  pinned_at: z.number().nullable(),
 });
 
 const usageRow = z.object({
@@ -69,7 +72,27 @@ function toSummary(
     permission: r.permission,
     createdAt: r.created_at,
     updatedAt: r.updated_at,
+    pinnedAt: r.pinned_at,
   };
+}
+
+const SEARCH_LIMIT = 50;
+/** 命中片段：命中处之前留这么多字，总长不超过 SNIPPET_LEN */
+const SNIPPET_BEFORE = 30;
+const SNIPPET_LEN = 120;
+
+/** LIKE 的通配符转义（ESCAPE '\'） */
+function likePattern(query: string): string {
+  return `%${query.replace(/[\\%_]/g, (c) => `\\${c}`)}%`;
+}
+
+/** 截取命中词附近的一段，换行压成空格 */
+function snippetOf(text: string, query: string): string {
+  const flat = text.replace(/\s+/g, ' ').trim();
+  const at = flat.toLowerCase().indexOf(query.toLowerCase());
+  const start = Math.max(0, at - SNIPPET_BEFORE);
+  const body = flat.slice(start, start + SNIPPET_LEN);
+  return `${start > 0 ? '…' : ''}${body}${start + SNIPPET_LEN < flat.length ? '…' : ''}`;
 }
 
 function toMessage(r: z.infer<typeof messageRow>): StoredMessage {
@@ -125,7 +148,7 @@ export class ConversationRepo {
 
   require(id: string): ConversationSummary {
     const c = this.get(id);
-    if (!c) throw new Error(`会话不存在：${id}`);
+    if (!c) throw new Error(hostI18n.t('errors.conversation.notFound', { id }));
     return c;
   }
 
@@ -163,7 +186,7 @@ export class ConversationRepo {
   /** 改工作区目录：只允许还没有任何消息的会话（附件副本、历史里的路径都依赖它） */
   setWorkspaceDir(id: string, dir: string): ConversationSummary {
     this.require(id);
-    if (this.nextSeq(id) > 0) throw new Error('会话已经开始，不能再更换工作目录；请新建会话');
+    if (this.nextSeq(id) > 0) throw new Error(hostI18n.t('errors.conversation.workspaceLocked'));
     this.db
       .prepare('UPDATE conversation SET workspace_dir = ?, updated_at = ? WHERE id = ?')
       .run(dir, Date.now(), id);
@@ -195,6 +218,45 @@ export class ConversationRepo {
         id,
       );
     return this.require(id);
+  }
+
+  /** 置顶 / 取消置顶：不动 updated_at（否则会话会跳到「今天」分组） */
+  setPinned(id: string, pinned: boolean): ConversationSummary {
+    this.require(id);
+    this.db.prepare('UPDATE conversation SET pinned_at = ? WHERE id = ?').run(pinned ? Date.now() : null, id);
+    return this.require(id);
+  }
+
+  /**
+   * 按标题 / 首条目标 / 消息正文（type=message 的 text）做不区分大小写的子串匹配，按最近活动倒序。
+   * 每个会话只取最近一条命中的消息作片段。
+   */
+  search(query: string): ConversationSearchHit[] {
+    const pattern = likePattern(query);
+    const fallback = this.defaultWorkspace();
+    const hitRow = z.object({ hit: z.string().nullable() });
+    return this.db
+      .prepare(
+        `SELECT * FROM (
+           SELECT c.*, (
+             SELECT json_extract(m.content, '$.text') FROM message m
+             WHERE m.conversation_id = c.id AND m.type = 'message'
+               AND json_extract(m.content, '$.text') LIKE :p ESCAPE '\\'
+             ORDER BY m.seq DESC LIMIT 1
+           ) AS hit
+           FROM conversation c
+         )
+         WHERE COALESCE(title, '') LIKE :p ESCAPE '\\' OR goal LIKE :p ESCAPE '\\' OR hit IS NOT NULL
+         ORDER BY updated_at DESC LIMIT ${SEARCH_LIMIT}`,
+      )
+      .all({ p: pattern })
+      .map((r) => {
+        const { hit } = hitRow.parse(r);
+        return {
+          conversation: toSummary(conversationRow.parse(r), fallback),
+          snippet: hit ? snippetOf(hit, query) : null,
+        };
+      });
   }
 
   delete(id: string): void {
@@ -232,7 +294,7 @@ export class ConversationRepo {
       transaction(this.db, () => {
         this.setStatus(id, 'failed');
         this.appendMessage(id, 'assistant', 'error', {
-          message: '运行中断：应用在运行中退出或 agent 进程崩溃，请重新发送。',
+          message: hostI18n.t('errors.conversation.interrupted'),
         });
       });
     }

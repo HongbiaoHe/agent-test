@@ -43,7 +43,7 @@ test('只读档位：写文件被直接拒绝，不弹审批', async () => {
   const { app, page } = await launch(dirs);
   await ensureReady(page);
   await newChat(page);
-  await setPermission(page, 'Read-only');
+  await setPermission(page, '只读');
   await sendAndWait(page, '用 write_file 创建 ro-marker.txt，内容 x。如果被拒绝，就只回复「只读拒绝」，不要重试。', {
     approve: false,
   });
@@ -57,13 +57,13 @@ test('拒绝审批：命令不执行，对话正常收尾', async () => {
   const { app, page } = await launch(dirs);
   await ensureReady(page);
   await newChat(page); // 默认「询问」：execute 需要审批
-  const input = page.getByLabel('Message');
+  const input = page.getByLabel('消息');
   await input.fill('用 execute 运行 `touch rejected-marker.txt`。如果被拒绝，就只回复「已取消」，不要做别的。');
   await input.press('Enter');
   const approval = page.getByTestId('approval-panel');
   await expect(approval).toBeVisible({ timeout: 150_000 });
-  await approval.getByRole('button', { name: 'Reject', exact: true }).click();
-  await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeVisible({ timeout: 150_000 });
+  await approval.getByRole('button', { name: '拒绝', exact: true }).click();
+  await expect(page.getByRole('button', { name: '发送', exact: true })).toBeVisible({ timeout: 150_000 });
   await expect(page.getByTestId('timeline')).toContainText('已取消');
   expect(existsSync(join(dirs.workspace, 'rejected-marker.txt'))).toBe(false);
   await page.screenshot({ path: join(screens, '9-rejected.png') });
@@ -74,13 +74,13 @@ test('运行中停止：正在执行的命令连同子进程被杀掉', async ()
   const { app, page } = await launch(dirs);
   await ensureReady(page);
   await newChat(page);
-  await setPermission(page, 'Auto'); // 自动档位：不用审批，直接开跑
-  const input = page.getByLabel('Message');
+  await setPermission(page, '自动'); // 自动档位：不用审批，直接开跑
+  const input = page.getByLabel('消息');
   await input.fill('用 execute 运行 `sleep 97 && echo $((40+2))late`，等它结束后告诉我输出。');
   await input.press('Enter');
   await expect.poll(() => processAlive('sleep 97'), { timeout: 150_000 }).toBe(true);
-  await page.getByRole('button', { name: 'Stop' }).click();
-  await expect(page.getByText(/Stopped after/)).toBeVisible({ timeout: 15_000 });
+  await page.getByRole('button', { name: '停止' }).click();
+  await expect(page.getByText(/已停止，用时/)).toBeVisible({ timeout: 15_000 });
   await page.waitForTimeout(1000);
   console.log(`停止 1 秒后命令行含 sleep 97 的进程：\n${psSnapshot('sleep 97') || '（无）'}`);
   await expect.poll(() => processAlive('sleep 97'), { timeout: 5_000 }).toBe(false);
@@ -94,8 +94,8 @@ test('agent-host 崩溃：自动重启，运行中的会话标为中断，之后
   const { app, page } = await launch(dirs);
   await ensureReady(page);
   await newChat(page);
-  await setPermission(page, 'Auto');
-  const input = page.getByLabel('Message');
+  await setPermission(page, '自动');
+  const input = page.getByLabel('消息');
   await input.fill('用 execute 运行 `sleep 98`，结束后回复 done。');
   await input.press('Enter');
   await expect.poll(() => processAlive('sleep 98'), { timeout: 150_000 }).toBe(true);

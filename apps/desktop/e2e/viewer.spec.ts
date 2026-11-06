@@ -56,7 +56,7 @@ const viewer = (page: Page) => page.getByTestId('file-viewer');
 
 async function expectStillInChat(page: Page) {
   await expect(page.locator('main[data-view]')).toHaveAttribute('data-view', /^chat:/);
-  await expect(page.getByLabel('Message')).toBeVisible();
+  await expect(page.getByLabel('消息')).toBeVisible();
 }
 
 test.skip(!apiKey, '需要 SPARK_E2E_GOOGLE_API_KEY');

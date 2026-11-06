@@ -11,10 +11,13 @@ export const WORKSPACE_PERMISSIONS = ['read_only', 'ask', 'auto'] as const;
 export type WorkspacePermission = (typeof WORKSPACE_PERMISSIONS)[number];
 export const DEFAULT_PERMISSION: WorkspacePermission = 'ask';
 
+/** 不合法的原因；文案键为 errors.workspace.<原因>，由调用方（main / agent-host）按各自的语言翻译 */
+export type WorkspaceDirProblem = 'notAbsolute' | 'singleQuote';
+
 /** 工作区路径约束：绝对路径；不含单引号（GuardedSandbox.execute 用单引号包路径） */
-export function validateWorkspaceDir(dir: string): string | null {
+export function validateWorkspaceDir(dir: string): WorkspaceDirProblem | null {
   // renderer 也会引用本文件，不能依赖 node:path
-  if (!/^(\/|[A-Za-z]:[\\/])/.test(dir)) return '工作区必须是绝对路径';
-  if (dir.includes("'")) return "工作区路径不能包含单引号（'）";
+  if (!/^(\/|[A-Za-z]:[\\/])/.test(dir)) return 'notAbsolute';
+  if (dir.includes("'")) return 'singleQuote';
   return null;
 }

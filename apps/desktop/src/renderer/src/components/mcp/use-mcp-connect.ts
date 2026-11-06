@@ -3,6 +3,7 @@ import { useCallback, useEffect, useRef, useState } from "react";
 import { toast } from "sonner";
 
 import { agent } from "@/lib/agent-client";
+import { i18n } from "@/lib/i18n";
 
 import { type ConnectResult, MCP_SERVERS_KEY, mcpServerKey } from "./api";
 
@@ -34,8 +35,8 @@ export function useMcpConnect() {
         if (e.type === "mcp-changed") refresh();
         if (e.type !== "mcp-oauth") return;
         refresh(e.serverId);
-        if (e.ok) toast.success("Connector connected");
-        else toast.error(e.error ?? "Authorization failed");
+        if (e.ok) toast.success(i18n.t("extensions.mcp.toast.oauthConnected"));
+        else toast.error(e.error ?? i18n.t("extensions.mcp.toast.authFailed"));
         waiter.current?.();
       }),
     [refresh],
@@ -48,15 +49,17 @@ export function useMcpConnect() {
         const result = await start();
         refresh(result.server.id);
         if (result.status === "connected") {
-          toast.success(`${result.server.name} connected`);
+          toast.success(i18n.t("extensions.mcp.toast.connected", { name: result.server.name }));
           return;
         }
         if (result.status === "error") {
-          toast.error(`Couldn't connect to ${result.server.name}: ${result.error}`);
+          toast.error(
+            i18n.t("extensions.mcp.toast.connectFailed", { name: result.server.name, error: result.error }),
+          );
           return;
         }
         await window.desktop.openExternal(result.authorizationUrl);
-        toast.info(`Finish signing in to ${result.server.name} in your browser`);
+        toast.info(i18n.t("extensions.mcp.toast.finishInBrowser", { name: result.server.name }));
         await new Promise<void>((resolve) => {
           const timer = window.setTimeout(finish, AUTH_WAIT_MS);
           function finish() {
@@ -67,7 +70,7 @@ export function useMcpConnect() {
           waiter.current = finish;
         });
       } catch (e) {
-        toast.error(e instanceof Error ? e.message : "Couldn't connect");
+        toast.error(e instanceof Error ? e.message : i18n.t("extensions.mcp.toast.failed"));
       } finally {
         setPendingId(null);
       }

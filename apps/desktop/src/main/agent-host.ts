@@ -15,6 +15,7 @@ import {
   AGENT_PORT_MESSAGE,
   type HostControlMessage,
 } from '../shared/desktop';
+import { appLocale } from './i18n';
 import type { DesktopStore } from './store';
 
 const PASS_THROUGH_ENV = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'USER', 'SHELL', 'NO_PROXY', 'no_proxy'];
@@ -89,6 +90,7 @@ export class AgentHostManager {
       type: 'config',
       settings: this.store.getSettings(),
       keys: this.store.keyStatus(),
+      locale: appLocale(this.store),
     };
     if (this.ready) this.child?.postMessage(msg);
   }
@@ -117,6 +119,8 @@ export class AgentHostManager {
       if (v) env[k] = v;
     }
     env.SPARK_USER_DATA = this.userData;
+    // 启动期就要用的界面语言（如把上次中断的会话标为失败时写的提示）；之后改语言经 config 消息下发
+    env.SPARK_LOCALE = appLocale(this.store);
     // 按账号隔离的数据目录（会话 / 技能 / 连接器）；登录、退出都会重启 agent-host 切过去
     env.SPARK_PROFILE_DIR = this.store.profileDir();
     // 内置技能：打包后随 extraResources 放在 Resources/skills；开发时直接读源码目录

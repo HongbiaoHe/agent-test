@@ -1,6 +1,7 @@
 import type { Todo } from "@/components/agent/todo-list";
 import { parseAttachments } from "@/components/attachments/attachments";
 import type { McpAppArtifact, McpAuthRequired } from "@/components/mcp/api";
+import type { PreviewSpec } from "@/features/viewer/preview-target";
 
 import {
   BACKGROUND_TOOLS,
@@ -110,15 +111,8 @@ export type ThreadItem =
       status: "done" | "stopped" | "failed";
     };
 
-/**
- * 要预览什么：
- * - file：工作区里的静态 HTML，path 是工作区相对路径；
- * - port：沙箱里运行中的 web 服务（支持 vite HMR），path 是应用内路径。
- * 两种都经后端子域名反代（p-<id>.<基域名>），与主站不同源。
- */
-export type PreviewSpec =
-  | { kind: "file"; path: string; title: string }
-  | { kind: "port"; port: number; path: string; title: string };
+// 要预览什么（静态页 / 本机端口）：类型定义在预览弹窗那边，这里沿用 Web 的导出名
+export type { PreviewSpec };
 
 /**
  * 归一事件：DB 历史 Message 与 socket ConversationEvent 都先转成这个形状，

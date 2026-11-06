@@ -12,6 +12,7 @@ import type {
 import { useQuery } from "@tanstack/react-query";
 import { AppWindow, Maximize2, Minimize2, TriangleAlert } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 
 import {
   AlertDialog,
@@ -127,6 +128,7 @@ export function McpAppCard({
   /** View 的 ui/message：填进输入框等用户确认发送，不直接开新一轮 */
   onFillPrompt: (text: string) => void;
 }) {
+  const { t } = useTranslation();
   const resource = useQuery({
     queryKey: ["mcp-app-resource", app.serverId, app.resourceUri],
     queryFn: () => fetchMcpAppResource(app.serverId, app.resourceUri),
@@ -140,8 +142,12 @@ export function McpAppCard({
       <div className="flex items-start gap-2 rounded-xl border border-border bg-card p-3 text-sm text-muted-foreground">
         <TriangleAlert className="mt-0.5 size-4 shrink-0 text-warning" />
         <span>
-          Couldn&apos;t load the {app.serverName} card
-          {resource.error instanceof Error ? `: ${resource.error.message}` : "."}
+          {resource.error instanceof Error
+            ? t("extensions.mcp.app.loadFailedWithReason", {
+                name: app.serverName,
+                error: resource.error.message,
+              })
+            : t("extensions.mcp.app.loadFailed", { name: app.serverName })}
         </span>
       </div>
     );
@@ -170,6 +176,7 @@ function McpAppFrame({
   toolCallId: string;
   onFillPrompt: (text: string) => void;
 }) {
+  const { t } = useTranslation();
   const iframeRef = useRef<HTMLIFrameElement>(null);
   const bridgeRef = useRef<AppBridge | null>(null);
   const [height, setHeight] = useState(240);
@@ -365,7 +372,7 @@ function McpAppFrame({
             variant="ghost"
             size="icon-xs"
             className="ml-auto"
-            aria-label={fullscreen ? "Exit full screen" : "Full screen"}
+            aria-label={fullscreen ? t("extensions.mcp.app.exitFullscreen") : t("extensions.mcp.app.fullscreen")}
             onClick={() => setMode(fullscreen ? "inline" : "fullscreen")}
           >
             {fullscreen ? <Minimize2 /> : <Maximize2 />}
@@ -373,7 +380,7 @@ function McpAppFrame({
         </div>
         <iframe
           ref={iframeRef}
-          title={`${app.serverName} app`}
+          title={t("extensions.mcp.app.frameTitle", { name: app.serverName })}
           sandbox={PROXY_SANDBOX}
           allow={allow || undefined}
           className={cn("w-full border-0 bg-transparent", fullscreen && "flex-1")}
@@ -392,13 +399,15 @@ function McpAppFrame({
       >
         <AlertDialogContent>
           <AlertDialogHeader>
-            <AlertDialogTitle>Allow {app.serverName} to run this?</AlertDialogTitle>
+            <AlertDialogTitle>{t("extensions.mcp.app.confirmTitle", { name: app.serverName })}</AlertDialogTitle>
             <AlertDialogDescription>
-              The card wants to call{" "}
-              <code className="rounded bg-muted px-1 py-0.5 font-mono text-foreground">
-                {confirm?.toolName}
-              </code>
-              . This tool is set to require your approval.
+              <Trans
+                i18nKey="extensions.mcp.app.confirmDescription"
+                values={{ tool: confirm?.toolName ?? "" }}
+                components={{
+                  code: <code className="rounded bg-muted px-1 py-0.5 font-mono text-foreground" />,
+                }}
+              />
             </AlertDialogDescription>
           </AlertDialogHeader>
           {confirm && Object.keys(confirm.args).length > 0 && (
@@ -407,14 +416,14 @@ function McpAppFrame({
             </pre>
           )}
           <AlertDialogFooter>
-            <AlertDialogCancel>Deny</AlertDialogCancel>
+            <AlertDialogCancel>{t("extensions.mcp.app.deny")}</AlertDialogCancel>
             <Button
               onClick={() => {
                 confirm?.resolve(true);
                 setConfirm(null);
               }}
             >
-              Allow
+              {t("extensions.mcp.app.allow")}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>

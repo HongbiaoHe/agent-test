@@ -32,6 +32,20 @@ export default tseslint.config(
     rules: { ...reactHooks.configs.recommended.rules },
   },
   {
+    // 界面文案一律走 i18n 字典（src/shared/i18n），renderer 代码里不许再写中文字面量（注释不受影响）
+    files: ['src/renderer/**/*.{ts,tsx}'],
+    ignores: ['**/*.test.ts'],
+    rules: {
+      'no-restricted-syntax': [
+        'error',
+        ...['JSXText', 'Literal', 'TemplateElement'].map((node) => ({
+          selector: `${node}[${node === 'TemplateElement' ? 'value.raw' : 'value'}=/[\\u3400-\\u9fff]/]`,
+          message: '界面文案放进 src/shared/i18n 字典，用 t() 取（给模型看的文字除外，需就地注明）',
+        })),
+      ],
+    },
+  },
+  {
     // 原样拷自 apps/frontend 的聊天 / MCP 组件：保持与 Web 逐行一致便于同步，lint 口径跟随 Web
     // （eslint-config-next/typescript，不开 type-checked 规则）。no-explicit-any 仍然是 error。
     files: [

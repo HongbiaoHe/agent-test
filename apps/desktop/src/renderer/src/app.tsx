@@ -5,6 +5,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { KeyRound, Plus } from 'lucide-react';
 import { useEffect, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { agent } from '@/lib/agent-client';
@@ -13,7 +14,10 @@ import { LoginView } from './features/auth/login-view';
 import { useWebAccount } from './features/auth/use-web-account';
 import { SettingsDialog, type SettingsSection } from './features/settings/settings-dialog';
 import { useSettings } from './features/settings/sections/use-settings';
+import { SearchDialog } from './features/shell/search-dialog';
 import { Sidebar, type View } from './features/shell/sidebar';
+import { COLLAPSED_HEADER_INSET, SidebarToggle } from './features/shell/sidebar-toggle';
+import { useSidebarLayout } from './features/shell/use-sidebar-layout';
 import { FileViewerProvider } from './features/viewer/file-viewer';
 
 function Home({
@@ -25,6 +29,7 @@ function Home({
   onNavigate: (v: View) => void;
   onFillKey: () => void;
 }) {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const create = useMutation({
     mutationFn: () => agent.call('conversations.create', {}),
@@ -40,17 +45,17 @@ function Home({
       <div className="flex flex-1 flex-col items-center justify-center gap-4 pb-24 text-center">
         <h1 className="text-2xl font-semibold tracking-tight">Spark</h1>
         <p className="max-w-sm text-sm text-muted-foreground">
-          在你自己的电脑上运行的 agent：读写工作区文件、执行命令、使用技能与连接器。
+          {t('shell.home.tagline')}
         </p>
         {hasAnyKey ? (
           <Button onClick={() => create.mutate()} disabled={create.isPending}>
             <Plus data-icon="inline-start" />
-            新对话
+            {t('shell.home.newChat')}
           </Button>
         ) : (
           <Button onClick={onFillKey}>
             <KeyRound data-icon="inline-start" />
-            先填写模型 Key
+            {t('shell.home.needKey')}
           </Button>
         )}
       </div>
@@ -61,6 +66,8 @@ function Home({
 export function App() {
   const [view, setView] = useState<View>({ kind: 'home' });
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [searchOpen, setSearchOpen] = useState(false);
+  const layout = useSidebarLayout();
   const [section, setSection] = useState<SettingsSection>('account');
   /** 用户主动要登录（侧栏「未登录 · 登录」/ 设置 → 账号「登录」） */
   const [loginRequested, setLoginRequested] = useState(false);
@@ -97,6 +104,17 @@ export function App() {
       }),
     [qc],
   );
+  // ⌘K：搜索会话（登录页上不响应：那时没有侧栏）
+  useEffect(() => {
+    const onKey = (e: KeyboardEvent) => {
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+        e.preventDefault();
+        setSearchOpen((o) => !o);
+      }
+    };
+    window.addEventListener('keydown', onKey);
+    return () => window.removeEventListener('keydown', onKey);
+  }, []);
   const keys = useQuery({ queryKey: ['keys'], queryFn: () => window.desktop.getKeyStatus() });
   const conv = useQuery({
     queryKey: ['conversation-model', view.kind === 'chat' ? view.id : ''],
@@ -115,6 +133,18 @@ export function App() {
   const signIn = () => {
     setSettingsOpen(false);
     setLoginRequested(true);
+  };
+  // 从临时弹出的侧栏里切会话：顺手收回浮层
+  const navigate = (v: View) => {
+    layout.closePeek();
+    setView(v);
+  };
+  const sidebarProps = {
+    view,
+    onNavigate: navigate,
+    onOpenSearch: () => setSearchOpen(true),
+    onOpenSettings: openSettings,
+    onSignIn: signIn,
   };
 
   // 启动时：没登录、也没选过「先跳过」→ 登录页（两份状态都到齐再判断，免得闪一下）
@@ -138,15 +168,44 @@ export function App() {
   return (
     // 根部的预览（无会话）：设置里技能详情等 Markdown 的远程链接也能预览；对话里由 ChatView 自己的那层接管
     <FileViewerProvider>
-      <div className="flex h-screen overflow-clip">
-        <Sidebar view={view} onNavigate={setView} onOpenSettings={openSettings} onSignIn={signIn} />
+      <div className="relative flex h-screen overflow-clip">
+        {!layout.collapsed && <Sidebar {...sidebarProps} />}
+        {layout.peek && (
+          // 收起时悬停开关临时弹出的浮层；指针离开浮层区（data-peek-zone）后收回，见 use-sidebar-layout
+          <div className="absolute inset-y-0 left-0 z-40 py-1" data-peek-zone="" data-testid="sidebar-peek">
+            <Sidebar {...sidebarProps} floating />
+          </div>
+        )}
         {/* data-view：e2e 失败时打印当前视图（排查过「对话区被换掉」的偶发问题） */}
-        <main className="min-w-0 flex-1" data-view={view.kind === 'chat' ? `chat:${view.id}` : view.kind}>
-          {view.kind === 'chat' && <ChatView key={view.id} id={view.id} hasKey={hasKey} />}
+        <main
+          className="min-w-0 flex-1"
+          data-view={view.kind === 'chat' ? `chat:${view.id}` : view.kind}
+        >
+          {view.kind === 'chat' && (
+            <ChatView
+              key={view.id}
+              id={view.id}
+              hasKey={hasKey}
+              headerInset={layout.collapsed ? COLLAPSED_HEADER_INSET : undefined}
+              onDeleted={() => navigate({ kind: 'home' })}
+            />
+          )}
           {view.kind === 'home' && (
-            <Home hasAnyKey={hasAnyKey} onNavigate={setView} onFillKey={() => openSettings('models')} />
+            <Home hasAnyKey={hasAnyKey} onNavigate={navigate} onFillKey={() => openSettings('models')} />
           )}
         </main>
+        {/* 开关必须排在侧栏、主区之后：Chromium 按文档顺序合成窗口拖动区（app-region），
+            排在前面的 no-drag 会被后面侧栏顶部 / 对话顶栏的 drag 区盖掉，真实鼠标点下去变成拖窗口
+            （Playwright 的合成点击不走拖动区，e2e 测不出来） */}
+        <SidebarToggle collapsed={layout.collapsed} onToggle={layout.toggle} onHover={layout.openPeek} />
+        <SearchDialog
+          open={searchOpen}
+          onOpenChange={setSearchOpen}
+          onSelect={(id) => {
+            setSearchOpen(false);
+            navigate({ kind: 'chat', id });
+          }}
+        />
         <SettingsDialog
           open={settingsOpen}
           section={section}

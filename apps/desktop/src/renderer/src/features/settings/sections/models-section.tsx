@@ -3,6 +3,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import type { ProviderKey } from '../../../../../shared/desktop';
 import { Button } from '@/components/ui/button';
@@ -12,12 +13,13 @@ import { Separator } from '@/components/ui/separator';
 import { agent } from '@/lib/agent-client';
 import { useSettings } from './use-settings';
 
-const PROVIDERS: { key: ProviderKey; label: string; hint: string }[] = [
-  { key: 'google', label: 'Google Gemini', hint: 'aistudio.google.com 申请的 API Key' },
-  { key: 'deepseek', label: 'DeepSeek', hint: 'platform.deepseek.com 申请的 API Key' },
+const PROVIDERS: { key: ProviderKey; label: string }[] = [
+  { key: 'google', label: 'Google Gemini' },
+  { key: 'deepseek', label: 'DeepSeek' },
 ];
 
 function KeyRow({ provider, configured }: { provider: (typeof PROVIDERS)[number]; configured: boolean }) {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const [value, setValue] = useState('');
   const save = useMutation({
@@ -25,7 +27,7 @@ function KeyRow({ provider, configured }: { provider: (typeof PROVIDERS)[number]
     onSuccess: () => {
       setValue('');
       void qc.invalidateQueries({ queryKey: ['keys'] });
-      toast.success(`${provider.label} Key 已更新`);
+      toast.success(t('settings.models.keyUpdated', { provider: provider.label }));
     },
     onError: (e) => toast.error(e.message),
   });
@@ -34,7 +36,7 @@ function KeyRow({ provider, configured }: { provider: (typeof PROVIDERS)[number]
       <div className="flex items-center justify-between text-sm">
         <span className="font-medium">{provider.label}</span>
         <span className={configured ? 'text-xs text-success' : 'text-xs text-muted-foreground'}>
-          {configured ? '已配置' : '未配置'}
+          {configured ? t('settings.models.configured') : t('settings.models.notConfigured')}
         </span>
       </div>
       <div className="flex gap-2">
@@ -42,16 +44,16 @@ function KeyRow({ provider, configured }: { provider: (typeof PROVIDERS)[number]
           type="password"
           value={value}
           onChange={(e) => setValue(e.target.value)}
-          placeholder={configured ? '输入新 Key 以替换' : provider.hint}
-          aria-label={`${provider.label} API Key`}
+          placeholder={configured ? t('settings.models.replacePlaceholder') : t(`settings.models.keyHints.${provider.key}`)}
+          aria-label={t('settings.models.keyLabel', { provider: provider.label })}
           autoComplete="off"
         />
         <Button disabled={!value.trim() || save.isPending} onClick={() => save.mutate(value)}>
-          保存
+          {t('common.save')}
         </Button>
         {configured && (
           <Button variant="outline" disabled={save.isPending} onClick={() => save.mutate(null)}>
-            清除
+            {t('settings.models.clear')}
           </Button>
         )}
       </div>
@@ -60,21 +62,22 @@ function KeyRow({ provider, configured }: { provider: (typeof PROVIDERS)[number]
 }
 
 export function ModelsSection() {
+  const { t } = useTranslation();
   const keys = useQuery({ queryKey: ['keys'], queryFn: () => window.desktop.getKeyStatus() });
   const models = useQuery({ queryKey: ['models'], queryFn: () => agent.call('models.list', {}) });
   const { settings, update } = useSettings();
   return (
     <div className="space-y-6">
       <section className="space-y-4">
-        <h3 className="text-sm font-semibold">模型 Key</h3>
+        <h3 className="text-sm font-semibold">{t('settings.models.keys')}</h3>
         {PROVIDERS.map((p) => (
           <KeyRow key={p.key} provider={p} configured={!!keys.data?.[p.key]} />
         ))}
       </section>
       <Separator />
       <section className="space-y-2">
-        <h3 className="text-sm font-semibold">默认模型</h3>
-        <p className="text-xs text-muted-foreground">新对话使用的模型，在输入框下方可以按对话单独切换。</p>
+        <h3 className="text-sm font-semibold">{t('settings.models.defaultModel')}</h3>
+        <p className="text-xs text-muted-foreground">{t('settings.models.defaultModelHint')}</p>
         <Select
           items={Object.fromEntries((models.data ?? []).map((m) => [m.id, m.label]))}
           value={settings.data?.defaultModel ?? ''}
@@ -82,7 +85,7 @@ export function ModelsSection() {
             if (typeof v === 'string' && v) update.mutate({ defaultModel: v });
           }}
         >
-          <SelectTrigger aria-label="默认模型" className="w-64">
+          <SelectTrigger aria-label={t('settings.models.defaultModel')} className="w-64">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>

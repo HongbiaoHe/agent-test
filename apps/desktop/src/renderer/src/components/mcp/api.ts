@@ -4,6 +4,7 @@
 import type { CallToolResult } from "@modelcontextprotocol/sdk/types.js";
 
 import { agent } from "@/lib/agent-client";
+import { i18n } from "@/lib/i18n";
 
 import type { ToolPermission } from "../../../../shared/mcp";
 
@@ -43,7 +44,7 @@ export const listMcpServers = () => agent.call("mcp.list", {});
 export async function getMcpServer(id: string) {
   const { servers } = await agent.call("mcp.list", {});
   const s = servers.find((x) => x.id === id);
-  if (!s) throw new Error("Connector not found");
+  if (!s) throw new Error(i18n.t("extensions.mcp.notFound"));
   return s;
 }
 

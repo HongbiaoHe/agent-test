@@ -3,6 +3,7 @@
 import { useQuery } from "@tanstack/react-query";
 import { ChevronDown, ChevronRight, Coins, Loader2, RotateCw } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -21,6 +22,7 @@ import type {
   TokenRun,
   TokenTotals,
 } from "@/lib/api";
+import { currentLocale } from "@/lib/i18n";
 
 /**
  * token 消耗详情弹窗：会话总结 + 按模型 + 每轮（可展开到每次模型调用）。
@@ -48,6 +50,7 @@ export function TokenUsageDialog({
   /** 模型标识 → 展示名 */
   modelLabel: (model: string) => string;
 }) {
+  const { t } = useTranslation();
   const { data, isPending, isError, error, refetch, isFetching } = useQuery({
     queryKey,
     queryFn,
@@ -61,11 +64,10 @@ export function TokenUsageDialog({
         <DialogHeader className="border-b border-border px-4 py-3 pr-12">
           <DialogTitle className="flex items-center gap-2 text-sm">
             <Coins className="size-4" />
-            Token 消耗详情
+            {t("agent.usage.title")}
           </DialogTitle>
           <DialogDescription className="text-xs">
-            缓存命中率 = 命中缓存的输入 token ÷ 输入 token（provider
-            回的输入量已包含缓存部分）。缓存数据自本功能上线起记录，更早的运行按 0 计。
+            {t("agent.usage.description")}
           </DialogDescription>
         </DialogHeader>
 
@@ -76,21 +78,21 @@ export function TokenUsageDialog({
             {isPending ? (
               <div className="flex items-center justify-center gap-2 py-10 text-sm text-muted-foreground">
                 <Loader2 className="size-4 animate-spin" />
-                正在统计…
+                {t("agent.usage.loading")}
               </div>
             ) : isError ? (
               <div className="flex flex-col items-center gap-3 py-10 text-center text-sm">
                 <p className="text-destructive">
-                  {error instanceof Error ? error.message : "读取用量失败"}
+                  {error instanceof Error ? error.message : t("agent.usage.loadFailed")}
                 </p>
                 <Button size="sm" variant="outline" onClick={() => void refetch()}>
                   <RotateCw />
-                  重试
+                  {t("common.retry")}
                 </Button>
               </div>
             ) : data.totals.calls === 0 ? (
               <p className="py-10 text-center text-sm text-muted-foreground">
-                这个画布还没有模型调用记录。
+                {t("agent.usage.empty")}
               </p>
             ) : (
               <>
@@ -98,7 +100,7 @@ export function TokenUsageDialog({
 
                 <section className="flex flex-col gap-2">
                   <h3 className="text-xs font-medium text-muted-foreground">
-                    按模型（{data.byModel.length}）
+                    {t("agent.usage.byModel", { n: data.byModel.length })}
                   </h3>
                   <div className="flex flex-col gap-2">
                     {data.byModel.map((m) => (
@@ -109,7 +111,7 @@ export function TokenUsageDialog({
 
                 <section className="flex flex-col gap-2">
                   <h3 className="text-xs font-medium text-muted-foreground">
-                    每轮运行（{data.runs.length}）
+                    {t("agent.usage.runs", { n: data.runs.length })}
                   </h3>
                   <div className="flex flex-col gap-2">
                     {data.runs.map((run) => (
@@ -134,13 +136,14 @@ function SummaryCard({
   totals: TokenTotals;
   refreshing: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="rounded-lg border border-border bg-card p-4">
       <div className="flex items-baseline gap-2">
         <span className="text-2xl font-medium tabular-nums">
-          {totals.total.toLocaleString()}
+          {formatNumber(totals.total)}
         </span>
-        <span className="text-xs text-muted-foreground">tokens 合计</span>
+        <span className="text-xs text-muted-foreground">{t("agent.usage.totalTokens")}</span>
         {refreshing && (
           <Loader2 className="size-3 animate-spin text-muted-foreground" />
         )}
@@ -150,11 +153,11 @@ function SummaryCard({
         「输入 + 输出」加起来对不上上面的合计。DeepSeek 把它算进 output，这一项为 0。
       */}
       <div className="mt-3 grid grid-cols-2 gap-3 sm:grid-cols-3 lg:grid-cols-5">
-        <Stat label="输入" value={totals.input} />
-        <Stat label="输出" value={totals.output} />
-        <Stat label="思考" value={totals.reasoning} />
-        <Stat label="命中缓存" value={totals.cacheRead} />
-        <Stat label="模型调用" value={totals.calls} suffix="次" />
+        <Stat label={t("agent.usage.input")} value={totals.input} />
+        <Stat label={t("agent.usage.output")} value={totals.output} />
+        <Stat label={t("agent.usage.reasoning")} value={totals.reasoning} />
+        <Stat label={t("agent.usage.cacheRead")} value={totals.cacheRead} />
+        <Stat label={t("agent.usage.modelCalls")} value={totals.calls} suffix={t("agent.usage.callsSuffix")} />
       </div>
       <Separator className="my-3" />
       <CacheRate totals={totals} />
@@ -175,7 +178,7 @@ function Stat({
     <div className="flex flex-col gap-0.5">
       <span className="text-xs text-muted-foreground">{label}</span>
       <span className="text-sm tabular-nums">
-        {value.toLocaleString()}
+        {formatNumber(value)}
         {suffix ? ` ${suffix}` : ""}
       </span>
     </div>
@@ -190,18 +193,19 @@ function CacheRate({
   totals: TokenTotals;
   compact?: boolean;
 }) {
+  const { t } = useTranslation();
   const rate = totals.input > 0 ? totals.cacheRead / totals.input : null;
   return (
     <div className="flex flex-col gap-1.5">
       <div className="flex items-baseline justify-between gap-2 text-xs">
-        <span className="text-muted-foreground">缓存命中率</span>
+        <span className="text-muted-foreground">{t("agent.usage.cacheRate")}</span>
         <span className="tabular-nums">
           {rate === null ? "—" : `${(rate * 100).toFixed(1)}%`}
           {!compact && (
             <span className="ml-1.5 text-muted-foreground">
-              {totals.cacheRead.toLocaleString()} / {totals.input.toLocaleString()}
+              {formatNumber(totals.cacheRead)} / {formatNumber(totals.input)}
               {totals.cacheCreation > 0 &&
-                ` · 写入缓存 ${totals.cacheCreation.toLocaleString()}`}
+                ` · ${t("agent.usage.cacheWrite", { n: formatNumber(totals.cacheCreation) })}`}
             </span>
           )}
         </span>
@@ -224,6 +228,7 @@ function ModelRow({
   usage: TokenModelUsage;
   modelLabel: (model: string) => string;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="rounded-lg border border-border p-3">
       <div className="flex items-center justify-between gap-2">
@@ -231,16 +236,16 @@ function ModelRow({
           {modelLabel(usage.model)}
         </span>
         <Badge variant="secondary" className="shrink-0 tabular-nums">
-          {usage.total.toLocaleString()}
+          {formatNumber(usage.total)}
         </Badge>
       </div>
       <div className="mt-1 flex flex-wrap gap-x-3 gap-y-0.5 text-xs text-muted-foreground tabular-nums">
-        <span>输入 {usage.input.toLocaleString()}</span>
-        <span>输出 {usage.output.toLocaleString()}</span>
+        <span>{t("agent.usage.inputN", { n: formatNumber(usage.input) })}</span>
+        <span>{t("agent.usage.outputN", { n: formatNumber(usage.output) })}</span>
         {usage.reasoning > 0 && (
-          <span>思考 {usage.reasoning.toLocaleString()}</span>
+          <span>{t("agent.usage.reasoningN", { n: formatNumber(usage.reasoning) })}</span>
         )}
-        <span>{usage.calls} 次调用</span>
+        <span>{t("agent.usage.calls", { count: usage.calls })}</span>
       </div>
       <div className="mt-2">
         <CacheRate totals={usage} compact />
@@ -257,6 +262,7 @@ function RunRow({
   run: TokenRun;
   modelLabel: (model: string) => string;
 }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   const rate =
     run.totals.input > 0 ? run.totals.cacheRead / run.totals.input : null;
@@ -277,7 +283,7 @@ function RunRow({
         <div className="min-w-0 flex-1">
           <div className="flex items-center gap-2">
             <span className="truncate text-sm">
-              {run.goal || "（续跑，无新目标）"}
+              {run.goal || t("agent.usage.noGoal")}
             </span>
             {run.status && (
               <Badge variant="secondary" className="shrink-0 text-[10px]">
@@ -287,24 +293,24 @@ function RunRow({
           </div>
           <div className="mt-0.5 flex flex-wrap gap-x-3 text-xs text-muted-foreground tabular-nums">
             <span>{formatTime(run.startedAt)}</span>
-            <span>输入 {run.totals.input.toLocaleString()}</span>
-            <span>输出 {run.totals.output.toLocaleString()}</span>
+            <span>{t("agent.usage.inputN", { n: formatNumber(run.totals.input) })}</span>
+            <span>{t("agent.usage.outputN", { n: formatNumber(run.totals.output) })}</span>
             {run.totals.reasoning > 0 && (
-              <span>思考 {run.totals.reasoning.toLocaleString()}</span>
+              <span>{t("agent.usage.reasoningN", { n: formatNumber(run.totals.reasoning) })}</span>
             )}
-            <span>{run.totals.calls} 次调用</span>
-            <span>命中 {rate === null ? "—" : `${(rate * 100).toFixed(1)}%`}</span>
+            <span>{t("agent.usage.calls", { count: run.totals.calls })}</span>
+            <span>{t("agent.usage.hit", { rate: rate === null ? "—" : `${(rate * 100).toFixed(1)}%` })}</span>
           </div>
         </div>
         <span className="shrink-0 text-sm tabular-nums">
-          {run.totals.total.toLocaleString()}
+          {formatNumber(run.totals.total)}
         </span>
       </button>
 
       {expanded && (
         <div className="border-t border-border p-3">
           {run.totals.calls === 0 ? (
-            <p className="text-xs text-muted-foreground">这一轮没有模型调用记录。</p>
+            <p className="text-xs text-muted-foreground">{t("agent.usage.runEmpty")}</p>
           ) : (
             <>
               {run.byModel.length > 1 && (
@@ -313,7 +319,7 @@ function RunRow({
                     <div key={m.model} className="flex justify-between gap-2">
                       <span className="truncate">{modelLabel(m.model)}</span>
                       <span className="tabular-nums">
-                        {m.total.toLocaleString()}（{m.calls} 次）
+                        {t("agent.usage.modelTotal", { total: formatNumber(m.total), count: m.calls })}
                       </span>
                     </div>
                   ))}
@@ -336,17 +342,18 @@ function CallTable({
   calls: TokenCall[];
   modelLabel: (model: string) => string;
 }) {
+  const { t } = useTranslation();
   return (
     <div className="overflow-x-auto">
       <table className="w-full min-w-[28rem] text-xs tabular-nums">
         <thead className="text-muted-foreground">
           <tr className="border-b border-border">
-            <th className="py-1.5 pr-3 text-left font-medium">时间</th>
-            <th className="py-1.5 pr-3 text-left font-medium">模型</th>
-            <th className="py-1.5 pr-3 text-right font-medium">输入</th>
-            <th className="py-1.5 pr-3 text-right font-medium">命中缓存</th>
-            <th className="py-1.5 pr-3 text-right font-medium">输出</th>
-            <th className="py-1.5 text-right font-medium">合计</th>
+            <th className="py-1.5 pr-3 text-left font-medium">{t("agent.usage.time")}</th>
+            <th className="py-1.5 pr-3 text-left font-medium">{t("agent.usage.model")}</th>
+            <th className="py-1.5 pr-3 text-right font-medium">{t("agent.usage.input")}</th>
+            <th className="py-1.5 pr-3 text-right font-medium">{t("agent.usage.cacheRead")}</th>
+            <th className="py-1.5 pr-3 text-right font-medium">{t("agent.usage.output")}</th>
+            <th className="py-1.5 text-right font-medium">{t("agent.usage.total")}</th>
           </tr>
         </thead>
         <tbody>
@@ -358,16 +365,16 @@ function CallTable({
               <td className="max-w-[9rem] truncate py-1.5 pr-3">
                 {modelLabel(c.model)}
               </td>
-              <td className="py-1.5 pr-3 text-right">{c.input.toLocaleString()}</td>
+              <td className="py-1.5 pr-3 text-right">{formatNumber(c.input)}</td>
               <td className="py-1.5 pr-3 text-right">
                 {c.cacheRead > 0 ? (
-                  c.cacheRead.toLocaleString()
+                  formatNumber(c.cacheRead)
                 ) : (
                   <span className="text-muted-foreground">—</span>
                 )}
               </td>
-              <td className="py-1.5 pr-3 text-right">{c.output.toLocaleString()}</td>
-              <td className="py-1.5 text-right">{c.total.toLocaleString()}</td>
+              <td className="py-1.5 pr-3 text-right">{formatNumber(c.output)}</td>
+              <td className="py-1.5 text-right">{formatNumber(c.total)}</td>
             </tr>
           ))}
         </tbody>
@@ -376,8 +383,12 @@ function CallTable({
   );
 }
 
+function formatNumber(n: number): string {
+  return n.toLocaleString(currentLocale());
+}
+
 function formatTime(iso: string): string {
-  return new Date(iso).toLocaleString(undefined, {
+  return new Date(iso).toLocaleString(currentLocale(), {
     month: "2-digit",
     day: "2-digit",
     hour: "2-digit",

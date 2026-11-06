@@ -53,9 +53,9 @@ test('填 Key → 对话 → 写文件与命令逐个审批 → token 报表与�
 
   // 新对话（默认「询问」权限）→ 让 agent 写文件并执行命令：写文件与命令都要逐个批准
   await newChat(page);
-  await expect(page.getByRole('button', { name: 'Permission: Ask' })).toBeVisible();
-  await expect(page.getByRole('button', { name: 'Workspace folder' })).toContainText('workspace');
-  const input = page.getByLabel('Message');
+  await expect(page.getByRole('button', { name: '权限：询问' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '工作区文件夹' })).toContainText('workspace');
+  const input = page.getByLabel('消息');
   await input.fill(
     '请用 write_file 在工作区根目录创建 e2e.txt，内容是 desktop-e2e-ok；然后用 execute 运行 `cat e2e.txt`，把输出原样告诉我。不要做别的。',
   );
@@ -84,7 +84,7 @@ test('填 Key → 对话 → 写文件与命令逐个审批 → token 报表与�
   await expect(dialog).toBeHidden();
 
   // 右上角工作区文件：文件树里有 e2e.txt，点开预览内容
-  await page.getByRole('button', { name: 'Workspace files' }).click();
+  await page.getByRole('button', { name: '工作区文件', exact: true }).click();
   const sheet = page.getByRole('dialog');
   await expect(sheet).toContainText(workspace);
   await sheet.getByRole('button', { name: 'e2e.txt' }).click();
@@ -113,10 +113,11 @@ test('填 Key → 对话 → 写文件与命令逐个审批 → token 报表与�
   await expect(page.getByRole('button', { name: '新建对话' })).toBeVisible({ timeout: 20_000 });
   await expect(page.getByRole('heading', { name: '欢迎使用 Spark' })).toHaveCount(0);
   await expect(page.getByRole('navigation', { name: '会话' })).toContainText('e2e.txt', { timeout: 20_000 });
-  await page.getByRole('navigation', { name: '会话' }).getByRole('button').first().click();
+  // 侧栏按日期分组，组标题也是按钮：按会话标题点
+  await page.getByRole('navigation', { name: '会话' }).getByRole('button').filter({ hasText: 'e2e.txt' }).first().click();
   await expect(page.getByTestId('timeline')).toContainText('desktop-e2e-ok');
   // 已开始的会话不能再换目录
-  await expect(page.getByRole('button', { name: 'Workspace folder' })).toBeDisabled();
+  await expect(page.getByRole('button', { name: '工作区文件夹' })).toBeDisabled();
   await page.screenshot({ path: join(screens, '4-after-restart.png') });
 
   // 暗色：界面跟随 prefers-color-scheme，<html> 挂上 .dark。
@@ -124,7 +125,7 @@ test('填 Key → 对话 → 写文件与命令逐个审批 → token 报表与�
   await page.emulateMedia({ colorScheme: 'dark' });
   await expect(page.locator('html')).toHaveClass(/dark/);
   // 输入框带 transition-colors：等它的背景过渡到暗色 --card 再截图（否则会截到过渡中间的浅灰）
-  const composer = page.getByLabel('Message').locator('xpath=ancestor::div[contains(@class,"rounded-2xl")][1]');
+  const composer = page.getByLabel('消息').locator('xpath=ancestor::div[contains(@class,"rounded-2xl")][1]');
   await expect
     .poll(() =>
       composer.evaluate((el) => {

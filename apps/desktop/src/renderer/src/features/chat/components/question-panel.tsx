@@ -2,6 +2,7 @@
 
 import { MessageCircleQuestion } from "lucide-react";
 import { useEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -65,6 +66,7 @@ export function QuestionPanel({
   approval: Approval;
   onSubmit: (decisions: unknown[]) => void;
 }) {
+  const { t } = useTranslation();
   // isAskUserApproval 已校验过形状，这里做同构反序列化（自有协议数据，安全）
   const args = approval.actionRequests[0].args as { questions: AskUserQuestion[] };
   const questions = args.questions;
@@ -119,6 +121,8 @@ export function QuestionPanel({
       const a = answers[i];
       const picks = [...a.selected];
       if (a.useCustom && a.custom.trim())
+        // 回给 agent 的答案内容（模型看的，与 Web 端一致），不随界面语言变
+        // eslint-disable-next-line no-restricted-syntax
         picks.push(`自定义：${a.custom.trim()}`);
       return { header: q.header, selected: picks };
     });
@@ -138,12 +142,12 @@ export function QuestionPanel({
   return (
     <PromptPanel
       icon={MessageCircleQuestion}
-      title="Spark 想确认几件事"
+      title={t("chat.question.title")}
       glow
       footer={
         <>
           <Button size="sm" disabled={!canSubmit} onClick={submit}>
-            提交回答
+            {t("chat.question.submit")}
           </Button>
           {!interacted && (
             <div className="flex min-w-0 flex-1 items-center gap-2">
@@ -154,7 +158,7 @@ export function QuestionPanel({
                 />
               </div>
               <span className="shrink-0 text-xs text-muted-foreground">
-                {secondsLeft}s 后自动采用建议答案
+                {t("chat.question.countdown", { seconds: secondsLeft })}
               </span>
             </div>
           )}
@@ -199,7 +203,7 @@ export function QuestionPanel({
                       }
                       className="mt-0.5"
                     />
-                    <span className="text-foreground/90">其他（补充说明）</span>
+                    <span className="text-foreground/90">{t("chat.question.otherMulti")}</span>
                   </label>
                 </div>
               ) : (
@@ -229,7 +233,7 @@ export function QuestionPanel({
                   ))}
                   <label className="flex cursor-pointer items-start gap-2">
                     <RadioGroupItem value={CUSTOM_VALUE} className="mt-0.5" />
-                    <span className="text-foreground/90">其他（自定义）</span>
+                    <span className="text-foreground/90">{t("chat.question.otherSingle")}</span>
                   </label>
                 </RadioGroup>
               )}
@@ -239,7 +243,7 @@ export function QuestionPanel({
                   value={a.custom}
                   onChange={(e) => patchAnswer(i, { custom: e.target.value })}
                   onFocus={touch}
-                  placeholder="输入你的答案…"
+                  placeholder={t("chat.question.placeholder")}
                   className="h-8"
                 />
               )}
@@ -259,12 +263,13 @@ function OptionText({
   option: AskUserOption;
   suggested: boolean;
 }) {
+  const { t } = useTranslation();
   return (
     <span className="min-w-0">
       <span className="text-foreground/90">{option.label}</span>
       {suggested && (
         <Badge variant="secondary" className="ml-1.5 align-middle">
-          建议
+          {t("chat.question.suggested")}
         </Badge>
       )}
       {option.description && (

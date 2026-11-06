@@ -3,6 +3,8 @@
  * 以及 main → agent-host 的控制消息。
  */
 
+import type { LanguagePreference, Locale } from './i18n/locales';
+
 export interface DesktopSettings {
   /** 新会话默认使用的工作区（默认 ~/Spark）；每个会话可另选目录与权限 */
   workspaceDir: string;
@@ -14,6 +16,8 @@ export interface DesktopSettings {
   loginSkipped: boolean;
   /** 外观：跟随系统 / 浅色 / 深色（main 设到 nativeTheme.themeSource，页面的 prefers-color-scheme 随之变） */
   theme: ThemePreference;
+  /** 界面语言：跟随系统 / 指定（main 用 resolveLocale 解析成实际语言，经 getLocale 给 renderer、经 config 给 agent-host） */
+  language: LanguagePreference;
 }
 
 export const THEME_PREFERENCES = ['system', 'light', 'dark'] as const;
@@ -35,6 +39,8 @@ export type KeyStatus = Record<ProviderKey, boolean>;
 /** renderer 经 preload 拿到的原生能力（实现见 src/preload/index.ts） */
 export interface DesktopApi {
   getSettings(): Promise<DesktopSettings>;
+  /** 实际界面语言（设置为「跟随系统」时按系统首选语言解析） */
+  getLocale(): Promise<Locale>;
   updateSettings(patch: Partial<DesktopSettings>): Promise<DesktopSettings>;
   getKeyStatus(): Promise<KeyStatus>;
   /** 写入 / 清除（null）某提供方的 Key；会重启 agent-host 让新 Key 生效 */
@@ -45,6 +51,8 @@ export interface DesktopApi {
   getPathForFile(file: File): string;
   openExternal(url: string): Promise<void>;
   showInFolder(path: string): Promise<void>;
+  /** 工作区网页预览的源（spark-preview://w-<hash>）：工作区根即站点根，页面地址 = 源 + / + 工作区相对路径 */
+  sitePreviewOrigin(workspaceDir: string): Promise<string>;
   /** 预览弹窗读远程 md / 文本（经 main 取，绕开 renderer 的跨域限制）；只放行 http(s)，最多 2MB */
   fetchText(url: string): Promise<{ text: string; truncated: boolean }>;
   getWebAccount(): Promise<WebAccountStatus>;
@@ -57,7 +65,7 @@ export interface DesktopApi {
 
 /** main → agent-host（utilityProcess.postMessage） */
 export type HostControlMessage =
-  | { type: 'config'; settings: DesktopSettings; keys: KeyStatus }
+  | { type: 'config'; settings: DesktopSettings; keys: KeyStatus; locale: Locale }
   | { type: 'port' };
 
 /** renderer 收到 agent-host 端口时，preload 转发的 window message 标记 */

@@ -46,6 +46,7 @@ import {
   type McpServerStatus,
 } from '../../shared/mcp';
 import type { Db } from '../db/database';
+import { hostI18n } from '../i18n';
 import { type AppContextEntry, appContextMap, appContextOf } from './mcp-app-context';
 import { mcpPresets } from './mcp-presets';
 
@@ -165,11 +166,11 @@ export function validateMcpUrl(raw: string): string {
   try {
     u = new URL(raw.trim());
   } catch {
-    throw new McpError('连接器地址无效');
+    throw new McpError(hostI18n.t('errors.mcp.invalidUrl'));
   }
   const local = ['localhost', '127.0.0.1', '[::1]'].includes(u.hostname);
   if (u.protocol !== 'https:' && !(u.protocol === 'http:' && local)) {
-    throw new McpError('连接器地址必须是 https（本机地址可以用 http）');
+    throw new McpError(hostI18n.t('errors.mcp.httpsRequired'));
   }
   u.hash = '';
   return u.toString();
@@ -231,7 +232,7 @@ export class McpStore {
   /** 推荐连接器：已添加过就直接重连那一条 */
   addPreset(key: string): Promise<ConnectResult> {
     const preset = mcpPresets().find((p) => p.key === key);
-    if (!preset) throw new McpError(`没有这个推荐连接器：${key}`);
+    if (!preset) throw new McpError(hostI18n.t('errors.mcp.unknownPreset', { key }));
     const existing = this.rows().find((r) => r.preset_key === key);
     const id = existing?.id ?? this.insert(preset.name, validateMcpUrl(preset.url), key);
     return this.connect(id);
@@ -304,12 +305,12 @@ export class McpStore {
     this.db.prepare('DELETE FROM mcp_oauth_pending WHERE state = ?').run(state);
     const p = raw ? pendingRow.parse(raw) : null;
     if (!p || p.expires_at < Date.now()) {
-      throw new McpError('授权已过期或无效，请回到 Spark 重新连接');
+      throw new McpError(hostI18n.t('errors.mcp.authExpired'));
     }
     const verifier = z
       .object({ verifier: z.string() })
       .safeParse(decryptJson<unknown>(p.verifier));
-    if (!verifier.success) throw new McpError('授权状态损坏，请回到 Spark 重新连接');
+    if (!verifier.success) throw new McpError(hostI18n.t('errors.mcp.authCorrupted'));
     const row = this.row(p.server_id);
     const provider = this.provider(row, { state, codeVerifier: verifier.data.verifier });
     await auth(provider, { serverUrl: row.url, authorizationCode: code });
@@ -361,13 +362,13 @@ export class McpStore {
   ): Promise<CallToolResult> {
     const row = this.row(serverId);
     const tool = snapshotsOf(row).find((t) => t.name === name);
-    if (!tool) throw new McpError(`工具不存在：${name}`);
+    if (!tool) throw new McpError(hostI18n.t('errors.mcp.toolNotFound', { name }));
     const permission = effectivePermission(tool, permissionsOf(row));
     if (!tool.visibility.includes('app') || permission === 'deny') {
-      throw new McpError(`这个工具不允许由卡片调用：${name}`);
+      throw new McpError(hostI18n.t('errors.mcp.toolNotAllowed', { name }));
     }
     if (permission === 'ask' && tool.visibility.includes('model') && !confirmed) {
-      throw new McpError(`调用 ${name} 需要先经你确认`);
+      throw new McpError(hostI18n.t('errors.mcp.needsConfirm', { name }));
     }
     return this.callTool(serverId, name, args);
   }
@@ -381,7 +382,7 @@ export class McpStore {
     const row = this.row(serverId);
     const resource = await this.readResource(serverId, uri);
     const content = resource.contents.find((c) => c.uri === uri) ?? resource.contents[0];
-    if (!content) throw new McpError('连接器没有返回卡片内容');
+    if (!content) throw new McpError(hostI18n.t('errors.mcp.noAppContent'));
     const html =
       'text' in content ? content.text : Buffer.from(content.blob, 'base64').toString('utf8');
     const meta = uiMetaSchema.safeParse(content._meta);
@@ -406,7 +407,7 @@ export class McpStore {
     const r = this.db
       .prepare('SELECT mcp_app_context FROM conversation WHERE id = ?')
       .get(conversationId);
-    if (!r) throw new McpError(`会话不存在：${conversationId}`);
+    if (!r) throw new McpError(hostI18n.t('errors.conversation.notFound', { id: conversationId }));
     const cur = z.object({ mcp_app_context: z.string().nullable() }).parse(r).mcp_app_context;
     const prev = appContextMap(parseJson(cur));
     // at 严格递增：同一毫秒里连发多次时，「最新」仍然确定（排序与淘汰都按它）
@@ -461,7 +462,7 @@ export class McpStore {
 
   private row(id: string): ServerRow {
     const r = this.db.prepare('SELECT * FROM mcp_server WHERE id = ?').get(id);
-    if (!r) throw new McpError(`连接器不存在：${id}`);
+    if (!r) throw new McpError(hostI18n.t('errors.mcp.serverNotFound', { id }));
     return serverRow.parse(r);
   }
 

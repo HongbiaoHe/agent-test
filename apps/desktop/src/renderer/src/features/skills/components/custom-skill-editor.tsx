@@ -2,6 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2 } from "lucide-react";
 import { useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 
 import { Markdown } from "@/features/chat/components/markdown";
 import { Button } from "@/components/ui/button";
@@ -22,6 +23,7 @@ import {
   getSkillDetail,
   updateCustomSkill,
 } from "@/lib/api";
+import { currentLocale } from "@/lib/i18n";
 
 import { skillDetailKey } from "./skill-detail-sheet";
 import { SKILLS_QUERY_KEY } from "./skill-list";
@@ -29,14 +31,6 @@ import { SKILLS_QUERY_KEY } from "./skill-list";
 /** 同后端 CreateCustomSkillDto：名字也是 /命令 名与目录名。 */
 const NAME_RE = /^[a-z0-9](?:[a-z0-9-]{0,62}[a-z0-9])?$/;
 const BODY_MAX = 100_000;
-
-const BODY_PLACEHOLDER = `# Weekly report
-
-When the user asks for a weekly report:
-1. Ask which project and date range it covers.
-2. Summarize progress, risks and next steps.
-3. Output in the template below.
-`;
 
 /** 编辑器打开方式：新建，或编辑某个手写技能（按名字拉详情回填）。 */
 export type CustomSkillEditorTarget = { mode: "create" } | { mode: "edit"; name: string };
@@ -68,6 +62,7 @@ export function CustomSkillEditor({
 
 /** 编辑模式：先拉详情，拿到说明与正文再挂表单（表单的初始值只取一次）。 */
 function EditLoader({ name, onClose }: { name: string; onClose: () => void }) {
+  const { t } = useTranslation();
   const query = useQuery({
     queryKey: skillDetailKey(name),
     queryFn: () => getSkillDetail(name),
@@ -88,7 +83,7 @@ function EditLoader({ name, onClose }: { name: string; onClose: () => void }) {
     <div className="space-y-3 p-5">
       {query.isError ? (
         <p className="text-sm text-destructive" role="alert">
-          {query.error instanceof Error ? query.error.message : "Failed to load"}
+          {query.error instanceof Error ? query.error.message : t("extensions.skills.detail.loadFailed")}
         </p>
       ) : (
         [0, 1, 2].map((i) => <Skeleton key={i} className="h-16 w-full rounded-lg" />)
@@ -105,6 +100,7 @@ function EditorForm({
   initial?: { name: string; description: string; body: string };
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const editing = initial !== undefined;
   const [name, setName] = useState(initial?.name ?? "");
@@ -114,7 +110,7 @@ function EditorForm({
 
   const nameError =
     !editing && name.trim() !== "" && !NAME_RE.test(name.trim())
-      ? "Lowercase letters, digits and hyphens only; must start and end with a letter or digit (max 64)."
+      ? t("extensions.skills.editor.nameError")
       : null;
   const canSave =
     (editing || NAME_RE.test(name.trim())) &&
@@ -139,18 +135,24 @@ function EditorForm({
   return (
     <>
       <DialogHeader className="border-b px-5 pt-5 pb-4">
-        <DialogTitle>{editing ? `Edit ${initial.name}` : "New skill"}</DialogTitle>
+        <DialogTitle>
+          {editing
+            ? t("extensions.skills.editor.editTitle", { name: initial.name })
+            : t("extensions.skills.editor.createTitle")}
+        </DialogTitle>
         <DialogDescription>
-          Write the skill in Markdown. The agent loads it when the task matches
-          the description, or when you type{" "}
-          <span className="font-mono">/{name.trim() || "name"}</span> in chat.
+          <Trans
+            i18nKey="extensions.skills.editor.description"
+            values={{ command: name.trim() || t("extensions.skills.editor.commandFallback") }}
+            components={{ cmd: <span className="font-mono" /> }}
+          />
         </DialogDescription>
       </DialogHeader>
 
       <div className="min-h-0 flex-1 space-y-4 overflow-y-auto px-5 py-4">
         <div className="space-y-1.5">
           <label htmlFor="custom-skill-name" className="text-sm font-medium">
-            Name
+            {t("extensions.skills.editor.nameLabel")}
           </label>
           <Input
             id="custom-skill-name"
@@ -165,45 +167,45 @@ function EditorForm({
             <p className="text-xs text-destructive">{nameError}</p>
           ) : (
             <p className="text-xs text-muted-foreground">
-              Also the slash command. Can&apos;t be changed later.
+              {t("extensions.skills.editor.nameHint")}
             </p>
           )}
         </div>
 
         <div className="space-y-1.5">
           <label htmlFor="custom-skill-description" className="text-sm font-medium">
-            Description
+            {t("extensions.skills.editor.descriptionLabel")}
           </label>
           <Textarea
             id="custom-skill-description"
             rows={2}
             maxLength={1024}
-            placeholder="Writes a weekly project report in the company template. Use when the user asks for a weekly report."
+            placeholder={t("extensions.skills.editor.descriptionPlaceholder")}
             value={description}
             onChange={(e) => setDescription(e.target.value)}
             disabled={saveMut.isPending}
             className="resize-none"
           />
           <p className="text-xs text-muted-foreground">
-            What the skill does and when to use it — the agent decides from this.
+            {t("extensions.skills.editor.descriptionHint")}
           </p>
         </div>
 
         <div className="space-y-1.5">
           <div className="flex items-center justify-between gap-2">
-            <span className="text-sm font-medium">Instructions</span>
+            <span className="text-sm font-medium">{t("extensions.skills.editor.instructionsLabel")}</span>
             <Tabs value={tab} onValueChange={(v) => setTab(v as "write" | "preview")}>
               <TabsList>
-                <TabsTrigger value="write">Write</TabsTrigger>
-                <TabsTrigger value="preview">Preview</TabsTrigger>
+                <TabsTrigger value="write">{t("extensions.skills.editor.write")}</TabsTrigger>
+                <TabsTrigger value="preview">{t("extensions.skills.editor.preview")}</TabsTrigger>
               </TabsList>
             </Tabs>
           </div>
           {tab === "write" ? (
             <Textarea
-              aria-label="Instructions (Markdown)"
+              aria-label={t("extensions.skills.editor.instructionsAria")}
               rows={14}
-              placeholder={BODY_PLACEHOLDER}
+              placeholder={t("extensions.skills.editor.bodyPlaceholder")}
               value={body}
               onChange={(e) => setBody(e.target.value)}
               disabled={saveMut.isPending}
@@ -214,20 +216,23 @@ function EditorForm({
               {body.trim() ? (
                 <Markdown>{body}</Markdown>
               ) : (
-                <p className="text-sm text-muted-foreground">Nothing to preview yet.</p>
+                <p className="text-sm text-muted-foreground">{t("extensions.skills.editor.nothingToPreview")}</p>
               )}
             </div>
           )}
           {body.length > BODY_MAX && (
             <p className="text-xs text-destructive">
-              Too long ({body.length.toLocaleString()} / {BODY_MAX.toLocaleString()} characters).
+              {t("extensions.skills.editor.tooLong", {
+                length: body.length.toLocaleString(currentLocale()),
+                max: BODY_MAX.toLocaleString(currentLocale()),
+              })}
             </p>
           )}
         </div>
 
         {saveMut.isError && (
           <p className="text-sm text-destructive" role="alert">
-            {saveMut.error instanceof Error ? saveMut.error.message : "Save failed"}
+            {saveMut.error instanceof Error ? saveMut.error.message : t("extensions.skills.editor.saveFailed")}
           </p>
         )}
       </div>
@@ -235,14 +240,14 @@ function EditorForm({
       {/* 弹窗是 p-0 自排版：抵消 DialogFooter 默认为 p-4 内容准备的 -mx-4 -mb-4 */}
       <DialogFooter className="mx-0 mb-0 px-5 py-3">
         <Button variant="ghost" onClick={onClose} disabled={saveMut.isPending}>
-          Cancel
+          {t("common.cancel")}
         </Button>
         <Button
           onClick={() => saveMut.mutate()}
           disabled={!canSave || saveMut.isPending}
         >
           {saveMut.isPending && <Loader2 className="animate-spin" />}
-          {editing ? "Save" : "Create skill"}
+          {editing ? t("common.save") : t("extensions.skills.editor.create")}
         </Button>
       </DialogFooter>
     </>

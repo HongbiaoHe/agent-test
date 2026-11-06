@@ -80,11 +80,11 @@ test('watch_until：后台轮询到完成 → 通知唤醒 agent → 汇报结�
   await ensureKey(page);
 
   await openSettings(page, '连接器');
-  await page.getByRole('button', { name: 'Add connector' }).click();
-  await page.getByPlaceholder("Optional — defaults to the server's own name").fill('jobs');
+  await page.getByRole('button', { name: '添加连接器' }).click();
+  await page.getByPlaceholder('可选——默认使用服务器自己的名称').fill('jobs');
   await page.getByPlaceholder('https://example.com/mcp').fill(mcpUrl);
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
-  await expect(page.getByText('Connected', { exact: true })).toBeVisible({ timeout: 20_000 });
+  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await expect(page.getByText('已连接', { exact: true })).toBeVisible({ timeout: 20_000 });
   await closeSettings(page);
 
   await newChat(page);
@@ -93,14 +93,14 @@ test('watch_until：后台轮询到完成 → 通知唤醒 agent → 汇报结�
     '用 watch_until 在后台轮询 jobs 连接器的 get_job 工具：arguments_json 为 {}，until_path 为 status，done_values 为 ["completed"]，interval_seconds 为 5，标题写「等作业」。不要自己调用 get_job。发起后直接结束本轮；收到任务通知后，只回复通知结果里 result 字段的值。',
   );
   const timeline = page.getByTestId('timeline');
-  await expect(timeline).toContainText('Watching');
+  await expect(timeline).toContainText('监视中');
   await expect(timeline).toContainText('等作业');
   await page.screenshot({ path: join(screens, '12-bg-watch-running.png') });
 
   // 第 3 次轮询完成 → 通知行 → agent 新一轮回复结果
-  await expect(timeline).toContainText('Background task finished', { timeout: 60_000 });
+  await expect(timeline).toContainText('后台任务已完成', { timeout: 60_000 });
   await expect(timeline).toContainText('job-result-55', { timeout: 120_000 });
-  await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeVisible({ timeout: 120_000 });
+  await expect(page.getByRole('button', { name: '发送', exact: true })).toBeVisible({ timeout: 120_000 });
   expect(jobPolls).toBeGreaterThanOrEqual(3);
   await page.screenshot({ path: join(screens, '13-bg-watch-done.png') });
 
@@ -112,20 +112,20 @@ test('run_in_background：任务卡片上取消 → 进程被杀、不唤醒 age
   const { app, page } = await launch(dirs);
   await ensureKey(page);
   await newChat(page);
-  await setPermission(page, 'Auto');
+  await setPermission(page, '自动');
   await sendAndWait(page, '用 run_in_background 运行 `sleep 79 && echo late`，标题写「长任务」。发起后直接结束本轮，不要做别的。');
   const timeline = page.getByTestId('timeline');
-  await expect(timeline).toContainText('Background command');
+  await expect(timeline).toContainText('后台命令');
   await expect.poll(() => processAlive('sleep 79'), { timeout: 15_000 }).toBe(true);
   await page.screenshot({ path: join(screens, '14-bg-command-running.png') });
 
-  await page.getByRole('button', { name: 'Cancel background task' }).click();
-  await expect(timeline).toContainText('Cancelled', { timeout: 10_000 });
+  await page.getByRole('button', { name: '取消后台任务' }).click();
+  await expect(timeline).toContainText('已取消', { timeout: 10_000 });
   await expect.poll(() => processAlive('sleep 79'), { timeout: 10_000 }).toBe(false);
   // 取消的任务不通知：几秒内不会出现通知行、也不会开新一轮
   await page.waitForTimeout(3000);
   await expect(timeline).not.toContainText('Background task');
-  await expect(page.getByRole('button', { name: 'Send', exact: true })).toBeVisible();
+  await expect(page.getByRole('button', { name: '发送', exact: true })).toBeVisible();
   await page.screenshot({ path: join(screens, '15-bg-command-cancelled.png') });
   await app.close();
 });

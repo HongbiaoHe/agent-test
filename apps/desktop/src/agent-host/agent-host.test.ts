@@ -196,6 +196,34 @@ describe('ConversationRepo', () => {
     expect(repo.recordUsage(u)).toBe(false);
     expect(repo.totalTokens(c.id)).toBe(3);
   });
+
+  it('置顶 / 取消置顶：记下置顶时刻，不改 updatedAt', () => {
+    const repo = new ConversationRepo(openDatabase(join(dir, 'spark.db')), () => dir);
+    const c = repo.create(null);
+    expect(c.pinnedAt).toBeNull();
+    const pinned = repo.setPinned(c.id, true);
+    expect(pinned.pinnedAt).toBeGreaterThan(0);
+    expect(pinned.updatedAt).toBe(c.updatedAt);
+    expect(repo.setPinned(c.id, false).pinnedAt).toBeNull();
+  });
+
+  it('搜索：标题与消息正文都能命中（不区分大小写），片段截在命中处；% _ 按字面匹配', () => {
+    const repo = new ConversationRepo(openDatabase(join(dir, 'spark.db')), () => dir);
+    const a = repo.update(repo.create(null).id, { title: 'Vite 项目预览' });
+    const b = repo.create(null);
+    repo.appendMessage(b.id, 'user', 'message', { text: `${'前文'.repeat(40)}帮我写一个 TODO 应用\n第二行` });
+    repo.appendMessage(b.id, 'assistant', 'error', { message: 'todo 不在正文里' });
+    const c = repo.create(null);
+    repo.appendMessage(c.id, 'user', 'message', { text: '进度 100% 完成' });
+
+    expect(repo.search('vite').map((h) => [h.conversation.id, h.snippet])).toEqual([[a.id, null]]);
+    const [hit] = repo.search('todo');
+    expect(hit?.conversation.id).toBe(b.id);
+    expect(hit?.snippet).toMatch(/^…前文.*帮我写一个 TODO 应用 第二行$/);
+    expect(repo.search('100%').map((h) => h.conversation.id)).toEqual([c.id]);
+    expect(repo.search('1_0')).toEqual([]);
+    expect(repo.search('不存在的词')).toEqual([]);
+  });
 });
 
 describe('SkillStore', () => {

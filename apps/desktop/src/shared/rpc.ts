@@ -35,6 +35,14 @@ export interface ConversationSummary {
   permission: WorkspacePermission;
   createdAt: number;
   updatedAt: number;
+  /** 置顶时刻（ms）；未置顶为 null。侧栏「已置顶」按它倒序 */
+  pinnedAt: number | null;
+}
+
+/** 会话搜索的一条结果：snippet 是命中的消息片段（只命中标题时为 null） */
+export interface ConversationSearchHit {
+  conversation: ConversationSummary;
+  snippet: string | null;
 }
 
 export interface StoredMessage {
@@ -158,7 +166,9 @@ export const rpcSchemas = {
   'conversations.get': z.object({ id }),
   'conversations.update': z.object({
     id,
-    title: z.string().max(200).optional(),
+    title: z.string().trim().min(1).max(200).optional(),
+    /** 置顶 / 取消置顶（不改 updatedAt，会话不会因此跳到「今天」） */
+    pinned: z.boolean().optional(),
     model: z.string().optional(),
     thinkingLevel: z.string().nullable().optional(),
     permission: z.enum(WORKSPACE_PERMISSIONS).optional(),
@@ -166,6 +176,8 @@ export const rpcSchemas = {
     workspaceDir: z.string().min(1).optional(),
   }),
   'conversations.delete': z.object({ id }),
+  /** 按标题与消息正文搜索（不区分大小写的子串匹配） */
+  'conversations.search': z.object({ query: z.string().trim().min(1).max(200) }),
   'conversations.tokenReport': z.object({ id }),
   'background.list': z.object({ conversationId: id }),
   /** Web 账号的媒体（生图 / 生视频 / 配音卡片）：未登录时报错 */
@@ -250,6 +262,7 @@ export interface RpcResults {
   'conversations.get': ConversationDetail;
   'conversations.update': ConversationSummary;
   'conversations.delete': { ok: true };
+  'conversations.search': ConversationSearchHit[];
   'conversations.tokenReport': TokenReport;
   'background.list': BackgroundTaskView[];
   /** Web 后端 GET /media-api/generations 的原样结果（形状同 Web 前端 MediaGeneration[]，renderer 侧再校验） */

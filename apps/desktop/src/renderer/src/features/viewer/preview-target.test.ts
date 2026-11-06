@@ -25,6 +25,32 @@ describe('previewTargetOf', () => {
     expect(previewTargetOf(`file://${WS}/docs/x.md`, `${WS}/`)).toMatchObject({ path: 'docs/x.md' });
   });
 
+  it('本机服务链接 → 端口网页预览（保留路径、查询串、锚点）', () => {
+    expect(previewTargetOf('http://localhost:5173/', WS)).toEqual({
+      source: 'site',
+      spec: { kind: 'port', port: 5173, path: '/', title: 'localhost:5173' },
+    });
+    expect(previewTargetOf('http://127.0.0.1:3000/app?tab=1#top', WS)).toEqual({
+      source: 'site',
+      spec: { kind: 'port', port: 3000, path: '/app?tab=1#top', title: '127.0.0.1:3000' },
+    });
+    expect(previewTargetOf('http://localhost/', WS)).toMatchObject({ spec: { port: 80 } });
+    // 本机服务上的媒体文件仍按媒体预览
+    expect(previewTargetOf('http://localhost:3000/a.png', WS)).toMatchObject({ source: 'url', kind: 'image' });
+    // https 本机 / 非本机网页仍交给系统浏览器
+    expect(previewTargetOf('https://localhost:8443/', WS)).toBeNull();
+    expect(previewTargetOf('http://example.com:8080/', WS)).toBeNull();
+  });
+
+  it('工作区里的 .html → 静态网页预览', () => {
+    expect(previewTargetOf('./site/index.html', WS)).toEqual({
+      source: 'site',
+      spec: { kind: 'file', path: 'site/index.html', title: 'index.html' },
+    });
+    expect(previewTargetOf(`${WS}/a.HTM`, WS)).toMatchObject({ spec: { kind: 'file', path: 'a.HTM' } });
+    expect(previewTargetOf('/etc/x.html', WS)).toBeNull();
+  });
+
   it('工作区外的绝对路径、锚点、其它协议不预览', () => {
     expect(previewTargetOf('/etc/passwd', WS)).toBeNull();
     expect(previewTargetOf('/Users/me/project-other/a.md', WS)).toBeNull();

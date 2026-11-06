@@ -7,6 +7,7 @@
 import { z } from 'zod';
 import { AGENT_PORT_CLOSED_MESSAGE, AGENT_PORT_MESSAGE } from '../../../shared/desktop';
 import type { HostEvent, RpcMethod, RpcParams, RpcResults } from '../../../shared/rpc';
+import { i18n } from '@/lib/i18n';
 
 type Listener = (e: HostEvent | { kind: 'reconnected' }) => void;
 
@@ -55,7 +56,7 @@ class AgentClient {
     this.port.close();
     this.port = null;
     this.reconnecting = true;
-    for (const p of this.pending.values()) p.reject(new Error('agent 进程已重启，请重试'));
+    for (const p of this.pending.values()) p.reject(new Error(i18n.t('agent.client.restarted')));
     this.pending.clear();
   }
 
@@ -63,7 +64,7 @@ class AgentClient {
     const hadPort = this.port !== null || this.reconnecting;
     this.reconnecting = false;
     this.port?.close();
-    for (const p of this.pending.values()) p.reject(new Error('agent 进程已重启，请重试'));
+    for (const p of this.pending.values()) p.reject(new Error(i18n.t('agent.client.restarted')));
     this.pending.clear();
     this.port = port;
     port.onmessage = (e: MessageEvent<unknown>) => this.onMessage(e.data);

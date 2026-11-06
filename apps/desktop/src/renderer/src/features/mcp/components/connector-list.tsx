@@ -2,6 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { ChevronRight, Loader2, Plug } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import {
   ConnectorIcon,
@@ -24,6 +25,7 @@ import { ConnectorDetailSheet } from "./connector-detail-sheet";
 
 /** 连接器列表（已添加的）+ 推荐连接器区块。 */
 export function ConnectorList() {
+  const { t } = useTranslation();
   const [detailId, setDetailId] = useState<string | null>(null);
   const query = useQuery({ queryKey: MCP_SERVERS_KEY, queryFn: listMcpServers });
 
@@ -40,7 +42,7 @@ export function ConnectorList() {
     return (
       <Card>
         <CardContent className="py-8 text-center text-sm text-destructive">
-          {query.error instanceof Error ? query.error.message : "Failed to load connectors"}
+          {query.error instanceof Error ? query.error.message : t("extensions.mcp.list.loadFailed")}
         </CardContent>
       </Card>
     );
@@ -52,14 +54,14 @@ export function ConnectorList() {
     <div className="space-y-6">
       <section className="space-y-2">
         <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-          Your connectors
+          {t("extensions.mcp.list.yours")}
         </h3>
         {servers.length === 0 ? (
           <Card>
             <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
               <Plug className="size-6 text-muted-foreground" />
               <p className="text-sm text-muted-foreground">
-                No connectors yet — connect a recommended one below or add your own.
+                {t("extensions.mcp.list.empty")}
               </p>
             </CardContent>
           </Card>
@@ -75,7 +77,7 @@ export function ConnectorList() {
       {presets.length > 0 && (
         <section className="space-y-2">
           <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-            Recommended
+            {t("extensions.mcp.list.recommended")}
           </h3>
           <div className="grid gap-3 sm:grid-cols-2">
             {presets.map((p) => (
@@ -91,6 +93,7 @@ export function ConnectorList() {
 }
 
 function ConnectorCard({ server, onOpen }: { server: McpServer; onOpen: () => void }) {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const toggle = useMutation({
     mutationFn: (enabled: boolean) => updateMcpServer(server.id, { enabled }),
@@ -106,7 +109,7 @@ function ConnectorCard({ server, onOpen }: { server: McpServer; onOpen: () => vo
       )}
       role="button"
       tabIndex={0}
-      aria-label={`Open ${server.name} details`}
+      aria-label={t("extensions.mcp.list.openDetails", { name: server.name })}
       onClick={onOpen}
       onKeyDown={(e) => {
         if (e.target !== e.currentTarget) return;
@@ -125,12 +128,14 @@ function ConnectorCard({ server, onOpen }: { server: McpServer; onOpen: () => vo
           </div>
           <p className="truncate text-xs text-muted-foreground">
             {server.url}
-            {server.status === "connected" && ` · ${toolCount} tools`}
+            {server.status === "connected" && ` · ${t("extensions.mcp.list.toolCount", { count: toolCount })}`}
           </p>
         </div>
         <div className="flex shrink-0 items-center gap-2" onClick={(e) => e.stopPropagation()}>
           <Switch
-            aria-label={server.enabled ? "Disable connector" : "Enable connector"}
+            aria-label={
+              server.enabled ? t("extensions.mcp.list.disable") : t("extensions.mcp.list.enable")
+            }
             checked={server.enabled}
             disabled={toggle.isPending}
             onCheckedChange={(checked) => toggle.mutate(checked)}
@@ -143,6 +148,7 @@ function ConnectorCard({ server, onOpen }: { server: McpServer; onOpen: () => vo
 }
 
 function PresetCard({ preset }: { preset: McpPreset }) {
+  const { t } = useTranslation();
   const { connect, pendingId } = useMcpConnect();
   const pending = pendingId === preset.key;
   return (
@@ -163,7 +169,7 @@ function PresetCard({ preset }: { preset: McpPreset }) {
           onClick={() => void connect(preset.key, () => connectMcpPreset(preset.key))}
         >
           {pending ? <Loader2 className="animate-spin" /> : <Plug />}
-          Connect
+          {t("extensions.mcp.connect")}
         </Button>
       </CardContent>
     </Card>

@@ -128,27 +128,27 @@ test('技能安装与调用、附件、MCP 工具与 App 卡片、/skills add', 
   await openSettings(page, '技能');
   await expect(page.getByText('create-skills', { exact: true })).toBeVisible();
   await stubOpenDialog(app, [skillDir]);
-  await page.getByRole('button', { name: 'Import folder' }).click();
+  await page.getByRole('button', { name: '从文件夹导入' }).click();
   await expect(page.getByText('magic-echo', { exact: true })).toBeVisible();
   await page.screenshot({ path: join(screens, '5-skills.png') });
 
   // 设置 → 连接器：添加本地 server 并连接（Web 同款对话框）
   await openSettings(page, '连接器');
-  await page.getByRole('button', { name: 'Add connector' }).click();
-  await page.getByPlaceholder("Optional — defaults to the server's own name").fill('e2e');
+  await page.getByRole('button', { name: '添加连接器' }).click();
+  await page.getByPlaceholder('可选——默认使用服务器自己的名称').fill('e2e');
   await page.getByPlaceholder('https://example.com/mcp').fill(mcpUrl);
-  await page.getByRole('button', { name: 'Connect', exact: true }).click();
-  await expect(page.getByText('Connected', { exact: true })).toBeVisible({ timeout: 20_000 });
-  await expect(page.getByText(/2 tools/)).toBeVisible();
+  await page.getByRole('button', { name: '连接', exact: true }).click();
+  await expect(page.getByText('已连接', { exact: true })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByText(/2 个工具/)).toBeVisible();
   await page.screenshot({ path: join(screens, '6-mcp.png') });
   await closeSettings(page);
 
   // 对话 1（自动档位）：/magic-echo + 附件；技能与附件都在运行目录，不写进工作区
   await newChat(page);
-  await setPermission(page, 'Auto');
+  await setPermission(page, '自动');
   await stubOpenDialog(app, [attachment]);
-  await page.getByRole('button', { name: 'Attach files' }).click();
-  await expect(page.getByRole('list', { name: 'Pending attachments' })).toContainText('note.txt');
+  await page.getByRole('button', { name: '添加附件' }).click();
+  await expect(page.getByRole('list', { name: '待发送的附件' })).toContainText('note.txt');
   await sendAndWait(page, '/magic-echo 处理一下附件', { approve: false });
   const timeline = page.getByTestId('timeline');
   await expect(timeline).toContainText('MAGIC-ECHO-42');

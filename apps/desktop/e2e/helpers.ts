@@ -28,6 +28,8 @@ export async function launch(
       ...process.env,
       SPARK_USER_DATA_DIR: dirs.userData,
       SPARK_DEFAULT_WORKSPACE: dirs.workspace,
+      // 用例按简体中文文案定位元素：固定「系统语言」，不受跑测试的机器影响（个别用例经 opts.env 覆盖）
+      SPARK_SYSTEM_LANGUAGE: 'zh-CN',
       ...opts.env,
     },
   });
@@ -84,16 +86,16 @@ export async function saveGoogleKey(page: Page): Promise<void> {
 
 /** 发一条消息并等这一轮跑完（发送按钮重新出现）；途中的审批一律批准（approve=false 时遇到审批即返回） */
 export async function sendAndWait(page: Page, text: string, opts: { approve?: boolean } = {}): Promise<number> {
-  const input = page.getByLabel('Message');
+  const input = page.getByLabel('消息');
   await input.fill(text);
   await input.press('Enter');
-  await expect(page.getByRole('button', { name: 'Stop' })).toBeVisible({ timeout: 20_000 });
+  await expect(page.getByRole('button', { name: '停止' })).toBeVisible({ timeout: 20_000 });
   return waitTurn(page, opts);
 }
 
 /** 等这一轮结束：遇到审批面板就点 Approve（返回批准了几次） */
 export async function waitTurn(page: Page, { approve = true }: { approve?: boolean } = {}): Promise<number> {
-  const send = page.getByRole('button', { name: 'Send', exact: true });
+  const send = page.getByRole('button', { name: '发送', exact: true });
   const panel = page.getByTestId('approval-panel');
   let approved = 0;
   const deadline = Date.now() + 180_000;
@@ -101,7 +103,7 @@ export async function waitTurn(page: Page, { approve = true }: { approve?: boole
     if (await send.isVisible()) return approved;
     if (await panel.isVisible()) {
       if (!approve) return approved;
-      await panel.getByRole('button', { name: 'Approve', exact: true }).click();
+      await panel.getByRole('button', { name: '批准', exact: true }).click();
       approved++;
       await expect(panel).toBeHidden({ timeout: 30_000 });
       continue;
@@ -120,12 +122,12 @@ export async function waitTurn(page: Page, { approve = true }: { approve?: boole
 /** 侧栏「+」新建对话，并等新会话的空状态出现（否则可能把消息填进上一个会话的输入框） */
 export async function newChat(page: Page): Promise<void> {
   await page.getByRole('button', { name: '新建对话' }).click();
-  await expect(page.getByText('Start chatting')).toBeVisible();
+  await expect(page.getByText('开始对话')).toBeVisible();
 }
 
-/** 输入框工具条上切换本会话的权限档位（Read-only / Ask / Auto） */
-export async function setPermission(page: Page, label: 'Read-only' | 'Ask' | 'Auto'): Promise<void> {
-  await page.getByRole('button', { name: /^Permission:/ }).click();
+/** 输入框工具条上切换本会话的权限档位（只读 / 询问 / 自动） */
+export async function setPermission(page: Page, label: '只读' | '询问' | '自动'): Promise<void> {
+  await page.getByRole('button', { name: /^权限：/ }).click();
   await page.getByRole('option', { name: new RegExp(`^${label}`) }).click();
-  await expect(page.getByRole('button', { name: `Permission: ${label}` })).toBeVisible();
+  await expect(page.getByRole('button', { name: `权限：${label}` })).toBeVisible();
 }

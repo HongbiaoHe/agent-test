@@ -1,6 +1,7 @@
 
 import { Plug } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
 import { cn } from "@/lib/utils";
@@ -39,15 +40,9 @@ export function ConnectorIcon({
   );
 }
 
-const STATUS_LABEL: Record<McpServerStatus, string> = {
-  connected: "Connected",
-  disconnected: "Not connected",
-  needs_auth: "Needs reconnect",
-  error: "Error",
-};
-
 /** 连接状态徽章：已连接带绿点，需要处理的用警示 / 危险色。 */
 export function ConnectorStatusBadge({ status }: { status: McpServerStatus }) {
+  const { t } = useTranslation();
   return (
     <Badge
       variant={status === "error" ? "destructive" : status === "connected" ? "secondary" : "outline"}
@@ -65,7 +60,7 @@ export function ConnectorStatusBadge({ status }: { status: McpServerStatus }) {
                 : "bg-muted-foreground",
         )}
       />
-      {STATUS_LABEL[status]}
+      {t(`extensions.mcp.status.${status}`)}
     </Badge>
   );
 }

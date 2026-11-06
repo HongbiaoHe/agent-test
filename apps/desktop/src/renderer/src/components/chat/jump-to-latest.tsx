@@ -1,6 +1,7 @@
 "use client";
 
 import { ArrowDown } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
@@ -18,12 +19,13 @@ export function JumpToLatest({
   onClick: () => void;
   className?: string;
 }) {
+  const { t } = useTranslation();
   return (
     <Button
       type="button"
       size="sm"
       variant="outline"
-      aria-label="Jump to latest"
+      aria-label={t("chat.jumpToLatest.label")}
       onClick={onClick}
       className={cn(
         "absolute bottom-3 left-1/2 -translate-x-1/2 gap-1.5 rounded-full shadow-md",
@@ -38,7 +40,7 @@ export function JumpToLatest({
       )}
     >
       <ArrowDown />
-      Latest
+      {t("chat.jumpToLatest.text")}
     </Button>
   );
 }

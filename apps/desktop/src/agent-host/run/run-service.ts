@@ -34,8 +34,10 @@ import type { HitlDecision } from '../../shared/rpc';
 import type { NodeSqliteSaver } from '../db/checkpointer';
 import type { ConversationRepo } from '../db/conversations';
 import type { McpStore } from '../mcp/mcp-store';
+import { hostI18n } from '../i18n';
 import type { BackgroundService } from '../background/background-service';
 import { backgroundPrompt, createBackgroundTools } from '../background/background-tools';
+import { createPreviewPageTool } from '../preview/preview-page.tool';
 import { parseSkillSource, skillsAddArgs } from '../skills/github-install';
 import type { WebApi } from '../web-media/web-api';
 import { createSyncMediaTool, createWebMediaTools, uploadAttachment } from '../web-media/web-media';
@@ -154,9 +156,9 @@ export class RunService {
     const { repo } = this.deps;
     const conv = repo.require(conversationId);
     if (this.active.has(conversationId) || conv.status === 'running') {
-      throw new BusyError('这个会话正在运行，请先等它结束或点停止');
+      throw new BusyError(hostI18n.t('errors.run.busy'));
     }
-    if (!text.trim() && attachmentPaths.length === 0) throw new Error('消息不能为空');
+    if (!text.trim() && attachmentPaths.length === 0) throw new Error(hostI18n.t('errors.run.emptyMessage'));
     const attachments = await copyAttachments(
       join(this.runtimeDir(conversationId), 'attachments'),
       attachmentPaths,
@@ -205,12 +207,12 @@ export class RunService {
       const installed = await this.deps.skills.installFromGithub(parseSkillSource(args));
       this.deps.skillsChanged?.();
       say(
-        `已安装 ${installed.length} 个技能：\n\n` +
+        `${hostI18n.t('errors.skills.installed', { count: installed.length })}\n\n` +
           installed.map((s) => `- \`/${s.name}\` — ${s.description}`).join('\n') +
-          `\n\n输入 \`/技能名 需求\` 即可使用。`,
+          `\n\n${hostI18n.t('errors.skills.installedHint')}`,
       );
     } catch (e) {
-      say(`安装失败：${e instanceof Error ? e.message : String(e)}`);
+      say(hostI18n.t('errors.skills.installFailed', { error: e instanceof Error ? e.message : String(e) }));
     }
     if (repo.transition(conversationId, ['running'], 'done')) {
       const evt: RawEvent = { type: 'result', payload: { status: 'done' } };
@@ -223,7 +225,7 @@ export class RunService {
   resume(conversationId: string, decisions: HitlDecision[]): void {
     const { repo } = this.deps;
     if (!repo.transition(conversationId, ['waiting_approval'], 'running')) {
-      throw new BusyError('当前没有待审批的操作');
+      throw new BusyError(hostI18n.t('errors.run.noPendingApproval'));
     }
     for (const d of decisions) repo.recordApproval(conversationId, d.type, d);
     this.deps.listChanged();
@@ -282,7 +284,7 @@ export class RunService {
       } catch (e) {
         emit(conversationId, {
           type: 'message',
-          payload: { text: `⚠️ 技能同步到工作区失败，本轮不使用技能：${String(e)}` },
+          payload: { text: hostI18n.t('errors.run.skillSyncFailed', { error: String(e) }) },
         });
       }
 
@@ -351,6 +353,7 @@ export class RunService {
           createSaveSkillTool(this.deps.skills, () => this.deps.skillsChanged?.()),
           ...bgTools,
           ...mediaTools,
+          createPreviewPageTool({ workspaceDir }),
         ],
       });
 

@@ -1,4 +1,5 @@
 import { File, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 
@@ -10,9 +11,10 @@ export function ComposerAttachments({
   items: string[];
   onRemove: (path: string) => void;
 }) {
+  const { t } = useTranslation();
   if (items.length === 0) return null;
   return (
-    <ul aria-label="Pending attachments" className="flex flex-wrap gap-2 px-3 pt-3">
+    <ul aria-label={t("chat.attachments.pending")} className="flex flex-wrap gap-2 px-3 pt-3">
       {items.map((p) => (
         <li
           key={p}
@@ -24,7 +26,7 @@ export function ComposerAttachments({
           <Button
             variant="ghost"
             size="icon-xs"
-            aria-label={`Remove ${p.split(/[\\/]/).pop()}`}
+            aria-label={t("chat.attachments.remove", { name: p.split(/[\\/]/).pop() ?? p })}
             onClick={() => onRemove(p)}
           >
             <X />

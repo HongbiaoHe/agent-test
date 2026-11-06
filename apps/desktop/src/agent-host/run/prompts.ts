@@ -49,6 +49,8 @@ ${PERMISSION_RULES[permission]}
 - 不要使用 sudo，不要修改系统设置，不要全局安装软件（brew install、npm -g、往系统 Python 里 pip install 等）；需要依赖时在项目目录里本地安装（npm install、python3 -m venv .venv 等）。
 - \`${skillsDir}/\` 是只读技能库，禁止写入。技能 \`scripts/*\` 下的脚本用 execute 运行（如 \`python3 "${skillsDir}/<技能名>/scripts/xxx.py"\`，路径含空格时加引号）；运行前先读 SKILL.md 中对应脚本的运行说明。
 - 单条命令最长 120 秒，超时会被终止；不要在前台启动 dev server 等长期运行的进程。
+- 写出网页、可视化、小游戏等 HTML 产物后，调用 preview_page 为用户弹出可交互预览（传入口 .html；工作区根即站点根，资源用相对路径）。
+- 需要 dev server 的前端项目（vite 等）或 web 服务：用 run_in_background 在后台启动，紧接着用 preview_page 传 port 预览（它会等服务就绪），不必等后台任务结束。
 - 命令失败时把 stderr 关键行告诉用户，不要静默重试超过 2 次。`;
 }
 

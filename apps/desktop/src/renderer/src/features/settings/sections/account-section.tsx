@@ -5,16 +5,19 @@
 import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { LogIn, LogOut } from 'lucide-react';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { Avatar, AvatarFallback } from '@/components/ui/avatar';
 import { Badge } from '@/components/ui/badge';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Separator } from '@/components/ui/separator';
+import { currentLocale } from '@/lib/i18n';
 import { useWebAccount, WEB_ACCOUNT_KEY } from '../../auth/use-web-account';
 import { useSettings } from './use-settings';
 
 export function AccountSection({ onSignIn }: { onSignIn: () => void }) {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const account = useWebAccount();
   const { settings, update } = useSettings();
@@ -27,7 +30,7 @@ export function AccountSection({ onSignIn }: { onSignIn: () => void }) {
     mutationFn: () => window.desktop.signOutWeb(),
     onSuccess: () => {
       void qc.invalidateQueries({ queryKey: WEB_ACCOUNT_KEY });
-      toast.success('已退出 Web 账号');
+      toast.success(t('settings.account.signedOutToast'));
     },
     onError: (e) => toast.error(e.message),
   });
@@ -40,15 +43,19 @@ export function AccountSection({ onSignIn }: { onSignIn: () => void }) {
     update.mutate({ webApiUrl: next });
     setApiUrl(null);
     void qc.invalidateQueries({ queryKey: WEB_ACCOUNT_KEY });
-    toast.success('Web 后端地址已更新');
+    toast.success(t('settings.account.apiUrlUpdated'));
   }
 
   return (
     <div className="space-y-6">
       <section className="space-y-3">
         <h3 className="flex items-center gap-2 text-sm font-semibold">
-          Web 账号
-          {s?.signedIn ? <Badge variant="secondary">已登录</Badge> : <Badge variant="outline">未登录</Badge>}
+          {t('settings.account.title')}
+          {s?.signedIn ? (
+            <Badge variant="secondary">{t('settings.account.signedIn')}</Badge>
+          ) : (
+            <Badge variant="outline">{t('settings.account.signedOut')}</Badge>
+          )}
         </h3>
         {s?.signedIn ? (
           <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
@@ -61,21 +68,23 @@ export function AccountSection({ onSignIn }: { onSignIn: () => void }) {
                   {s.email}
                 </div>
                 <div className="truncate text-xs text-muted-foreground">
-                  有效期至 {s.expiresAt ? new Date(s.expiresAt).toLocaleString() : '—'}
+                  {t('settings.account.expiresAt', {
+                    date: s.expiresAt ? new Date(s.expiresAt).toLocaleString(currentLocale()) : '—',
+                  })}
                 </div>
               </div>
             </div>
             <Button variant="outline" onClick={() => signOut.mutate()} disabled={signOut.isPending}>
               <LogOut data-icon="inline-start" />
-              退出登录
+              {t('settings.account.signOut')}
             </Button>
           </div>
         ) : (
           <div className="flex items-center justify-between gap-3 rounded-lg border border-border p-3">
-            <p className="text-sm text-muted-foreground">没有登录：对话、技能、连接器照常可用，生图、生视频、配音需要登录。</p>
+            <p className="text-sm text-muted-foreground">{t('settings.account.signedOutHint')}</p>
             <Button className="shrink-0" onClick={onSignIn}>
               <LogIn data-icon="inline-start" />
-              登录
+              {t('settings.account.signIn')}
             </Button>
           </div>
         )}
@@ -84,13 +93,11 @@ export function AccountSection({ onSignIn }: { onSignIn: () => void }) {
       <Separator />
 
       <section className="space-y-2">
-        <h3 className="text-sm font-semibold">Web 后端地址</h3>
-        <p className="text-xs text-muted-foreground">
-          生成请求发往这个地址（本机开发是 http://localhost:3101）。登录状态和地址绑定，更换地址会退出当前账号。
-        </p>
+        <h3 className="text-sm font-semibold">{t('settings.account.apiUrl')}</h3>
+        <p className="text-xs text-muted-foreground">{t('settings.account.apiUrlHint')}</p>
         <div className="flex gap-2">
           <Input
-            aria-label="Web 后端地址"
+            aria-label={t('settings.account.apiUrl')}
             className="font-mono"
             value={draftUrl}
             onChange={(e) => setApiUrl(e.target.value)}
@@ -99,7 +106,7 @@ export function AccountSection({ onSignIn }: { onSignIn: () => void }) {
             }}
           />
           <Button variant="outline" disabled={!draftUrl.trim() || draftUrl.trim() === currentUrl} onClick={() => void saveUrl()}>
-            保存
+            {t('common.save')}
           </Button>
         </div>
       </section>
