@@ -129,6 +129,8 @@ function ConversationItem({
 
 export function Sidebar({
   view,
+  width,
+  resizeHandle,
   floating = false,
   onNavigate,
   onOpenSearch,
@@ -136,6 +138,10 @@ export function Sidebar({
   onSignIn,
 }: {
   view: View;
+  /** 宽度（px），由外壳的 useSidebarLayout 管 */
+  width: number;
+  /** 右缘的拖拽调宽把手；浮层不传（拖出浮层区会把浮层收回） */
+  resizeHandle?: ReactNode;
   /** 收起状态下临时弹出的浮层：不透明底 + 阴影 */
   floating?: boolean;
   onNavigate: (v: View) => void;
@@ -184,9 +190,11 @@ export function Sidebar({
   return (
     <aside
       className={cn(
-        'flex h-full w-60 shrink-0 flex-col border-r border-border bg-muted/40',
-        floating && 'rounded-r-xl border-y bg-background shadow-xl',
+        'relative flex h-full shrink-0 flex-col border-r border-border bg-muted/40',
+        // 浮层与展开态同色：bg-muted/40 是半透明，靠外壳那层 bg-background 垫底，不在这里换底色
+        floating && 'shadow-xl',
       )}
+      style={{ width }}
     >
       {/* 顶部留给 macOS 红绿灯（titleBarStyle: hiddenInset）与侧栏开关，可拖动窗口 */}
       <div className="app-drag h-12 shrink-0" />
@@ -289,6 +297,8 @@ export function Sidebar({
         onClose={() => setDeleting(null)}
         onDelete={(id) => actions.remove.mutate(id)}
       />
+      {/* 排在最后：Chromium 按文档顺序合成拖动区，把手的 no-drag 要盖过上面顶部的 app-drag */}
+      {resizeHandle}
     </aside>
   );
 }
