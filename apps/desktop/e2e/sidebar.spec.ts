@@ -1,7 +1,7 @@
 /**
  * 侧栏与会话顶栏（不需要模型）：
  * 新建 → 顶栏标题菜单重命名 → 侧栏「…」置顶（进「已置顶」组）→ ⌘K 搜标题 / 搜消息正文（片段高亮）→
- * 收起侧栏（顶栏让位、刷新后仍收起）→ 悬停开关临时弹出、在浮层里切会话、移回主区收回 → 删除（确认后消失）。
+ * 拖右缘调宽（夹在上限、刷新后保持）→ 收起侧栏（顶栏让位、刷新后仍收起）→ 悬停开关临时弹出、在浮层里切会话、移回主区收回 → 删除（确认后消失）。
  */
 import { randomUUID } from 'node:crypto';
 import { mkdirSync } from 'node:fs';
@@ -14,6 +14,12 @@ const dirs = tempDirs('sidebar');
 
 const nav = (page: Page) => page.getByRole('navigation', { name: '会话' });
 const group = (page: Page, label: string) => nav(page).locator('section').filter({ hasText: label });
+
+/** 侧栏列表下方空白处的一小块像素：用来比对浮层与展开态底色一致 */
+async function sidebarBlankPixels(page: Page) {
+  const h = await page.evaluate(() => window.innerHeight);
+  return page.screenshot({ clip: { x: 120, y: h - 90, width: 4, height: 4 } });
+}
 
 async function renameCurrent(page: Page, title: string) {
   await page.getByRole('button', { name: '会话菜单' }).click();
@@ -120,6 +126,27 @@ test('侧栏：新建 / 重命名 / 置顶分组 / 搜索 / 收起与悬停弹�
   await page.screenshot({ path: join(screens, '62-title-menu.png') });
   await page.keyboard.press('Escape');
 
+  // 拖右缘调宽：跟手、开关随右缘移动；超出上限被夹住（刷新后保持：见下面收起刷新后浮层仍是 400 宽）
+  const sidebarAside = page.locator('aside').filter({ has: nav(page) });
+  const dragSidebarEdge = async (toX: number) => {
+    const box = await page.getByRole('separator', { name: '调整侧栏宽度' }).boundingBox();
+    if (!box) throw new Error('调宽把手不可见');
+    const y = box.y + box.height / 2;
+    await page.mouse.move(box.x + box.width / 2, y);
+    await page.mouse.down();
+    await page.mouse.move(toX, y, { steps: 5 });
+    await page.mouse.up();
+  };
+  await dragSidebarEdge(320);
+  expect((await sidebarAside.boundingBox())?.width).toBe(320);
+  // 开关贴侧栏顶部行右端：320 - 8 - 28
+  expect((await page.getByRole('button', { name: '收起侧栏' }).boundingBox())?.x).toBe(284);
+  await page.screenshot({ path: join(screens, '62b-resized.png') });
+  await dragSidebarEdge(1000);
+  expect((await sidebarAside.boundingBox())?.width).toBe(400);
+
+  const expandedPixels = await sidebarBlankPixels(page);
+
   // 收起侧栏：侧栏消失，顶栏标题让出红绿灯与开关的位置；刷新后仍是收起
   await page.getByRole('button', { name: '收起侧栏' }).click();
   await expect(nav(page)).toBeHidden();
@@ -141,6 +168,14 @@ test('侧栏：新建 / 重命名 / 置顶分组 / 搜索 / 收起与悬停弹�
   await page.getByRole('button', { name: '展开侧栏' }).hover();
   const peek = page.getByTestId('sidebar-peek');
   await expect(peek).toBeVisible();
+  // 浮层：与窗口等高、无圆角、底色与展开态一致
+  const peekBox = await peek.locator('aside').boundingBox();
+  const innerHeight = await page.evaluate(() => window.innerHeight);
+  expect(peekBox?.y).toBe(0);
+  expect(peekBox?.height).toBe(innerHeight);
+  expect(peekBox?.width).toBe(400); // 浮层沿用调过的宽度，且刷新后仍在
+  expect(await peek.locator('aside').evaluate((el) => getComputedStyle(el).borderTopRightRadius)).toBe('0px');
+  expect((await sidebarBlankPixels(page)).equals(expandedPixels)).toBe(true);
   await page.screenshot({ path: join(screens, '64-peek.png') });
   await peek.getByRole('button', { name: 'Beta 调研' }).click();
   await expect(peek).toBeHidden();

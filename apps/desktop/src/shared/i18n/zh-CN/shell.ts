@@ -16,6 +16,7 @@ export const shell = {
     settings: '设置',
     expand: '展开侧栏',
     collapse: '收起侧栏',
+    resize: '调整侧栏宽度',
   },
   groups: {
     pinned: '已置顶',

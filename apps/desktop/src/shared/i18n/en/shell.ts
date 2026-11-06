@@ -18,6 +18,7 @@ export const shell = {
     settings: 'Settings',
     expand: 'Expand sidebar',
     collapse: 'Collapse sidebar',
+    resize: 'Resize sidebar',
   },
   groups: {
     pinned: 'Pinned',

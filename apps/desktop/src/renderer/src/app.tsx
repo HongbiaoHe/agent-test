@@ -16,8 +16,9 @@ import { SettingsDialog, type SettingsSection } from './features/settings/settin
 import { useSettings } from './features/settings/sections/use-settings';
 import { SearchDialog } from './features/shell/search-dialog';
 import { Sidebar, type View } from './features/shell/sidebar';
+import { SidebarResizeHandle } from './features/shell/sidebar-resize-handle';
 import { COLLAPSED_HEADER_INSET, SidebarToggle } from './features/shell/sidebar-toggle';
-import { useSidebarLayout } from './features/shell/use-sidebar-layout';
+import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, useSidebarLayout } from './features/shell/use-sidebar-layout';
 import { FileViewerProvider } from './features/viewer/file-viewer';
 
 function Home({
@@ -141,6 +142,7 @@ export function App() {
   };
   const sidebarProps = {
     view,
+    width: layout.width,
     onNavigate: navigate,
     onOpenSearch: () => setSearchOpen(true),
     onOpenSettings: openSettings,
@@ -169,10 +171,23 @@ export function App() {
     // 根部的预览（无会话）：设置里技能详情等 Markdown 的远程链接也能预览；对话里由 ChatView 自己的那层接管
     <FileViewerProvider>
       <div className="relative flex h-screen overflow-clip">
-        {!layout.collapsed && <Sidebar {...sidebarProps} />}
+        {!layout.collapsed && (
+          <Sidebar
+            {...sidebarProps}
+            resizeHandle={
+              <SidebarResizeHandle
+                width={layout.width}
+                min={SIDEBAR_MIN_WIDTH}
+                max={SIDEBAR_MAX_WIDTH}
+                onResize={layout.resize}
+                onResizeEnd={layout.endResize}
+              />
+            }
+          />
+        )}
         {layout.peek && (
           // 收起时悬停开关临时弹出的浮层；指针离开浮层区（data-peek-zone）后收回，见 use-sidebar-layout
-          <div className="absolute inset-y-0 left-0 z-40 py-1" data-peek-zone="" data-testid="sidebar-peek">
+          <div className="absolute inset-y-0 left-0 z-40 bg-background" data-peek-zone="" data-testid="sidebar-peek">
             <Sidebar {...sidebarProps} floating />
           </div>
         )}
@@ -197,7 +212,13 @@ export function App() {
         {/* 开关必须排在侧栏、主区之后：Chromium 按文档顺序合成窗口拖动区（app-region），
             排在前面的 no-drag 会被后面侧栏顶部 / 对话顶栏的 drag 区盖掉，真实鼠标点下去变成拖窗口
             （Playwright 的合成点击不走拖动区，e2e 测不出来） */}
-        <SidebarToggle collapsed={layout.collapsed} onToggle={layout.toggle} onHover={layout.openPeek} />
+        <SidebarToggle
+          collapsed={layout.collapsed}
+          sidebarWidth={layout.width}
+          resizing={layout.resizing}
+          onToggle={layout.toggle}
+          onHover={layout.openPeek}
+        />
         <SearchDialog
           open={searchOpen}
           onOpenChange={setSearchOpen}

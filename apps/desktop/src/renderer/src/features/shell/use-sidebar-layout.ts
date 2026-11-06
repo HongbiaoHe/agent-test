@@ -1,6 +1,7 @@
 /**
- * 侧栏收起 / 临时弹出的状态：
+ * 侧栏收起 / 临时弹出 / 宽度的状态：
  * - collapsed：用户点开关收起，记在 localStorage（本机偏好，读写失败就按展开处理）；
+ * - width：拖侧栏右缘调整，限在 [SIDEBAR_MIN_WIDTH, SIDEBAR_MAX_WIDTH]，松手后记进 localStorage；浮层沿用同一宽度；
  * - peek：收起时鼠标悬停开关 → 侧栏以浮层临时弹出。浮层打开期间监听 document 的 pointermove：
  *   指针离开「浮层区」（开关与浮层，标了 data-peek-zone）稍等片刻才收回，回到浮层区就取消；
  *   浮层里的菜单 / 弹窗开着时不收（它们渲染在浮层之外，收了会连同菜单一起卸载）。
@@ -9,6 +10,10 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 const STORAGE_KEY = 'spark.sidebarCollapsed';
+const WIDTH_STORAGE_KEY = 'spark.sidebarWidth';
+export const SIDEBAR_DEFAULT_WIDTH = 240;
+export const SIDEBAR_MIN_WIDTH = 200;
+export const SIDEBAR_MAX_WIDTH = 400;
 const PEEK_CLOSE_DELAY_MS = 250;
 /** 标在开关与浮层容器上的属性（JSX 里直接写 data-peek-zone） */
 const PEEK_ZONE_ATTR = 'data-peek-zone';
@@ -23,8 +28,21 @@ function readCollapsed(): boolean {
   }
 }
 
+const clampWidth = (w: number) => Math.round(Math.min(SIDEBAR_MAX_WIDTH, Math.max(SIDEBAR_MIN_WIDTH, w)));
+
+function readWidth(): number {
+  try {
+    const saved = Number(localStorage.getItem(WIDTH_STORAGE_KEY));
+    return saved ? clampWidth(saved) : SIDEBAR_DEFAULT_WIDTH;
+  } catch {
+    return SIDEBAR_DEFAULT_WIDTH;
+  }
+}
+
 export function useSidebarLayout() {
   const [collapsed, setCollapsed] = useState(readCollapsed);
+  const [width, setWidth] = useState(readWidth);
+  const [resizing, setResizing] = useState(false);
   const [peek, setPeek] = useState(false);
   const closeTimer = useRef<number | undefined>(undefined);
 
@@ -77,5 +95,21 @@ export function useSidebarLayout() {
     setPeek(false);
   }, []);
 
-  return { collapsed, peek: open, toggle, openPeek, closePeek };
+  /** 拖动中：按指针位置设宽度（侧栏贴窗口左缘，宽度即指针 x） */
+  const resize = useCallback((w: number) => {
+    setResizing(true);
+    setWidth(clampWidth(w));
+  }, []);
+  const endResize = useCallback(() => setResizing(false), []);
+  // 拖动中不写盘，松手再记
+  useEffect(() => {
+    if (resizing) return;
+    try {
+      localStorage.setItem(WIDTH_STORAGE_KEY, String(width));
+    } catch {
+      // 存不了就只在本次生效
+    }
+  }, [width, resizing]);
+
+  return { collapsed, peek: open, toggle, openPeek, closePeek, width, resizing, resize, endResize };
 }

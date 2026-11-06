@@ -11,12 +11,20 @@ import { cn } from '@/lib/utils';
 /** 收起后主区顶栏左侧要让出的宽度：红绿灯 + 开关（pl-32 = 128px） */
 export const COLLAPSED_HEADER_INSET = 'pl-32 lg:pl-32';
 
+/** 展开时开关的 left：侧栏宽 - 右内边距 8 - 按钮宽 28 */
+const TOGGLE_INSET_FROM_SIDEBAR_EDGE = 36;
+
 export function SidebarToggle({
   collapsed,
+  sidebarWidth,
+  resizing,
   onToggle,
   onHover,
 }: {
   collapsed: boolean;
+  sidebarWidth: number;
+  /** 拖动调宽中：关掉 left 过渡，开关紧跟侧栏右缘 */
+  resizing: boolean;
   onToggle: () => void;
   onHover: () => void;
 }) {
@@ -24,13 +32,15 @@ export function SidebarToggle({
   const label = collapsed ? t('shell.sidebar.expand') : t('shell.sidebar.collapse');
   return (
     // 垂直：按钮 h-7、top-2.5 → 中线 24px，与红绿灯（main 的 trafficLightPosition）和 h-12 顶栏行对齐。
-    // 水平：展开时 left-51 = 侧栏宽 240 - 右内边距 8 - 按钮宽 28；收起时 left-20 紧挨红绿灯。
+    // 水平：展开时贴侧栏顶部行右端（随侧栏宽度）；收起时 left-20 紧挨红绿灯。
     // data-peek-zone：指针在开关上时浮层不收回（见 use-sidebar-layout）
     <div
       className={cn(
         'app-no-drag absolute top-2.5 z-50 transition-[left] duration-200 motion-reduce:transition-none',
-        collapsed ? 'left-20' : 'left-51',
+        collapsed && 'left-20',
+        resizing && 'transition-none',
       )}
+      style={collapsed ? undefined : { left: sidebarWidth - TOGGLE_INSET_FROM_SIDEBAR_EDGE }}
       data-peek-zone=""
       onMouseEnter={onHover}
     >

@@ -18,6 +18,7 @@ export const shell = {
     settings: '設定',
     expand: '展開側邊欄',
     collapse: '收合側邊欄',
+    resize: '調整側邊欄寬度',
   },
   groups: {
     pinned: '已釘選',
