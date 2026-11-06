@@ -1,8 +1,13 @@
 import { Transform } from 'class-transformer';
 import { IsBoolean, IsOptional, IsString, MaxLength } from 'class-validator';
 
-/** PATCH /conversations/:id：两个字段都可选，只改传了的那个。 */
+/** PATCH /conversations/:id：字段都可选，只改传了的那个。 */
 export class UpdateConversationDto {
+  /** 切换模式：模式 id；null = 回通用模式。运行中 / 排队 / 审批中不可切（409）。 */
+  @IsOptional()
+  @IsString()
+  modeId?: string | null;
+
   /** 侧栏置顶 / 取消置顶。 */
   @IsOptional()
   @IsBoolean()

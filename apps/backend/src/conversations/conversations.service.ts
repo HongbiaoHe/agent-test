@@ -55,7 +55,22 @@ export class ConversationsService {
     userId: string,
     model?: string,
     thinkingLevel?: string,
+    modeId?: string,
   ) {
+    // body 没给模型 / 档位时用默认值回填（只在创建时生效）：选了模式（校验归属）取模式的，
+    // 没选（通用模式）取该用户通用模式设置的
+    if (modeId) {
+      const mode = await this.assertOwnedMode(modeId, userId);
+      model ??= mode.defaultModel ?? undefined;
+      thinkingLevel ??= mode.defaultThinkingLevel ?? undefined;
+    } else if (model === undefined || thinkingLevel === undefined) {
+      const general = await this.prisma.generalModeSetting.findUnique({
+        where: { userId },
+        select: { defaultModel: true, defaultThinkingLevel: true },
+      });
+      model ??= general?.defaultModel ?? undefined;
+      thinkingLevel ??= general?.defaultThinkingLevel ?? undefined;
+    }
     // goal 为空 → 创建 idle 空会话（先建会话再进入）：不落首条消息、不入队，
     // 等首条 appendMessage 时再置 queued 并回填 goal。
     if (!goal?.trim()) {
@@ -67,6 +82,7 @@ export class ConversationsService {
           userId,
           model,
           thinkingLevel,
+          modeId,
         },
       });
       return { conversationId: conv.id };
@@ -75,7 +91,15 @@ export class ConversationsService {
     // 沙箱换档迁移中：新的运行会写进即将被替换的旧沙箱，拒绝
     await this.sandboxMigration.assertNotMigrating(userId);
     const conv = await this.prisma.conversation.create({
-      data: { goal, status: 'queued', tenantId, userId, model, thinkingLevel },
+      data: {
+        goal,
+        status: 'queued',
+        tenantId,
+        userId,
+        model,
+        thinkingLevel,
+        modeId,
+      },
     });
     // 把首轮目标落成 user message（seq 0），与追加轮统一；worker 每轮从 DB 重放完整对话历史
     await this.prisma.message.create({
@@ -237,20 +261,28 @@ export class ConversationsService {
         status: true,
         createdAt: true,
         pinnedAt: true,
+        modeId: true,
       },
     });
   }
 
   /**
-   * 置顶 / 取消置顶、重命名：只改传了的字段。
+   * 置顶 / 取消置顶、重命名、切换模式：只改传了的字段。
    * title 空串 = 清除自定义标题（存 NULL），界面回退显示 goal。
+   * modeId：null = 回通用模式；会话运行中 / 排队 / 审批中禁切（409），历史保留。
    */
   async update(
     id: string,
     tenantId: string,
-    patch: { pinned?: boolean; title?: string },
+    patch: { pinned?: boolean; title?: string; modeId?: string | null },
   ) {
-    await this.assertConversationOwner(id, tenantId);
+    const userId = await this.assertConversationOwner(id, tenantId);
+    if (patch.modeId !== undefined) {
+      await this.assertIdle(id);
+      if (patch.modeId !== null) {
+        await this.assertOwnedMode(patch.modeId, userId);
+      }
+    }
     return this.prisma.conversation.update({
       where: { id },
       data: {
@@ -258,9 +290,43 @@ export class ConversationsService {
           pinnedAt: patch.pinned ? new Date() : null,
         }),
         ...(patch.title !== undefined && { title: patch.title.trim() || null }),
+        ...(patch.modeId !== undefined && { modeId: patch.modeId }),
       },
-      select: { id: true, pinnedAt: true, title: true },
+      select: { id: true, pinnedAt: true, title: true, modeId: true },
     });
+  }
+
+  /** 模式必须属于该用户（被删的模式按不存在处理）。 */
+  private async assertOwnedMode(modeId: string, userId: string) {
+    const mode = await this.prisma.agentMode.findFirst({
+      where: { id: modeId, userId },
+      select: { id: true, defaultModel: true, defaultThinkingLevel: true },
+    });
+    if (!mode) {
+      throw new BusinessException(
+        ErrorCodes.MODE_NOT_FOUND,
+        HttpStatus.NOT_FOUND,
+      );
+    }
+    return mode;
+  }
+
+  /** 切模式只能在空闲态：运行中换装配会让续跑与本轮不一致。 */
+  private async assertIdle(id: string) {
+    const conv = await this.prisma.conversation.findUniqueOrThrow({
+      where: { id },
+      select: { status: true },
+    });
+    if (
+      conv.status === 'running' ||
+      conv.status === 'queued' ||
+      conv.status === 'waiting_approval'
+    ) {
+      throw new BusinessException(
+        ErrorCodes.CONVERSATION_BUSY,
+        HttpStatus.CONFLICT,
+      );
+    }
   }
 
   /**

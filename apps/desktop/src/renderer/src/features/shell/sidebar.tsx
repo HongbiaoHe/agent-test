@@ -15,6 +15,7 @@ import { Button } from '@/components/ui/button';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@/components/ui/dropdown-menu';
 import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip';
 import { agent } from '@/lib/agent-client';
+import { readModePreference } from '../modes/mode-preference';
 import { cn } from '@/lib/utils';
 import { useWebAccount } from '../auth/use-web-account';
 import {
@@ -165,7 +166,8 @@ export function Sidebar({
     [qc],
   );
   const create = useMutation({
-    mutationFn: () => agent.call('conversations.create', {}),
+    // 新会话带上最近用的模式（agent-host 回填模式的默认模型 / 思考档位；模式已删则按通用建）
+    mutationFn: () => agent.call('conversations.create', { modeId: readModePreference() ?? undefined }),
     onSuccess: (c) => {
       void qc.invalidateQueries({ queryKey: ['conversations'] });
       onNavigate({ kind: 'chat', id: c.id });

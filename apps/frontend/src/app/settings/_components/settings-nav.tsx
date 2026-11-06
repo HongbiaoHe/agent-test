@@ -1,6 +1,6 @@
 "use client";
 
-import { Box, CircleUserRound, Plug, Wrench } from "lucide-react";
+import { Box, CircleUserRound, Plug, SlidersHorizontal, Wrench } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -9,6 +9,7 @@ import { cn } from "@/lib/utils";
 const ITEMS = [
   { href: "/settings/profile", label: "Profile", icon: CircleUserRound },
   { href: "/settings/skills", label: "Skills", icon: Wrench },
+  { href: "/settings/modes", label: "Modes", icon: SlidersHorizontal },
   { href: "/settings/mcp", label: "Connectors", icon: Plug },
   { href: "/settings/sandbox", label: "Sandbox", icon: Box },
 ] as const;

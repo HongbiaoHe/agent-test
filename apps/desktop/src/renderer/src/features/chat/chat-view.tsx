@@ -20,6 +20,7 @@ import { conversationKey, useConversation } from './hooks/use-conversation';
 import { DEFAULT_MODEL } from './lib/models';
 import type { ThreadItem } from './lib/thread';
 import { FileViewerProvider } from '../viewer/file-viewer';
+import { writeModePreference } from '../modes/mode-preference';
 
 export function ChatView({
   id,
@@ -56,6 +57,7 @@ export function ChatView({
       thinkingLevel?: string | null;
       permission?: WorkspacePermission;
       workspaceDir?: string;
+      modeId?: string | null;
     }) => agent.call('conversations.update', { id, ...patch }),
     onSuccess: refresh,
     onError: (e) => toast.error(e.message),
@@ -159,6 +161,12 @@ export function ChatView({
           onPermissionChange={(permission) => update.mutate({ permission })}
           canChangeWorkspace={thread.messageCount === 0 && !thread.busy}
           onChangeWorkspace={() => void changeWorkspace()}
+          modeId={conv?.modeId ?? null}
+          onModeChange={(modeId) => {
+            // 记成最近用的模式：之后新建会话默认带上
+            writeModePreference(modeId);
+            update.mutate({ modeId });
+          }}
         />
         {panelOpen && selectedTool && (
           <DetailPanel tool={selectedTool} onClose={() => setPanelOpen(false)} />

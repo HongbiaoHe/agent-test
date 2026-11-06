@@ -5,7 +5,13 @@ import { stat } from 'node:fs/promises';
 import { z } from 'zod';
 import { ALLOWED_MODELS } from '@agent-test/agent-core/agent/models';
 import { thinkingLevelsFor } from '@agent-test/agent-core/agent/thinking-level';
+import { GENERAL_MODE_PROMPT } from '@agent-test/agent-core/modes/mode.schema';
+import { PROMPT_FRAGMENT_IDS } from '@agent-test/agent-core/modes/prompt-fragments';
+import { resolveMode } from '@agent-test/agent-core/modes/resolve-mode';
+import type { GeneralModeSettings } from '@agent-test/agent-core/modes/mode.schema';
 import {
+  type GeneralModeView,
+  type ModeCatalog,
   type ModelOption,
   rpcSchemas,
   type RpcMethod,
@@ -17,7 +23,9 @@ import type { ConversationRepo } from './db/conversations';
 import type { BackgroundService } from './background/background-service';
 import { hostI18n } from './i18n';
 import { McpError, type McpStore } from './mcp/mcp-store';
+import type { ModeStore } from './modes/mode-store';
 import type { RunConfig, RunService } from './run/run-service';
+import { type DesktopRegistry, desktopCapabilities } from './run/tool-registry';
 import { parseSkillSource, skillsAddArgs } from './skills/github-install';
 import type { SkillStore } from './skills/skill-store';
 import type { WebApi } from './web-media/web-api';
@@ -28,12 +36,52 @@ export interface Services {
   runs: RunService;
   skills: SkillStore;
   mcp: McpStore;
+  modes: ModeStore;
+  registry: DesktopRegistry;
   config: () => RunConfig & { keys: { google: boolean; deepseek: boolean } };
   listChanged: () => void;
   mcpChanged: () => void;
   skillsChanged: () => void;
+  modesChanged: () => void;
   background: BackgroundService;
   webApi: WebApi | null;
+}
+
+/** 设置页目录用的能力集：按新会话默认档位（ask）算，运行期再按会话实际权限重算 */
+function catalogCapabilities(s: Services) {
+  return desktopCapabilities({ permission: 'ask', webApi: s.webApi, background: s.background });
+}
+
+async function modeCatalog(s: Services): Promise<ModeCatalog> {
+  const skills = await s.skills.list();
+  return {
+    tools: s.registry.catalog(),
+    mcpServers: s.mcp.list().servers.map(({ id, name, slug }) => ({ id, name, slug })),
+    skills: skills.filter((x) => x.enabled).map(({ name, description }) => ({ name, description })),
+    fragments: [...PROMPT_FRAGMENT_IDS],
+    generalPrompt: s.modes.getGeneral().systemPrompt ?? GENERAL_MODE_PROMPT,
+    capabilities: [...catalogCapabilities(s)],
+  };
+}
+
+function generalModeView(g: GeneralModeSettings): GeneralModeView {
+  return {
+    systemPrompt: g.systemPrompt ?? GENERAL_MODE_PROMPT,
+    isCustom: g.systemPrompt !== null,
+    defaultPrompt: GENERAL_MODE_PROMPT,
+    defaultModel: g.defaultModel,
+    defaultThinkingLevel: g.defaultThinkingLevel,
+  };
+}
+
+/** 设置页预览的装配环境：能力集同目录（ask 档位），技能目录用占位路径 */
+async function previewEnv(s: Services) {
+  return {
+    registry: s.registry,
+    env: { capabilities: catalogCapabilities(s), skillsDir: '<runtime>/skills' },
+    installedSkills: await s.skills.listFiles(),
+    mcpServers: s.mcp.runtimeServers(),
+  };
 }
 
 function requireWeb(s: Services): WebApi {
@@ -81,10 +129,16 @@ export function createHandlers(s: Services): Handlers {
     'conversations.list': () => s.repo.list(),
     'conversations.create': async (p) => {
       const dir = p.workspaceDir ? await assertWorkspaceDir(p.workspaceDir) : undefined;
-      const c = s.repo.create(p.model ?? s.config().defaultModel, {
-        dir,
-        permission: p.permission,
-      });
+      // 模式被删了就按通用模式建（最近用的 modeId 存在 renderer 本地）；模式（或通用模式设置）的默认模型 /
+      // 思考档位只在创建时回填（决策 11）
+      const mode = p.modeId ? s.modes.get(p.modeId) : null;
+      const defaults = mode ?? s.modes.getGeneral();
+      let c = s.repo.create(
+        p.model ?? defaults.defaultModel ?? s.config().defaultModel,
+        { dir, permission: p.permission },
+        mode?.id ?? null,
+      );
+      if (defaults.defaultThinkingLevel) c = s.repo.update(c.id, { thinkingLevel: defaults.defaultThinkingLevel });
       s.listChanged();
       return c;
     },
@@ -97,13 +151,53 @@ export function createHandlers(s: Services): Handlers {
       if (p.workspaceDir) s.repo.setWorkspaceDir(p.id, await assertWorkspaceDir(p.workspaceDir));
       if (p.permission) s.repo.setPermission(p.id, p.permission);
       if (p.pinned !== undefined) s.repo.setPinned(p.id, p.pinned);
-      // 只改置顶 / 权限 / 目录时不走 update：它会刷新 updated_at，置顶会让会话跳到「今天」
+      if (p.modeId !== undefined) {
+        if (p.modeId !== null) s.modes.require(p.modeId);
+        s.repo.setMode(p.id, p.modeId);
+      }
+      // 只改置顶 / 权限 / 目录 / 模式时不走 update：它会刷新 updated_at，置顶会让会话跳到「今天」
       const changesFields = p.title !== undefined || p.model !== undefined || p.thinkingLevel !== undefined;
       const c = changesFields
         ? s.repo.update(p.id, { title: p.title, model: p.model, thinkingLevel: p.thinkingLevel })
         : s.repo.require(p.id);
       s.listChanged();
       return c;
+    },
+    'modes.list': () => s.modes.list(),
+    'modes.create': (p) => {
+      const m = s.modes.create(p);
+      s.modesChanged();
+      return m;
+    },
+    'modes.update': ({ id, ...input }) => {
+      const m = s.modes.update(id, input);
+      s.modesChanged();
+      return m;
+    },
+    'modes.delete': (p) => {
+      // 引用它的会话退回通用模式：会话列表也要刷新
+      if (s.modes.remove(p.id) > 0) s.listChanged();
+      s.modesChanged();
+      return { ok: true };
+    },
+    'modes.catalog': () => modeCatalog(s),
+    'modes.preview': async (p) => {
+      const { systemPrompt, unavailable } = resolveMode({ mode: { ...p, id: 'preview' }, ...(await previewEnv(s)) });
+      return { systemPrompt, unavailable };
+    },
+    'modes.general.get': () => generalModeView(s.modes.getGeneral()),
+    'modes.general.update': (p) => {
+      const g = s.modes.updateGeneral(p);
+      s.modesChanged();
+      return generalModeView(g);
+    },
+    'modes.general.preview': async (p) => {
+      const { systemPrompt, unavailable } = resolveMode({
+        mode: null,
+        generalPrompt: p.systemPrompt,
+        ...(await previewEnv(s)),
+      });
+      return { systemPrompt, unavailable };
     },
     'conversations.search': (p) => s.repo.search(p.query),
     'conversations.tokenReport': (p) => s.repo.tokenReport(p.id),

@@ -14,10 +14,12 @@ import { NodeSqliteSaver } from '../db/checkpointer';
 import { ConversationRepo } from '../db/conversations';
 import { openDatabase } from '../db/database';
 import { McpStore } from '../mcp/mcp-store';
+import { ModeStore } from '../modes/mode-store';
 import { installEnvProxy } from '../proxy';
 import { SkillStore } from '../skills/skill-store';
 import { BackgroundService } from '../background/background-service';
 import { RunService } from './run-service';
+import { buildDesktopRegistry } from './tool-registry';
 
 const live = process.env.SPARK_LIVE_TEST === '1' && !!process.env.GOOGLE_API_KEY;
 
@@ -39,6 +41,8 @@ describe.runIf(live)('RunService（真实模型）', () => {
       checkpointer: new NodeSqliteSaver(db),
       skills,
       mcp: new McpStore(db, 'http://127.0.0.1:1/cb', () => Promise.resolve()),
+      modes: new ModeStore(db),
+      registry: buildDesktopRegistry({ webApi: null, skills, skillsChanged: () => undefined, background: () => null }),
       config: () => ({
         workspaceDir: join(dir, 'ws'),
         defaultModel: 'google-genai:gemini-3.8-flash',

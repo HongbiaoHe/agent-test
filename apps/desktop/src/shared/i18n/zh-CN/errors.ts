@@ -31,6 +31,11 @@ export const errors = {
     notFound: '会话不存在：{{id}}',
     workspaceLocked: '会话已经开始，不能再更换工作目录；请新建会话',
     interrupted: '运行中断：应用在运行中退出或 agent 进程崩溃，请重新发送。',
+    busyModeSwitch: '会话正在运行或等待审批，结束后再切换模式',
+  },
+  modes: {
+    notFound: '模式不存在：{{id}}',
+    unknownPlaceholder: '提示词里有未知的占位符：{{ids}}（只能引用 platform.* 片段）',
   },
   run: {
     busy: '这个会话正在运行，请先等它结束或点停止',

@@ -9,7 +9,9 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { agent } from '@/lib/agent-client';
+import { MODE_CATALOG_KEY, MODES_QUERY_KEY } from '@/lib/api';
 import { ChatView } from './features/chat/chat-view';
+import { readModePreference } from './features/modes/mode-preference';
 import { LoginView } from './features/auth/login-view';
 import { useWebAccount } from './features/auth/use-web-account';
 import { SettingsDialog, type SettingsSection } from './features/settings/settings-dialog';
@@ -33,7 +35,8 @@ function Home({
   const { t } = useTranslation();
   const qc = useQueryClient();
   const create = useMutation({
-    mutationFn: () => agent.call('conversations.create', {}),
+    // 新会话带上最近用的模式（agent-host 按模式回填默认模型 / 思考档位；模式已删则按通用建）
+    mutationFn: () => agent.call('conversations.create', { modeId: readModePreference() ?? undefined }),
     onSuccess: (c) => {
       void qc.invalidateQueries({ queryKey: ['conversations'] });
       onNavigate({ kind: 'chat', id: c.id });
@@ -102,6 +105,11 @@ export function App() {
           void qc.invalidateQueries({ queryKey: ['commands'] });
         }
         if (e.type === 'mcp-changed') void qc.invalidateQueries({ queryKey: ['mcp-servers'] });
+        if (e.type === 'modes-changed') void qc.invalidateQueries({ queryKey: MODES_QUERY_KEY });
+        // 模式编辑器的目录（可勾选的工具 / 连接器 / 技能）跟着技能、连接器、模式一起刷新
+        if (e.type === 'skills-changed' || e.type === 'mcp-changed' || e.type === 'modes-changed') {
+          void qc.invalidateQueries({ queryKey: MODE_CATALOG_KEY });
+        }
       }),
     [qc],
   );

@@ -1,20 +1,21 @@
 /**
  * 设置弹窗：左侧分类导航（同 Web /settings 的 SettingsNav 样式），右侧当前分类的内容。
- * 分类：账号（Web 账号 / 后端地址）、外观（主题 / 语言）、模型（Key / 默认模型）、工作区、技能、连接器。
+ * 分类：账号（Web 账号 / 后端地址）、外观（主题 / 语言）、模型（Key / 默认模型）、工作区、技能、连接器、模式。
  * 内容区用原生 overflow-y-auto（弹窗里 ScrollArea 遇到不确定高度会失效，见项目记忆）。
  */
-import { Bot, CircleUserRound, FolderOpen, type LucideIcon, Palette, Plug, Wrench } from 'lucide-react';
+import { Bot, CircleUserRound, FolderOpen, type LucideIcon, Palette, Plug, SlidersHorizontal, Wrench } from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import { McpSettings } from '../mcp/mcp-view';
+import { ModesSettings } from '../modes/modes-view';
 import { SkillsSettings } from '../skills/skills-view';
 import { AccountSection } from './sections/account-section';
 import { AppearanceSection } from './sections/appearance-section';
 import { ModelsSection } from './sections/models-section';
 import { WorkspaceSection } from './sections/workspace-section';
 
-export type SettingsSection = 'account' | 'appearance' | 'models' | 'workspace' | 'skills' | 'connectors';
+export type SettingsSection = 'account' | 'appearance' | 'models' | 'workspace' | 'skills' | 'connectors' | 'modes';
 
 /** 名称与说明见字典 settings.sections.<key> */
 const SECTIONS: { key: SettingsSection; icon: LucideIcon }[] = [
@@ -24,6 +25,7 @@ const SECTIONS: { key: SettingsSection; icon: LucideIcon }[] = [
   { key: 'workspace', icon: FolderOpen },
   { key: 'skills', icon: Wrench },
   { key: 'connectors', icon: Plug },
+  { key: 'modes', icon: SlidersHorizontal },
 ];
 
 export function SettingsDialog({
@@ -76,6 +78,7 @@ export function SettingsDialog({
             {section === 'workspace' && <WorkspaceSection />}
             {section === 'skills' && <SkillsSettings />}
             {section === 'connectors' && <McpSettings />}
+            {section === 'modes' && <ModesSettings />}
           </div>
         </section>
       </DialogContent>

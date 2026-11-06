@@ -128,6 +128,34 @@ const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE conversation ADD COLUMN pinned_at INTEGER;
   `,
+  // v7：agent 模式（对应 backend 的 AgentMode；JSON 列存 TEXT）+ 会话所选模式（NULL = 通用模式）。
+  // 删模式时由 ModeStore 把引用它的会话 mode_id 置空，不用外键级联
+  `
+  CREATE TABLE agent_mode (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    system_prompt TEXT NOT NULL,
+    tool_names TEXT NOT NULL DEFAULT '[]',
+    mcp_server_ids TEXT NOT NULL DEFAULT '[]',
+    skill_names TEXT NOT NULL DEFAULT '[]',
+    default_model TEXT,
+    default_thinking_level TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  ALTER TABLE conversation ADD COLUMN mode_id TEXT;
+  `,
+  // v8：通用模式（mode_id 为 NULL 的会话）的用户覆盖：单行表，id 恒为 1；没有行 = 全用默认。
+  // system_prompt 为 NULL = 用 core 的 GENERAL_MODE_PROMPT
+  `
+  CREATE TABLE general_mode (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    system_prompt TEXT,
+    default_model TEXT,
+    default_thinking_level TEXT,
+    updated_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 export type Db = DatabaseSync;

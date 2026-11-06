@@ -76,6 +76,8 @@ model Conversation {
   // MCP App 经 ui/update-model-context 交给模型的上下文：{ [toolCallId]: { server, text, at } }，
   // 每个 App 只留最新一份，下一轮运行时注入系统提示（见 mcp/mcp-prompt.ts）
   mcpAppContext Json?
+  // 会话选用的 agent 模式（AgentMode.id）；NULL = 通用模式。删模式时置空（见 modes 模块）
+  modeId        String?
   tenantId      String
   userId        String
   messages      Message[]
@@ -433,6 +435,41 @@ model MediaAnalysis {
   outputTokens Int          @default(0)
   createdAt    DateTime     @default(now())
   updatedAt    DateTime     @updatedAt
+}
+
+/// 用户自建的 agent 模式（/settings/modes）：完整系统提示 + 勾选的工具 / MCP server / 技能。
+/// 没有内置模式；Conversation.modeId 为 NULL = 通用模式（全部工具 / server / 技能，core 默认提示词）。
+model AgentMode {
+  id                   String   @id @default(cuid())
+  userId               String
+  name                 String   @db.VarChar(100)
+  /// 完整正文；平台规则用 {{platform.xxx}} 占位符引用（见 agent-core modes/prompt-fragments.ts）
+  systemPrompt         String   @db.Text
+  /// string[]：注册表里的工具名
+  toolNames            Json
+  /// string[]：McpServer.id
+  mcpServerIds         Json
+  /// string[]：技能名
+  skillNames           Json
+  /// 新建会话时回填的默认模型 / 思考档位（仅创建时生效）
+  defaultModel         String?
+  defaultThinkingLevel String?
+  createdAt            DateTime @default(now())
+  updatedAt            DateTime @updatedAt
+
+  @@index([userId])
+}
+
+/// 用户对「通用模式」（会话 modeId 为空）的覆盖，每个用户至多一行；没有行 = 全部用默认。
+/// 通用模式的工具 / 连接器 / 技能恒为全部（含以后新增），这里只存可改的部分。
+model GeneralModeSetting {
+  userId               String   @id
+  /// 自定义系统提示；NULL = 用 agent-core 的 GENERAL_MODE_PROMPT（「恢复默认」即置回 NULL）
+  systemPrompt         String?  @db.Text
+  /// 新建通用会话时回填的默认模型 / 思考档位（仅创建时生效）
+  defaultModel         String?
+  defaultThinkingLevel String?
+  updatedAt            DateTime @updatedAt
 }
 
 /// 用户接入的远程 MCP server（/settings/mcp）。只支持 Streamable HTTP；鉴权只有 none / oauth 两种。

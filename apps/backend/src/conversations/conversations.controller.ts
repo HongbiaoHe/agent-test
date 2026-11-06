@@ -29,6 +29,7 @@ export class ConversationsController {
       user.userId,
       dto.model,
       dto.thinkingLevel,
+      dto.modeId,
     );
   }
 
@@ -48,7 +49,7 @@ export class ConversationsController {
     return this.conversations.tokenReport(id, user.tenantId);
   }
 
-  /** 置顶 / 取消置顶、重命名（只改传了的字段）。 */
+  /** 置顶 / 取消置顶、重命名、切换模式（只改传了的字段）。 */
   @Patch(':id')
   update(
     @Param('id') id: string,

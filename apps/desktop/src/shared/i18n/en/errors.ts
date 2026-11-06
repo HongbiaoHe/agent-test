@@ -30,6 +30,11 @@ export const errors = {
     notFound: 'Chat not found: {{id}}',
     workspaceLocked: "This chat has already started, so its workspace can't be changed. Start a new chat",
     interrupted: 'Run interrupted: the app quit or the agent process crashed while running. Please send again.',
+    busyModeSwitch: 'This chat is running or waiting for approval. Switch modes once it finishes',
+  },
+  modes: {
+    notFound: 'Mode not found: {{id}}',
+    unknownPlaceholder: 'The prompt contains unknown placeholders: {{ids}} (only platform.* fragments can be referenced)',
   },
   run: {
     busy: 'This chat is running. Wait for it to finish or click Stop',

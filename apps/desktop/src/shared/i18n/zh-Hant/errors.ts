@@ -30,6 +30,11 @@ export const errors = {
     notFound: '對話不存在：{{id}}',
     workspaceLocked: '對話已經開始，不能再更換工作資料夾；請新增對話',
     interrupted: '執行中斷：應用程式在執行中結束或 agent 處理程序當機，請重新傳送。',
+    busyModeSwitch: '對話正在執行或等待審核，結束後再切換模式',
+  },
+  modes: {
+    notFound: '模式不存在：{{id}}',
+    unknownPlaceholder: '提示詞裡有未知的佔位符：{{ids}}（只能引用 platform.* 片段）',
   },
   run: {
     busy: '這個對話正在執行，請先等它結束或按停止',

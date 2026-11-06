@@ -4,15 +4,25 @@ import { Command } from '@langchain/langgraph';
 import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
 import { Job, Queue } from 'bullmq';
+import { activePlanProvider } from '@agent-test/agent-core/modes/dynamic-context';
+import type { DynamicContextProvider } from '@agent-test/agent-core/modes/dynamic-context';
+import {
+  instantiateTools,
+  resolveMode,
+  type SkillFiles,
+} from '@agent-test/agent-core/modes/resolve-mode';
+import type { ToolRegistry } from '@agent-test/agent-core/modes/tool-registry';
+import { mountSkills } from '@agent-test/agent-core/skills/skills-mount';
 import { AbortRegistry, AGENT_ABORTS } from '../agent/abort-registry';
 import { buildAgent } from '../agent/agent.factory';
-import {
-  BACKEND_HOST_SECTIONS,
-  SANDBOX_SYSTEM_PROMPT_BLOCK,
-} from '../agent/backend-prompt';
-import { sendEmailTool } from '../agent/tools/send-email.tool';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
-import { getUserSandbox, uploadSkillsToSandbox } from '../agent/sandbox';
+import { getUserSandbox } from '../agent/sandbox';
+import {
+  type BackendHost,
+  backendEnvironment,
+  backendEnvPromptBlock,
+  TOOL_REGISTRY,
+} from '../agent/tool-registry.provider';
 import { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
 import {
   extractThinkingBlocks,
@@ -28,20 +38,13 @@ import { StreamService } from '../events/stream.service';
 import { userMessageText } from '../conversations/message-content';
 import { MediaService } from '../media/media.service';
 import { UPLOAD_MODEL } from '../media/media-upload.service';
-import { createSyncMediaTool } from '../media/media-sandbox.tool';
-import { createMediaTools } from '../media/media.tools';
-import { createPreviewPageTool } from '../agent/tools/preview-page.tool';
 import { BackgroundService } from '../background/background.service';
-import {
-  backgroundPrompt,
-  createBackgroundTools,
-} from '../background/background.tools';
 import { appContextOf } from '../mcp/mcp-app-context';
-import { buildMcpAgentTools, buildMcpPrompt } from '../mcp/mcp-agent-tools';
+import { buildMcpPrompt } from '../mcp/mcp-agent-tools';
 import { McpService } from '../mcp/mcp.service';
+import { toAgentMode } from '../modes/mode-view';
 import { PrismaService } from '../prisma/prisma.service';
 import { absolutizeRefPaths } from '../skills/skill-files';
-import type { SkillDef } from '../skills/skills.service';
 import { SkillsService } from '../skills/skills.service';
 
 interface JobData {
@@ -95,6 +98,8 @@ export class AgentProcessor extends WorkerHost {
     private readonly sandboxSettings: SandboxSettingsService,
     private readonly mcp: McpService,
     private readonly background: BackgroundService,
+    @Inject(TOOL_REGISTRY)
+    private readonly registry: ToolRegistry<BackendHost>,
   ) {
     super();
   }
@@ -137,10 +142,10 @@ export class AgentProcessor extends WorkerHost {
         configurable: { thread_id: conversationId, userId: conv.userId },
       };
 
-      // ① 取该用户生效技能（含全部文件内容），供下方上传沙箱 + 多轮 SKILL.md 注入复用
+      // ① 取该用户生效技能（含全部文件内容）：按模式过滤后挂载，多轮 SKILL.md 注入也复用
       const defs = await this.skills.effectiveSkillsFor(conv.userId);
 
-      // ② 沙箱：user-scoped find-or-create（同一用户全部会话共享工作区）；无 key/创建失败 → 回退 StateBackend
+      // ② 沙箱：user-scoped find-or-create（同一用户全部会话共享工作区）；无 key/创建失败 → 回退内存 backend
       let sandbox: Awaited<ReturnType<typeof getUserSandbox>> = null;
       try {
         // 用户在 /settings/profile 选的提供方（未选/未配置 → env 默认）
@@ -178,32 +183,73 @@ export class AgentProcessor extends WorkerHost {
         }, SANDBOX_HEARTBEAT_MS);
       }
 
-      // ②.5 加载技能：起沙箱后、调 LLM 前把技能写入沙箱盘（${skillsDir}/<name>/...），
-      // deepagents skills 中间件随后扫 skillsDir 才能读到。上传失败只告警不中断
-      // （沙箱仍可执行命令/读写文件，仅本轮无技能）。无沙箱 → 不提供技能（设计：无沙箱=无技能）。
+      // ③ 按模式装配（纯函数）：模式是会话上的 modeId（被删 → 回通用模式）；运行环境按沙箱有无描述，
+      // 不满足 capability 的工具降级跳过并写进系统提示。MCP 按工具快照装配（不连 server），
+      // run 与 resume 都要装：审批通过后的续跑得能执行被批准的 MCP 工具。
+      // 通用模式读该用户的提示词覆盖（没有行 / 为 NULL → resolveMode 用 GENERAL_MODE_PROMPT）。
+      const modeRow = conv.modeId
+        ? await this.prisma.agentMode.findFirst({
+            where: { id: conv.modeId, userId: conv.userId },
+          })
+        : null;
+      const generalSetting = modeRow
+        ? null
+        : await this.prisma.generalModeSetting.findUnique({
+            where: { userId: conv.userId },
+            select: { systemPrompt: true },
+          });
+      const env = backendEnvironment(sandbox);
+      const mcpServers = await this.mcp.runtimeServers(conv.userId);
+      const assembly = resolveMode({
+        mode: modeRow ? toAgentMode(modeRow) : null,
+        generalPrompt: generalSetting?.systemPrompt ?? null,
+        registry: this.registry,
+        env,
+        installedSkills: defs,
+        mcpServers,
+        envPromptBlock: backendEnvPromptBlock(env.workspace),
+      });
+
+      // ③.5 挂载技能（只挂模式勾选的）：有沙箱写进沙箱盘（deepagents skills 中间件随后扫 skillsDir），
+      // 上传失败只告警不中断（沙箱仍可执行命令，仅本轮无技能）；无沙箱灌进内存只读 store。
+      let backend: Awaited<ReturnType<typeof mountSkills>>['backend'];
       if (sandbox) {
         try {
-          await uploadSkillsToSandbox(sandbox, defs);
+          backend = (
+            await mountSkills({
+              strategy: 'sandbox',
+              sandbox,
+              skills: assembly.skills,
+            })
+          ).backend;
         } catch (e) {
           this.logger.warn(
             `技能上传沙箱失败，本轮无技能：${(e as Error)?.message ?? e}`,
           );
+          backend = sandbox;
         }
+      } else {
+        backend = (
+          await mountSkills({
+            strategy: 'memory',
+            skillsDir: env.skillsDir,
+            skills: assembly.skills,
+          })
+        ).backend;
       }
-      // sandbox 为 null 时不传 defaultBackend，buildAgent 内部 new StateBackend() 兜底（避免在 processor 引入 deepagents 直接依赖）
-      const defaultBackend = sandbox ?? undefined;
 
       // resume 续跑沿用 checkpointer 的中断态；run/追加则从 DB 重放完整对话历史，
       // 因为 deepagents 跑完一轮后不在持久化 state 保留对话消息（同 thread_id 续跑拿不到上文）。
       let runName = `审批续跑 · ${conversationId}`;
       let input: unknown;
-      let systemPromptExtra = '';
+      // run 内稳定的静态尾段（/command 激活技能的全文），接在装配出的系统提示之后
+      let skillPromptExtra = '';
       if (kind === 'resume') {
         input = new Command({ resume: { decisions } });
       } else {
         const messages = await this.loadHistory(conversationId);
         // 历史按原样重放，不改写任何用户消息：/command 该触发哪个技能由 system prompt 约束
-        // （见 agent.factory）。技能文件已在上方 uploadSkillsToSandbox 写入沙箱盘，
+        // （见 prompt-fragments 的 platform.slash_command）。技能文件已在上方 mountSkills 挂好，
         // 不再注入 state.files。这里只取末条 user 消息做 LangSmith runName。
         let lastLabel = '';
         for (const m of messages) {
@@ -217,66 +263,64 @@ export class AgentProcessor extends WorkerHost {
         }
         runName = lastLabel || runName;
         input = { messages };
-        systemPromptExtra = await this.buildSkillPrompt(
-          conv.userId,
+        // 只认当前模式勾选的技能：模式外的 /技能名 当普通文本（不注入全文）
+        skillPromptExtra = this.buildSkillPrompt(
+          assembly.skills,
           messages,
-          sandbox?.skillsDir,
+          env.skillsDir,
         );
-        const mediaInventory = await this.buildMediaInventory(
-          conversationId,
-          conv.userId,
-        );
-        if (mediaInventory) {
-          systemPromptExtra += mediaInventory;
-        }
       }
 
-      // 既有任务计划经 runtime context 注入：planContinuationMiddleware 会把它追加到系统提示
+      // 既有任务计划经 runtime context 注入：activePlanProvider 会把它追加到系统提示
       // **末尾**（盖过 todoListMiddleware 的「随时重订」），根治多轮 todos 被整表替换、没执行完
       // 就换新列表。run/resume 都注入（resume 续跑同一轮，回注既有计划同样有益）。
       const activePlan = await this.buildActivePlan(conversationId);
 
-      // ③ 装配：media 工具闭包注入——conversationId/userId 由 worker 上下文提供，不经模型传递（无注入风险）
-      // 网页预览、媒体同步工具只在有沙箱时注入：没有沙箱就没有工作区可预览 / 可写入
-      const mediaCtx = { conversationId, userId: conv.userId };
-      // MCP 连接器：按工具快照装配（不连 server），调用时才短连；需审批的并进 interruptOn。
-      // run 与 resume 都要装：审批通过后的续跑得能执行被批准的 MCP 工具。
-      const mcpServers = await this.mcp.runtimeServers(conv.userId);
-      const mcp = buildMcpAgentTools(mcpServers, (serverId, name, args) =>
-        this.mcp.callTool(conv.userId, serverId, name, args),
+      // ④ 建工具实例：描述符闭包里拿到 conversationId/userId（不经模型传递，无注入风险）、
+      // 本轮沙箱与 MCP server 清单；需审批的（send_email、MCP ask）并进 interruptOn。
+      const { tools, interruptOn } = instantiateTools(
+        assembly,
+        {
+          conversationId,
+          userId: conv.userId,
+          env,
+          host: { sandbox, mcpServers: assembly.mcpServers },
+        },
+        (serverId, name, args) =>
+          this.mcp.callTool(conv.userId, serverId, name, args),
       );
-      const extraTools = [
-        sendEmailTool,
-        ...createMediaTools(this.media, mediaCtx),
-        ...(sandbox
-          ? [
-              createPreviewPageTool(sandbox),
-              createSyncMediaTool(this.media, sandbox, mediaCtx),
-            ]
-          : []),
-        ...mcp.tools,
-        // 后台任务：等异步结果时由服务端轮询 / 后台跑，结束后通知唤醒，不让模型自己反复调工具
-        ...createBackgroundTools(this.background, {
-          ...mediaCtx,
-          sandbox,
-          mcpServers,
-        }),
+
+      // 动态尾段：每次模型调用前取，只改发给模型的那份。媒体清单 / MCP App 上下文在同一 run 内
+      // 不会变（App 上下文由上一轮写入会话），闭包里缓存首次结果避免每次模型调用重查。
+      const mediaInventory = this.memo(() =>
+        this.buildMediaInventory(conversationId, conv.userId),
+      );
+      const mcpAppContext = buildMcpPrompt(
+        [],
+        appContextOf(conv.mcpAppContext),
+      ).trim();
+      const dynamicContext: DynamicContextProvider[] = [
+        activePlanProvider,
+        async () => {
+          const text = await mediaInventory();
+          return text ? [{ placement: 'system_tail', text }] : null;
+        },
+        () =>
+          mcpAppContext
+            ? [{ placement: 'system_tail', text: mcpAppContext }]
+            : null,
       ];
+
       const agent = await buildAgent({
         checkpointer: this.checkpointer,
-        hostPromptSections: BACKEND_HOST_SECTIONS,
-        workspacePromptBlock: SANDBOX_SYSTEM_PROMPT_BLOCK,
-        systemPromptExtra:
-          systemPromptExtra +
-          buildMcpPrompt(mcpServers, appContextOf(conv.mcpAppContext)) +
-          backgroundPrompt(!!sandbox),
-        extraInterruptOn: { ...mcp.interruptOn, send_email: true },
+        systemPrompt: assembly.systemPrompt + skillPromptExtra,
+        tools,
+        interruptOn,
+        backend,
+        skillsDir: env.skillsDir,
         model: conv.model ?? undefined,
         thinkingLevel: asThinkingLevel(conv.thinkingLevel),
-        defaultBackend,
-        hasSandbox: !!sandbox,
-        workspace: sandbox?.visibleRoot,
-        extraTools,
+        dynamicContext,
       });
 
       // ④ stream config：userId 进 configurable（thread 作用域）与 context（中间件用）
@@ -706,22 +750,23 @@ export class AgentProcessor extends WorkerHost {
    * 本轮才首次发起的 /command 不注入，交由基础系统提示按 read_file 完成首次加载。
    * SKILL.md 经 absolutizeRefPaths 改写相对引用，保证注入后正文里的 references 路径仍能命中虚拟 FS。
    */
-  private async buildSkillPrompt(
-    userId: string,
+  private buildSkillPrompt(
+    /** 本轮挂载的技能（= 当前模式勾选且已装的）；模式外的 /技能名 不算激活 */
+    skills: readonly SkillFiles[],
     messages: { role: string; content: string }[],
     /** 沙箱技能库目录（GuardedSandbox.skillsDir）；无沙箱时沿用默认 /skills 表述 */
     skillsDir = '/skills',
-  ): Promise<string> {
+  ): string {
     const users = messages.filter((m) => m.role === 'user');
     if (users.length === 0) return '';
     const current = users[users.length - 1];
 
-    let active: SkillDef | undefined;
+    let active: SkillFiles | undefined;
     let activeMsg: { role: string; content: string } | undefined;
     for (const m of users) {
       const cmd = parseCommand(m.content);
       if (!cmd) continue;
-      const def = await this.skills.getFor(userId, cmd.name);
+      const def = skills.find((s) => s.name === cmd.name);
       if (!def) continue;
       active = def;
       activeMsg = m;
@@ -741,9 +786,15 @@ export class AgentProcessor extends WorkerHost {
     );
   }
 
+  /** 同一 run 内只算一次的异步值（动态上下文 provider 每次模型调用都会跑）。 */
+  private memo<T>(fn: () => Promise<T>): () => Promise<T> {
+    let pending: Promise<T> | undefined;
+    return () => (pending ??= fn());
+  }
+
   /**
-   * 构建本会话已生成的媒体资产清单，注入系统提示让模型正确引用 versionId，避免编造。
-   * 空会话（无生成位）返回空串，不注入。
+   * 构建本会话已生成的媒体资产清单，经动态上下文 provider 接到系统提示末尾，让模型正确引用
+   * versionId、避免编造。空会话（无生成位）返回空串，不注入。
    */
   private async buildMediaInventory(
     conversationId: string,
@@ -772,7 +823,7 @@ export class AgentProcessor extends WorkerHost {
     if (!lines) return '';
 
     return (
-      `\n\n## 本会话的媒体资产（生成的与用户上传的；引用素材必须用此表的 versionId）\n${lines}\n` +
+      `## 本会话的媒体资产（生成的与用户上传的；引用素材必须用此表的 versionId）\n${lines}\n` +
       `规则：referenceVersionIds 只能填上表或生成工具结果中的真实 versionId（cuid 格式），禁止自造名称；表中已有的资产不要重复生成；[upload] 是用户上传的素材，不能重新生成。`
     );
   }

@@ -6,6 +6,14 @@
  * - 运行中的流式事件以 HostEvent 推送。
  */
 import type { TokenReport } from '@agent-test/agent-core/agent/token-usage';
+import type { Capability } from '@agent-test/agent-core/modes/capabilities';
+import {
+  type AgentMode,
+  AgentModeInputSchema,
+  GeneralModeSettingsSchema,
+} from '@agent-test/agent-core/modes/mode.schema';
+import type { Unavailable } from '@agent-test/agent-core/modes/resolve-mode';
+import type { ToolCatalogEntry } from '@agent-test/agent-core/modes/tool-registry';
 import { z } from 'zod';
 import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
 import type { ConnectResult, McpAppResource, McpPreset, McpServer } from './mcp';
@@ -37,6 +45,35 @@ export interface ConversationSummary {
   updatedAt: number;
   /** 置顶时刻（ms）；未置顶为 null。侧栏「已置顶」按它倒序 */
   pinnedAt: number | null;
+  /** 会话所选 agent 模式；null = 通用模式（全部工具 / 连接器 / 技能） */
+  modeId: string | null;
+}
+
+/** 设置页「模式」编辑器的目录：可勾选的工具 / 连接器 / 技能、片段占位符、通用提示词（生效的，含用户覆盖）、本环境能力 */
+export interface ModeCatalog {
+  tools: ToolCatalogEntry[];
+  mcpServers: { id: string; name: string; slug: string }[];
+  skills: { name: string; description: string }[];
+  fragments: string[];
+  generalPrompt: string;
+  capabilities: Capability[];
+}
+
+export interface ModePreview {
+  systemPrompt: string;
+  unavailable: Unavailable[];
+}
+
+/** 通用模式（modeId 为 null）的设置：名称固定、工具 / 连接器 / 技能恒为全部，只能改提示词与默认模型 */
+export interface GeneralModeView {
+  /** 生效的提示词：用户覆盖过取覆盖，否则 = defaultPrompt */
+  systemPrompt: string;
+  /** 用户是否覆盖过提示词（库里 system_prompt 非 NULL） */
+  isCustom: boolean;
+  /** core 的 GENERAL_MODE_PROMPT（「恢复默认」回填用；renderer 不能从 core 的 CJS dist 取值） */
+  defaultPrompt: string;
+  defaultModel: string | null;
+  defaultThinkingLevel: string | null;
 }
 
 /** 会话搜索的一条结果：snippet 是命中的消息片段（只命中标题时为 null） */
@@ -162,6 +199,8 @@ export const rpcSchemas = {
     model: z.string().optional(),
     workspaceDir: z.string().min(1).optional(),
     permission: z.enum(WORKSPACE_PERMISSIONS).optional(),
+    /** 所选模式；模式带默认模型 / 思考档位时只在这里回填（之后以会话自己的值为准） */
+    modeId: z.string().min(1).optional(),
   }),
   'conversations.get': z.object({ id }),
   'conversations.update': z.object({
@@ -174,8 +213,22 @@ export const rpcSchemas = {
     permission: z.enum(WORKSPACE_PERMISSIONS).optional(),
     /** 只有还没发过消息的会话能改目录（附件、历史里的路径都依赖它） */
     workspaceDir: z.string().min(1).optional(),
+    /** 切模式：null = 回到通用模式；运行中 / 等审批时拒绝 */
+    modeId: z.string().nullable().optional(),
   }),
   'conversations.delete': z.object({ id }),
+  'modes.list': z.object({}),
+  'modes.create': AgentModeInputSchema,
+  'modes.update': AgentModeInputSchema.extend({ id }),
+  'modes.delete': z.object({ id }),
+  'modes.catalog': z.object({}),
+  /** 用编辑中的内容算最终系统提示与不可用清单（不落库） */
+  'modes.preview': AgentModeInputSchema,
+  'modes.general.get': z.object({}),
+  /** 整份覆盖；systemPrompt 为 null = 恢复默认提示词 */
+  'modes.general.update': GeneralModeSettingsSchema,
+  /** 用编辑中的通用提示词算最终系统提示（不落库）；null = 默认提示词 */
+  'modes.general.preview': GeneralModeSettingsSchema.pick({ systemPrompt: true }),
   /** 按标题与消息正文搜索（不区分大小写的子串匹配） */
   'conversations.search': z.object({ query: z.string().trim().min(1).max(200) }),
   'conversations.tokenReport': z.object({ id }),
@@ -262,6 +315,15 @@ export interface RpcResults {
   'conversations.get': ConversationDetail;
   'conversations.update': ConversationSummary;
   'conversations.delete': { ok: true };
+  'modes.list': AgentMode[];
+  'modes.create': AgentMode;
+  'modes.update': AgentMode;
+  'modes.delete': { ok: true };
+  'modes.catalog': ModeCatalog;
+  'modes.preview': ModePreview;
+  'modes.general.get': GeneralModeView;
+  'modes.general.update': GeneralModeView;
+  'modes.general.preview': ModePreview;
   'conversations.search': ConversationSearchHit[];
   'conversations.tokenReport': TokenReport;
   'background.list': BackgroundTaskView[];
@@ -325,6 +387,8 @@ export type HostEvent =
   | { kind: 'event'; type: 'conversations-changed' }
   | { kind: 'event'; type: 'mcp-changed' }
   | { kind: 'event'; type: 'skills-changed' }
+  /** 模式增删改（设置页列表、会话内选择器据此刷新） */
+  | { kind: 'event'; type: 'modes-changed' }
   /** 系统浏览器里的 OAuth 授权完成（loopback 回调）：成功 / 失败都推，连接中的按钮据此结束 */
   | { kind: 'event'; type: 'mcp-oauth'; ok: boolean; serverId?: string; error?: string };
 

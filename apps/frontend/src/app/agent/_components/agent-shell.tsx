@@ -7,16 +7,24 @@ import { useCallback, useState } from "react";
 
 import { Sheet, SheetContent, SheetTitle } from "@/components/ui/sheet";
 import {
+  GENERAL_MODE_QUERY_KEY,
+  MODES_QUERY_KEY,
+} from "@/app/settings/modes/_components/mode-list";
+import {
   appendMessage,
   type ConversationListItem,
   createEmptyConversation,
   deleteConversation,
+  getGeneralMode,
   listConversations,
+  listModes,
   type MessageAttachment,
   renameConversation,
+  setConversationMode,
   setConversationPinned,
   stopConversation,
 } from "@/lib/api";
+import { asThinkingLevel, supportsThinkingLevel } from "@/lib/thinking-level";
 
 import { ChatThread } from "./chat-thread";
 import { ConversationSidebar, SidebarContent } from "./conversation-sidebar";
@@ -29,9 +37,11 @@ import {
 import { useConversation } from "../_hooks/use-conversation";
 import { conversationTitle } from "../_lib/conversation-title";
 import { useIsDesktop } from "../_hooks/use-is-desktop";
+import { useModePreference } from "../_hooks/use-mode-preference";
 import { useModelPreference } from "../_hooks/use-model-preference";
 import { useThinkingPreference } from "../_hooks/use-thinking-preference";
 import { useTheme } from "../_hooks/use-theme";
+import { MODEL_OPTIONS } from "../_lib/models";
 import type { PreviewSpec, ThreadItem } from "../_lib/thread";
 
 /**
@@ -54,6 +64,12 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   const [model, setModel] = useModelPreference();
   // 思考深度：同样随 create/append 带给后端；当前模型不支持的档位已在 hook 里回落 auto
   const [thinkingLevel, setThinkingLevel] = useThinkingPreference(model);
+  // 模式：最近用过的 id 缓存在 localStorage，新建会话时带上；已有会话的模式以服务端为准
+  const [preferredModeId, setPreferredModeId] = useModePreference();
+  const modesQuery = useQuery({ queryKey: MODES_QUERY_KEY, queryFn: listModes });
+  const modes = modesQuery.data ?? [];
+  // 通用模式设置（默认模型 / 档位）：偏好为通用模式时新建会话据此回填
+  const generalQuery = useQuery({ queryKey: GENERAL_MODE_QUERY_KEY, queryFn: getGeneralMode });
 
   // 切换会话（含 [id1]→[id2] 不重挂载的情况）时清掉详情面板选择
   const [trackedId, setTrackedId] = useState(conversationId);
@@ -76,9 +92,29 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
 
   const thread = useConversation(conversationId, { onPreview: openPreview });
 
-  // 先创建空会话（idle）再进入：成功后跳 /agent/[id]，首条消息走 appendMessage
+  // 先创建空会话（idle）再进入：成功后跳 /agent/[id]，首条消息走 appendMessage。
+  // 带上最近用的模式（已删除的按通用模式）；模式（或通用模式设置）有默认模型 / 思考深度时**只在这里**
+  // 回填偏好并随请求带上，切换已有会话的模式不动模型。
   const createMut = useMutation({
-    mutationFn: () => createEmptyConversation(model, thinkingLevel),
+    mutationFn: () => {
+      const mode = modes.find((m) => m.id === preferredModeId) ?? null;
+      const defaults = mode ?? generalQuery.data ?? null;
+      let nextModel = model;
+      let nextLevel = thinkingLevel;
+      if (
+        defaults?.defaultModel &&
+        MODEL_OPTIONS.some((m) => m.value === defaults.defaultModel)
+      ) {
+        nextModel = defaults.defaultModel;
+        setModel(nextModel);
+      }
+      const level = asThinkingLevel(defaults?.defaultThinkingLevel);
+      if (defaults?.defaultModel && level && supportsThinkingLevel(nextModel, level)) {
+        nextLevel = level;
+        setThinkingLevel(level);
+      }
+      return createEmptyConversation(nextModel, nextLevel, mode?.id ?? null);
+    },
     onSuccess: ({ conversationId: newId }) => {
       void qc.invalidateQueries({ queryKey: ["conversations"] });
       router.push(`/agent/${newId}`); // 跳到新会话路由，URL 持有 id，刷新可恢复
@@ -111,6 +147,17 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
     onError: () => setStopRequested(false),
   });
 
+  // 切换已有会话的模式（空闲时；运行中按钮已禁用，后端也会 409）。成功后重拉会话拿新 modeId，并记为偏好
+  const modeMut = useMutation({
+    mutationFn: ({ id, modeId }: { id: string; modeId: string | null }) =>
+      setConversationMode(id, modeId),
+    onSuccess: (_r, { id, modeId }) => {
+      setPreferredModeId(modeId);
+      void qc.invalidateQueries({ queryKey: ["conversation", id] });
+      void qc.invalidateQueries({ queryKey: ["conversations"] });
+    },
+  });
+
   const pinMut = useMutation({
     mutationFn: ({ id, pinned }: { id: string; pinned: boolean }) =>
       setConversationPinned(id, pinned),
@@ -137,6 +184,8 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   });
 
   const busy = thread.busy || createMut.isPending;
+  // 当前会话的模式对象（null = 通用模式 / 模式已删除）：命令面板按它的技能集过滤
+  const activeMode = thread.modeId ? (modes.find((m) => m.id === thread.modeId) ?? null) : null;
   // 运行已结束 → 复位（render-time reset，同 trackedId 模式，避免 effect 里 setState）
   if (stopRequested && !busy) {
     setStopRequested(false);
@@ -243,6 +292,11 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
           onSend={handleSend}
           onStop={handleStop}
           stopping={stopRequested}
+          mode={activeMode}
+          onModeChange={(modeId) =>
+            conversationId && modeMut.mutate({ id: conversationId, modeId })
+          }
+          modeSwitching={modeMut.isPending}
           model={model}
           onModelChange={setModel}
           thinkingLevel={thinkingLevel}

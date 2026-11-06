@@ -1,17 +1,19 @@
-import { MEDIA_GENERATION_PROMPT } from '@agent-test/agent-core/media/media-prompt';
-import { composeSystemPrompt } from './system-prompt';
-
 /**
- * backend（Web 版 Spark）专属的系统提示段落：外发、生图 / 生视频、配音、附件，
- * 以及沙箱工作区区块（含 sync_media_to_sandbox / preview_page）。通用段见 system-prompt.ts。
- * 拼出的全文由 system-prompt.spec.ts 快照锁定，与拆分前逐字一致。
+ * backend（Web 版 Spark）专属的系统提示段落。拼装由 agent-core 的 resolveMode 完成
+ * （模式正文 → 工具段 → MCP 说明 → 环境段 → 不可用工具提示）：
+ * - 工具段：随工具描述符走（send_email 的「外发」段、媒体工具的 MEDIA_GENERATION_PROMPT），
+ *   勾了工具才出现，见 tool-registry.provider.ts；
+ * - 环境段：沙箱 execute 守则 + 附件说明（+ 后台任务说明），由宿主按运行环境给，
+ *   见 tool-registry.provider.ts 的 backendEnvPromptBlock。
+ * 通用模式的全文由 system-prompt.spec.ts 快照锁定。
  */
-export const BACKEND_HOST_SECTIONS = `
 
-## 外发与不可逆动作
-发送邮件等外发动作会把内容发布出去：仅在用户明确要求时调用对应工具，参数如实反映用户意图（系统会再要求用户审批）。
+/** send_email 的工具段（勾选 send_email 时才拼进系统提示）。 */
+export const SEND_EMAIL_SECTION = `## 外发与不可逆动作
+发送邮件等外发动作会把内容发布出去：仅在用户明确要求时调用对应工具，参数如实反映用户意图（系统会再要求用户审批）。`;
 
-${MEDIA_GENERATION_PROMPT}
+/** 附件说明：backend 固有（上传链路始终存在），作为环境段的一部分；自带前导空行。 */
+export const ATTACHMENTS_SECTION = `
 
 ## 用户上传的附件
 用户消息末尾的「[附件]」列出本条消息随附上传的文件（类型、versionId、文件名）。它们可作为生成素材经 referenceVersionIds 引用；你看不到文件内容，不要臆测画面或声音，需要时请用户描述。用户说「这张图 / 这段视频」通常就是指本条消息的附件；只发附件没说要做什么时，先问用户想用它做什么。`;
@@ -35,11 +37,3 @@ export const SANDBOX_SYSTEM_PROMPT_BLOCK = (w: string) => `
 - 需要用命令处理用户上传的附件或本会话生成的图片 / 视频（ffmpeg 剪辑转码、Python 处理图片等）时，先调用 sync_media_to_sandbox 把它们同步进工作区，再用返回的路径操作；只作生成参考时不需要同步。
 - 写出网页、可视化、小游戏等 HTML 产物后，调用 preview_page 为用户弹出可交互预览（入口目录即站点根，资源用相对路径）。
 - 需要 dev server 的前端项目（vite 等）或 web 服务：后台启动并监听 0.0.0.0，确认启动成功后用 preview_page 传 port 预览。`;
-
-/** backend 的完整系统提示（worker 经 buildAgent 的 hostPromptSections / workspacePromptBlock 传入同一套）。 */
-export function buildSystemPrompt(workspace?: string): string {
-  return composeSystemPrompt(workspace, {
-    hostSections: BACKEND_HOST_SECTIONS,
-    workspaceBlock: SANDBOX_SYSTEM_PROMPT_BLOCK,
-  });
-}

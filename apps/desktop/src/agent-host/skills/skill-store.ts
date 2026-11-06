@@ -10,6 +10,7 @@
  */
 import { cp, lstat, mkdir, readdir, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { basename, join, relative, sep } from 'node:path';
+import type { SkillFiles } from '@agent-test/agent-core/modes/resolve-mode';
 import { parseSkillMd, validateSkill } from '@agent-test/agent-core/skills/skill-parser';
 import { z } from 'zod';
 import type { SkillDetail, SkillInfo } from '../../shared/rpc';
@@ -214,16 +215,37 @@ export class SkillStore {
     await rm(join(this.root, name), { recursive: true, force: true });
   }
 
-  /** 把内置 + 已启用技能同步到 `<runtimeDir>/skills/`（先清空再复制），返回同步了哪些技能 */
-  async syncToRuntime(runtimeDir: string): Promise<string[]> {
+  /**
+   * 把内置 + 已启用技能同步到 `<runtimeDir>/skills/`（先清空再复制），返回同步了哪些技能。
+   * 给了 names（当前模式勾选的技能）只同步交集：没勾的技能不会出现在运行目录里被模型看到。
+   */
+  async syncToRuntime(runtimeDir: string, names?: readonly string[]): Promise<string[]> {
     const target = join(runtimeDir, 'skills');
     await rm(target, { recursive: true, force: true });
     await mkdir(target, { recursive: true });
-    const enabled = (await this.list()).filter((s) => s.enabled);
+    const enabled = (await this.list()).filter((s) => s.enabled && (!names || names.includes(s.name)));
     for (const s of enabled) {
       await cp(this.dirOf(s), join(target, s.name), { recursive: true });
     }
     return enabled.map((s) => s.name);
+  }
+
+  /**
+   * 内置 + 已启用技能的文件清单（core resolveMode 的 installedSkills）。desktop 不走 core 的 mountSkills
+   * （本机目录由 syncToRuntime 复制），这份清单只用于按模式过滤名单，所以只读 SKILL.md、不读整个目录。
+   * 读不到 SKILL.md 的技能跳过（与 syncToRuntime 不一致时模型也找不到它）。
+   */
+  async listFiles(): Promise<SkillFiles[]> {
+    const out: SkillFiles[] = [];
+    for (const s of (await this.list()).filter((x) => x.enabled)) {
+      try {
+        const md = await readFile(join(this.dirOf(s), 'SKILL.md'), 'utf8');
+        out.push({ name: s.name, files: { 'SKILL.md': md } });
+      } catch {
+        continue;
+      }
+    }
+    return out;
   }
 
   // ── 内部 ─────────────────────────────────────────────────────────────────
