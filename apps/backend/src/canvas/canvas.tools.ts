@@ -230,169 +230,209 @@ export function createCanvasTools(
     }
   }
 
-  const addNode = tool(
-    async ({
+  const addNodeSchema = z.object({
+    // 刻意用 z.string() 而不是 z.enum：枚举由 zod 拒会抛异常（见 addOneNode 注释），
+    // 取值范围写在 description 里，模型读的是这个
+    type: z
+      .string()
+      .optional()
+      .describe(
+        '节点类型（必填）：image_upload 上传图片 / video_upload 上传视频 / audio_upload 上传音频 / image_gen 生图 / video_gen 生视频 / video_concat 视频拼接',
+      ),
+    label: z
+      .string()
+      .optional()
+      .describe('节点标题（可选；挂附件时缺省用文件名）'),
+    prompt: z
+      .string()
+      .optional()
+      .describe('生成提示词（image_gen / video_gen 专有）'),
+    model: z
+      .string()
+      .optional()
+      .describe(
+        '生成节点专有：模型别名（list_media_models 返回的 model，也认展示名）；不传 = 默认模型',
+      ),
+    channel: z
+      .string()
+      .optional()
+      .describe('生成节点专有：渠道（同名模型出现在多个渠道时才需要指定）'),
+    params: mediaParamsSchema,
+    versionId: z
+      .string()
+      .optional()
+      .describe(
+        '上传节点专有：用户附件的 versionId（「[附件]」清单里那个），类型须与节点一致',
+      ),
+    x: z.number().optional(),
+    y: z.number().optional(),
+  });
+
+  /** 建一个节点，回给模型的结果对象（成功：nodeId/revision；不合法：error…）。add_node / add_nodes 共用。 */
+  async function addOneNode({
+    type,
+    label,
+    prompt,
+    versionId,
+    model,
+    channel,
+    params,
+    x,
+    y,
+  }: z.infer<typeof addNodeSchema>): Promise<Record<string, unknown>> {
+    // type 的校验**整个**放在这儿而不是交给 zod 枚举：让 zod 直接拒的话，报错会以一大坨
+    // 带堆栈的异常进对话历史、废掉一整轮；这里返回一句话，模型下一步就能补上——
+    // 与本文件其它工具报「节点不存在」是同一套做法。
+    //
+    // 三种情况分开报，因为模型需要的下一步动作不同：
+    //  - 漏传（实测漏过一次，只给了 label/prompt/x/y）→ 告诉它取值范围
+    //  - 已下线的类型（老会话的 checkpoint 里存着 add_node type:"text" 的调用记录，
+    //    模型很可能照着自己的历史再来一次）→ 告诉它现在该怎么做，而不只是"非法"
+    //  - 其余非法值 → 取值范围
+    if (!type) {
+      return {
+        error: `缺少必填参数 type，取值：${CANVAS_NODE_TYPES.join(' | ')}`,
+      };
+    }
+    if (RETIRED_NODE_TYPES[type]) {
+      return { error: RETIRED_NODE_TYPES[type] };
+    }
+    if (!isCanvasNodeType(type)) {
+      return {
+        error: `未知的 type "${type}"，取值：${CANVAS_NODE_TYPES.join(' | ')}`,
+      };
+    }
+    // 上传节点挂用户在对话里发的附件：只认本画布、本人、已随消息发出的上传版本，
+    // 且附件类型要与节点类型一致（报错里直接给出该用哪种节点，模型下一步就能改对）
+    let mediaGenerationId: string | undefined;
+    let defaultLabel: string | undefined;
+    if (versionId) {
+      if (!isUploadNodeType(type)) {
+        return {
+          error:
+            'versionId 只用于上传节点（image_upload / video_upload / audio_upload）',
+        };
+      }
+      const asset = await media.findUploadedAsset(
+        ctx.sessionId,
+        ctx.userId,
+        versionId,
+      );
+      if (!asset) {
+        return {
+          error: '找不到这个附件：versionId 必须取自用户消息里的「[附件]」清单',
+          versionId,
+        };
+      }
+      if (asset.type !== UPLOAD_NODE_ASSET[type]) {
+        return {
+          error: `这个附件是 ${asset.type}，要用 ${uploadNodeTypeFor(asset.type)} 节点`,
+          versionId,
+        };
+      }
+      mediaGenerationId = asset.generationId;
+      defaultLabel = asset.filename;
+    }
+    // 生成节点建时就定好模型与档位（同 set_node_model 的严格校验），不合法一个节点都不建——
+    // 先建成默认再改，用户会先看到一张 1:1 / 默认模型的卡片，且 agent 常常忘了回头改。
+    // 刚建的节点还没有入边，参考素材按 0 算；之后连上参考图若触发约束，生成时按原规则收窄。
+    let config:
+      | { channel: string; model: string; params: Record<string, string> }
+      | undefined;
+    if (model !== undefined || channel !== undefined || params !== undefined) {
+      if (type !== 'image_gen' && type !== 'video_gen') {
+        return {
+          error: 'model / channel / params 只用于 image_gen / video_gen',
+        };
+      }
+      const r = await media.prepareNodeConfig(
+        type === 'video_gen' ? 'video' : 'image',
+        {
+          model,
+          channel,
+          params,
+          referenceCounts: { image: 0, video: 0, audio: 0 },
+        },
+      );
+      if (!r.ok) {
+        return {
+          error: 'invalid_params',
+          issues: r.issues,
+          hint: '节点未创建。按 issues 修正后重新调用 add_node；完整的模型与档位表可调用 list_media_models',
+        };
+      }
+      config = r.config;
+    }
+    const r = await canvas.applyOp(ctx.sessionId, 'agent', {
+      op: 'add_node',
       type,
-      label,
+      label: label ?? defaultLabel,
       prompt,
-      versionId,
-      model,
-      channel,
-      params,
+      mediaGenerationId,
+      mediaChannel: config?.channel,
+      mediaModel: config?.model,
+      mediaParams: config?.params,
       x,
       y,
-    }) => {
-      // type 的校验**整个**放在这儿而不是交给 zod 枚举：让 zod 直接拒的话，报错会以一大坨
-      // 带堆栈的异常进对话历史、废掉一整轮；这里返回一句话，模型下一步就能补上——
-      // 与本文件其它工具报「节点不存在」是同一套做法。
-      //
-      // 三种情况分开报，因为模型需要的下一步动作不同：
-      //  - 漏传（实测漏过一次，只给了 label/prompt/x/y）→ 告诉它取值范围
-      //  - 已下线的类型（老会话的 checkpoint 里存着 add_node type:"text" 的调用记录，
-      //    模型很可能照着自己的历史再来一次）→ 告诉它现在该怎么做，而不只是"非法"
-      //  - 其余非法值 → 取值范围
-      if (!type) {
-        return JSON.stringify({
-          error: `缺少必填参数 type，取值：${CANVAS_NODE_TYPES.join(' | ')}`,
-        });
-      }
-      if (RETIRED_NODE_TYPES[type]) {
-        return JSON.stringify({ error: RETIRED_NODE_TYPES[type] });
-      }
-      if (!isCanvasNodeType(type)) {
-        return JSON.stringify({
-          error: `未知的 type "${type}"，取值：${CANVAS_NODE_TYPES.join(' | ')}`,
-        });
-      }
-      // 上传节点挂用户在对话里发的附件：只认本画布、本人、已随消息发出的上传版本，
-      // 且附件类型要与节点类型一致（报错里直接给出该用哪种节点，模型下一步就能改对）
-      let mediaGenerationId: string | undefined;
-      let defaultLabel: string | undefined;
-      if (versionId) {
-        if (!isUploadNodeType(type)) {
-          return JSON.stringify({
-            error:
-              'versionId 只用于上传节点（image_upload / video_upload / audio_upload）',
-          });
+    });
+    const node = 'node' in r.patch ? r.patch.node : null;
+    // 回短 id：与注入的画布状态同一套写法，模型不必在两种 id 之间切换
+    return {
+      nodeId: node ? shortNodeId(node.id) : undefined,
+      revision: r.revision,
+      ...(config ? { model: config.model, params: config.params } : {}),
+    };
+  }
+
+  const addNode = tool(async (args) => JSON.stringify(await addOneNode(args)), {
+    name: 'add_node',
+    description:
+      '在画布上新建一个节点。type：image_upload / video_upload / audio_upload(用户上传的图片 / 视频 / 音频) | image_gen(生图) | video_gen(生视频) | video_concat(把多段上游视频按顺序拼成一条)。生成节点的提示词直接写在它自己的 prompt 参数里，模型与档位用 model / params 在建节点时一并定好（不传就是默认模型的默认档位）；不合法时返回 error=invalid_params 与 issues，节点不会被创建，按 issues 修正后重试。要把用户在对话里发的附件放上画布：建对应类型的上传节点并传 versionId（取自用户消息的「[附件]」清单）；不传 versionId 的上传节点是空的，等用户自己在卡片上传文件。x/y 为画布坐标（按工作流从左到右布局，纵向错开避免重叠）。返回 nodeId。要建 2 个及以上节点用 add_nodes。',
+    schema: addNodeSchema,
+  });
+
+  /**
+   * 批量版 add_node：理由同 update_nodes（并行工具调用每个都带一份完整 state，实测并行建 5 个
+   * 节点派了 5 个 Send）。逐条串行建，每条的校验与 add_node 完全一致；某条不合法 / 失败只影响它自己，
+   * results 与 nodes 一一对应（同序），模型按位置取各自的 nodeId 去连线。
+   */
+  const addNodes = tool(
+    async ({ nodes }) => {
+      const results: Record<string, unknown>[] = [];
+      for (const n of nodes) {
+        try {
+          results.push(await addOneNode(n));
+        } catch (e) {
+          results.push({ error: e instanceof Error ? e.message : String(e) });
         }
-        const asset = await media.findUploadedAsset(
-          ctx.sessionId,
-          ctx.userId,
-          versionId,
-        );
-        if (!asset) {
-          return JSON.stringify({
-            error:
-              '找不到这个附件：versionId 必须取自用户消息里的「[附件]」清单',
-            versionId,
-          });
-        }
-        if (asset.type !== UPLOAD_NODE_ASSET[type]) {
-          return JSON.stringify({
-            error: `这个附件是 ${asset.type}，要用 ${uploadNodeTypeFor(asset.type)} 节点`,
-            versionId,
-          });
-        }
-        mediaGenerationId = asset.generationId;
-        defaultLabel = asset.filename;
       }
-      // 生成节点建时就定好模型与档位（同 set_node_model 的严格校验），不合法一个节点都不建——
-      // 先建成默认再改，用户会先看到一张 1:1 / 默认模型的卡片，且 agent 常常忘了回头改。
-      // 刚建的节点还没有入边，参考素材按 0 算；之后连上参考图若触发约束，生成时按原规则收窄。
-      let config:
-        | { channel: string; model: string; params: Record<string, string> }
-        | undefined;
-      if (
-        model !== undefined ||
-        channel !== undefined ||
-        params !== undefined
-      ) {
-        if (type !== 'image_gen' && type !== 'video_gen') {
-          return JSON.stringify({
-            error: 'model / channel / params 只用于 image_gen / video_gen',
-          });
-        }
-        const r = await media.prepareNodeConfig(
-          type === 'video_gen' ? 'video' : 'image',
-          {
-            model,
-            channel,
-            params,
-            referenceCounts: { image: 0, video: 0, audio: 0 },
-          },
-        );
-        if (!r.ok) {
-          return JSON.stringify({
-            error: 'invalid_params',
-            issues: r.issues,
-            hint: '节点未创建。按 issues 修正后重新调用 add_node；完整的模型与档位表可调用 list_media_models',
-          });
-        }
-        config = r.config;
-      }
-      const r = await canvas.applyOp(ctx.sessionId, 'agent', {
-        op: 'add_node',
-        type,
-        label: label ?? defaultLabel,
-        prompt,
-        mediaGenerationId,
-        mediaChannel: config?.channel,
-        mediaModel: config?.model,
-        mediaParams: config?.params,
-        x,
-        y,
-      });
-      const node = 'node' in r.patch ? r.patch.node : null;
-      // 回短 id：与注入的画布状态同一套写法，模型不必在两种 id 之间切换
+      const created = results.filter((r) => r.nodeId).length;
       return JSON.stringify({
-        nodeId: node ? shortNodeId(node.id) : undefined,
-        revision: r.revision,
-        ...(config ? { model: config.model, params: config.params } : {}),
+        ok: created === nodes.length,
+        created,
+        results,
       });
     },
     {
-      name: 'add_node',
+      name: 'add_nodes',
       description:
-        '在画布上新建一个节点。type：image_upload / video_upload / audio_upload(用户上传的图片 / 视频 / 音频) | image_gen(生图) | video_gen(生视频) | video_concat(把多段上游视频按顺序拼成一条)。生成节点的提示词直接写在它自己的 prompt 参数里，模型与档位用 model / params 在建节点时一并定好（不传就是默认模型的默认档位）；不合法时返回 error=invalid_params 与 issues，节点不会被创建，按 issues 修正后重试。要把用户在对话里发的附件放上画布：建对应类型的上传节点并传 versionId（取自用户消息的「[附件]」清单）；不传 versionId 的上传节点是空的，等用户自己在卡片上传文件。x/y 为画布坐标（按工作流从左到右布局，纵向错开避免重叠）。返回 nodeId。',
+        '一次新建**多个**节点。每项参数与 add_node 完全相同（type 必填，生成节点带 prompt / model / params，上传节点可带 versionId，x/y 坐标）。返回 results 与传入顺序一一对应：成功项带 nodeId，失败项带 error（该项未创建，其余照常创建）。建 2 个及以上节点时用它，不要并行发多个 add_node。',
       schema: z.object({
-        // 刻意用 z.string() 而不是 z.enum：枚举由 zod 拒会抛异常（见函数体注释），
-        // 取值范围写在 description 里，模型读的是这个
-        type: z
-          .string()
-          .optional()
-          .describe(
-            '节点类型（必填）：image_upload 上传图片 / video_upload 上传视频 / audio_upload 上传音频 / image_gen 生图 / video_gen 生视频 / video_concat 视频拼接',
-          ),
-        label: z
-          .string()
-          .optional()
-          .describe('节点标题（可选；挂附件时缺省用文件名）'),
-        prompt: z
-          .string()
-          .optional()
-          .describe('生成提示词（image_gen / video_gen 专有）'),
-        model: z
-          .string()
-          .optional()
-          .describe(
-            '生成节点专有：模型别名（list_media_models 返回的 model，也认展示名）；不传 = 默认模型',
-          ),
-        channel: z
-          .string()
-          .optional()
-          .describe('生成节点专有：渠道（同名模型出现在多个渠道时才需要指定）'),
-        params: mediaParamsSchema,
-        versionId: z
-          .string()
-          .optional()
-          .describe(
-            '上传节点专有：用户附件的 versionId（「[附件]」清单里那个），类型须与节点一致',
-          ),
-        x: z.number().optional(),
-        y: z.number().optional(),
+        nodes: z.array(addNodeSchema).min(1).describe('每个要建的节点一项'),
       }),
     },
   );
+
+  const nodeUpdateSchema = z.object({
+    nodeId: z.string(),
+    label: z.string().optional(),
+    prompt: z
+      .string()
+      .optional()
+      .describe('生成提示词（image_gen / video_gen 专有）'),
+    x: z.number().optional().describe('新的画布 x 坐标'),
+    y: z.number().optional().describe('新的画布 y 坐标'),
+  });
 
   const updateNode = tool(
     async ({ nodeId, label, prompt, x, y }) => {
@@ -411,16 +451,60 @@ export function createCanvasTools(
     {
       name: 'update_node',
       description:
-        '修改已存在节点的 label / prompt，或移动节点位置 x/y（放入安全区避免重叠）。prompt 就是该生成节点本次要用的提示词——换提示词直接改它，不需要别的节点。',
+        '修改**单个**已存在节点的 label / prompt，或移动它的位置 x/y（放入安全区避免重叠）。prompt 就是该生成节点本次要用的提示词——换提示词直接改它，不需要别的节点。要改/挪多个节点用 update_nodes。',
+      schema: nodeUpdateSchema,
+    },
+  );
+
+  /**
+   * 批量版 update_node。并行发多个 update_node 时，LangChain 给每个工具调用派一个 Send、
+   * 每个 Send 都带整份 state（全部消息）：实测重排 49 个节点时单份 checkpoint 49MB、
+   * 历史里还多出 49 对工具调用/结果。批量只派一个 Send、只留一对。
+   * 逐条串行落库（applyOp 本就按会话串行），某条失败不影响其余，结果逐条回报。
+   */
+  const updateNodes = tool(
+    async ({ updates }) => {
+      let revision: number | undefined;
+      const failed: { nodeId: string; error: string }[] = [];
+      for (const { nodeId, label, prompt, x, y } of updates) {
+        const full = await resolveId(nodeId);
+        if (!full) {
+          failed.push({ nodeId, error: '节点不存在' });
+          continue;
+        }
+        try {
+          const r = await canvas.applyOp(ctx.sessionId, 'agent', {
+            op: 'update_node',
+            nodeId: full,
+            label,
+            prompt,
+            x,
+            y,
+          });
+          revision = r.revision;
+        } catch (e) {
+          failed.push({
+            nodeId,
+            error: e instanceof Error ? e.message : String(e),
+          });
+        }
+      }
+      return JSON.stringify({
+        ok: failed.length === 0,
+        updated: updates.length - failed.length,
+        ...(failed.length ? { failed } : {}),
+        ...(revision !== undefined ? { revision } : {}),
+      });
+    },
+    {
+      name: 'update_nodes',
+      description:
+        '一次修改/移动**多个**已存在节点（重排布局、批量改 label 或 prompt）。每项字段同 update_node，只传要改的字段。改 2 个及以上节点时用它，不要并行发多个 update_node。',
       schema: z.object({
-        nodeId: z.string(),
-        label: z.string().optional(),
-        prompt: z
-          .string()
-          .optional()
-          .describe('生成提示词（image_gen / video_gen 专有）'),
-        x: z.number().optional().describe('新的画布 x 坐标'),
-        y: z.number().optional().describe('新的画布 y 坐标'),
+        updates: z
+          .array(nodeUpdateSchema)
+          .min(1)
+          .describe('每个要改的节点一项'),
       }),
     },
   );
@@ -849,7 +933,9 @@ export function createCanvasTools(
 
   return [
     addNode,
+    addNodes,
     updateNode,
+    updateNodes,
     connectNodes,
     deleteNode,
     clearCanvas,

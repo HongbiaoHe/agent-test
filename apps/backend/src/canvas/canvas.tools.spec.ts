@@ -2,6 +2,7 @@ import { AIMessage } from '@langchain/core/messages';
 import type { CanvasService } from './canvas.service';
 import type { MediaService } from '../media/media.service';
 import { createCanvasTools } from './canvas.tools';
+import { shortNodeId } from './canvas.types';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
 
@@ -80,6 +81,290 @@ describe('add_node 的 type 校验', () => {
     const parsed = JSON.parse(out) as { error?: string };
     expect(parsed.error).toContain('prompt');
     expect(parsed.error).toContain('image_gen');
+  });
+});
+
+/**
+ * add_nodes：批量建节点只占一次工具调用。每项校验与 add_node 同一份逻辑（addOneNode），
+ * 锁住：results 与传入同序一一对应、成功项回短 id；不合法 / 找不到附件 / 落库抛错只废掉自己那一项；空数组直接拒。
+ */
+describe('add_nodes 批量建节点', () => {
+  const applyOp = jest.fn();
+  const findUploadedAsset = jest.fn();
+  const tools = createCanvasTools(
+    // cast-at-injection：只用到 applyOp / findUploadedAsset
+    { applyOp } as unknown as CanvasService,
+    { findUploadedAsset } as unknown as MediaService,
+    { sessionId: 's1', userId: 'u1' },
+  );
+  const addNodes = tools.find((t) => t.name === 'add_nodes');
+
+  beforeEach(() => {
+    applyOp.mockReset();
+    findUploadedAsset.mockReset();
+    let n = 0;
+    applyOp.mockImplementation(() => {
+      n++;
+      return Promise.resolve({
+        patch: { op: 'add_node', node: { id: `cmtjnode0000${n}abcde${n}` } },
+        revision: 100 + n,
+      });
+    });
+  });
+
+  it('按顺序逐个建，results 同序带短 id', async () => {
+    const out = await addNodes!.invoke({
+      nodes: [
+        { type: 'image_gen', label: '春', prompt: '春天', x: 0, y: 0 },
+        { type: 'image_gen', label: '夏', prompt: '夏天', x: 320, y: 0 },
+        { type: 'video_concat', label: '成片', x: 640, y: 0 },
+      ],
+    });
+
+    expect(
+      applyOp.mock.calls.map((c) => (c[2] as { label: string }).label),
+    ).toEqual(['春', '夏', '成片']);
+    expect(applyOp).toHaveBeenNthCalledWith(
+      1,
+      's1',
+      'agent',
+      expect.objectContaining({
+        op: 'add_node',
+        type: 'image_gen',
+        prompt: '春天',
+        x: 0,
+        y: 0,
+      }),
+    );
+    expect(JSON.parse(out)).toEqual({
+      ok: true,
+      created: 3,
+      results: [
+        { nodeId: shortNodeId('cmtjnode00001abcde1'), revision: 101 },
+        { nodeId: shortNodeId('cmtjnode00002abcde2'), revision: 102 },
+        { nodeId: shortNodeId('cmtjnode00003abcde3'), revision: 103 },
+      ],
+    });
+  });
+
+  it('某项不合法（漏 type / 非法 type）：该项回 error 不建，其余照常建、位置不错', async () => {
+    const out = await addNodes!.invoke({
+      nodes: [
+        { type: 'image_gen', prompt: 'a' },
+        { label: '漏了 type' },
+        { type: 'audio_gen' } as unknown as { type: 'image_gen' },
+        { type: 'video_gen', prompt: 'b' },
+      ],
+    });
+
+    expect(applyOp).toHaveBeenCalledTimes(2);
+    const parsed = JSON.parse(out) as {
+      ok: boolean;
+      created: number;
+      results: { nodeId?: string; error?: string }[];
+    };
+    expect(parsed.ok).toBe(false);
+    expect(parsed.created).toBe(2);
+    expect(parsed.results).toHaveLength(4);
+    expect(parsed.results[0].nodeId).toBeDefined();
+    expect(parsed.results[1].error).toContain('type');
+    expect(parsed.results[2].error).toContain('audio_gen');
+    expect(parsed.results[3].nodeId).toBeDefined();
+  });
+
+  it('附件 versionId 找不到：该项回 error，其余照常', async () => {
+    findUploadedAsset.mockResolvedValue(null);
+    const out = await addNodes!.invoke({
+      nodes: [
+        { type: 'image_upload', versionId: 'v-nope' },
+        { type: 'image_gen', prompt: 'a' },
+      ],
+    });
+    expect(findUploadedAsset).toHaveBeenCalledWith('s1', 'u1', 'v-nope');
+    expect(applyOp).toHaveBeenCalledTimes(1);
+    const parsed = JSON.parse(out) as {
+      results: { nodeId?: string; error?: string; versionId?: string }[];
+    };
+    expect(parsed.results[0]).toMatchObject({ versionId: 'v-nope' });
+    expect(parsed.results[0].error).toContain('附件');
+    expect(parsed.results[1].nodeId).toBeDefined();
+  });
+
+  it('某项落库抛错：回报这一项的错误，不中断后面的', async () => {
+    applyOp.mockImplementationOnce(() =>
+      Promise.reject(new Error('revision 冲突')),
+    );
+    const out = await addNodes!.invoke({
+      nodes: [
+        { type: 'image_gen', prompt: 'a' },
+        { type: 'image_gen', prompt: 'b' },
+      ],
+    });
+    expect(applyOp).toHaveBeenCalledTimes(2);
+    const parsed = JSON.parse(out) as {
+      ok: boolean;
+      created: number;
+      results: { nodeId?: string; error?: string }[];
+    };
+    expect(parsed).toMatchObject({ ok: false, created: 1 });
+    expect(parsed.results[0]).toEqual({ error: 'revision 冲突' });
+    expect(parsed.results[1].nodeId).toBeDefined();
+  });
+
+  it('空数组：schema 直接拒，不落库', async () => {
+    await expect(addNodes!.invoke({ nodes: [] })).rejects.toThrow();
+    expect(applyOp).not.toHaveBeenCalled();
+  });
+
+  it('add_node 单个调用的返回不变（与抽出 addOneNode 前一致）', async () => {
+    const addNode = tools.find((t) => t.name === 'add_node');
+    const out = await addNode!.invoke({ type: 'image_gen', prompt: 'x' });
+    expect(JSON.parse(out)).toEqual({
+      nodeId: shortNodeId('cmtjnode00001abcde1'),
+      revision: 101,
+    });
+  });
+});
+
+/**
+ * update_nodes：批量改/挪节点只占一次工具调用（并行 update_node 会让每个调用各带一份完整 state）。
+ * 锁住：按顺序逐条落 update_node、只传给了的字段；找不到 / 落库失败的逐条回报且不拖累其余；空数组直接拒。
+ */
+describe('update_nodes 批量更新', () => {
+  const applyOp = jest.fn();
+  const resolveNodeId = jest.fn((_s: string, id: string) =>
+    Promise.resolve(id === 'missing' ? null : `full-${id}`),
+  );
+  const tools = createCanvasTools(
+    // cast-at-injection：只用到 applyOp / resolveNodeId
+    { applyOp, resolveNodeId } as unknown as CanvasService,
+    {} as unknown as MediaService,
+    { sessionId: 's1', userId: 'u1' },
+  );
+  const updateNodes = tools.find((t) => t.name === 'update_nodes');
+
+  beforeEach(() => {
+    applyOp.mockReset();
+    let rev = 10;
+    applyOp.mockImplementation(() => Promise.resolve({ revision: ++rev }));
+  });
+
+  it('按顺序逐条落 update_node，只带给了的字段，回报最后的 revision', async () => {
+    const out = await updateNodes!.invoke({
+      updates: [
+        { nodeId: 'a', x: 0, y: 100 },
+        { nodeId: 'b', x: 300, y: 100 },
+        { nodeId: 'c', label: '结尾', prompt: '日落' },
+      ],
+    });
+
+    expect(applyOp.mock.calls).toEqual([
+      [
+        's1',
+        'agent',
+        {
+          op: 'update_node',
+          nodeId: 'full-a',
+          label: undefined,
+          prompt: undefined,
+          x: 0,
+          y: 100,
+        },
+      ],
+      [
+        's1',
+        'agent',
+        {
+          op: 'update_node',
+          nodeId: 'full-b',
+          label: undefined,
+          prompt: undefined,
+          x: 300,
+          y: 100,
+        },
+      ],
+      [
+        's1',
+        'agent',
+        {
+          op: 'update_node',
+          nodeId: 'full-c',
+          label: '结尾',
+          prompt: '日落',
+          x: undefined,
+          y: undefined,
+        },
+      ],
+    ]);
+    expect(JSON.parse(out)).toEqual({ ok: true, updated: 3, revision: 13 });
+  });
+
+  it('找不到的节点跳过并回报，其余照常落库', async () => {
+    const out = await updateNodes!.invoke({
+      updates: [
+        { nodeId: 'a', x: 1 },
+        { nodeId: 'missing', x: 2 },
+        { nodeId: 'b', x: 3 },
+      ],
+    });
+
+    expect(applyOp).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(out)).toEqual({
+      ok: false,
+      updated: 2,
+      failed: [{ nodeId: 'missing', error: '节点不存在' }],
+      revision: 12,
+    });
+  });
+
+  it('某条落库抛错：回报这一条的错误，不中断后面的', async () => {
+    applyOp
+      .mockImplementationOnce(() => Promise.reject(new Error('revision 冲突')))
+      .mockImplementationOnce(() => Promise.resolve({ revision: 20 }));
+
+    const out = await updateNodes!.invoke({
+      updates: [
+        { nodeId: 'a', x: 1 },
+        { nodeId: 'b', x: 2 },
+      ],
+    });
+
+    expect(applyOp).toHaveBeenCalledTimes(2);
+    expect(JSON.parse(out)).toEqual({
+      ok: false,
+      updated: 1,
+      failed: [{ nodeId: 'a', error: 'revision 冲突' }],
+      revision: 20,
+    });
+  });
+
+  it('全部失败：不回 revision', async () => {
+    const out = await updateNodes!.invoke({
+      updates: [{ nodeId: 'missing', x: 1 }],
+    });
+    expect(applyOp).not.toHaveBeenCalled();
+    expect(JSON.parse(out)).toEqual({
+      ok: false,
+      updated: 0,
+      failed: [{ nodeId: 'missing', error: '节点不存在' }],
+    });
+  });
+
+  it('空数组：schema 直接拒，不落库', async () => {
+    await expect(updateNodes!.invoke({ updates: [] })).rejects.toThrow();
+    expect(applyOp).not.toHaveBeenCalled();
+  });
+
+  it('同一节点出现两次：按顺序都落，后者生效', async () => {
+    await updateNodes!.invoke({
+      updates: [
+        { nodeId: 'a', x: 1 },
+        { nodeId: 'a', x: 2 },
+      ],
+    });
+    expect(applyOp.mock.calls.map((c) => (c[2] as { x: number }).x)).toEqual([
+      1, 2,
+    ]);
   });
 });
 
