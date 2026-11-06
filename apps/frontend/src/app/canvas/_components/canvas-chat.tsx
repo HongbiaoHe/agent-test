@@ -68,7 +68,9 @@ import {
 
 const TOOL_LABEL: Record<string, string> = {
   add_node: "Add node",
+  add_nodes: "Add nodes",
   update_node: "Update node",
+  update_nodes: "Update nodes",
   connect_nodes: "Connect nodes",
   delete_node: "Delete node",
   generate_media_node: "Run generation",
@@ -113,8 +115,16 @@ function toolDetail(item: ToolItem): string {
         .map((x) => preview(x, 32));
       return parts.join(" · ");
     }
+    case "add_nodes": {
+      const n = Array.isArray(a.nodes) ? a.nodes.length : 0;
+      return `${n} node${n === 1 ? "" : "s"}`;
+    }
     case "update_node":
       return preview(a.text ?? a.label ?? a.nodeId);
+    case "update_nodes": {
+      const n = Array.isArray(a.updates) ? a.updates.length : 0;
+      return `${n} node${n === 1 ? "" : "s"}`;
+    }
     case "connect_nodes":
       return "Added an edge";
     case "delete_node":
