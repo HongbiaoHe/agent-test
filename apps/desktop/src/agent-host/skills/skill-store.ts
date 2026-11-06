@@ -14,6 +14,7 @@ import { parseSkillMd, validateSkill } from '@agent-test/agent-core/skills/skill
 import { z } from 'zod';
 import type { SkillDetail, SkillInfo } from '../../shared/rpc';
 import type { Db } from '../db/database';
+import { hostI18n } from '../i18n';
 import { fetchGithubSkills, type GithubSkillSource } from './github-install';
 
 /** 单文件 / 目录总量上限，与 backend skill-installer 一致（512KB / 20MB） */
@@ -90,7 +91,7 @@ export class SkillStore {
   /** 详情：文件列表 + SKILL.md 原文 + 去掉 frontmatter 的正文（同 Web GET /skills/:name） */
   async detail(name: string): Promise<SkillDetail> {
     const info = await this.get(name);
-    if (!info) throw new SkillInstallError(`技能不存在：${name}`);
+    if (!info) throw new SkillInstallError(hostI18n.t('errors.skills.notFound', { name }));
     const dir = this.dirOf(info);
     const skillMd = await readFile(join(dir, 'SKILL.md'), 'utf8');
     const files = (await listFiles(dir)).map((f) => relative(dir, f.path).split(sep).join('/')).sort();
@@ -103,7 +104,7 @@ export class SkillStore {
     try {
       raw = await readFile(join(folder, 'SKILL.md'), 'utf8');
     } catch {
-      throw new SkillInstallError(`所选文件夹里没有 SKILL.md：${folder}`);
+      throw new SkillInstallError(hostI18n.t('errors.skills.noSkillMd', { folder }));
     }
     const parsed = parseSkillMd(raw, dirName);
     const errors = validateSkill({
@@ -112,18 +113,18 @@ export class SkillStore {
       dirName,
       compatibility: parsed.compatibility,
     });
-    if (errors.length) throw new SkillInstallError(`技能 ${dirName} 校验失败：${errors.join('；')}`);
+    if (errors.length) throw new SkillInstallError(hostI18n.t('errors.skills.invalid', { name: dirName, errors: errors.join('；') }));
     await this.assertNotBuiltin(parsed.name);
 
     const files = await listFiles(folder);
     let total = 0;
     for (const f of files) {
       if (f.size > MAX_FILE_BYTES) {
-        throw new SkillInstallError(`文件过大（>512KB）：${relative(folder, f.path)}`);
+        throw new SkillInstallError(hostI18n.t('errors.skills.fileTooLarge', { path: relative(folder, f.path) }));
       }
       total += f.size;
     }
-    if (total > MAX_SKILL_DIR_BYTES) throw new SkillInstallError('技能目录总大小超过 20MB');
+    if (total > MAX_SKILL_DIR_BYTES) throw new SkillInstallError(hostI18n.t('errors.skills.dirTooLarge'));
 
     const dest = join(this.root, parsed.name);
     await rm(dest, { recursive: true, force: true });
@@ -169,22 +170,22 @@ export class SkillStore {
     const { name, description, body } = input;
     const errors = validateSkill({ name, description, dirName: name });
     if (errors.length) throw new SkillInstallError(errors.join('；'));
-    if (body.length > MAX_BODY_CHARS) throw new SkillInstallError('正文超过 100000 字符');
+    if (body.length > MAX_BODY_CHARS) throw new SkillInstallError(hostI18n.t('errors.skills.bodyTooLong'));
     await this.assertNotBuiltin(name);
     const existing = await this.get(name);
-    if (input.mustExist && !existing) throw new SkillInstallError(`技能不存在：${name}`);
+    if (input.mustExist && !existing) throw new SkillInstallError(hostI18n.t('errors.skills.notFound', { name }));
     if (existing && existing.kind !== 'custom') {
-      throw new SkillInstallError(`${name} 是从 GitHub 安装的技能，不能覆盖；换个名字`);
+      throw new SkillInstallError(hostI18n.t('errors.skills.fromGithub', { name }));
     }
     const extra = input.files ?? [];
     for (const f of extra) {
       const segs = f.path.split('/');
       if (!f.path || f.path.startsWith('/') || segs.some((s) => s === '..' || s.startsWith('.'))) {
-        throw new SkillInstallError(`附带文件路径不合法：${f.path}`);
+        throw new SkillInstallError(hostI18n.t('errors.skills.badFilePath', { path: f.path }));
       }
-      if (f.path === 'SKILL.md') throw new SkillInstallError('SKILL.md 由 description 与正文生成，不要放进附带文件');
+      if (f.path === 'SKILL.md') throw new SkillInstallError(hostI18n.t('errors.skills.skillMdInFiles'));
       if (Buffer.byteLength(f.content) > MAX_FILE_BYTES) {
-        throw new SkillInstallError(`附带文件过大（>512KB）：${f.path}`);
+        throw new SkillInstallError(hostI18n.t('errors.skills.extraFileTooLarge', { path: f.path }));
       }
     }
     const dest = join(this.root, name);
@@ -202,13 +203,13 @@ export class SkillStore {
   }
 
   async setEnabled(name: string, enabled: boolean): Promise<SkillInfo> {
-    await this.assertNotBuiltin(name, '内置技能不能停用');
+    await this.assertNotBuiltin(name, hostI18n.t('errors.skills.builtinDisable'));
     this.db.prepare('UPDATE skill SET enabled = ? WHERE name = ?').run(enabled ? 1 : 0, name);
     return this.require(name);
   }
 
   async remove(name: string): Promise<void> {
-    await this.assertNotBuiltin(name, '内置技能不能删除');
+    await this.assertNotBuiltin(name, hostI18n.t('errors.skills.builtinRemove'));
     this.db.prepare('DELETE FROM skill WHERE name = ?').run(name);
     await rm(join(this.root, name), { recursive: true, force: true });
   }
@@ -245,12 +246,14 @@ export class SkillStore {
 
   private async require(name: string): Promise<SkillInfo> {
     const info = await this.get(name);
-    if (!info) throw new SkillInstallError(`技能不存在：${name}`);
+    if (!info) throw new SkillInstallError(hostI18n.t('errors.skills.notFound', { name }));
     return info;
   }
 
-  private async assertNotBuiltin(name: string, msg = `${name} 是内置技能的名字，换一个`): Promise<void> {
-    if ((await this.builtins()).some((b) => b.name === name)) throw new SkillInstallError(msg);
+  private async assertNotBuiltin(name: string, msg?: string): Promise<void> {
+    if ((await this.builtins()).some((b) => b.name === name)) {
+      throw new SkillInstallError(msg ?? hostI18n.t('errors.skills.builtinName', { name }));
+    }
   }
 
   /** 内置技能：builtinRoot 下每个含合法 SKILL.md 的子目录（读不到 / 不合法的跳过） */

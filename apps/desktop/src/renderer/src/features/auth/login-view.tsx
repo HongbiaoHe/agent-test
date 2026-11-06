@@ -7,6 +7,7 @@
 import { useQueryClient } from '@tanstack/react-query';
 import { KeyRound, Loader2, Mail, Sparkles } from 'lucide-react';
 import { useEffect, useRef, useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import DotField from '@/components/dot-field';
 import { Button } from '@/components/ui/button';
@@ -36,6 +37,7 @@ export function LoginView({
   onSkip: () => void;
   onDone: () => void;
 }) {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const [email, setEmail] = useState(lastEmail);
   const [code, setCode] = useState('');
@@ -57,7 +59,7 @@ export function LoginView({
     setNotice('');
     const value = email.trim();
     if (!EMAIL_RE.test(value)) {
-      setError('请输入有效的邮箱地址');
+      setError(t('settings.login.invalidEmail'));
       return;
     }
     setBusy(true);
@@ -67,9 +69,9 @@ export function LoginView({
       setCountdown(60);
       if (r.devCode) {
         setCode(r.devCode);
-        setNotice(`测试环境：验证码是 ${r.devCode}（已自动填入）`);
+        setNotice(t('settings.login.devCode', { code: r.devCode }));
       } else {
-        setNotice(`验证码已发送到 ${value}`);
+        setNotice(t('settings.login.codeSent', { email: value }));
       }
       requestAnimationFrame(() => codeRef.current?.focus());
     } catch (e) {
@@ -82,7 +84,7 @@ export function LoginView({
   async function verify() {
     setError('');
     if (code.trim().length !== 6) {
-      setError('请输入 6 位验证码');
+      setError(t('settings.login.invalidCode'));
       return;
     }
     setBusy(true);
@@ -94,10 +96,10 @@ export function LoginView({
         // 本地存储不可用：下次不预填而已
       }
       await qc.invalidateQueries({ queryKey: WEB_ACCOUNT_KEY });
-      toast.success(`已登录 ${s.email ?? ''}`);
+      toast.success(t('settings.login.signedInAs', { email: s.email ?? '' }));
       onDone();
     } catch (e) {
-      setError(e instanceof Error ? e.message : '验证失败或验证码无效');
+      setError(e instanceof Error ? e.message : t('settings.login.verifyFailed'));
       setBusy(false);
     }
   }
@@ -114,8 +116,8 @@ export function LoginView({
             <Sparkles className="size-5" />
           </div>
           <div className="space-y-1">
-            <h1 className="text-xl font-semibold tracking-tight">欢迎使用 Spark</h1>
-            <p className="text-sm text-muted-foreground">登录 Web 账号，解锁生图、生视频与配音</p>
+            <h1 className="text-xl font-semibold tracking-tight">{t('settings.login.welcome')}</h1>
+            <p className="text-sm text-muted-foreground">{t('settings.login.subtitle')}</p>
           </div>
         </div>
 
@@ -125,8 +127,8 @@ export function LoginView({
             <Input
               type="email"
               autoComplete="email"
-              placeholder="邮箱地址"
-              aria-label="邮箱地址"
+              placeholder={t('settings.login.email')}
+              aria-label={t('settings.login.email')}
               value={email}
               onChange={(e) => {
                 setEmail(e.target.value);
@@ -150,7 +152,7 @@ export function LoginView({
                 disabled={busy}
                 className="absolute top-1/2 right-3 -translate-y-1/2 text-xs font-medium text-primary hover:underline"
               >
-                修改
+                {t('settings.login.changeEmail')}
               </button>
             )}
           </div>
@@ -163,8 +165,8 @@ export function LoginView({
                   ref={codeRef}
                   inputMode="numeric"
                   maxLength={6}
-                  placeholder="6 位验证码"
-                  aria-label="验证码"
+                  placeholder={t('settings.login.codePlaceholder')}
+                  aria-label={t('settings.login.code')}
                   value={code}
                   onChange={(e) => {
                     setCode(e.target.value.replace(/\D/g, ''));
@@ -178,9 +180,9 @@ export function LoginView({
                 />
               </div>
               <div className="flex items-center justify-between px-1 text-xs text-muted-foreground">
-                <span>5 分钟内有效</span>
+                <span>{t('settings.login.codeValidity')}</span>
                 {countdown > 0 ? (
-                  <span>{countdown} 秒后可重新发送</span>
+                  <span>{t('settings.login.resendIn', { count: countdown })}</span>
                 ) : (
                   <button
                     type="button"
@@ -188,7 +190,7 @@ export function LoginView({
                     disabled={busy}
                     className="font-medium text-primary hover:underline disabled:opacity-50"
                   >
-                    重新发送
+                    {t('settings.login.resend')}
                   </button>
                 )}
               </div>
@@ -205,12 +207,12 @@ export function LoginView({
           <Button className="h-11 w-full text-sm" onClick={submit} disabled={busy}>
             {busy ? (
               <>
-                <Loader2 className="size-4 animate-spin" /> 请稍候…
+                <Loader2 className="size-4 animate-spin" /> {t('settings.login.pleaseWait')}
               </>
             ) : showCode ? (
-              '验证并登录'
+              t('settings.login.verifyAndSignIn')
             ) : (
-              '继续'
+              t('settings.login.continue')
             )}
           </Button>
         </div>
@@ -222,9 +224,9 @@ export function LoginView({
             disabled={busy}
             className="text-sm font-medium text-muted-foreground underline-offset-4 hover:text-foreground hover:underline"
           >
-            先跳过，不登录使用
+            {t('settings.login.skip')}
           </button>
-          <p className="text-xs text-muted-foreground">不登录也能对话、使用技能和连接器，只是不能生图、生视频和配音</p>
+          <p className="text-xs text-muted-foreground">{t('settings.login.skipHint')}</p>
         </div>
       </Card>
     </main>

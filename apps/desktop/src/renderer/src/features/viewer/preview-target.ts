@@ -1,15 +1,34 @@
 /**
  * 对话里的链接 → 预览目标。纯函数，不碰 DOM / IPC（单测见 preview-target.test.ts）。
  *
- * - http(s) 链接：按 URL 路径的扩展名判断图片 / 视频 / 音频 / Markdown / 文本；认不出的返回 null（交给系统浏览器）；
- * - 其余（相对路径、本机绝对路径、file://）：当成当前会话工作区里的文件，交给 workspace.read 判断类型；
- *   绝对路径必须落在工作区目录下，否则返回 null（agent-host 也只读得到工作区内的文件）。
+ * - http(s) 链接：按 URL 路径的扩展名判断图片 / 视频 / 音频 / Markdown / 文本；
+ *   认不出的本机服务（localhost / 127.0.0.1）当网页预览，其余返回 null（交给系统浏览器）；
+ * - 其余（相对路径、本机绝对路径、file://）：当成当前会话工作区里的文件——.html 当网页预览，
+ *   其余交给 workspace.read 判断类型；绝对路径必须落在工作区目录下，否则返回 null（agent-host 也只读得到工作区内的文件）。
  */
 export type RemoteKind = 'image' | 'video' | 'audio' | 'markdown' | 'text';
 
+/**
+ * 网页预览（agent 的 preview_page、链接、工作区面板共用）：
+ * - file：工作区里的静态 HTML，path 是工作区相对路径（经 main 的 spark-preview:// 源加载）；
+ * - port：本机运行中的 web 服务，path 是应用内路径（含查询串 / 锚点），直接加载 http://localhost:端口。
+ */
+export type PreviewSpec =
+  | { kind: 'file'; path: string; title: string }
+  | { kind: 'port'; port: number; path: string; title: string };
+
 export type PreviewTarget =
   | { source: 'url'; url: string; kind: RemoteKind; name: string }
-  | { source: 'workspace'; path: string; name: string };
+  | { source: 'workspace'; path: string; name: string }
+  | { source: 'site'; spec: PreviewSpec };
+
+/** 弹窗与卡片上展示的位置：文件给工作区路径，端口给 localhost:端口/路径 */
+export function previewLocation(spec: PreviewSpec): string {
+  return spec.kind === 'file' ? `/${spec.path}` : `localhost:${spec.port}${spec.path}`;
+}
+
+const LOCAL_HOSTS = new Set(['localhost', '127.0.0.1']);
+const HTML_RE = /\.html?$/i;
 
 const EXT_KIND: Record<string, RemoteKind> = {};
 const register = (kind: RemoteKind, exts: string) => {
@@ -56,7 +75,7 @@ export function previewTargetOf(href: string, workspaceDir: string | null): Prev
 
   if (/^https?:\/\//i.test(raw)) {
     const kind = remoteKindOf(raw);
-    if (!kind) return null;
+    if (!kind) return localSiteOf(raw);
     const name = safeDecode(new URL(raw).pathname.split('/').pop() ?? '') || raw;
     return { source: 'url', url: raw, kind, name };
   }
@@ -82,5 +101,23 @@ export function previewTargetOf(href: string, workspaceDir: string | null): Prev
   }
   path = path.replace(/^(\.\/)+/, '');
   if (!path || path.endsWith('/')) return null;
-  return { source: 'workspace', path, name: path.split('/').pop() ?? path };
+  const name = path.split('/').pop() ?? path;
+  if (HTML_RE.test(path)) return { source: 'site', spec: { kind: 'file', path, title: name } };
+  return { source: 'workspace', path, name };
+}
+
+/** http(s)://localhost:端口/… → 本机服务网页预览；https、非本机、URL 不合法返回 null */
+function localSiteOf(raw: string): PreviewTarget | null {
+  let url: URL;
+  try {
+    url = new URL(raw);
+  } catch {
+    return null;
+  }
+  if (url.protocol !== 'http:' || !LOCAL_HOSTS.has(url.hostname)) return null;
+  const port = url.port ? Number(url.port) : 80;
+  return {
+    source: 'site',
+    spec: { kind: 'port', port, path: `${url.pathname}${url.search}${url.hash}`, title: url.host },
+  };
 }

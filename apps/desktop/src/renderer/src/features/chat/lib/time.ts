@@ -1,30 +1,59 @@
-/** 对话区的时间 / 耗时格式化（界面是英文，固定 en-US + 24 小时制，不随浏览器语言漂移）。 */
+/** 对话区的时间 / 耗时格式化：日期按界面语言（currentLocale），时刻固定 24 小时制。 */
+import { currentLocale, i18n } from "@/lib/i18n";
 
-const LOCALE = "en-US";
+import type { Locale } from "../../../../../shared/i18n";
 
-const CLOCK = new Intl.DateTimeFormat(LOCALE, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" });
-const CLOCK_SECONDS = new Intl.DateTimeFormat(LOCALE, {
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hourCycle: "h23",
-});
-const MONTH_DAY = new Intl.DateTimeFormat(LOCALE, { month: "short", day: "numeric" });
-const MONTH_DAY_YEAR = new Intl.DateTimeFormat(LOCALE, {
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-});
-const FULL = new Intl.DateTimeFormat(LOCALE, {
-  weekday: "short",
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
-  hourCycle: "h23",
-});
+/** 界面语言可能在运行中切换：格式化器按语言懒建并缓存 */
+function makeFormatters(locale: Locale) {
+  return {
+    clock: new Intl.DateTimeFormat(locale, { hour: "2-digit", minute: "2-digit", hourCycle: "h23" }),
+    clockSeconds: new Intl.DateTimeFormat(locale, {
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }),
+    monthDay: new Intl.DateTimeFormat(locale, { month: "short", day: "numeric" }),
+    monthDayYear: new Intl.DateTimeFormat(locale, { month: "short", day: "numeric", year: "numeric" }),
+    monthDayClock: new Intl.DateTimeFormat(locale, {
+      month: "short",
+      day: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }),
+    monthDayYearClock: new Intl.DateTimeFormat(locale, {
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      hourCycle: "h23",
+    }),
+    full: new Intl.DateTimeFormat(locale, {
+      weekday: "short",
+      month: "short",
+      day: "numeric",
+      year: "numeric",
+      hour: "2-digit",
+      minute: "2-digit",
+      second: "2-digit",
+      hourCycle: "h23",
+    }),
+  };
+}
+
+const cache = new Map<Locale, ReturnType<typeof makeFormatters>>();
+
+function fmt(): ReturnType<typeof makeFormatters> {
+  const locale = currentLocale();
+  let f = cache.get(locale);
+  if (!f) {
+    f = makeFormatters(locale);
+    cache.set(locale, f);
+  }
+  return f;
+}
 
 const DAY_MS = 86_400_000;
 
@@ -38,10 +67,12 @@ export function isSameDay(a: number, b: number): boolean {
   return startOfDay(a) === startOfDay(b);
 }
 
+function sameYear(a: number, b: number): boolean {
+  return new Date(a).getFullYear() === new Date(b).getFullYear();
+}
+
 function dateLabel(at: number, now: number): string {
-  return new Date(at).getFullYear() === new Date(now).getFullYear()
-    ? MONTH_DAY.format(at)
-    : MONTH_DAY_YEAR.format(at);
+  return sameYear(at, now) ? fmt().monthDay.format(at) : fmt().monthDayYear.format(at);
 }
 
 /**
@@ -58,25 +89,26 @@ export function formatDuration(ms: number, live = false): string {
   return `${Math.floor(mins / 60)}h ${mins % 60}m`;
 }
 
-/** 消息旁的短时刻：今天只写 14:32，其它日子带日期（Oct 22, 14:32）。 */
+/** 消息旁的短时刻：今天只写 14:32，其它日子带日期（Oct 22, 14:32 / 10月22日 14:32）。 */
 export function formatMessageTime(at: number, now: number): string {
-  return isSameDay(at, now) ? CLOCK.format(at) : `${dateLabel(at, now)}, ${CLOCK.format(at)}`;
+  if (isSameDay(at, now)) return fmt().clock.format(at);
+  return sameYear(at, now) ? fmt().monthDayClock.format(at) : fmt().monthDayYearClock.format(at);
 }
 
 /** 完整日期时间（Tooltip 用）：Fri, Oct 24, 2026, 14:32:05。 */
 export function formatFullDateTime(at: number): string {
-  return FULL.format(at);
+  return fmt().full.format(at);
 }
 
 /** 只要时分秒（同一天内的结束时刻）。 */
 export function formatClockSeconds(at: number): string {
-  return CLOCK_SECONDS.format(at);
+  return fmt().clockSeconds.format(at);
 }
 
-/** 日期分隔线文案：Today / Yesterday / Oct 22（跨年带年份）。 */
+/** 日期分隔线文案：今天 / 昨天 / 10月22日（跨年带年份）。 */
 export function formatDayLabel(at: number, now: number): string {
   const diff = Math.round((startOfDay(now) - startOfDay(at)) / DAY_MS);
-  if (diff === 0) return "Today";
-  if (diff === 1) return "Yesterday";
+  if (diff === 0) return i18n.t("chat.time.today");
+  if (diff === 1) return i18n.t("chat.time.yesterday");
   return dateLabel(at, now);
 }

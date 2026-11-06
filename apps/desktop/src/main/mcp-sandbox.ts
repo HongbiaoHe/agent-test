@@ -12,17 +12,19 @@
  * 与 Web 的差异：嵌入方是本应用自己的窗口（file:// 源是不透明源，postMessage 无法按源定向），
  * 所以不做 referrer 白名单，改为只认 window.parent 这个固定的消息来源、向它发消息时用 '*'。
  */
-import { protocol } from 'electron';
+import { type CustomScheme, protocol } from 'electron';
 import { MCP_SANDBOX_SCHEME } from '../shared/mcp';
 
 const HOST_RE = /^m-[a-f0-9]{16}$/;
 
-/** 必须在 app ready 之前调用：standard + secure 让它像 https 一样有独立源、可用 Web API */
-export function registerMcpSandboxScheme(): void {
-  protocol.registerSchemesAsPrivileged([
-    { scheme: MCP_SANDBOX_SCHEME, privileges: { standard: true, secure: true } },
-  ]);
-}
+/**
+ * 必须在 app ready 之前注册（main/index.ts 与其它特权协议一起，registerSchemesAsPrivileged 只能调一次）：
+ * standard + secure 让它像 https 一样有独立源、可用 Web API
+ */
+export const MCP_SANDBOX_PRIVILEGES: CustomScheme = {
+  scheme: MCP_SANDBOX_SCHEME,
+  privileges: { standard: true, secure: true },
+};
 
 /** `_meta.ui.csp`（规范 McpUiResourceCsp） */
 interface UiResourceCsp {

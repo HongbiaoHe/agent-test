@@ -1,5 +1,6 @@
 import { Check, ChevronDown, Eye, ShieldCheck, Zap } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 
@@ -7,18 +8,6 @@ import {
   WORKSPACE_PERMISSIONS,
   type WorkspacePermission,
 } from "../../../../../shared/workspace";
-
-export const PERMISSION_LABEL: Record<WorkspacePermission, string> = {
-  read_only: "Read-only",
-  ask: "Ask",
-  auto: "Auto",
-};
-
-const PERMISSION_HINT: Record<WorkspacePermission, string> = {
-  read_only: "Can read files only — writes and commands are refused",
-  ask: "Asks before every file write and command",
-  auto: "Writes files and runs commands in this folder without asking",
-};
 
 const PERMISSION_ICON = { read_only: Eye, ask: ShieldCheck, auto: Zap } as const;
 
@@ -35,8 +24,10 @@ export function PermissionSwitcher({
   onChange: (permission: WorkspacePermission) => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const Icon = PERMISSION_ICON[value];
+  const label = t(`chat.permission.label.${value}`);
 
   return (
     <div className="relative">
@@ -47,12 +38,12 @@ export function PermissionSwitcher({
         disabled={disabled}
         aria-haspopup="listbox"
         aria-expanded={open}
-        aria-label={`Permission: ${PERMISSION_LABEL[value]}`}
+        aria-label={t("chat.permission.button", { label })}
         onClick={() => setOpen((v) => !v)}
         className="text-muted-foreground hover:text-foreground"
       >
         <Icon />
-        <span>{PERMISSION_LABEL[value]}</span>
+        <span>{label}</span>
         <ChevronDown className="opacity-60" />
       </Button>
 
@@ -67,7 +58,7 @@ export function PermissionSwitcher({
           />
           <div
             role="listbox"
-            aria-label="Permission"
+            aria-label={t("chat.permission.list")}
             className="absolute bottom-full left-0 z-50 mb-2 w-80 rounded-xl border bg-popover p-1.5 shadow-lg"
           >
             {WORKSPACE_PERMISSIONS.map((p) => {
@@ -90,8 +81,8 @@ export function PermissionSwitcher({
                   <Check className={`size-3.5 shrink-0 ${active ? "opacity-100" : "opacity-0"}`} />
                   <ItemIcon className="size-3.5 shrink-0 text-muted-foreground" />
                   <span className="min-w-0 flex-1">
-                    <span className="block text-sm font-medium">{PERMISSION_LABEL[p]}</span>
-                    <span className="block text-xs text-muted-foreground">{PERMISSION_HINT[p]}</span>
+                    <span className="block text-sm font-medium">{t(`chat.permission.label.${p}`)}</span>
+                    <span className="block text-xs text-muted-foreground">{t(`chat.permission.hint.${p}`)}</span>
                   </span>
                 </button>
               );

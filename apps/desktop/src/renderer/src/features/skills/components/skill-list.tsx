@@ -2,6 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Loader2, PackageOpen, Pencil, RefreshCw, Trash2 } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -25,7 +26,6 @@ import {
 } from "@/lib/api";
 
 import { SkillDetailSheet, skillDetailKey } from "./skill-detail-sheet";
-import { KIND_LABEL } from "./skill-kind";
 
 export const SKILLS_QUERY_KEY = ["skills"] as const;
 
@@ -45,6 +45,7 @@ export function SkillList({
   /** 编辑某个手写技能（由页面打开编辑器） */
   onEdit: (name: string) => void;
 }) {
+  const { t } = useTranslation();
   const [detailName, setDetailName] = useState<string | null>(null);
 
   const query = useQuery({
@@ -68,7 +69,7 @@ export function SkillList({
         <CardContent className="py-8 text-center text-sm text-destructive">
           {query.error instanceof Error
             ? query.error.message
-            : "Failed to load skills"}
+            : t("extensions.skills.list.loadFailed")}
         </CardContent>
       </Card>
     );
@@ -82,7 +83,7 @@ export function SkillList({
         <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
           <PackageOpen className="size-6 text-muted-foreground" />
           <p className="text-sm text-muted-foreground">
-            No skills yet — install one from GitHub or write your own.
+            {t("extensions.skills.list.empty")}
           </p>
         </CardContent>
       </Card>
@@ -104,7 +105,7 @@ export function SkillList({
       <Card>
         <CardContent className="flex flex-col items-center gap-2 py-10 text-center">
           <p className="text-sm text-muted-foreground">
-            No skills match your filters.
+            {t("extensions.skills.list.noMatch")}
           </p>
         </CardContent>
       </Card>
@@ -124,7 +125,7 @@ export function SkillList({
       {kinds.map((kind) => (
         <section key={kind} className="space-y-2">
           <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-            {KIND_LABEL[kind]}
+            {t(`extensions.skills.kinds.${kind}`)}
           </h3>
           <div className="space-y-3">
             {groups
@@ -157,6 +158,7 @@ function SkillCard({
   onOpenDetail: () => void;
   onEdit: () => void;
 }) {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const isBuiltin = skill.kind === "builtin";
   const [confirming, setConfirming] = useState(false);
@@ -180,7 +182,7 @@ function SkillCard({
   const updateMut = useMutation({
     mutationFn: () => {
       const src = parseGithubSource(skill.source);
-      if (!src) throw new Error("Unrecognized source format");
+      if (!src) throw new Error(t("extensions.skills.list.unrecognizedSource"));
       return installSkill(src);
     },
     onSuccess: () => {
@@ -196,7 +198,7 @@ function SkillCard({
   ) instanceof Error
     ? ((toggleMut.error ?? deleteMut.error ?? updateMut.error) as Error)
         .message
-    : "Action failed";
+    : t("extensions.skills.list.actionFailed");
 
   return (
     <Card
@@ -206,7 +208,7 @@ function SkillCard({
       )}
       role="button"
       tabIndex={0}
-      aria-label={`View ${skill.name} details`}
+      aria-label={t("extensions.skills.list.viewDetails", { name: skill.name })}
       onClick={onOpenDetail}
       onKeyDown={(e) => {
         // 只响应卡片自身的按键：内部 Switch/按钮的 keydown 会冒泡上来，
@@ -223,11 +225,11 @@ function SkillCard({
           <div className="flex items-center gap-2">
             <span className="truncate text-sm font-semibold">{skill.name}</span>
             <Badge variant={isBuiltin ? "secondary" : "outline"}>
-              {KIND_LABEL[skill.kind]}
+              {t(`extensions.skills.kinds.${skill.kind}`)}
             </Badge>
           </div>
           <p className="line-clamp-2 text-sm text-muted-foreground">
-            {skill.description || "(No description)"}
+            {skill.description || t("extensions.skills.list.noDescription")}
           </p>
           {hasError && (
             <p className="text-xs text-destructive" role="alert">
@@ -250,14 +252,14 @@ function SkillCard({
                     <Button
                       variant="ghost"
                       size="icon-sm"
-                      aria-label="Edit skill"
+                      aria-label={t("extensions.skills.list.edit")}
                       onClick={onEdit}
                     />
                   }
                 >
                   <Pencil />
                 </TooltipTrigger>
-                <TooltipContent>Edit</TooltipContent>
+                <TooltipContent>{t("common.edit")}</TooltipContent>
               </Tooltip>
             ) : (
               <Tooltip>
@@ -266,7 +268,7 @@ function SkillCard({
                     <Button
                       variant="ghost"
                       size="icon-sm"
-                      aria-label="Update skill"
+                      aria-label={t("extensions.skills.list.update")}
                       disabled={updateMut.isPending}
                       onClick={() => updateMut.mutate()}
                     />
@@ -278,12 +280,14 @@ function SkillCard({
                     <RefreshCw />
                   )}
                 </TooltipTrigger>
-                <TooltipContent>Reinstall from source</TooltipContent>
+                <TooltipContent>{t("extensions.skills.list.reinstall")}</TooltipContent>
               </Tooltip>
             )}
 
             <Switch
-              aria-label={skill.enabled ? "Disable skill" : "Enable skill"}
+              aria-label={
+                skill.enabled ? t("extensions.skills.list.disable") : t("extensions.skills.list.enable")
+              }
               checked={skill.enabled}
               disabled={toggleMut.isPending}
               onCheckedChange={(checked) => toggleMut.mutate(checked)}
@@ -299,7 +303,7 @@ function SkillCard({
                   {deleteMut.isPending ? (
                     <Loader2 className="size-4 animate-spin" />
                   ) : (
-                    "Confirm delete"
+                    t("extensions.skills.list.confirmDelete")
                   )}
                 </Button>
                 <Button
@@ -308,14 +312,14 @@ function SkillCard({
                   disabled={deleteMut.isPending}
                   onClick={() => setConfirming(false)}
                 >
-                  Cancel
+                  {t("common.cancel")}
                 </Button>
               </div>
             ) : (
               <Button
                 variant="ghost"
                 size="icon-sm"
-                aria-label="Delete skill"
+                aria-label={t("extensions.skills.list.delete")}
                 onClick={() => setConfirming(true)}
               >
                 <Trash2 />

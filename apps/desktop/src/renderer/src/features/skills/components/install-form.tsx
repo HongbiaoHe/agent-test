@@ -1,6 +1,7 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { Download, FolderInput, Loader2 } from "lucide-react";
 import { useState } from "react";
+import { Trans, useTranslation } from "react-i18next";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
@@ -22,13 +23,14 @@ import { SKILLS_QUERY_KEY } from "./skill-list";
  * 整条 `npx skills add …` 命令直接粘进来也行。另可从本机文件夹导入。
  */
 export function InstallForm() {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const [source, setSource] = useState("");
 
   const onInstalled = (names: string[]) => {
     void qc.invalidateQueries({ queryKey: SKILLS_QUERY_KEY });
     void qc.invalidateQueries({ queryKey: ["commands"] });
-    toast.success(`Installed ${names.join(", ")}`);
+    toast.success(t("extensions.skills.install.installed", { names: names.join(", ") }));
   };
 
   const installMut = useMutation({
@@ -59,18 +61,18 @@ export function InstallForm() {
   return (
     <Card>
       <CardHeader>
-        <CardTitle className="text-base">Install a skill</CardTitle>
+        <CardTitle className="text-base">{t("extensions.skills.install.title")}</CardTitle>
         <CardDescription>
-          Same syntax as <code className="font-mono">npx skills add</code>: a GitHub repository
-          (owner/repo), optionally <code className="font-mono">@skill</code> or{" "}
-          <code className="font-mono">--skill name</code>, or a full GitHub URL. You can also type{" "}
-          <code className="font-mono">/skills add …</code> in any chat.
+          <Trans
+            i18nKey="extensions.skills.install.description"
+            components={{ code: <code className="font-mono" /> }}
+          />
         </CardDescription>
       </CardHeader>
       <CardContent className="space-y-4">
         <div className="flex flex-col gap-2 sm:flex-row">
           <Input
-            aria-label="Skill source"
+            aria-label={t("extensions.skills.install.sourceLabel")}
             placeholder="anthropics/skills --skill skill-creator"
             className="font-mono"
             value={source}
@@ -83,11 +85,11 @@ export function InstallForm() {
           <Button onClick={submit} disabled={!canSubmit || installMut.isPending}>
             {installMut.isPending ? (
               <>
-                <Loader2 className="size-4 animate-spin" /> Installing…
+                <Loader2 className="size-4 animate-spin" /> {t("extensions.skills.install.installing")}
               </>
             ) : (
               <>
-                <Download className="size-4" /> Install
+                <Download className="size-4" /> {t("extensions.skills.install.install")}
               </>
             )}
           </Button>
@@ -96,7 +98,7 @@ export function InstallForm() {
             onClick={() => folderMut.mutate()}
             disabled={folderMut.isPending}
           >
-            <FolderInput className="size-4" /> Import folder
+            <FolderInput className="size-4" /> {t("extensions.skills.install.importFolder")}
           </Button>
         </div>
 
@@ -104,7 +106,7 @@ export function InstallForm() {
           <p className="text-sm text-destructive" role="alert">
             {installMut.error instanceof Error
               ? installMut.error.message
-              : "Install failed, please try again"}
+              : t("extensions.skills.install.failed")}
           </p>
         )}
       </CardContent>

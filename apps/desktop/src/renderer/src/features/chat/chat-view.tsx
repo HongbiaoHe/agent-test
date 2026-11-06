@@ -5,6 +5,7 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { agent } from '@/lib/agent-client';
 import { asThinkingLevel, type ThinkingLevel } from '@/lib/thinking-level';
@@ -12,13 +13,28 @@ import type { HitlDecision } from '../../../../shared/rpc';
 import type { WorkspacePermission } from '../../../../shared/workspace';
 import { attachmentTypeOf } from '@/components/attachments/attachments';
 import { ChatThread } from './components/chat-thread';
+import { ConversationTitleMenu, ConversationToolbarIcons } from './components/conversation-toolbar';
+import { PreviewAutoOpen } from './components/preview-card';
 import { DetailPanel } from './components/detail-panel';
 import { conversationKey, useConversation } from './hooks/use-conversation';
 import { DEFAULT_MODEL } from './lib/models';
 import type { ThreadItem } from './lib/thread';
 import { FileViewerProvider } from '../viewer/file-viewer';
 
-export function ChatView({ id, hasKey }: { id: string; hasKey: boolean }) {
+export function ChatView({
+  id,
+  hasKey,
+  headerInset,
+  onDeleted,
+}: {
+  id: string;
+  hasKey: boolean;
+  /** 侧栏收起时顶栏左侧的让位 */
+  headerInset?: string;
+  /** 在顶栏菜单里删除了本会话 */
+  onDeleted: () => void;
+}) {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const thread = useConversation(id);
   // 标题同 Web：取侧栏会话列表里的这一条（发送后 goal 回填，列表随 conversations-changed 刷新）
@@ -53,7 +69,7 @@ export function ChatView({ id, hasKey }: { id: string; hasKey: boolean }) {
 
   function handleSend(text: string, attachments: string[]) {
     if (!hasKey) {
-      toast.error('当前模型还没有填写 Key，请先到设置里填写');
+      toast.error(t('chat.view.noKey'));
       return;
     }
     thread.pushUserMessage(
@@ -85,13 +101,27 @@ export function ChatView({ id, hasKey }: { id: string; hasKey: boolean }) {
     : undefined;
   const model = conv?.model ?? DEFAULT_MODEL;
   const thinkingLevel: ThinkingLevel = asThinkingLevel(conv?.thinkingLevel) ?? 'auto';
+  const untitled = t('shell.conversation.untitled');
+  const title = conv ? conv.title ?? (conv.goal || untitled) : untitled;
 
   return (
     // 对话里的链接在这里预览：带会话 id 与工作区，相对路径能读到工作区文件
     <FileViewerProvider conversationId={id} workspaceDir={conv?.workspaceDir ?? null}>
+      <PreviewAutoOpen conversationId={id} />
       <div className="flex h-full w-full overflow-clip">
         <ChatThread
-          title={conv ? conv.title ?? (conv.goal || 'New conversation') : 'New conversation'}
+          title={title}
+          headerInset={headerInset}
+          headerTitle={
+            <ConversationTitleMenu
+              conversationId={id}
+              title={title}
+              pinned={(conv?.pinnedAt ?? null) !== null}
+              workspaceDir={conv?.workspaceDir ?? null}
+              onDeleted={onDeleted}
+            />
+          }
+          headerTools={<ConversationToolbarIcons items={thread.items} />}
           conversationId={id}
           items={thread.items}
           approval={thread.approval}
@@ -123,7 +153,6 @@ export function ChatView({ id, hasKey }: { id: string; hasKey: boolean }) {
           onModelChange={(m) => update.mutate({ model: m })}
           thinkingLevel={thinkingLevel}
           onThinkingLevelChange={(level) => update.mutate({ thinkingLevel: level === 'auto' ? null : level })}
-          onOpenSidebar={() => undefined}
           tokens={thread.tokens}
           workspaceDir={conv?.workspaceDir ?? null}
           permission={conv?.permission ?? 'ask'}

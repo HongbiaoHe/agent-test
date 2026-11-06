@@ -4,6 +4,7 @@
  */
 import { Plus, Search } from 'lucide-react';
 import { useState } from 'react';
+import { Trans, useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Input } from '@/components/ui/input';
 import { Tabs, TabsList, TabsTrigger } from '@/components/ui/tabs';
@@ -15,6 +16,7 @@ const SOURCES: readonly SourceFilter[] = ['all', 'builtin', 'github', 'custom'];
 const isSource = (v: unknown): v is SourceFilter => SOURCES.some((s) => s === v);
 
 export function SkillsSettings() {
+  const { t } = useTranslation();
   const [search, setSearch] = useState('');
   const [source, setSource] = useState<SourceFilter>('all');
   const [editor, setEditor] = useState<CustomSkillEditorTarget | null>(null);
@@ -23,10 +25,10 @@ export function SkillsSettings() {
     <div className="space-y-6">
       <div className="flex items-center justify-between gap-4">
         <p className="text-sm text-muted-foreground">
-          也可以在对话里用 <code className="font-mono">/create-skills</code> 让 agent 帮你写一个技能。
+          <Trans i18nKey="extensions.skills.createHint" components={{ code: <code className="font-mono" /> }} />
         </p>
         <Button className="shrink-0" onClick={() => setEditor({ mode: 'create' })}>
-          <Plus /> New skill
+          <Plus /> {t('extensions.skills.newSkill')}
         </Button>
       </div>
 
@@ -36,7 +38,7 @@ export function SkillsSettings() {
         <div className="relative flex-1">
           <Search className="pointer-events-none absolute top-1/2 left-2.5 size-3.5 -translate-y-1/2 text-muted-foreground" />
           <Input
-            placeholder="Search skills…"
+            placeholder={t('extensions.skills.searchPlaceholder')}
             className="h-9 pl-8"
             value={search}
             onChange={(e) => setSearch(e.target.value)}
@@ -44,10 +46,10 @@ export function SkillsSettings() {
         </div>
         <Tabs value={source} onValueChange={(v) => isSource(v) && setSource(v)}>
           <TabsList>
-            <TabsTrigger value="all">All</TabsTrigger>
-            <TabsTrigger value="builtin">Built-in</TabsTrigger>
-            <TabsTrigger value="github">GitHub</TabsTrigger>
-            <TabsTrigger value="custom">Custom</TabsTrigger>
+            <TabsTrigger value="all">{t('extensions.skills.filterAll')}</TabsTrigger>
+            <TabsTrigger value="builtin">{t('extensions.skills.kinds.builtin')}</TabsTrigger>
+            <TabsTrigger value="github">{t('extensions.skills.kinds.github')}</TabsTrigger>
+            <TabsTrigger value="custom">{t('extensions.skills.kinds.custom')}</TabsTrigger>
           </TabsList>
         </Tabs>
       </div>

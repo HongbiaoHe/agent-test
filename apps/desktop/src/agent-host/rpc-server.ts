@@ -15,6 +15,7 @@ import {
 import { validateWorkspaceDir } from '../shared/workspace';
 import type { ConversationRepo } from './db/conversations';
 import type { BackgroundService } from './background/background-service';
+import { hostI18n } from './i18n';
 import { McpError, type McpStore } from './mcp/mcp-store';
 import type { RunConfig, RunService } from './run/run-service';
 import { parseSkillSource, skillsAddArgs } from './skills/github-install';
@@ -36,7 +37,7 @@ export interface Services {
 }
 
 function requireWeb(s: Services): WebApi {
-  if (!s.webApi) throw new Error('还没有登录 Web 账号：在设置里登录后才能使用生图 / 生视频 / 配音');
+  if (!s.webApi) throw new Error(hostI18n.t('errors.web.notSignedIn'));
   return s.webApi;
 }
 
@@ -56,9 +57,9 @@ function modelOptions(): ModelOption[] {
 /** 会话工作区必须是已存在的目录（由文件夹选择器选出），路径约束同 GuardedSandbox */
 async function assertWorkspaceDir(dir: string): Promise<string> {
   const err = validateWorkspaceDir(dir);
-  if (err) throw new Error(err);
+  if (err) throw new Error(hostI18n.t(`errors.workspace.${err}`));
   const st = await stat(dir).catch(() => null);
-  if (!st?.isDirectory()) throw new Error(`目录不存在：${dir}`);
+  if (!st?.isDirectory()) throw new Error(hostI18n.t('errors.workspace.dirNotFound', { dir }));
   return dir;
 }
 
@@ -95,14 +96,16 @@ export function createHandlers(s: Services): Handlers {
     'conversations.update': async (p) => {
       if (p.workspaceDir) s.repo.setWorkspaceDir(p.id, await assertWorkspaceDir(p.workspaceDir));
       if (p.permission) s.repo.setPermission(p.id, p.permission);
-      const c = s.repo.update(p.id, {
-        title: p.title,
-        model: p.model,
-        thinkingLevel: p.thinkingLevel,
-      });
+      if (p.pinned !== undefined) s.repo.setPinned(p.id, p.pinned);
+      // 只改置顶 / 权限 / 目录时不走 update：它会刷新 updated_at，置顶会让会话跳到「今天」
+      const changesFields = p.title !== undefined || p.model !== undefined || p.thinkingLevel !== undefined;
+      const c = changesFields
+        ? s.repo.update(p.id, { title: p.title, model: p.model, thinkingLevel: p.thinkingLevel })
+        : s.repo.require(p.id);
       s.listChanged();
       return c;
     },
+    'conversations.search': (p) => s.repo.search(p.query),
     'conversations.tokenReport': (p) => s.repo.tokenReport(p.id),
     'background.list': (p) => s.background.list(p.conversationId),
     'media.list': (p) =>
@@ -157,7 +160,7 @@ export function createHandlers(s: Services): Handlers {
     },
     'skills.saveCustom': async (p) => {
       if (p.mode === 'create' && (await s.skills.get(p.name))) {
-        throw new Error(`已经有名为 ${p.name} 的技能`);
+        throw new Error(hostI18n.t('errors.skills.alreadyExists', { name: p.name }));
       }
       const v = await s.skills.saveCustom({
         name: p.name,

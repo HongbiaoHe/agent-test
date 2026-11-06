@@ -2,6 +2,7 @@
 
 import { Brain, Check, ChevronDown } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
@@ -36,6 +37,7 @@ export function ThinkingSwitcher({
   /** 触发按钮的尺寸微调（各输入框工具条的按钮高度不同） */
   className?: string;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const options = thinkingLevelsFor(model);
 
@@ -48,7 +50,7 @@ export function ThinkingSwitcher({
             type="button"
             variant="ghost"
             size="sm"
-            aria-label="Thinking depth"
+            aria-label={t("agent.thinking.label")}
             className={cn(
               "h-8 gap-1.5 px-2 text-xs text-muted-foreground hover:text-foreground data-popup-open:bg-accent data-popup-open:text-foreground",
               className,
@@ -63,7 +65,7 @@ export function ThinkingSwitcher({
       {/* Portal 渲染到 body：不受聊天栏 overflow 裁剪；工具栏 flex-wrap 换行后位置会变，
           由 Positioner 的碰撞避让自动挪回可视区（左对齐向上，与模型 / 技能选择一致） */}
       <PopoverContent side="top" align="start" className="w-64 p-1.5">
-        <div role="listbox" aria-label="Thinking depth">
+        <div role="listbox" aria-label={t("agent.thinking.label")}>
             {options.map((o) => {
               const active = o.value === value;
               return (

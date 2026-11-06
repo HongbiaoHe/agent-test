@@ -1,6 +1,7 @@
 import { useQueryClient } from "@tanstack/react-query";
-import { FolderOpen, FolderSearch, RefreshCw, X } from "lucide-react";
+import { AppWindow, FolderOpen, FolderSearch, RefreshCw, X } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -13,10 +14,10 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { useFileViewer } from "@/features/viewer/viewer-context";
 import { cn } from "@/lib/utils";
 
 import type { WorkspacePermission } from "../../../../../shared/workspace";
-import { PERMISSION_LABEL } from "./permission-switcher";
 import { FilePreview } from "./file-preview";
 import { FileTree } from "./file-tree";
 
@@ -34,9 +35,11 @@ export function WorkspaceFilesButton({
   workspaceDir: string;
   permission: WorkspacePermission;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
   const [selected, setSelected] = useState<string | null>(null);
   const qc = useQueryClient();
+  const viewer = useFileViewer();
   const abs = (rel: string) => `${workspaceDir.replace(/\/$/, "")}/${rel}`;
 
   const refresh = () => {
@@ -52,7 +55,7 @@ export function WorkspaceFilesButton({
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="Workspace files"
+              aria-label={t("chat.workspace.files")}
               onClick={() => {
                 refresh();
                 setOpen(true);
@@ -62,7 +65,7 @@ export function WorkspaceFilesButton({
         >
           <FolderOpen />
         </TooltipTrigger>
-        <TooltipContent>Workspace files</TooltipContent>
+        <TooltipContent>{t("chat.workspace.files")}</TooltipContent>
       </Tooltip>
 
       <Sheet
@@ -82,8 +85,8 @@ export function WorkspaceFilesButton({
           <SheetHeader className="border-b">
             <SheetTitle className="flex items-center gap-2">
               <FolderOpen className="size-4" />
-              Workspace
-              <Badge variant="secondary">{PERMISSION_LABEL[permission]}</Badge>
+              {t("chat.workspace.title")}
+              <Badge variant="secondary">{t(`chat.permission.label.${permission}`)}</Badge>
             </SheetTitle>
             <SheetDescription className="truncate font-mono text-xs" title={workspaceDir}>
               {workspaceDir}
@@ -91,7 +94,7 @@ export function WorkspaceFilesButton({
             <div className="flex gap-1.5">
               <Button variant="outline" size="xs" onClick={refresh}>
                 <RefreshCw />
-                Refresh
+                {t("common.refresh")}
               </Button>
               <Button
                 variant="outline"
@@ -99,7 +102,7 @@ export function WorkspaceFilesButton({
                 onClick={() => void window.desktop.showInFolder(workspaceDir)}
               >
                 <FolderSearch />
-                Open in Finder
+                {t("chat.workspace.openInFinder")}
               </Button>
             </div>
           </SheetHeader>
@@ -120,11 +123,28 @@ export function WorkspaceFilesButton({
                 <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b px-3">
                   <span className="truncate font-mono text-xs">{selected}</span>
                   <div className="flex shrink-0 items-center gap-0.5">
+                    {/* HTML 入口：以可交互网页打开（与 agent 的 preview_page 同一个弹窗） */}
+                    {viewer && /\.html?$/i.test(selected) && (
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={t("chat.workspace.previewPage")}
+                        title={t("chat.workspace.previewPage")}
+                        onClick={() =>
+                          viewer.show({
+                            source: "site",
+                            spec: { kind: "file", path: selected, title: selected.split("/").pop() ?? selected },
+                          })
+                        }
+                      >
+                        <AppWindow />
+                      </Button>
+                    )}
                     <Button
                       variant="ghost"
                       size="icon-sm"
-                      aria-label="Show in Finder"
-                      title="Show in Finder"
+                      aria-label={t("common.showInFinder")}
+                      title={t("common.showInFinder")}
                       onClick={() => void window.desktop.showInFolder(abs(selected))}
                     >
                       <FolderSearch />
@@ -132,7 +152,7 @@ export function WorkspaceFilesButton({
                     <Button
                       variant="ghost"
                       size="icon-sm"
-                      aria-label="Close preview"
+                      aria-label={t("chat.workspace.closePreview")}
                       onClick={() => setSelected(null)}
                     >
                       <X />

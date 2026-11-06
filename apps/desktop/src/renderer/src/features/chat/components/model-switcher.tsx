@@ -2,6 +2,7 @@
 
 import { Check, ChevronDown, Cpu } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 
@@ -21,6 +22,7 @@ export function ModelSwitcher({
   onChange: (model: string) => void;
   disabled?: boolean;
 }) {
+  const { t } = useTranslation();
   const [open, setOpen] = useState(false);
 
   return (
@@ -80,7 +82,7 @@ export function ModelSwitcher({
                       {modelDisplayName(m.value)}
                     </span>
                     <span className="block truncate text-xs text-muted-foreground">
-                      {m.hint}
+                      {t(`chat.modelHint.${m.hint}`)}
                     </span>
                   </span>
                 </button>

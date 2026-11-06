@@ -7,6 +7,7 @@ import { access, copyFile, mkdir, stat } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
 import { z } from 'zod';
 import type { AttachmentRef } from '../../shared/rpc';
+import { hostI18n } from '../i18n';
 
 export const MAX_ATTACHMENT_BYTES = 50 * 1024 * 1024;
 
@@ -23,14 +24,14 @@ export async function copyAttachments(
     let size: number;
     try {
       const st = await stat(src);
-      if (!st.isFile()) throw new AttachmentError(`不是文件：${src}`);
+      if (!st.isFile()) throw new AttachmentError(hostI18n.t('errors.attachments.notFile', { path: src }));
       size = st.size;
     } catch (e) {
       if (e instanceof AttachmentError) throw e;
-      throw new AttachmentError(`读取附件失败：${src}`);
+      throw new AttachmentError(hostI18n.t('errors.attachments.readFailed', { path: src }));
     }
     if (size > MAX_ATTACHMENT_BYTES) {
-      throw new AttachmentError(`附件超过 50MB：${basename(src)}`);
+      throw new AttachmentError(hostI18n.t('errors.attachments.tooLarge', { name: basename(src) }));
     }
     const dest = await uniquePath(dir, basename(src));
     await copyFile(src, dest);

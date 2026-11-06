@@ -2,6 +2,7 @@
 
 import { Brain, ChevronDown, ChevronRight, ListChecks, Loader, Wrench } from "lucide-react";
 import { useLayoutEffect, useRef, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
 
@@ -37,6 +38,7 @@ export function ActivityGroup({
   activeDetailId: string | null;
   onOpenDetail: (id: string) => void;
 }) {
+  const { t } = useTranslation();
   const [manual, setManual] = useState<boolean | null>(null);
 
   if (items.length === 1) {
@@ -55,7 +57,7 @@ export function ActivityGroup({
   const ends = items.flatMap((i) => (i.endedAt != null ? [i.endedAt] : []));
   const startedAt = starts.length ? Math.min(...starts) : null;
   const endedAt = ends.length ? Math.max(...ends) : null;
-  const stepLabel = steps ? `${steps} ${steps === 1 ? "step" : "steps"}` : "thinking";
+  const stepLabel = steps ? t("chat.activity.steps", { count: steps }) : t("chat.activity.thinking");
 
   return (
     <div className="text-xs">
@@ -77,7 +79,7 @@ export function ActivityGroup({
         <span className="tabular-nums">
           {running ? (
             <>
-              Working
+              {t("chat.activity.working")}
               {startedAt != null && (
                 <>
                   {" · "}
@@ -89,10 +91,10 @@ export function ActivityGroup({
             <>
               {startedAt != null && endedAt != null ? (
                 <>
-                  Worked for <Elapsed startedAt={startedAt} endedAt={endedAt} />
+                  {t("chat.activity.workedFor")} <Elapsed startedAt={startedAt} endedAt={endedAt} />
                 </>
               ) : (
-                "Worked"
+                t("chat.activity.worked")
               )}
               {` · ${stepLabel}`}
             </>
@@ -181,6 +183,7 @@ function ToolRow({
  * 结束后自动收起；手动点过以手动状态为准。只滚这个框自己的 scrollTop，不用 scrollIntoView。
  */
 function ThoughtRow({ item }: { item: ReasoningItem }) {
+  const { t } = useTranslation();
   const [manual, setManual] = useState<boolean | null>(null);
   const open = manual ?? item.streaming;
   const bodyRef = useRef<HTMLDivElement>(null);
@@ -209,14 +212,14 @@ function ThoughtRow({ item }: { item: ReasoningItem }) {
         <span className={cn("shrink-0 font-medium", item.streaming && "text-foreground")}>
           {/* 耗时：起点 = 本次模型调用开始，进行中走字、收口后定格；旧数据没有时间只显示文案 */}
           {item.startedAt == null ? (
-            item.streaming ? "Thinking…" : "Thought"
+            item.streaming ? t("chat.activity.thinkingNow") : t("chat.activity.thought")
           ) : item.streaming ? (
             <>
-              Thinking… <Elapsed startedAt={item.startedAt} />
+              {t("chat.activity.thinkingNow")} <Elapsed startedAt={item.startedAt} />
             </>
           ) : (
             <>
-              Thought for <Elapsed startedAt={item.startedAt} endedAt={item.endedAt ?? item.startedAt} />
+              {t("chat.activity.thoughtFor")} <Elapsed startedAt={item.startedAt} endedAt={item.endedAt ?? item.startedAt} />
             </>
           )}
         </span>

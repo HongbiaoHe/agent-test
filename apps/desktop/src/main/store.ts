@@ -1,6 +1,10 @@
 /**
  * main 进程的持久化：设置（settings.json，明文）与密钥（secrets.json，safeStorage 加密 → 系统钥匙串保护）。
  * 密钥包括各提供方的模型 Key，以及 MCP 凭据加密用的随机密钥（首次启动生成）。
+ *
+ * 解不开的密文（钥匙串被重置、secrets.json 从别的机器 / 别的应用身份拷来）一律当作「没有」：
+ * 模型 Key 显示未配置、Web 账号视为未登录、MCP 密钥重新生成。不能抛错——agent-host 启动时要读这些，
+ * 一抛错 agent-host 就起不来，界面上「新建对话」会一直等，没有任何提示。
  */
 import { randomBytes } from 'node:crypto';
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
@@ -16,7 +20,9 @@ import {
   THEME_PREFERENCES,
   type WebAccountStatus,
 } from '../shared/desktop';
+import { LANGUAGE_PREFERENCES } from '../shared/i18n/locales';
 import { validateWorkspaceDir } from '../shared/workspace';
+import { mainI18n } from './i18n';
 
 export const DEFAULT_MODEL = 'google-genai:gemini-3.8-flash';
 /** Web 后端（apps/backend）默认地址：本机开发端口，可在设置里改成线上地址 */
@@ -28,6 +34,7 @@ const settingsSchema = z.object({
   webApiUrl: z.string(),
   loginSkipped: z.boolean(),
   theme: z.enum(THEME_PREFERENCES),
+  language: z.enum(LANGUAGE_PREFERENCES),
 });
 
 const secretsSchema = z.object({
@@ -71,6 +78,7 @@ export class DesktopStore {
       webApiUrl: process.env.SPARK_WEB_API_URL ?? DEFAULT_WEB_API_URL,
       loginSkipped: false,
       theme: 'system',
+      language: 'system',
     };
     const raw = readJson(this.settingsFile);
     const parsed = settingsSchema.partial().safeParse(raw);
@@ -80,14 +88,15 @@ export class DesktopStore {
   updateSettings(patch: Partial<DesktopSettings>): DesktopSettings {
     const next = { ...this.getSettings(), ...patch };
     const err = validateWorkspaceDir(next.workspaceDir);
-    if (err) throw new Error(err);
+    if (err) throw new Error(mainI18n.t(`errors.workspace.${err}`));
     writeJson(this.settingsFile, next);
     return next;
   }
 
+  /** 能解开才算已配置：解不开的旧密文要让用户重新填写 */
   keyStatus(): KeyStatus {
     const s = this.secrets();
-    return { google: !!s.google, deepseek: !!s.deepseek };
+    return { google: !!this.decrypt(s.google), deepseek: !!this.decrypt(s.deepseek) };
   }
 
   setKey(provider: ProviderKey, value: string | null): KeyStatus {
@@ -103,8 +112,8 @@ export class DesktopStore {
     const s = this.secrets();
     const out: Partial<Record<ProviderKey, string>> = {};
     for (const p of PROVIDER_KEYS) {
-      const enc = s[p];
-      if (enc) out[p] = this.decrypt(enc);
+      const plain = this.decrypt(s[p]);
+      if (plain) out[p] = plain;
     }
     return out;
   }
@@ -114,7 +123,7 @@ export class DesktopStore {
   webAccount(): WebAccountStatus {
     const s = this.secrets();
     const apiUrl = this.getSettings().webApiUrl;
-    const token = s.webToken ? this.decrypt(s.webToken) : null;
+    const token = this.decrypt(s.webToken);
     const exp = token ? (jwtPayload(token)?.exp ?? 0) * 1000 || null : null;
     // 令牌过期、或设置里换了后端地址：视为未登录（旧令牌对新地址无效）
     const signedIn = !!token && !!exp && exp > Date.now() && s.webApiUrl === apiUrl;
@@ -133,7 +142,7 @@ export class DesktopStore {
    */
   profileDir(): string {
     const s = this.secrets();
-    const token = this.webAccount().signedIn && s.webToken ? this.decrypt(s.webToken) : null;
+    const token = this.webAccount().signedIn ? this.decrypt(s.webToken) : null;
     const sub = token ? jwtPayload(token)?.sub : null;
     return sub ? join(this.userData, 'users', sub) : this.userData;
   }
@@ -141,7 +150,7 @@ export class DesktopStore {
   /** 交给 agent-host 的有效令牌（未登录 / 已过期返回 null） */
   webToken(): string | null {
     const s = this.secrets();
-    return this.webAccount().signedIn && s.webToken ? this.decrypt(s.webToken) : null;
+    return this.webAccount().signedIn ? this.decrypt(s.webToken) : null;
   }
 
   setWebSession(email: string, token: string, apiUrl: string): void {
@@ -163,10 +172,14 @@ export class DesktopStore {
     writeJson(this.secretsFile, s);
   }
 
-  /** MCP 凭据加密密钥：没有就生成一把随机密钥并加密保存 */
+  /**
+   * MCP 凭据加密密钥：没有（或旧密文解不开）就生成一把随机密钥并加密保存。
+   * 换了密钥后库里旧的 MCP 凭据解不开，agent-core 的 decryptJson 会当作没有凭据，连接器需要重新授权。
+   */
   mcpEncryptionKey(): string {
     const s = this.secrets();
-    if (s.mcpKey) return this.decrypt(s.mcpKey);
+    const existing = this.decrypt(s.mcpKey);
+    if (existing) return existing;
     const key = randomBytes(32).toString('base64url');
     s.mcpKey = this.encrypt(key);
     writeJson(this.secretsFile, s);
@@ -180,13 +193,20 @@ export class DesktopStore {
 
   private encrypt(plain: string): string {
     if (!safeStorage.isEncryptionAvailable()) {
-      throw new Error('系统钥匙串不可用，无法安全保存密钥');
+      throw new Error(mainI18n.t('errors.store.keychainUnavailable'));
     }
     return safeStorage.encryptString(plain).toString('base64');
   }
 
-  private decrypt(b64: string): string {
-    return safeStorage.decryptString(Buffer.from(b64, 'base64'));
+  /** 没有密文、或解不开（见文件头注释）都返回 null */
+  private decrypt(b64: string | undefined): string | null {
+    if (!b64) return null;
+    try {
+      return safeStorage.decryptString(Buffer.from(b64, 'base64'));
+    } catch (e) {
+      console.warn('[store] 密钥解不开，按未配置处理：', e instanceof Error ? e.message : e);
+      return null;
+    }
   }
 }
 

@@ -1,5 +1,6 @@
 
 import { Loader2, PlugZap } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 
@@ -11,6 +12,7 @@ import { useMcpConnect } from "./use-mcp-connect";
  * 点「Reconnect」弹窗重新授权；授权完由用户手动重试，不自动重跑本轮。
  */
 export function McpReconnectCard({ auth }: { auth: McpAuthRequired }) {
+  const { t } = useTranslation();
   const { connect, pendingId } = useMcpConnect();
   const pending = pendingId === auth.serverId;
   return (
@@ -18,9 +20,7 @@ export function McpReconnectCard({ auth }: { auth: McpAuthRequired }) {
       <PlugZap className="size-4 shrink-0 text-warning" />
       <p className="min-w-0 flex-1 text-sm">
         <span className="font-medium">{auth.serverName}</span>{" "}
-        <span className="text-muted-foreground">
-          needs to be reconnected. Reconnect, then ask again.
-        </span>
+        <span className="text-muted-foreground">{t("extensions.mcp.reconnectCard.message")}</span>
       </p>
       <Button
         size="sm"
@@ -29,7 +29,7 @@ export function McpReconnectCard({ auth }: { auth: McpAuthRequired }) {
         onClick={() => void connect(auth.serverId, () => connectMcpServer(auth.serverId))}
       >
         {pending && <Loader2 className="animate-spin" />}
-        Reconnect
+        {t("extensions.mcp.reconnect")}
       </Button>
     </div>
   );

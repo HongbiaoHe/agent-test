@@ -2,6 +2,7 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { AppWindow, Loader2, RefreshCw, Trash2, Unplug } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import {
   ConnectorIcon,
@@ -46,14 +47,10 @@ import {
 } from "@/components/ui/sheet";
 import { Skeleton } from "@/components/ui/skeleton";
 
-const PERMISSION_LABEL: Record<ToolPermission, string> = {
-  allow: "Always allow",
-  ask: "Needs approval",
-  deny: "Disabled",
-};
+const PERMISSIONS: readonly ToolPermission[] = ["allow", "ask", "deny"];
 
 function isPermission(v: unknown): v is ToolPermission {
-  return typeof v === "string" && v in PERMISSION_LABEL;
+  return PERMISSIONS.some((p) => p === v);
 }
 
 /** 连接器详情侧拉：连接状态与操作（重连 / 断开 / 删除）+ 工具列表与逐个工具的权限（设计 Q4）。 */
@@ -64,6 +61,7 @@ export function ConnectorDetailSheet({
   serverId: string | null;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const query = useQuery({
     queryKey: mcpServerKey(serverId ?? ""),
     queryFn: () => getMcpServer(serverId!),
@@ -80,7 +78,7 @@ export function ConnectorDetailSheet({
         <SheetHeader>
           <SheetTitle className="flex items-center gap-3">
             <ConnectorIcon src={s?.serverInfo?.iconUrl} className="size-8" />
-            <span className="truncate">{s?.name ?? "Connector"}</span>
+            <span className="truncate">{s?.name ?? t("extensions.mcp.detail.fallbackTitle")}</span>
             {s && <ConnectorStatusBadge status={s.status} />}
           </SheetTitle>
           {s && (
@@ -101,7 +99,7 @@ export function ConnectorDetailSheet({
           )}
           {query.isError && (
             <p className="py-4 text-sm text-destructive" role="alert">
-              {query.error instanceof Error ? query.error.message : "Failed to load"}
+              {query.error instanceof Error ? query.error.message : t("extensions.mcp.detail.loadFailed")}
             </p>
           )}
           {s && <ConnectorDetail server={s} onDeleted={onClose} />}
@@ -112,6 +110,7 @@ export function ConnectorDetailSheet({
 }
 
 function ConnectorDetail({ server, onDeleted }: { server: McpServer; onDeleted: () => void }) {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const { connect, pendingId } = useMcpConnect();
   const [confirmDelete, setConfirmDelete] = useState(false);
@@ -156,7 +155,7 @@ function ConnectorDetail({ server, onDeleted }: { server: McpServer; onDeleted: 
           onClick={() => void connect(server.id, () => connectMcpServer(server.id))}
         >
           {pendingId === server.id ? <Loader2 className="animate-spin" /> : <RefreshCw />}
-          {connected ? "Refresh tools" : "Reconnect"}
+          {connected ? t("extensions.mcp.detail.refreshTools") : t("extensions.mcp.reconnect")}
         </Button>
         {connected && server.authType === "oauth" && (
           <Button
@@ -165,11 +164,11 @@ function ConnectorDetail({ server, onDeleted }: { server: McpServer; onDeleted: 
             disabled={disconnect.isPending}
             onClick={() => disconnect.mutate()}
           >
-            <Unplug /> Disconnect
+            <Unplug /> {t("extensions.mcp.detail.disconnect")}
           </Button>
         )}
         <Button variant="destructive" size="sm" onClick={() => setConfirmDelete(true)}>
-          <Trash2 /> Remove
+          <Trash2 /> {t("extensions.mcp.detail.remove")}
         </Button>
       </div>
 
@@ -177,11 +176,11 @@ function ConnectorDetail({ server, onDeleted }: { server: McpServer; onDeleted: 
 
       <section className="space-y-2">
         <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-          Tools ({modelTools.length})
+          {t("extensions.mcp.detail.tools", { total: modelTools.length })}
         </h3>
         {server.tools.length === 0 ? (
           <p className="text-sm text-muted-foreground">
-            {connected ? "This server exposes no tools." : "Connect to load this server's tools."}
+            {connected ? t("extensions.mcp.detail.noTools") : t("extensions.mcp.detail.connectToLoad")}
           </p>
         ) : (
           <ul className="divide-y divide-border rounded-lg border border-border">
@@ -195,12 +194,9 @@ function ConnectorDetail({ server, onDeleted }: { server: McpServer; onDeleted: 
       {appOnlyTools.length > 0 && (
         <section className="space-y-2">
           <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-            App-only tools ({appOnlyTools.length})
+            {t("extensions.mcp.detail.appOnlyTools", { total: appOnlyTools.length })}
           </h3>
-          <p className="text-xs text-muted-foreground">
-            Used internally by this connector&apos;s interactive cards. The agent can&apos;t
-            call them.
-          </p>
+          <p className="text-xs text-muted-foreground">{t("extensions.mcp.detail.appOnlyHint")}</p>
           <ul className="divide-y divide-border rounded-lg border border-border">
             {appOnlyTools.map((t) => (
               <ToolRow key={t.name} serverId={server.id} tool={t} />
@@ -212,20 +208,17 @@ function ConnectorDetail({ server, onDeleted }: { server: McpServer; onDeleted: 
       <AlertDialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <AlertDialogContent size="sm">
           <AlertDialogHeader>
-            <AlertDialogTitle>Remove {server.name}?</AlertDialogTitle>
-            <AlertDialogDescription>
-              The agent will no longer be able to use its tools. Existing cards in your
-              conversations stop working until you connect it again.
-            </AlertDialogDescription>
+            <AlertDialogTitle>{t("extensions.mcp.detail.removeTitle", { name: server.name })}</AlertDialogTitle>
+            <AlertDialogDescription>{t("extensions.mcp.detail.removeDescription")}</AlertDialogDescription>
           </AlertDialogHeader>
           <AlertDialogFooter>
-            <AlertDialogCancel>Cancel</AlertDialogCancel>
+            <AlertDialogCancel>{t("common.cancel")}</AlertDialogCancel>
             <Button
               variant="destructive"
               disabled={remove.isPending}
               onClick={() => remove.mutate()}
             >
-              Remove
+              {t("extensions.mcp.detail.remove")}
             </Button>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -235,6 +228,7 @@ function ConnectorDetail({ server, onDeleted }: { server: McpServer; onDeleted: 
 }
 
 function ToolRow({ serverId, tool }: { serverId: string; tool: McpTool }) {
+  const { t } = useTranslation();
   const qc = useQueryClient();
   const appOnly = !tool.visibility.includes("model");
   const incompatible = !appOnly && !tool.modelSchema;
@@ -247,6 +241,12 @@ function ToolRow({ serverId, tool }: { serverId: string; tool: McpTool }) {
     },
   });
 
+  const permissionLabels: Record<ToolPermission, string> = {
+    allow: t("extensions.mcp.permission.allow"),
+    ask: t("extensions.mcp.permission.ask"),
+    deny: t("extensions.mcp.permission.deny"),
+  };
+
   return (
     <li className="flex items-start gap-3 p-3">
       <div className="min-w-0 flex-1 space-y-1">
@@ -254,34 +254,36 @@ function ToolRow({ serverId, tool }: { serverId: string; tool: McpTool }) {
           <code className="truncate font-mono text-sm">{tool.name}</code>
           {tool.uiResourceUri && (
             <Badge variant="outline" className="gap-1">
-              <AppWindow className="size-3" /> Interactive
+              <AppWindow className="size-3" /> {t("extensions.mcp.detail.interactive")}
             </Badge>
           )}
-          {tool.readOnly && <Badge variant="secondary">Read-only</Badge>}
-          {incompatible && <Badge variant="destructive">Incompatible</Badge>}
+          {tool.readOnly && <Badge variant="secondary">{t("extensions.mcp.detail.readOnly")}</Badge>}
+          {incompatible && <Badge variant="destructive">{t("extensions.mcp.detail.incompatible")}</Badge>}
         </div>
         <p className="line-clamp-2 text-xs text-muted-foreground">
           {incompatible
-            ? `Not available to the agent: ${tool.incompatibleReason ?? "unsupported input schema"}`
-            : tool.description || tool.title || "(No description)"}
+            ? t("extensions.mcp.detail.unavailable", {
+                reason: tool.incompatibleReason ?? t("extensions.mcp.detail.unsupportedSchema"),
+              })
+            : tool.description || tool.title || t("extensions.mcp.detail.noDescription")}
         </p>
       </div>
       {!appOnly && !incompatible && (
         <Select
-          items={PERMISSION_LABEL}
+          items={permissionLabels}
           value={tool.permission}
           onValueChange={(v) => {
             if (isPermission(v)) update.mutate(v);
           }}
           disabled={update.isPending}
         >
-          <SelectTrigger size="sm" aria-label={`Permission for ${tool.name}`} className="w-36 shrink-0">
+          <SelectTrigger size="sm" aria-label={t("extensions.mcp.detail.permissionFor", { name: tool.name })} className="w-36 shrink-0">
             <SelectValue />
           </SelectTrigger>
           <SelectContent>
-            {(Object.keys(PERMISSION_LABEL) as ToolPermission[]).map((p) => (
+            {PERMISSIONS.map((p) => (
               <SelectItem key={p} value={p}>
-                {PERMISSION_LABEL[p]}
+                {permissionLabels[p]}
               </SelectItem>
             ))}
           </SelectContent>

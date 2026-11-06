@@ -22,6 +22,7 @@ import { z } from 'zod';
 import type { BackgroundKind, BackgroundStatus, BackgroundTaskView } from '../../shared/rpc';
 import type { ConversationRepo } from '../db/conversations';
 import { type Db, transaction } from '../db/database';
+import { hostI18n } from '../i18n';
 import { whitelistedEnv } from '../workspace/local-sandbox';
 import type { ProcessTracker } from '../workspace/process-tracker';
 import { LIMITS, type TaskResult, truncate, wakeupSpecSchema, type WatchSpec, watchSpecSchema } from './background-types';
@@ -469,7 +470,7 @@ export class BackgroundService {
 
   private row(id: string): TaskRow {
     const r = this.maybeRow(id);
-    if (!r) throw new Error(`后台任务不存在：${id}`);
+    if (!r) throw new Error(hostI18n.t('errors.background.notFound', { id }));
     return r;
   }
 

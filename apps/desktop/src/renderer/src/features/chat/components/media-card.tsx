@@ -17,6 +17,7 @@ import {
   X,
 } from "lucide-react";
 import { useEffect, useMemo, useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -31,33 +32,14 @@ import {
   type MediaVersion,
   regenerateMedia,
 } from "@/lib/api";
+import { i18n } from "@/lib/i18n";
 
-/** 类型 → 图标 / 文案 / 工具名 / 重新生成输入框提示。卡片头部、生成中占位与失败态共用。 */
+/** 类型 → 图标 / 工具名（文案在字典 chat.media.type / chat.media.placeholder）。卡片头部、生成中占位与失败态共用。 */
 const TYPE_META = {
-  image: {
-    Icon: ImageIcon,
-    label: "Image",
-    tool: "generate_image",
-    placeholder: "Describe the image you want…",
-  },
-  video: {
-    Icon: VideoIcon,
-    label: "Video",
-    tool: "generate_video",
-    placeholder: "Describe the video you want…",
-  },
-  audio: {
-    Icon: AudioLines,
-    label: "Audio",
-    tool: "generate_audio",
-    placeholder: "Text to speak…",
-  },
-  voice: {
-    Icon: Mic,
-    label: "Voice clone",
-    tool: "clone_voice",
-    placeholder: "Demo line spoken in the cloned voice (4–80 chars)…",
-  },
+  image: { Icon: ImageIcon, tool: "generate_image" },
+  video: { Icon: VideoIcon, tool: "generate_video" },
+  audio: { Icon: AudioLines, tool: "generate_audio" },
+  voice: { Icon: Mic, tool: "clone_voice" },
 } as const;
 
 /** 产物是音频（配音 / 克隆音色）：资产区用播放条，不占 16:9 的画面高度。 */
@@ -133,6 +115,7 @@ export function MediaGroup({
   generationIds: string[];
   mediaType: MediaType;
 }) {
+  const { t } = useTranslation();
   const { data } = useConversationMedia(conversationId);
   if (generationIds.length === 1) {
     return (
@@ -170,9 +153,9 @@ export function MediaGroup({
         )}
         <Badge variant="outline" className="ml-auto tabular-nums">
           {settled ? <CheckCircle2 /> : <Loader2 className="animate-spin" />}
-          {done}/{generationIds.length} done
-          {failed > 0 && ` · ${failed} failed`}
-          {cancelled > 0 && ` · ${cancelled} cancelled`}
+          {t("chat.media.batchDone", { done, total: generationIds.length })}
+          {failed > 0 && ` · ${t("chat.media.batchFailed", { n: failed })}`}
+          {cancelled > 0 && ` · ${t("chat.media.batchCancelled", { n: cancelled })}`}
         </Badge>
       </div>
       {first && <PromptBlock prompt={first.prompt} />}
@@ -251,6 +234,7 @@ function MediaCardBody({
   compact: boolean;
   onAfterRegenerate: () => void;
 }) {
+  const { t } = useTranslation();
   // versions 按 createdAt desc，versions[0] 为最新版。当前查看的版本索引。
   const versions = generation.versions;
   const [versionIndex, setVersionIndex] = useState(0);
@@ -289,7 +273,7 @@ function MediaCardBody({
     }
   }
 
-  const { Icon, label } = TYPE_META[mediaType];
+  const { Icon } = TYPE_META[mediaType];
 
   return (
     <div className="overflow-hidden rounded-xl border bg-card">
@@ -318,14 +302,14 @@ function MediaCardBody({
       {/* 底栏：类型徽标 + 版本切换 + 重新生成 */}
       <div className="flex items-center gap-2 border-t px-3 py-2">
         <Icon className="size-3.5 shrink-0 text-muted-foreground" />
-        <span className="text-xs font-medium text-muted-foreground">{label}</span>
+        <span className="text-xs font-medium text-muted-foreground">{t(`chat.media.type.${mediaType}`)}</span>
 
         {versions.length > 1 && (
           <div className="ml-1 flex items-center gap-0.5">
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="Previous version"
+              aria-label={t("chat.media.previousVersion")}
               disabled={safeIndex >= versions.length - 1}
               onClick={() => setVersionIndex((i) => Math.min(i + 1, versions.length - 1))}
             >
@@ -337,7 +321,7 @@ function MediaCardBody({
             <Button
               variant="ghost"
               size="icon-sm"
-              aria-label="Next version"
+              aria-label={t("chat.media.nextVersion")}
               disabled={safeIndex <= 0}
               onClick={() => setVersionIndex((i) => Math.max(i - 1, 0))}
             >
@@ -354,7 +338,7 @@ function MediaCardBody({
             onClick={openRegenerate}
           >
             <RefreshCw className="size-3.5" />
-            Regenerate
+            {t("chat.media.regenerate")}
           </Button>
         )}
       </div>
@@ -367,7 +351,7 @@ function MediaCardBody({
             onChange={(e) => setDraft(e.target.value)}
             rows={3}
             maxLength={2000}
-            placeholder={TYPE_META[mediaType].placeholder}
+            placeholder={t(`chat.media.placeholder.${mediaType}`)}
             // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
             className="resize-none text-base md:text-sm"
             autoFocus
@@ -381,7 +365,7 @@ function MediaCardBody({
               onClick={() => setEditing(false)}
             >
               <X className="size-3.5" />
-              Cancel
+              {t("common.cancel")}
             </Button>
             <Button
               size="sm"
@@ -394,7 +378,7 @@ function MediaCardBody({
               ) : (
                 <RefreshCw className="size-3.5" />
               )}
-              Generate
+              {t("chat.media.generate")}
             </Button>
           </div>
         </div>
@@ -403,16 +387,16 @@ function MediaCardBody({
   );
 }
 
-/** 状态 → 指示图标 + 文案 + badge 变体。头部状态指示共用。 */
+/** 状态 → 指示图标 + badge 变体（文案在字典 chat.media.status）。头部状态指示共用。 */
 const STATUS_META: Record<
   MediaStatus,
-  { label: string; variant: "secondary" | "outline" | "destructive"; spin?: boolean }
+  { variant: "secondary" | "outline" | "destructive"; spin?: boolean }
 > = {
-  queued: { label: "Queued", variant: "secondary", spin: true },
-  generating: { label: "Generating", variant: "secondary", spin: true },
-  done: { label: "Done", variant: "outline" },
-  failed: { label: "Failed", variant: "destructive" },
-  cancelled: { label: "Cancelled", variant: "outline" },
+  queued: { variant: "secondary", spin: true },
+  generating: { variant: "secondary", spin: true },
+  done: { variant: "outline" },
+  failed: { variant: "destructive" },
+  cancelled: { variant: "outline" },
 };
 
 /**
@@ -429,6 +413,7 @@ function CardHeader({
   mediaType: MediaType;
   compact: boolean;
 }) {
+  const { t } = useTranslation();
   const { Icon, tool } = TYPE_META[mediaType];
   const status = STATUS_META[version.status];
   const StatusIcon = status.spin
@@ -453,7 +438,7 @@ function CardHeader({
       )}
       <Badge variant={status.variant} className="ml-auto">
         <StatusIcon className={status.spin ? "animate-spin" : undefined} />
-        {status.label}
+        {t(`chat.media.status.${version.status}`)}
       </Badge>
     </div>
   );
@@ -464,6 +449,7 @@ function CardHeader({
  * 默认折叠为 2 行（line-clamp），可展开看全文。
  */
 function PromptBlock({ prompt }: { prompt: string }) {
+  const { t } = useTranslation();
   const [expanded, setExpanded] = useState(false);
   if (!prompt) return null;
 
@@ -485,7 +471,7 @@ function PromptBlock({ prompt }: { prompt: string }) {
             expanded ? "" : "line-clamp-2"
           }`}
         >
-          <span className="font-medium text-foreground">Prompt: </span>
+          <span className="font-medium text-foreground">{t("chat.media.prompt")}</span>
           {prompt}
         </p>
       </button>
@@ -498,10 +484,12 @@ const PARAM_ORDER = ["aspect_ratio", "resolution", "duration", "with_audio"];
 
 /** 档位取值的展示文本：时长补单位、布尔维度写成人话，其余原样（16:9 / 2K / 16x9）。 */
 function paramText(key: string, value: string): string {
-  if (key === "duration") return value === "-1" ? "Auto length" : `${value}s`;
-  if (key === "with_audio") return value === "true" ? "Audio on" : "No audio";
-  if (key === "background") return `${value} background`;
-  if (key === "quality") return `${value} quality`;
+  if (key === "duration")
+    return value === "-1" ? i18n.t("chat.media.param.autoLength") : i18n.t("chat.media.param.seconds", { value });
+  if (key === "with_audio")
+    return value === "true" ? i18n.t("chat.media.param.audioOn") : i18n.t("chat.media.param.noAudio");
+  if (key === "background") return i18n.t("chat.media.param.background", { value });
+  if (key === "quality") return i18n.t("chat.media.param.quality", { value });
   return value;
 }
 
@@ -510,6 +498,7 @@ function paramText(key: string, value: string): string {
  * 拼接产物与旧数据没有档位（null / 空对象）时整行不出。
  */
 function ParamsRow({ params }: { params: Record<string, string> | null }) {
+  const { t } = useTranslation();
   const entries = Object.entries(params ?? {}).sort(([a], [b]) => {
     const ia = PARAM_ORDER.indexOf(a);
     const ib = PARAM_ORDER.indexOf(b);
@@ -519,7 +508,7 @@ function ParamsRow({ params }: { params: Record<string, string> | null }) {
 
   return (
     <div className="flex items-center gap-2 border-t px-3 py-2.5">
-      <span className="shrink-0 text-xs font-medium text-foreground">Settings</span>
+      <span className="shrink-0 text-xs font-medium text-foreground">{t("chat.media.settings")}</span>
       <div className="flex flex-wrap items-center gap-1.5">
         {entries.map(([key, value]) => (
           <Badge key={key} variant="secondary" className="font-mono">
@@ -542,11 +531,12 @@ function ReferenceRow({
   conversationId: string;
   referenceVersionIds: string[];
 }) {
+  const { t } = useTranslation();
   if (referenceVersionIds.length === 0) return null;
 
   return (
     <div className="flex items-center gap-2 border-t px-3 py-2.5">
-      <span className="shrink-0 text-xs font-medium text-foreground">Reference</span>
+      <span className="shrink-0 text-xs font-medium text-foreground">{t("chat.media.reference")}</span>
       <div className="flex flex-wrap items-center gap-1.5">
         {referenceVersionIds.map((id) => (
           <ReferenceThumb key={id} conversationId={conversationId} versionId={id} />
@@ -570,6 +560,7 @@ function ReferenceThumb({
   conversationId: string;
   versionId: string;
 }) {
+  const { t } = useTranslation();
   const { data: media } = useConversationMedia(conversationId);
   const owner = media?.find((g) => g.versions.some((v) => v.id === versionId));
   const ref = owner?.versions.find((v) => v.id === versionId);
@@ -591,7 +582,7 @@ function ReferenceThumb({
     return (
       <span
         title={versionId}
-        aria-label={isAudio ? "Reference audio" : "Reference video"}
+        aria-label={isAudio ? t("chat.media.referenceAudio") : t("chat.media.referenceVideo")}
         className="flex size-7 items-center justify-center rounded-md border bg-muted"
       >
         <Icon className="size-3.5 text-muted-foreground" />
@@ -606,7 +597,7 @@ function ReferenceThumb({
     // 参考图同样是带鉴权 fetch 的 blob objectURL，next/image 无法优化，用原生 <img>。
     <img
       src={url}
-      alt="Reference image"
+      alt={t("chat.media.referenceImage")}
       title={versionId}
       className="size-7 rounded-md border object-cover"
     />
@@ -671,13 +662,14 @@ function ShimmerPlaceholder({
 
 /** 失败：destructive 边框 + 错误文案。重试由底栏「重新生成」承担（设计 §操作）。 */
 function FailedSurface({ error, mediaType }: { error: string | null; mediaType: MediaType }) {
+  const { t } = useTranslation();
   return (
     <div
       className={`flex ${surfaceSize(mediaType)} w-full flex-col items-center justify-center gap-2 border-2 border-destructive/40 bg-destructive/5 px-4 text-center`}
     >
-      <p className="text-sm font-medium text-destructive">Generation failed</p>
+      <p className="text-sm font-medium text-destructive">{t("chat.media.failed")}</p>
       <p className="line-clamp-3 text-xs text-muted-foreground">
-        {error || "Unknown error. Click “Regenerate” below to retry."}
+        {error || t("chat.media.unknownError")}
       </p>
     </div>
   );
@@ -685,12 +677,13 @@ function FailedSurface({ error, mediaType }: { error: string | null; mediaType: 
 
 /** 已取消（用户停止 / aigc 侧取消）：中性弱化，不用危险色——这不是错误。 */
 function CancelledSurface({ mediaType }: { mediaType: MediaType }) {
+  const { t } = useTranslation();
   return (
     <div
       className={`flex ${surfaceSize(mediaType)} w-full flex-col items-center justify-center gap-2 bg-muted px-4 text-center`}
     >
       <Ban className="size-5 text-muted-foreground" />
-      <p className="text-sm font-medium text-muted-foreground">Generation cancelled</p>
+      <p className="text-sm font-medium text-muted-foreground">{t("chat.media.cancelled")}</p>
     </div>
   );
 }
@@ -703,6 +696,7 @@ function AssetSurface({
   versionId: string;
   mediaType: MediaType;
 }) {
+  const { t } = useTranslation();
   const { data: blob, isLoading } = useQuery({
     queryKey: ["media-asset", versionId],
     queryFn: () => fetchMediaAssetBlob(versionId),
@@ -737,6 +731,6 @@ function AssetSurface({
   }
   return (
     // 资产是 blob objectURL（运行时生成、带鉴权 fetch），next/image 无法优化此类源，故用原生 <img>。
-    <img src={url} alt="Generated image" className="w-full bg-muted object-contain" />
+    <img src={url} alt={t("chat.media.generatedImage")} className="w-full bg-muted object-contain" />
   );
 }

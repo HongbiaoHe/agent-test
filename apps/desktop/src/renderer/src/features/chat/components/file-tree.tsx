@@ -12,6 +12,7 @@ import {
   Loader2,
 } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { fetchSandboxDir, type SandboxDirEntry } from "@/lib/api";
 import { cn } from "@/lib/utils";
@@ -79,6 +80,7 @@ function DirChildren({
   selected: string | null;
   onSelect: (path: string) => void;
 }) {
+  const { t } = useTranslation();
   const { data, isLoading, error } = useQuery({
     queryKey: ["sandbox-dir", conversationId, dir],
     queryFn: () => fetchSandboxDir(conversationId, dir),
@@ -92,7 +94,7 @@ function DirChildren({
         style={indentStyle(depth)}
       >
         <Loader2 className="size-3 animate-spin" />
-        Loading…
+        {t("common.loading")}
       </div>
     );
   }
@@ -102,7 +104,7 @@ function DirChildren({
         className="py-1 text-xs text-destructive"
         style={indentStyle(depth)}
       >
-        {error instanceof Error ? error.message : "Failed to load"}
+        {error instanceof Error ? error.message : t("chat.files.loadFailed")}
       </p>
     );
   }
@@ -114,7 +116,7 @@ function DirChildren({
         className="py-1 text-xs text-muted-foreground"
         style={indentStyle(depth)}
       >
-        {depth === 0 ? "No files in the workspace yet." : "Empty"}
+        {depth === 0 ? t("chat.files.emptyWorkspace") : t("chat.files.emptyDir")}
       </p>
     );
   }

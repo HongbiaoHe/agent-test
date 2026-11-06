@@ -9,6 +9,8 @@
  *
  * 模型标识既可能是 `provider:model`（Spark）也可能是裸名（画布），这里统一去前缀再判断。
  */
+import { i18n } from "@/lib/i18n";
+
 export type ThinkingLevel = "auto" | "off" | "on" | "low" | "medium" | "high";
 
 export interface ThinkingLevelOption {
@@ -17,14 +19,16 @@ export interface ThinkingLevelOption {
   hint: string;
 }
 
-const THINKING_OPTION: Record<ThinkingLevel, ThinkingLevelOption> = {
-  auto: { value: "auto", label: "Auto", hint: "Model default, unchanged" },
-  off: { value: "off", label: "Off", hint: "No thinking. Fastest and cheapest" },
-  on: { value: "on", label: "On", hint: "Think before answering" },
-  low: { value: "low", label: "Low", hint: "Brief thinking" },
-  medium: { value: "medium", label: "Medium", hint: "Balanced thinking" },
-  high: { value: "high", label: "High", hint: "Deepest thinking, slowest" },
-};
+const THINKING_LEVELS: readonly ThinkingLevel[] = ["auto", "off", "on", "low", "medium", "high"];
+
+/** 文案在调用时取（界面语言可能在运行中切换） */
+function option(value: ThinkingLevel): ThinkingLevelOption {
+  return {
+    value,
+    label: i18n.t(`agent.thinking.level.${value}`),
+    hint: i18n.t(`agent.thinking.hint.${value}`),
+  };
+}
 
 const DEEPSEEK_LEVELS: ThinkingLevel[] = ["auto", "off", "on"];
 const GEMINI_LEVELS: ThinkingLevel[] = ["auto", "low", "medium", "high"];
@@ -53,12 +57,12 @@ function bareModelName(model: string): string {
 /** 该模型真正支持的档位（顺序即展示顺序）。 */
 export function thinkingLevelsFor(model: string): ThinkingLevelOption[] {
   if (model.startsWith("deepseek:")) {
-    return DEEPSEEK_LEVELS.map((l) => THINKING_OPTION[l]);
+    return DEEPSEEK_LEVELS.map(option);
   }
   const levels = GEMINI_CAN_DISABLE_THINKING.has(bareModelName(model))
     ? GEMINI_LEVELS_WITH_OFF
     : GEMINI_LEVELS;
-  return levels.map((l) => THINKING_OPTION[l]);
+  return levels.map(option);
 }
 
 /** 档位在该模型上是否可用——换模型后用它决定要不要把选择回落到 auto。 */
@@ -70,10 +74,10 @@ export function supportsThinkingLevel(
 }
 
 export function thinkingLevelLabel(level: ThinkingLevel): string {
-  return THINKING_OPTION[level]?.label ?? THINKING_OPTION.auto.label;
+  return i18n.t(`agent.thinking.level.${level}`);
 }
 
 /** 任意字符串收窄成档位（本地存储/旧值可能非法），非法按 null。 */
 export function asThinkingLevel(v: string | null | undefined): ThinkingLevel | null {
-  return v != null && v in THINKING_OPTION ? (v as ThinkingLevel) : null;
+  return THINKING_LEVELS.find((l) => l === v) ?? null;
 }

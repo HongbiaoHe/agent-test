@@ -1,0 +1,10 @@
+import { common } from './common';
+import { shell } from './shell';
+import { chat } from './chat';
+import { agent } from './agent';
+import { viewer } from './viewer';
+import { settings } from './settings';
+import { extensions } from './extensions';
+import { errors } from './errors';
+
+export const en = { common, shell, chat, agent, viewer, settings, extensions, errors };

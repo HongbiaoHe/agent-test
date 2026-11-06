@@ -1,6 +1,7 @@
 "use client";
 
 import { useQuery } from "@tanstack/react-query";
+import { useTranslation } from "react-i18next";
 
 import {
   Tooltip,
@@ -12,19 +13,12 @@ import { ErrorNotice } from "@/components/chat/error-notice";
 import {
   listCommands,
   type MessageAttachment,
-  type SkillKind,
 } from "@/lib/api";
 
 import { useNow } from "../hooks/use-now";
 import type { ThreadItem } from "../lib/thread";
 import { formatFullDateTime, formatMessageTime } from "../lib/time";
 import { Markdown } from "./markdown";
-
-const CMD_KIND_LABEL: Record<SkillKind, string> = {
-  builtin: "Built-in",
-  github: "GitHub",
-  custom: "Custom",
-};
 
 export function ChatMessage({ item }: { item: ThreadItem }) {
   if (item.kind === "user") {
@@ -66,6 +60,7 @@ function UserMessage({
   attachments: MessageAttachment[];
   at?: number;
 }) {
+  const { t } = useTranslation();
   // 与 ChatThread 的补全共用同一缓存（queryKey 一致，不会重复请求）
   const { data: commands = [] } = useQuery({
     queryKey: ["commands"],
@@ -109,7 +104,7 @@ function UserMessage({
                   <TooltipContent side="top" align="start" className="max-w-xs">
                     <span className="flex flex-col gap-1 text-left">
                       <span className="text-[10px] font-medium tracking-wide text-background/60 uppercase">
-                        {CMD_KIND_LABEL[command.kind]}
+                        {t(`chat.commandKind.${command.kind}`)}
                       </span>
                       <span className="font-mono text-xs font-semibold">
                         /{command.name}

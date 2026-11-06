@@ -1,6 +1,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { FileText } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -17,8 +18,6 @@ import { getSkillDetail } from "@/lib/api";
 
 import { Markdown } from "@/features/chat/components/markdown";
 
-import { KIND_LABEL } from "./skill-kind";
-
 /** 详情查询 key（与列表 mutation 的失效联动）。 */
 export const skillDetailKey = (name: string) => ["skill-detail", name] as const;
 
@@ -30,6 +29,7 @@ export function SkillDetailSheet({
   name: string | null;
   onClose: () => void;
 }) {
+  const { t } = useTranslation();
   const query = useQuery({
     queryKey: skillDetailKey(name ?? ""),
     queryFn: () => getSkillDetail(name!),
@@ -51,18 +51,18 @@ export function SkillDetailSheet({
             {d && (
               <>
                 <Badge variant={d.kind === "builtin" ? "secondary" : "outline"}>
-                  {KIND_LABEL[d.kind]}
+                  {t(`extensions.skills.kinds.${d.kind}`)}
                 </Badge>
-                {!d.enabled && <Badge variant="destructive">Disabled</Badge>}
+                {!d.enabled && <Badge variant="destructive">{t("extensions.skills.detail.disabled")}</Badge>}
               </>
             )}
           </SheetTitle>
           {d && (
             <SheetDescription className="truncate text-left">
               {d.kind === "builtin"
-                ? "Ships with the system"
+                ? t("extensions.skills.detail.builtin")
                 : d.kind === "custom"
-                  ? "Written by you"
+                  ? t("extensions.skills.detail.custom")
                   : d.source}
             </SheetDescription>
           )}
@@ -80,7 +80,7 @@ export function SkillDetailSheet({
             <p className="py-4 text-sm text-destructive" role="alert">
               {query.error instanceof Error
                 ? query.error.message
-                : "Failed to load"}
+                : t("extensions.skills.detail.loadFailed")}
             </p>
           )}
           {d && (
@@ -89,17 +89,17 @@ export function SkillDetailSheet({
                 <Markdown>{d.skillMd}</Markdown>
               ) : (
                 <p className="text-sm text-muted-foreground">
-                  No SKILL.md content available (files may be missing on disk).
+                  {t("extensions.skills.detail.noSkillMd")}
                 </p>
               )}
               <Separator />
               <section className="space-y-2">
                 <h3 className="text-xs font-medium tracking-wide text-muted-foreground uppercase">
-                  Files ({d.files.length})
+                  {t("extensions.skills.detail.files", { total: d.files.length })}
                 </h3>
                 {d.files.length === 0 ? (
                   <p className="text-sm text-muted-foreground">
-                    No files found.
+                    {t("extensions.skills.detail.noFiles")}
                   </p>
                 ) : (
                   <ul className="space-y-1">

@@ -6,6 +6,8 @@ import type {
   McpUiTheme,
 } from "@modelcontextprotocol/ext-apps/app-bridge";
 
+import { currentLocale } from "@/lib/i18n";
+
 /**
  * 宿主设计 token → MCP Apps 标准主题变量（规范 §Theming）。
  * App 在 iframe 里读不到我们的 CSS 变量，所以把 :root / .dark 上**当前生效**的值算出来传过去；
@@ -59,7 +61,8 @@ export function hostContext(
       displayMode === "fullscreen"
         ? { height: window.innerHeight, width: window.innerWidth }
         : { maxHeight: INLINE_MAX_HEIGHT, ...(width ? { width } : {}) },
-    locale: navigator.language,
+    // 界面语言（'zh-CN' / 'zh-Hant' / 'en' 都是合法 BCP 47 标签），而非系统语言
+    locale: currentLocale(),
     timeZone: Intl.DateTimeFormat().resolvedOptions().timeZone,
     platform: "desktop",
   };

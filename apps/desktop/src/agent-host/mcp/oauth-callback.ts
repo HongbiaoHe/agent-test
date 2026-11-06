@@ -4,6 +4,7 @@
  * 只在第一次需要授权时才开始监听，之后常驻到 agent-host 退出。
  */
 import { createServer, type Server } from 'node:http';
+import { hostI18n } from '../i18n';
 
 export const OAUTH_CALLBACK_PORT = 47391;
 export const OAUTH_CALLBACK_PATH = '/mcp/oauth/callback';
@@ -35,17 +36,17 @@ export function createOAuthCallbackServer(
         res.end(page(title, detail));
       };
       if (error || !code || !state) {
-        const detail = error ?? '回调缺少 code 或 state';
+        const detail = error ?? hostI18n.t('errors.oauth.missingParams');
         onFailure(detail);
-        reply(400, '授权未完成', detail);
+        reply(400, hostI18n.t('errors.oauth.incomplete'), detail);
         return;
       }
       complete(code, state).then(
-        (name) => reply(200, '授权完成', `${name} 已连接，可以回到 Spark 继续。`),
+        (name) => reply(200, hostI18n.t('errors.oauth.done'), hostI18n.t('errors.oauth.connected', { name })),
         (e: unknown) => {
           const detail = e instanceof Error ? e.message : String(e);
           onFailure(detail);
-          reply(400, '授权失败', detail);
+          reply(400, hostI18n.t('errors.oauth.failed'), detail);
         },
       );
     });

@@ -3,22 +3,25 @@
  * （apps/backend/src/agent/models.ts 的 ALLOWED_MODELS），改动需两边同步。
  * value 为 LangChain initChatModel 的 `provider:model` 形式（多提供商动态切换）。
  */
+import type { chat } from "../../../../../shared/i18n/zh-CN/chat";
+
 export interface ModelOption {
   /** `provider:model` 完整标识（发给后端的值）。 */
   value: string;
-  hint: string;
+  /** 说明文案的字典键（chat.modelHint.*） */
+  hint: keyof typeof chat.modelHint;
 }
 
 export const MODEL_OPTIONS: ModelOption[] = [
-  { value: "google-genai:gemini-3.8-flash", hint: "Fast · default" },
-  { value: "google-genai:gemini-4-argon", hint: "Most powerful · flagship" },
-  { value: "google-genai:gemini-3.6-flash", hint: "Previous-gen Flash" },
-  { value: "google-genai:gemini-3.5-flash-lite", hint: "Fastest · lowest cost" },
-  { value: "google-genai:gemini-3.1-flash-lite", hint: "Low cost · near-frontier" },
-  { value: "google-genai:gemini-3.1-pro-preview", hint: "Previous-gen Pro · preview" },
-  { value: "google-genai:gemini-3-flash-preview", hint: "Gemini 3 Flash · preview" },
-  { value: "deepseek:deepseek-flash", hint: "DeepSeek V4.1 Flash · fast" },
-  { value: "deepseek:deepseek-v4-pro", hint: "DeepSeek V4 Pro · flagship" },
+  { value: "google-genai:gemini-3.8-flash", hint: "gemini38Flash" },
+  { value: "google-genai:gemini-4-argon", hint: "gemini4Argon" },
+  { value: "google-genai:gemini-3.6-flash", hint: "gemini36Flash" },
+  { value: "google-genai:gemini-3.5-flash-lite", hint: "gemini35FlashLite" },
+  { value: "google-genai:gemini-3.1-flash-lite", hint: "gemini31FlashLite" },
+  { value: "google-genai:gemini-3.1-pro-preview", hint: "gemini31ProPreview" },
+  { value: "google-genai:gemini-3-flash-preview", hint: "gemini3FlashPreview" },
+  { value: "deepseek:deepseek-flash", hint: "deepseekFlash" },
+  { value: "deepseek:deepseek-v4-pro", hint: "deepseekV4Pro" },
 ];
 
 export const DEFAULT_MODEL = "google-genai:gemini-3.8-flash";

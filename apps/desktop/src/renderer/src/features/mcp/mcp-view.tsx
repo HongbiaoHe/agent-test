@@ -4,17 +4,19 @@
  */
 import { Plus } from 'lucide-react';
 import { useState } from 'react';
+import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { AddConnectorDialog } from './components/add-connector-dialog';
 import { ConnectorList } from './components/connector-list';
 
 export function McpSettings() {
+  const { t } = useTranslation();
   const [adding, setAdding] = useState(false);
   return (
     <div className="space-y-6">
       <div className="flex justify-end">
         <Button onClick={() => setAdding(true)}>
-          <Plus /> Add connector
+          <Plus /> {t('extensions.mcp.addConnector')}
         </Button>
       </div>
       <ConnectorList />

@@ -1,6 +1,7 @@
 "use client";
 
 import { Check, Download, Loader, X } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
@@ -71,7 +72,8 @@ function parseContentBlocks(s: string): ContentBlock[] | null {
  * 非 block 结构按原文展示（同样剥行号）。
  */
 function ResultView({ result, language }: { result?: string; language?: string }) {
-  if (!result) return <CodeBlock>(No result yet)</CodeBlock>;
+  const { t } = useTranslation();
+  if (!result) return <CodeBlock>{t("chat.detail.noResult")}</CodeBlock>;
   const blocks = parseContentBlocks(result);
   if (!blocks) {
     const text = stripLineNumbers(result);
@@ -138,6 +140,7 @@ export function DetailPanel({
   onClose: () => void;
   className?: string;
 }) {
+  const { t } = useTranslation();
   const file = downloadableFile(tool.args);
   // 读/写文件类工具按 file_path 扩展名推断结果高亮语言（如 .py → python）
   const argPath = (tool.args as { file_path?: unknown } | null)?.file_path;
@@ -157,7 +160,7 @@ export function DetailPanel({
       <header className="flex h-14 shrink-0 items-center justify-between gap-2 border-b px-4">
         <div className="flex min-w-0 flex-col">
           <span className="text-[11px] tracking-wide text-muted-foreground uppercase">
-            Tool call
+            {t("chat.detail.toolCall")}
           </span>
           <span className="truncate text-sm font-medium">{toolLabel(tool.name)}</span>
         </div>
@@ -169,13 +172,13 @@ export function DetailPanel({
               onClick={() => triggerDownload(file.name, file.content)}
             >
               <Download />
-              Download
+              {t("chat.detail.download")}
             </Button>
           )}
           <Button
             variant="ghost"
             size="icon-sm"
-            aria-label="Close detail panel"
+            aria-label={t("chat.detail.close")}
             onClick={onClose}
           >
             <X />
@@ -195,22 +198,22 @@ export function DetailPanel({
             {tool.done ? (
               <Badge variant="outline">
                 <Check />
-                Done
+                {t("chat.detail.done")}
               </Badge>
             ) : (
               <Badge variant="secondary">
                 <Loader className="animate-spin" />
-                Running
+                {t("chat.detail.running")}
               </Badge>
             )}
           </div>
         </div>
         <TabsList className="w-full">
           <TabsTrigger value="result" className="flex-1">
-            Result
+            {t("chat.detail.result")}
           </TabsTrigger>
           <TabsTrigger value="args" className="flex-1">
-            Arguments
+            {t("chat.detail.arguments")}
           </TabsTrigger>
         </TabsList>
         <TabsContent value="result" className="mt-3 min-h-0 flex-1">

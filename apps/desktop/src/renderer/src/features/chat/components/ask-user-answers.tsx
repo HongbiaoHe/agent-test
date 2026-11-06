@@ -1,6 +1,7 @@
 "use client";
 
 import { MessageCircleQuestion } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Badge } from "@/components/ui/badge";
 
@@ -11,12 +12,13 @@ import type { AskUserAnswer } from "../lib/thread";
  * 每题一行「问题 → 回答」，倒计时 / 超时自动采用建议答案的标出来，方便事后回看 agent 依据了什么。
  */
 export function AskUserAnswers({ answers }: { answers: AskUserAnswer[] }) {
+  const { t } = useTranslation();
   const allAuto = answers.every((a) => a.auto);
   return (
     <div className="space-y-2 rounded-xl border border-border bg-card p-3 text-sm">
       <div className="flex items-center gap-2 text-xs font-medium text-muted-foreground">
         <MessageCircleQuestion className="size-3.5" />
-        {allAuto ? "No reply in time — suggested answers were used" : "You answered"}
+        {allAuto ? t("chat.answers.allAuto") : t("chat.answers.answered")}
       </div>
       <ul className="space-y-1.5">
         {answers.map((a, i) => (
@@ -24,9 +26,9 @@ export function AskUserAnswers({ answers }: { answers: AskUserAnswer[] }) {
             <div className="text-muted-foreground">{a.question}</div>
             <div className="flex flex-wrap items-center gap-2 pl-3">
               <span className="font-medium text-foreground">
-                → {a.selected.length > 0 ? a.selected.join("、") : "—"}
+                → {a.selected.length > 0 ? a.selected.join(t("chat.answers.separator")) : "—"}
               </span>
-              {a.auto && !allAuto && <Badge variant="outline">Suggested</Badge>}
+              {a.auto && !allAuto && <Badge variant="outline">{t("chat.answers.suggested")}</Badge>}
             </div>
           </li>
         ))}

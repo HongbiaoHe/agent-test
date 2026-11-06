@@ -2,6 +2,7 @@
 
 import { useQuery } from "@tanstack/react-query";
 import { FileWarning, Loader2 } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { fetchSandboxFile } from "@/lib/api";
@@ -30,6 +31,7 @@ export function FilePreview({
   path: string;
   onReveal: () => void;
 }) {
+  const { t } = useTranslation();
   const { data, isLoading, error } = useQuery({
     queryKey: ["sandbox-file", conversationId, path],
     queryFn: () => fetchSandboxFile(conversationId, path),
@@ -40,7 +42,7 @@ export function FilePreview({
     return (
       <div className="flex items-center gap-2 px-4 py-6 text-sm text-muted-foreground">
         <Loader2 className="size-4 animate-spin" />
-        Loading…
+        {t("common.loading")}
       </div>
     );
   }
@@ -48,7 +50,7 @@ export function FilePreview({
     return (
       <div className="flex items-center gap-2 px-4 py-6 text-sm text-destructive">
         <FileWarning className="size-4 shrink-0" />
-        {error instanceof Error ? error.message : "Failed to load file"}
+        {error instanceof Error ? error.message : t("chat.files.fileLoadFailed")}
       </div>
     );
   }
@@ -70,10 +72,10 @@ export function FilePreview({
     return (
       <div className="flex flex-col items-center gap-2 px-4 py-10 text-center text-sm text-muted-foreground">
         <FileWarning className="size-5" />
-        <p>This file can't be previewed here</p>
+        <p>{t("chat.files.cannotPreview")}</p>
         <p className="text-xs">{formatBytes(data.size)}</p>
         <Button variant="outline" size="sm" onClick={onReveal}>
-          Show in Finder
+          {t("common.showInFinder")}
         </Button>
       </div>
     );
@@ -84,7 +86,7 @@ export function FilePreview({
       <CodeViewer text={data.content} path={path} strip={false} />
       {data.truncated && (
         <p className="text-xs text-muted-foreground">
-          Preview truncated (showing the first lines only).
+          {t("chat.files.truncated")}
         </p>
       )}
     </div>

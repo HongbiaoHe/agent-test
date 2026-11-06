@@ -1,4 +1,5 @@
 import { File, FileAudio, FileImage, FileVideo } from "lucide-react";
+import { useTranslation } from "react-i18next";
 
 import type { MessageAttachment } from "@/lib/api";
 
@@ -11,9 +12,10 @@ const ICON = { image: FileImage, video: FileVideo, audio: FileAudio, file: File 
  * Web 版直接用 CDN 地址内联图片 / 播放器；桌面端副本在本机运行目录，renderer 不直接读本地文件。
  */
 export function MessageAttachments({ attachments }: { attachments: MessageAttachment[] }) {
+  const { t } = useTranslation();
   if (attachments.length === 0) return null;
   return (
-    <ul aria-label="Attachments" className="flex max-w-[80%] flex-wrap justify-end gap-2">
+    <ul aria-label={t("chat.attachments.list")} className="flex max-w-[80%] flex-wrap justify-end gap-2">
       {attachments.map((a) => {
         const Icon = ICON[a.type];
         return (

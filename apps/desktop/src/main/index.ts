@@ -3,19 +3,23 @@
  * renderer 不开放 Node 能力（contextIsolation + sandbox），原生能力只经 preload 暴露的 window.desktop。
  */
 import { join } from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, shell } from 'electron';
 import { z } from 'zod';
 import { PROVIDER_KEYS, THEME_PREFERENCES } from '../shared/desktop';
+import { LANGUAGE_PREFERENCES } from '../shared/i18n/locales';
 import { AgentHostManager } from './agent-host';
-import { handleMcpSandboxProtocol, registerMcpSandboxScheme } from './mcp-sandbox';
+import { appLocale, mainI18n, syncMainLocale } from './i18n';
+import { handleMcpSandboxProtocol, MCP_SANDBOX_PRIVILEGES } from './mcp-sandbox';
+import { handleSitePreviewProtocol, SITE_PREVIEW_PRIVILEGES, siteOrigin } from './site-preview';
 import { DesktopStore } from './store';
 import { normalizeApiUrl, sendCode, verifyCode } from './web-account';
 
 // e2e / 多实例隔离：显式指定 userData 目录（必须在 ready 之前设置）
 if (process.env.SPARK_USER_DATA_DIR) app.setPath('userData', process.env.SPARK_USER_DATA_DIR);
 
-// MCP Apps 的 sandbox 源（spark-mcp://m-<hash>）：必须在 ready 之前注册为特权协议
-registerMcpSandboxScheme();
+// 特权协议必须在 ready 之前一次性注册：MCP Apps 的 sandbox 源（spark-mcp://m-<hash>）、
+// 工作区网页预览源（spark-preview://w-<hash>）
+protocol.registerSchemesAsPrivileged([MCP_SANDBOX_PRIVILEGES, SITE_PREVIEW_PRIVILEGES]);
 
 const userData = app.getPath('userData');
 const store = new DesktopStore(userData);
@@ -28,14 +32,17 @@ const settingsPatch = z
     webApiUrl: z.string(),
     loginSkipped: z.boolean(),
     theme: z.enum(THEME_PREFERENCES),
+    language: z.enum(LANGUAGE_PREFERENCES),
   })
   .partial();
 
 function registerIpc(): void {
   ipcMain.handle('desktop:getSettings', () => store.getSettings());
+  ipcMain.handle('desktop:getLocale', () => appLocale(store));
   ipcMain.handle('desktop:updateSettings', (_e, patch: unknown) => {
     const next = store.updateSettings(settingsPatch.parse(patch));
     nativeTheme.themeSource = next.theme;
+    syncMainLocale(store);
     host.sendConfig();
     return next;
   });
@@ -67,9 +74,12 @@ function registerIpc(): void {
   ipcMain.handle('desktop:showInFolder', (_e, path: unknown) => {
     shell.showItemInFolder(z.string().parse(path));
   });
+  ipcMain.handle('desktop:sitePreviewOrigin', (_e, workspaceDir: unknown) =>
+    siteOrigin(z.string().min(1).parse(workspaceDir)),
+  );
   ipcMain.handle('desktop:fetchText', async (_e, url: unknown) => {
     const res = await net.fetch(z.url({ protocol: /^https?$/ }).parse(url));
-    if (!res.ok) throw new Error(`读取失败：HTTP ${res.status}`);
+    if (!res.ok) throw new Error(mainI18n.t('errors.fetch.failed', { status: res.status }));
     const buf = Buffer.from(await res.arrayBuffer());
     const truncated = buf.length > FETCH_TEXT_MAX_BYTES;
     return { text: buf.subarray(0, FETCH_TEXT_MAX_BYTES).toString('utf8'), truncated };
@@ -106,6 +116,9 @@ function createWindow(): void {
     show: false,
     title: 'Spark',
     titleBarStyle: 'hiddenInset',
+    // 红绿灯垂直居中在 48px 高的顶栏行里（中线 24px），与侧栏开关、对话顶栏标题对齐。
+    // y 是按钮顶边（Electron 按 y 上下对称留白居中按钮），按钮约 14px 高 → 中线 ≈ y + 7
+    trafficLightPosition: { x: 12, y: 17 },
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       contextIsolation: true,
@@ -132,8 +145,10 @@ function createWindow(): void {
 void app.whenReady().then(() => {
   // 外观：跟随系统 / 浅色 / 深色。页面靠 prefers-color-scheme 挂 .dark，原生标题栏、滚动条也一起变
   nativeTheme.themeSource = store.getSettings().theme;
+  syncMainLocale(store);
   registerIpc();
   handleMcpSandboxProtocol();
+  handleSitePreviewProtocol();
   // 不等 agent-host 就绪就开窗口：renderer 的请求会排队，等端口到了再发
   void host.start();
   createWindow();

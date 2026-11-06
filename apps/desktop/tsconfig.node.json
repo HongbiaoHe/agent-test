@@ -10,5 +10,5 @@
     "noEmit": true,
     "types": ["node"]
   },
-  "include": ["src/main", "src/preload", "src/agent-host", "src/shared", "e2e", "scripts", "electron.vite.config.mts", "vitest.config.mts", "playwright.config.ts"]
+  "include": ["src/main", "src/preload", "src/agent-host", "src/shared", "e2e", "scripts", "electron.vite.config.mts", "vitest.config.mts", "vitest.setup.ts", "playwright.config.ts"]
 }

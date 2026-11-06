@@ -2,6 +2,7 @@
 
 import { ChevronDown, ListChecks } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { TodoList, type Todo } from "@/components/agent/todo-list";
 import { cn } from "@/lib/utils";
@@ -13,6 +14,7 @@ import { cn } from "@/lib/utils";
  * （执行中完成最后一项也会自动收起）。用户手动点过后以手动选择为准。
  */
 export function TaskPlanPanel({ todos }: { todos: Todo[] }) {
+  const { t } = useTranslation();
   const [manual, setManual] = useState<boolean | null>(null);
   if (!todos.length) return null;
 
@@ -29,7 +31,7 @@ export function TaskPlanPanel({ todos }: { todos: Todo[] }) {
         className="flex w-full cursor-pointer items-center gap-1.5 px-3 py-2 text-xs font-medium text-muted-foreground transition-colors hover:text-foreground"
       >
         <ListChecks className="size-3.5 shrink-0" />
-        <span>Game plan</span>
+        <span>{t("chat.plan.title")}</span>
         <span className="text-muted-foreground/70">
           {done}/{todos.length}
         </span>

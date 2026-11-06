@@ -124,6 +124,10 @@ const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX background_task_conversation ON background_task (conversation_id, status);
   `,
+  // v6：会话置顶（侧栏「已置顶」分组）
+  `
+  ALTER TABLE conversation ADD COLUMN pinned_at INTEGER;
+  `,
 ];
 
 export type Db = DatabaseSync;

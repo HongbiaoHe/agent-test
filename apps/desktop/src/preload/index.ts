@@ -7,6 +7,7 @@ import { AGENT_PORT_CLOSED_MESSAGE, AGENT_PORT_MESSAGE, type DesktopApi } from '
 
 const api: DesktopApi = {
   getSettings: () => ipcRenderer.invoke('desktop:getSettings'),
+  getLocale: () => ipcRenderer.invoke('desktop:getLocale'),
   updateSettings: (patch) => ipcRenderer.invoke('desktop:updateSettings', patch),
   getKeyStatus: () => ipcRenderer.invoke('desktop:getKeyStatus'),
   setKey: (provider, value) => ipcRenderer.invoke('desktop:setKey', provider, value),
@@ -15,6 +16,7 @@ const api: DesktopApi = {
   getPathForFile: (file) => webUtils.getPathForFile(file),
   openExternal: (url) => ipcRenderer.invoke('desktop:openExternal', url),
   showInFolder: (path) => ipcRenderer.invoke('desktop:showInFolder', path),
+  sitePreviewOrigin: (workspaceDir) => ipcRenderer.invoke('desktop:sitePreviewOrigin', workspaceDir),
   fetchText: (url) => ipcRenderer.invoke('desktop:fetchText', url),
   getWebAccount: () => ipcRenderer.invoke('desktop:getWebAccount'),
   sendWebCode: (email, apiUrl) => ipcRenderer.invoke('desktop:sendWebCode', email, apiUrl),

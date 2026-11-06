@@ -2,19 +2,13 @@
 
 import { ShieldAlert } from "lucide-react";
 import { useState } from "react";
+import { useTranslation } from "react-i18next";
 
 import { Button } from "@/components/ui/button";
 import { Textarea } from "@/components/ui/textarea";
 
 import type { Approval, Decision } from "../lib/thread";
 import { PromptPanel } from "./prompt-panel";
-
-const DECISION_LABEL: Record<Decision, string> = {
-  approve: "Approve",
-  reject: "Reject",
-  edit: "Edit",
-  respond: "Reply",
-};
 
 type View = "review" | "edit" | "reply";
 
@@ -32,6 +26,7 @@ export function ApprovalPanel({
   approval: Approval;
   onSubmit: (decisions: unknown[]) => void;
 }) {
+  const { t } = useTranslation();
   const [view, setView] = useState<View>("review");
   const [reply, setReply] = useState("");
   // drafts[i][key]：第 i 个 actionRequest 的字段编辑文本（非字符串字段为 JSON 文本）
@@ -79,7 +74,7 @@ export function ApprovalPanel({
       });
       onSubmit(decisions);
     } catch {
-      setEditError("Invalid JSON in a non-text field — fix it and try again.");
+      setEditError(t("chat.approval.invalidJson"));
     }
   }
 
@@ -92,7 +87,7 @@ export function ApprovalPanel({
   return (
     <PromptPanel
       icon={ShieldAlert}
-      title="Needs your sign-off"
+      title={t("chat.approval.title")}
       glow
       footer={
         view === "review" ? (
@@ -116,22 +111,22 @@ export function ApprovalPanel({
                       : submitSimple(d)
                 }
               >
-                {DECISION_LABEL[d] ?? d}
+                {t(`chat.approval.decision.${d}`)}
               </Button>
             ))}
             {!allowed.includes("respond") && (
               <Button size="sm" variant="secondary" onClick={() => setView("reply")}>
-                Reply
+                {t("chat.approval.decision.respond")}
               </Button>
             )}
           </>
         ) : view === "edit" ? (
           <>
             <Button size="sm" onClick={submitEdit}>
-              Save & approve
+              {t("chat.approval.saveAndApprove")}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setView("review")}>
-              Cancel
+              {t("common.cancel")}
             </Button>
             {editError && (
               <p className="text-xs text-destructive" role="alert">
@@ -142,10 +137,10 @@ export function ApprovalPanel({
         ) : (
           <>
             <Button size="sm" disabled={!reply.trim()} onClick={submitReply}>
-              Send reply
+              {t("chat.approval.sendReply")}
             </Button>
             <Button size="sm" variant="ghost" onClick={() => setView("review")}>
-              Cancel
+              {t("common.cancel")}
             </Button>
           </>
         )
@@ -156,7 +151,7 @@ export function ApprovalPanel({
           autoFocus
           value={reply}
           onChange={(e) => setReply(e.target.value)}
-          placeholder="Your reply is returned to the agent as the tool result…"
+          placeholder={t("chat.approval.replyPlaceholder")}
           className="min-h-20"
         />
       ) : (
@@ -164,7 +159,7 @@ export function ApprovalPanel({
           {approval.actionRequests.map((a, i) => (
             <div key={i} className="space-y-2 text-sm">
               <div className="text-muted-foreground">
-                Tool:{" "}
+                {t("chat.approval.tool")}{" "}
                 <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-foreground">
                   {a.name}
                 </code>

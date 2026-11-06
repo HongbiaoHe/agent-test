@@ -5,6 +5,7 @@
 import type { DirEntry, FilePreview, StoredMessage } from '../../../shared/rpc';
 import { z } from 'zod';
 import { agent } from './agent-client';
+import { i18n } from './i18n';
 
 import type {
   TokenCall,
@@ -59,17 +60,15 @@ export interface CommandInfo {
   kind: SkillKind;
 }
 
-/** `/skills add` 安装命令：不是技能，但放进 / 补全里方便发现（agent-host 直接执行，不交给模型） */
-const SKILLS_ADD_COMMAND: CommandInfo = {
-  name: 'skills',
-  description: 'add <owner/repo> [--skill name] — install open-source skills from GitHub',
-  kind: 'builtin',
-};
+/** `/skills add` 安装命令：不是技能，但放进 / 补全里方便发现（agent-host 直接执行，不交给模型）；说明按调用时的语言取 */
+function skillsAddCommand(): CommandInfo {
+  return { name: 'skills', description: i18n.t('settings.skillsAddCommand'), kind: 'builtin' };
+}
 
 export async function listCommands(): Promise<CommandInfo[]> {
   const skills = await agent.call('skills.list', {});
   return [
-    SKILLS_ADD_COMMAND,
+    skillsAddCommand(),
     ...skills
       .filter((s) => s.enabled)
       .map((s) => ({ name: s.name, description: s.description, kind: s.kind })),

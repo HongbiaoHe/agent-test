@@ -10,6 +10,7 @@ import { join } from 'node:path';
 import type { MessagePortMain } from 'electron';
 import { z } from 'zod';
 import type { HostControlMessage } from '../shared/desktop';
+import { LANGUAGE_PREFERENCES, LOCALES } from '../shared/i18n/locales';
 import { type HostEvent, isMethod, type RpcResponse } from '../shared/rpc';
 import { NodeSqliteSaver } from './db/checkpointer';
 import { ConversationRepo } from './db/conversations';
@@ -18,6 +19,7 @@ import { McpStore } from './mcp/mcp-store';
 import { createOAuthCallbackServer, OAUTH_REDIRECT_URI } from './mcp/oauth-callback';
 import { installEnvProxy } from './proxy';
 import { BackgroundService } from './background/background-service';
+import { setHostLocale } from './i18n';
 import { createHandlers, dispatch } from './rpc-server';
 import { RunService } from './run/run-service';
 import { SkillStore } from './skills/skill-store';
@@ -25,6 +27,9 @@ import { WebApi } from './web-media/web-api';
 import { ProcessTracker } from './workspace/process-tracker';
 
 const log = (msg: string) => console.log(`[agent-host] ${msg}`);
+
+const startupLocale = z.enum(LOCALES).safeParse(process.env.SPARK_LOCALE);
+if (startupLocale.success) setHostLocale(startupLocale.data);
 
 const userData = process.env.SPARK_USER_DATA;
 if (!userData) throw new Error('SPARK_USER_DATA 未设置（应由 main 进程注入）');
@@ -64,12 +69,14 @@ const settingsSchema = z.object({
   webApiUrl: z.string(),
   loginSkipped: z.boolean(),
   theme: z.enum(['system', 'light', 'dark']),
+  language: z.enum(LANGUAGE_PREFERENCES),
 });
 const controlSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('config'),
     settings: settingsSchema,
     keys: z.object({ google: z.boolean(), deepseek: z.boolean() }),
+    locale: z.enum(LOCALES),
   }),
   z.object({ type: z.literal('port') }),
 ]);
@@ -198,6 +205,7 @@ process.parentPort.on('message', (e) => {
   if (!msg.success) return;
   if (msg.data.type === 'config') {
     current = msg.data;
+    setHostLocale(msg.data.locale);
     return;
   }
   const port = e.ports[0];

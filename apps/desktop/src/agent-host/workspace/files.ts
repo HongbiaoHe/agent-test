@@ -8,6 +8,7 @@
 import { open, readdir, readFile, realpath, stat } from 'node:fs/promises';
 import { extname, join, relative, sep } from 'node:path';
 import type { DirEntry, FilePreview } from '../../shared/rpc';
+import { hostI18n } from '../i18n';
 
 const HIDDEN_NAMES = new Set(['node_modules']);
 const PREVIEW_MAX_LINES = 2000;
@@ -38,11 +39,11 @@ const IMAGE_MIME: Record<string, string> = {
 export class WorkspacePathError extends Error {}
 
 /** 工作区相对路径 → 真实绝对路径；出域（含经软链出域）抛 WorkspacePathError */
-async function resolveInside(root: string, rel: string): Promise<string> {
+export async function resolveInside(root: string, rel: string): Promise<string> {
   const realRoot = await realpath(root);
   const target = await realpath(join(realRoot, rel || '.'));
   if (target !== realRoot && !target.startsWith(realRoot + sep)) {
-    throw new WorkspacePathError(`路径不在工作区内：${rel}`);
+    throw new WorkspacePathError(hostI18n.t('errors.workspace.outside', { path: rel }));
   }
   return target;
 }
@@ -76,7 +77,7 @@ export async function listDir(root: string, rel: string): Promise<DirEntry[]> {
 export async function readFilePreview(root: string, rel: string): Promise<FilePreview> {
   const file = await resolveInside(root, rel);
   const st = await stat(file);
-  if (!st.isFile()) throw new WorkspacePathError(`不是文件：${rel}`);
+  if (!st.isFile()) throw new WorkspacePathError(hostI18n.t('errors.workspace.notFile', { path: rel }));
   const name = file.split(sep).pop() ?? '';
   const ext = extname(name).slice(1).toLowerCase();
   const isText = ext ? TEXT_EXTS.has(ext) : TEXT_NOEXT_NAMES.has(name.toLowerCase());
