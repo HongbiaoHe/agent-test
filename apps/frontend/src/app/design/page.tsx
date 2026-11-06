@@ -22,7 +22,9 @@ type Preset = (typeof CANVAS_PRESETS)[number];
 export default function DesignListPage() {
   const router = useRouter();
   const qc = useQueryClient();
-  const list = useQuery({ queryKey: ["design", "list"], queryFn: designApi.list });
+  // staleTime 0：列表反映的是编辑器里的改动（新建、改名、图层数、agent 状态），从编辑器返回时
+  // 必须重拉；全局默认的 60s 会让刚建 / 刚改的设计稿在列表里看不到
+  const list = useQuery({ queryKey: ["design", "list"], queryFn: designApi.list, staleTime: 0 });
   const create = useMutation({
     mutationFn: designApi.create,
     onSuccess: (snap) => router.push(`/design/${snap.id}`),

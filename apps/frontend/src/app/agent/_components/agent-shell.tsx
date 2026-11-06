@@ -68,8 +68,9 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   const [preferredModeId, setPreferredModeId] = useModePreference();
   const modesQuery = useQuery({ queryKey: MODES_QUERY_KEY, queryFn: listModes });
   const modes = modesQuery.data ?? [];
-  // 通用模式设置（默认模型 / 档位）：偏好为通用模式时新建会话据此回填
-  const generalQuery = useQuery({ queryKey: GENERAL_MODE_QUERY_KEY, queryFn: getGeneralMode });
+  // 通用模式设置（默认模型 / 档位）：偏好为通用模式时新建会话据此回填。
+  // 这里只负责提前预取、让缓存热着；新建时由 createMut 里的 ensureQueryData 取用
+  useQuery({ queryKey: GENERAL_MODE_QUERY_KEY, queryFn: getGeneralMode });
 
   // 切换会话（含 [id1]→[id2] 不重挂载的情况）时清掉详情面板选择
   const [trackedId, setTrackedId] = useState(conversationId);
@@ -96,9 +97,15 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
   // 带上最近用的模式（已删除的按通用模式）；模式（或通用模式设置）有默认模型 / 思考深度时**只在这里**
   // 回填偏好并随请求带上，切换已有会话的模式不动模型。
   const createMut = useMutation({
-    mutationFn: () => {
-      const mode = modes.find((m) => m.id === preferredModeId) ?? null;
-      const defaults = mode ?? generalQuery.data ?? null;
+    mutationFn: async () => {
+      // 点得比查询返回快时，用渲染时的 modes / generalQuery.data 会拿到空值：偏好的模式被当成已删除、
+      // 通用模式的默认模型也漏掉。这里先确保两份数据就绪（有缓存直接用，没有就当场取）。
+      const [modeList, general] = await Promise.all([
+        qc.ensureQueryData({ queryKey: MODES_QUERY_KEY, queryFn: listModes }),
+        qc.ensureQueryData({ queryKey: GENERAL_MODE_QUERY_KEY, queryFn: getGeneralMode }),
+      ]);
+      const mode = modeList.find((m) => m.id === preferredModeId) ?? null;
+      const defaults = mode ?? general;
       let nextModel = model;
       let nextLevel = thinkingLevel;
       if (

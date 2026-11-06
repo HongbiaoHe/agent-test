@@ -136,8 +136,10 @@ export function ChatThread({
   const [dragging, setDragging] = useState(false);
   const attachmentsBlocked =
     attachments.uploading || attachments.items.some((it) => it.status === "error");
+  // 历史加载中不许发：基底随后到达会重置实时增量、把状态同步成 idle，乐观气泡与运行态会丢
   const canSend =
     !busy &&
+    !isLoading &&
     !attachmentsBlocked &&
     (draft.trim().length > 0 || attachments.ready.length > 0);
   // 滚动编排：发送后把这条消息顶到视口顶部，回复在其下方生长而视图不动；
@@ -448,7 +450,10 @@ export function ChatThread({
 
           {/* 命令补全面板（输入 / 时浮在输入框上方，按分类 Built-in/GitHub 分组）*/}
           {showCmdMenu && (
-            <div className="absolute bottom-full mb-2 max-h-72 w-full overflow-y-auto rounded-xl border bg-popover p-1.5 shadow-lg">
+            <div
+              data-testid="command-menu"
+              className="absolute bottom-full mb-2 max-h-72 w-full overflow-y-auto rounded-xl border bg-popover p-1.5 shadow-lg"
+            >
               {groupedKinds.map(([kind, cmds]) => (
                 <div key={kind}>
                   <div className="px-2 py-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">

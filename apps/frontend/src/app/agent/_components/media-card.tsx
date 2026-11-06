@@ -286,7 +286,7 @@ function MediaCardBody({
   const { Icon, label } = TYPE_META[mediaType];
 
   return (
-    <div className="overflow-hidden rounded-xl border bg-card">
+    <div className="overflow-hidden rounded-xl border bg-card" data-testid="media-card">
       {/* 头部（常驻）：工具名 + 模型 + 状态。信息随当前查看的 version 联动。 */}
       <CardHeader version={version} mediaType={mediaType} compact={compact} />
 
