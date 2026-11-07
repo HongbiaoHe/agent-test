@@ -54,6 +54,13 @@ test('工作区面板：.html 以网页打开（相对路径资源、交互、�
   );
   writeFileSync(join(ws, 'site', 'css', 'style.css'), 'h1 { color: rgb(200, 30, 30); }');
   const { app, page } = await launch({ userData: join(dirs.root, 'panel-user-data'), workspace: ws });
+  // 诊断：记录预览 iframe 的每次导航与点击时刻。这条用例在整套里偶发「点了加一计数仍为 0」，
+  // 单独跑复现不了；失败时据此判断是否点击后 iframe 又被重载（计数被重置）
+  const t0 = Date.now();
+  const nav: string[] = [];
+  page.on('framenavigated', (f) => {
+    if (f.url().startsWith('spark-preview://')) nav.push(`nav@${Date.now() - t0}`);
+  });
   try {
     await newChat(page);
     await page.getByRole('button', { name: '工作区文件', exact: true }).click();
@@ -66,8 +73,9 @@ test('工作区面板：.html 以网页打开（相对路径资源、交互、�
     await expect(heading).toHaveCSS('color', 'rgb(200, 30, 30)');
     await expect(viewer(page)).toContainText('/site/index.html');
     expect(await viewer(page).locator('iframe').getAttribute('src')).toMatch(/^spark-preview:\/\/w-[a-f0-9]{16}\/site\/index\.html$/);
+    nav.push(`click@${Date.now() - t0}`);
     await frame(page).getByRole('button', { name: '加一' }).click();
-    await expect(frame(page).locator('#c')).toHaveText('1');
+    await expect(frame(page).locator('#c'), `iframe 导航与点击时序：${nav.join(' ')}`).toHaveText('1');
     // 刷新：iframe 重新加载；改过的文件也立即生效（no-store）
     writeFileSync(join(ws, 'site', 'css', 'style.css'), 'h1 { color: rgb(30, 30, 200); }');
     await viewer(page).getByRole('button', { name: '刷新' }).click();

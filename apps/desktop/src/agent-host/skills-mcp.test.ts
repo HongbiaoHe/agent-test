@@ -83,6 +83,28 @@ describe('技能库', () => {
     expect(existsSync(join(runtime, 'skills', 'create-skills', 'SKILL.md'))).toBe(true);
   });
 
+  it('随应用发布的内置技能（resources/skills）全部合法、能同步进运行目录，且不含 BuzzVideo 专有机制', async () => {
+    const resources = join(__dirname, '..', '..', 'resources', 'skills');
+    const store = new SkillStore(openDatabase(join(dir, 'spark.db')), join(dir, 'lib'), resources);
+    // 不合法的内置技能会被静默跳过，这里逐个点名
+    expect((await store.list()).map((s) => [s.name, s.kind])).toEqual(
+      ['audio-producer', 'copywriter', 'create-skills', 'designer', 'strategist', 'video-producer'].map((n) => [n, 'builtin']),
+    );
+    const runtime = join(dir, 'runtime');
+    await store.syncToRuntime(runtime);
+    expect(existsSync(join(runtime, 'skills', 'video-producer', 'seedance-2_5-prompt-optimizer.md'))).toBe(true);
+    expect(existsSync(join(runtime, 'skills', 'audio-producer', 'seed-audio-pe.md'))).toBe(true);
+    // 营销技能来自 BuzzVideo Marketing Agent，改写后不能再引用 desktop 没有的工具 / 系统提示块
+    const banned = /propose_batch_plan|execute_batch_plan|Locked for this turn|Model Settings|matchModel|videoParams|`list_models`|referenceAudioUrls|referenceImageUrls|referenceVideoUrls/;
+    for (const name of ['audio-producer', 'copywriter', 'designer', 'strategist', 'video-producer']) {
+      const d = await store.detail(name);
+      for (const f of d.files) {
+        const text = await readFile(join(resources, name, f), 'utf8');
+        expect(banned.exec(text)?.[0], `${name}/${f}`).toBeUndefined();
+      }
+    }
+  });
+
   it('自定义技能：生成带 frontmatter 的 SKILL.md、附带文件、详情；路径穿越拒绝', async () => {
     const store = new SkillStore(openDatabase(join(dir, 'spark.db')), join(dir, 'lib'));
     await store.saveCustom({

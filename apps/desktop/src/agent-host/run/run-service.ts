@@ -25,10 +25,12 @@ import { ReasoningCollector } from '@agent-test/agent-core/agent/reasoning-parts
 import { asThinkingLevel } from '@agent-test/agent-core/agent/thinking-level';
 import { type CallUsage, extractUsages } from '@agent-test/agent-core/agent/token-usage';
 import { parseCommand } from '@agent-test/agent-core/commands/parse-command';
+import type { RuntimeEnvironment } from '@agent-test/agent-core/modes/capabilities';
 import {
-  buildMcpAgentTools,
-  buildMcpPrompt,
-} from '@agent-test/agent-core/mcp/mcp-agent-tools';
+  activePlanProvider,
+  type DynamicContextProvider,
+} from '@agent-test/agent-core/modes/dynamic-context';
+import { instantiateTools, resolveMode } from '@agent-test/agent-core/modes/resolve-mode';
 import { z } from 'zod';
 import type { HitlDecision } from '../../shared/rpc';
 import type { NodeSqliteSaver } from '../db/checkpointer';
@@ -36,12 +38,10 @@ import type { ConversationRepo } from '../db/conversations';
 import type { McpStore } from '../mcp/mcp-store';
 import { hostI18n } from '../i18n';
 import type { BackgroundService } from '../background/background-service';
-import { backgroundPrompt, createBackgroundTools } from '../background/background-tools';
-import { createPreviewPageTool } from '../preview/preview-page.tool';
+import type { ModeStore } from '../modes/mode-store';
 import { parseSkillSource, skillsAddArgs } from '../skills/github-install';
 import type { WebApi } from '../web-media/web-api';
-import { createSyncMediaTool, createWebMediaTools, uploadAttachment } from '../web-media/web-media';
-import { createSaveSkillTool, SAVE_SKILL_TOOL } from '../skills/save-skill.tool';
+import { uploadAttachment } from '../web-media/web-media';
 import type { SkillStore } from '../skills/skill-store';
 import { LocalWorkspaceSandbox } from '../workspace/local-sandbox';
 import type { ProcessTracker } from '../workspace/process-tracker';
@@ -50,10 +50,12 @@ import { copyAttachments, userTextForModel } from './attachments';
 import {
   buildActivePlan,
   buildSkillPrompt,
-  DESKTOP_HOST_SECTIONS,
-  DESKTOP_MEDIA_SECTIONS,
+  DESKTOP_ATTACHMENTS_SECTION,
+  DESKTOP_MEDIA_ATTACHMENTS_NOTE,
   localWorkspaceBlock,
+  mcpAppContextBlock,
 } from './prompts';
+import { type DesktopRegistry, desktopCapabilities } from './tool-registry';
 
 /** 桌面端单用户：contextSchema 要求 userId 必填，固定传这个值 */
 export const LOCAL_USER_ID = 'local';
@@ -83,6 +85,10 @@ export interface RunDeps {
   checkpointer: NodeSqliteSaver;
   skills: SkillStore;
   mcp: McpStore;
+  /** 会话所选模式（被删 → 按通用模式跑） */
+  modes: ModeStore;
+  /** desktop 工具注册表（启动时登记一次，见 tool-registry.ts） */
+  registry: DesktopRegistry;
   /** 命令登记表（崩溃后清理孤儿进程）；测试里可不传 */
   processes?: ProcessTracker;
   config: () => RunConfig;
@@ -279,8 +285,36 @@ export class RunService {
       });
       const config = { configurable: { thread_id: conversationId, userId: LOCAL_USER_ID } };
 
+      // ── 按模式装配（core resolveMode 纯函数）：模式被删 → null = 通用模式 ──
+      const mode = conv.modeId ? this.deps.modes.get(conv.modeId) : null;
+      const webApi = this.deps.webApi ?? null;
+      const env: RuntimeEnvironment = {
+        capabilities: desktopCapabilities({ permission: conv.permission, webApi, background: this.background }),
+        workspace: workspaceDir,
+        skillsDir,
+      };
+      const assembly = resolveMode({
+        mode,
+        // 通用模式用用户覆盖的提示词（没覆盖为 null → core 默认）；有模式时 core 不看它
+        generalPrompt: mode ? null : this.deps.modes.getGeneral().systemPrompt,
+        // 用户改写过的平台片段（通用模式与普通模式都生效）
+        fragmentOverrides: this.deps.modes.fragmentOverrides(),
+        // 用户自建片段（{{custom.xxx}}）
+        customFragments: this.deps.modes.customFragments(),
+        registry: this.deps.registry,
+        env,
+        installedSkills: await this.deps.skills.listFiles(),
+        mcpServers: this.deps.mcp.runtimeServers(),
+        envPromptBlock:
+          localWorkspaceBlock({ skillsDir, permission: conv.permission })(workspaceDir) +
+          DESKTOP_ATTACHMENTS_SECTION +
+          (webApi ? DESKTOP_MEDIA_ATTACHMENTS_NOTE : ''),
+        // 后台任务说明是后台工具的 promptSection，随勾选与环境走（见 tool-registry.ts）
+      });
+      const skillNames = assembly.skills.map((s) => s.name);
+
       try {
-        await this.deps.skills.syncToRuntime(runtimeDir);
+        await this.deps.skills.syncToRuntime(runtimeDir, skillNames);
       } catch (e) {
         emit(conversationId, {
           type: 'message',
@@ -300,61 +334,42 @@ export class RunService {
         const cmd = parseCommand(last);
         runName = cmd ? `技能:${cmd.name} · ${cmd.args}`.slice(0, 60) : `Agent · ${last.slice(0, 60)}`;
         input = { messages };
+        // /技能名 不在当前模式技能集内：当普通文本（决策 15），不注入其 SKILL.md
         systemPromptExtra = await buildSkillPrompt(
           userTexts,
-          (name) => this.deps.skills.skillMd(name),
+          (name) => (skillNames.includes(name) ? this.deps.skills.skillMd(name) : Promise.resolve(null)),
           skillsDir,
         );
       }
       const activePlan = buildActivePlan(repo.lastOfType(conversationId, 'plan_update')?.content);
-      const servers = this.deps.mcp.runtimeServers();
-      const webApi = this.deps.webApi;
-      const mediaTools = webApi
-        ? [
-            ...createWebMediaTools(webApi, conversationId),
-            ...(conv.permission === 'read_only' ? [] : [createSyncMediaTool(webApi, conversationId, workspaceDir)]),
-          ]
-        : [];
-      const bgTools = this.background
-        ? createBackgroundTools(this.background, {
-            conversationId,
-            workspaceDir,
-            logDir: join(runtimeDir, 'bg'),
-            permission: conv.permission,
-            mcpServers: servers,
-          })
-        : [];
-      const mcp = buildMcpAgentTools(servers, (sid, name, args) =>
-        this.deps.mcp.callTool(sid, name, args),
+      const { tools, interruptOn } = instantiateTools(
+        assembly,
+        {
+          conversationId,
+          userId: LOCAL_USER_ID,
+          env,
+          host: { workspaceDir, runtimeDir, permission: conv.permission, mcpServers: assembly.mcpServers },
+        },
+        (sid, name, args) => this.deps.mcp.callTool(sid, name, args),
       );
+      // MCP 卡片上下文随对话变化：每次模型调用前现取（不进静态提示，见 prompts.mcpAppContextBlock）
+      const mcpAppContextProvider: DynamicContextProvider = () => {
+        const text = mcpAppContextBlock(this.deps.mcp.appContext(conversationId));
+        return text ? [{ placement: 'system_tail', text }] : null;
+      };
 
       const agent = await buildAgent({
-        checkpointer: this.deps.checkpointer,
-        hostPromptSections: DESKTOP_HOST_SECTIONS + (webApi ? DESKTOP_MEDIA_SECTIONS : ''),
-        workspacePromptBlock: localWorkspaceBlock({ skillsDir, permission: conv.permission }),
-        systemPromptExtra:
-          systemPromptExtra +
-          buildMcpPrompt(servers, this.deps.mcp.appContext(conversationId)) +
-          (this.background ? backgroundPrompt(conv.permission !== 'read_only') : ''),
-        extraInterruptOn: {
-          ...mcp.interruptOn,
-          ...permissionInterrupts(conv.permission),
-          // 保存技能会改变之后所有对话的行为：任何权限档位都要用户确认
-          [SAVE_SKILL_TOOL]: true,
-        },
+        // /command 激活技能的全文是 run 内稳定的静态尾段，接在装配结果之后
+        systemPrompt: assembly.systemPrompt + systemPromptExtra,
+        tools,
+        interruptOn,
+        interruptOnOverride: permissionInterrupts(conv.permission),
+        backend,
+        skillsDir,
         model: conv.model ?? cfg.defaultModel,
         thinkingLevel: asThinkingLevel(conv.thinkingLevel),
-        defaultBackend: backend,
-        hasSandbox: true,
-        workspace: workspaceDir,
-        skillsDir,
-        extraTools: [
-          ...mcp.tools,
-          createSaveSkillTool(this.deps.skills, () => this.deps.skillsChanged?.()),
-          ...bgTools,
-          ...mediaTools,
-          createPreviewPageTool({ workspaceDir }),
-        ],
+        checkpointer: this.deps.checkpointer,
+        dynamicContext: [activePlanProvider, mcpAppContextProvider],
       });
 
       const stream = await agent.stream(input, {

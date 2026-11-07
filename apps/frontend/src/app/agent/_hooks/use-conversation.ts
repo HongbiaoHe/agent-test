@@ -177,6 +177,8 @@ export function useConversation(
     turnStartedAt: derived.turnStartedAt,
     /** 会话累计 token（顶栏徽标） */
     tokens,
+    /** 会话使用的模式 id；null = 通用模式（切换后由 invalidate 重拉） */
+    modeId: query.data?.modeId ?? null,
     isLoading: !!conversationId && query.isLoading,
     pushUserMessage,
     markRunning: () => setPending(true),

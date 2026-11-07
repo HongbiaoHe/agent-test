@@ -67,6 +67,8 @@ export function InstallForm() {
     onSuccess: () => {
       // 安装成功后刷新列表并清空表单
       void qc.invalidateQueries({ queryKey: SKILLS_QUERY_KEY });
+      // 新装的技能立刻出现在斜杠命令补全里（命令列表有 5 分钟缓存）
+      void qc.invalidateQueries({ queryKey: ["commands"] });
       setRepo("");
       setPath("");
       setRef("");

@@ -61,7 +61,8 @@ test('登录 Web 账号 → 带参考图生图 → 卡片出图 → 同步进工
     '我确认要生成：用 generate_image 生成 1 张图，提示词「a red apple on a white table, studio light」，用默认模型，把我附件里的图作为参考图（referenceVersionIds 用附件的 versionId）。不用再问我，直接调用。',
   );
   const timeline = page.getByTestId('timeline');
-  const generated = timeline.locator('img[alt="Generated image"]');
+  // alt 走 i18n（chat.media.generatedImage），e2e 固定 zh-CN
+  const generated = timeline.locator('img[alt="生成的图片"]');
   // 失败时留现场：截图 + 当前视图（排查过一次「对话区被换成设置页」的偶发问题）
   await expect(generated)
     .toBeVisible({ timeout: 150_000 })

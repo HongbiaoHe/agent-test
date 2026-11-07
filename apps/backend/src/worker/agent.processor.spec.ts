@@ -6,26 +6,30 @@ import {
 // 偏好服务会引入沙箱提供方 SDK（深 ESM 链，jest 加载失败）；偏好已整体 mock，不需要真实提供方
 jest.mock('../agent/sandbox-providers', () => ({}));
 import { AIMessage } from '@langchain/core/messages';
+import type { DynamicContextProvider } from '@agent-test/agent-core/modes/dynamic-context';
+import { activePlanProvider } from '@agent-test/agent-core/modes/dynamic-context';
+import {
+  instantiateTools,
+  type ModeAssembly,
+  resolveMode,
+} from '@agent-test/agent-core/modes/resolve-mode';
+import { ToolRegistry } from '@agent-test/agent-core/modes/tool-registry';
+import { mountSkills } from '@agent-test/agent-core/skills/skills-mount';
 import type { Job, Queue } from 'bullmq';
 import { buildAgent } from '../agent/agent.factory';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
-import { createMediaTools } from '../media/media.tools';
 import { PrismaService } from '../prisma/prisma.service';
-import { getUserSandbox, uploadSkillsToSandbox } from '../agent/sandbox';
+import { getUserSandbox } from '../agent/sandbox';
+import type { BackendHost } from '../agent/tool-registry.provider';
 import type { SkillDef } from '../skills/skills.service';
 import { SkillsService } from '../skills/skills.service';
 import { AbortRegistry } from '../agent/abort-registry';
 import type { BackgroundService } from '../background/background.service';
 import type { McpService } from '../mcp/mcp.service';
+import { ModesService } from '../modes/modes.service';
 import type { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
 import { AgentProcessor } from './agent.processor';
-
-// 后台任务工具另有专门单测（background.tools.spec）；这里的用例断言的是其余工具的装配
-jest.mock('../background/background.tools', () => ({
-  createBackgroundTools: jest.fn(() => []),
-  backgroundPrompt: jest.fn(() => ''),
-}));
 
 /** 沙箱提供方偏好 mock：固定解析为 daytona（sandbox 模块已整体 mock，取值不影响行为）。 */
 const sandboxSettingsMock = {
@@ -34,29 +38,59 @@ const sandboxSettingsMock = {
 // 无 MCP 连接器：不装任何 MCP 工具
 const mcpMock = {
   runtimeServers: jest.fn().mockResolvedValue([]),
+  callTool: jest.fn(),
 } as unknown as McpService;
 // 后台任务：本轮结束后的通知投递在这些用例里无事可做
 const backgroundMock = {
   deliverPending: jest.fn().mockResolvedValue(undefined),
 } as unknown as BackgroundService;
+// 用户没改写任何平台片段、也没有自建片段（片段来源另有「模式装配」用例走真实 ModesService 读库）
+const modesMock = {
+  fragmentOverrides: jest.fn().mockResolvedValue({}),
+  customFragments: jest.fn().mockResolvedValue({}),
+} as unknown as ModesService;
+// 注册表只是透传给 resolveMode（已 mock），空表即可；真实注册表另有 tool-registry.provider.spec
+const registry = new ToolRegistry<BackendHost>();
 
 // 避免加载 deepagents / google-genai 等重依赖，并能捕获传给 agent 的 input
 jest.mock('../agent/agent.factory', () => ({ buildAgent: jest.fn() }));
 
 // 沙箱模块级函数 jest.mock 拦截，否则会真的调 Daytona SDK。
-// uploadSkillsToSandbox spy：验证起沙箱后、调 LLM 前确实加载了技能。
 jest.mock('../agent/sandbox', () => ({
   getUserSandbox: jest.fn().mockResolvedValue(null),
   findUserSandbox: jest.fn().mockResolvedValue(null),
-  uploadSkillsToSandbox: jest.fn().mockResolvedValue(undefined),
 }));
 
-// createMediaTools mock：拦截媒体工具构造，避免依赖真实 MediaService
-jest.mock('../media/media.tools', () => ({
-  createMediaTools: jest
-    .fn()
-    .mockReturnValue([{ name: 'generate_image' }, { name: 'generate_video' }]),
+// 模式装配三件套来自 agent-core（各有自己的单测）：这里 mock 掉，断言 worker 传给它们的输入。
+jest.mock('@agent-test/agent-core/modes/resolve-mode', () => ({
+  resolveMode: jest.fn(),
+  instantiateTools: jest.fn(),
 }));
+jest.mock('@agent-test/agent-core/skills/skills-mount', () => ({
+  mountSkills: jest.fn(),
+}));
+
+/** resolveMode 的默认产物（可按用例覆盖 skills / systemPrompt）。 */
+const makeAssembly = (
+  extra: Partial<ModeAssembly<BackendHost>> = {},
+): ModeAssembly<BackendHost> => ({
+  systemPrompt: 'BASE',
+  toolDescriptors: [],
+  mcpServers: [],
+  skills: [],
+  unavailable: [],
+  ...extra,
+});
+
+beforeEach(() => {
+  (resolveMode as jest.Mock).mockReset().mockReturnValue(makeAssembly());
+  (instantiateTools as jest.Mock)
+    .mockReset()
+    .mockReturnValue({ tools: [], interruptOn: {} });
+  (mountSkills as jest.Mock)
+    .mockReset()
+    .mockResolvedValue({ backend: {}, skillsDir: '/skills' });
+});
 
 /** 构造 MediaService mock（仅需 createGeneration 和 listForConversation 存在） */
 const makeMediaService = (generations: unknown[] = []) =>
@@ -96,6 +130,7 @@ describe('AgentProcessor 多轮重放', () => {
     ];
 
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest.fn().mockResolvedValue(makeConv()),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -144,6 +179,8 @@ describe('AgentProcessor 多轮重放', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c1', kind: 'run' },
@@ -186,6 +223,7 @@ describe('AgentProcessor 多轮重放', () => {
     ];
 
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest.fn().mockResolvedValue(makeConv()),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -212,14 +250,17 @@ describe('AgentProcessor 多轮重放', () => {
 
     const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
 
+    // 通用模式：装配出的技能集包含该技能（resolveMode 已 mock）
+    (resolveMode as jest.Mock).mockReturnValue(makeAssembly({ skills: [def] }));
+
     let capturedExtra = '';
     const fakeAgent = {
       stream: jest.fn(async () => (async function* () {})()),
       getState: jest.fn(async () => ({ tasks: [] })),
     };
     (buildAgent as jest.Mock).mockImplementation(
-      (opts: { systemPromptExtra?: string }) => {
-        capturedExtra = opts.systemPromptExtra ?? '';
+      (opts: { systemPrompt?: string }) => {
+        capturedExtra = opts.systemPrompt ?? '';
         return fakeAgent;
       },
     );
@@ -235,6 +276,8 @@ describe('AgentProcessor 多轮重放', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c3', kind: 'run' },
@@ -251,6 +294,104 @@ describe('AgentProcessor 多轮重放', () => {
     expect(capturedExtra).toContain(
       '/skills/tvc-director/references/treatment.md',
     );
+  });
+
+  it('当前模式没勾该技能：之前轮次的 /命令 视为普通文本，不注入 SKILL.md 全文', async () => {
+    const def: SkillDef = {
+      name: 'tvc-director',
+      description: '',
+      kind: 'builtin' as const,
+      source: 'builtin',
+      enabled: true,
+      files: { 'SKILL.md': '# TVC Director' },
+    };
+    const history = [
+      {
+        role: 'user',
+        content: { text: '/tvc-director 帮我做一条30秒手表广告' },
+      },
+      { role: 'assistant', content: { text: '（上一轮分镜）' } },
+      { role: 'user', content: { text: '再短一点，改成15秒' } },
+    ];
+    const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
+      conversation: {
+        update: jest.fn().mockResolvedValue(makeConv({ modeId: 'm1' })),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest
+          .fn()
+          .mockResolvedValue(makeConv({ modeId: 'm1' })),
+      },
+      agentMode: {
+        // 用户后来切到一个只勾了别的技能的模式
+        findFirst: jest.fn().mockResolvedValue({
+          id: 'm1',
+          userId: 'u1',
+          name: '写作',
+          systemPrompt: '写作专用',
+          toolNames: [],
+          mcpServerIds: [],
+          skillNames: ['doc'],
+          defaultModel: null,
+          defaultThinkingLevel: null,
+        }),
+      },
+      message: {
+        findMany: jest.fn().mockResolvedValue(history),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(history.length),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([def]),
+      getFor: jest.fn(async (_userId: string, name: string) =>
+        name === 'tvc-director' ? def : undefined,
+      ),
+    } as unknown as SkillsService;
+
+    // 模式装配（resolveMode 已 mock）：只挂了 doc，没有 tvc-director
+    (resolveMode as jest.Mock).mockReturnValue(
+      makeAssembly({
+        systemPrompt: '写作专用',
+        skills: [{ name: 'doc', files: { 'SKILL.md': '# doc' } }],
+      }),
+    );
+
+    let capturedPrompt = '';
+    (buildAgent as jest.Mock).mockImplementation(
+      (opts: { systemPrompt?: string }) => {
+        capturedPrompt = opts.systemPrompt ?? '';
+        return {
+          stream: jest.fn(async () => (async function* () {})()),
+          getState: jest.fn(async () => ({ tasks: [] })),
+        };
+      },
+    );
+
+    const proc = new AgentProcessor(
+      prisma,
+      {
+        publish: jest.fn().mockResolvedValue(undefined),
+      } as unknown as StreamService,
+      skills,
+      {},
+      { add: jest.fn().mockResolvedValue({}) } as unknown as Queue,
+      makeMediaService(),
+      new AbortRegistry(),
+      sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
+      registry,
+      modesMock,
+    );
+    await proc.process({
+      data: { conversationId: 'c1', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+
+    expect(capturedPrompt.startsWith('写作专用')).toBe(true);
+    expect(capturedPrompt).not.toContain('已加载技能');
+    expect(capturedPrompt).not.toContain('# TVC Director');
   });
 
   it('本轮当前请求才首次发起 /command 时不注入 SKILL.md（首次加载交给 read_file）', async () => {
@@ -271,6 +412,7 @@ describe('AgentProcessor 多轮重放', () => {
     ];
 
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest.fn().mockResolvedValue(makeConv()),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -303,8 +445,8 @@ describe('AgentProcessor 多轮重放', () => {
       getState: jest.fn(async () => ({ tasks: [] })),
     };
     (buildAgent as jest.Mock).mockImplementation(
-      (opts: { systemPromptExtra?: string }) => {
-        capturedExtra = opts.systemPromptExtra ?? '';
+      (opts: { systemPrompt?: string }) => {
+        capturedExtra = opts.systemPrompt ?? '';
         return fakeAgent;
       },
     );
@@ -320,6 +462,8 @@ describe('AgentProcessor 多轮重放', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c4', kind: 'run' },
@@ -343,6 +487,7 @@ describe('AgentProcessor 多轮重放', () => {
     };
 
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest.fn().mockResolvedValue(makeConv()),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -367,8 +512,8 @@ describe('AgentProcessor 多轮重放', () => {
 
     const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
 
-    // 既有计划现在经 runtime context（context.activePlan）传入，不再塞进 systemPromptExtra；
-    // 由 planContinuationMiddleware 在系统提示末尾注入（盖过 todoListMiddleware 的「随时重订」）。
+    // 既有计划经 runtime context（context.activePlan）传入，不进静态系统提示；
+    // 由 activePlanProvider（动态上下文）在系统提示末尾注入（盖过 todoListMiddleware 的「随时重订」）。
     let capturedContext: { activePlan?: string } | undefined;
     const fakeAgent = {
       stream: jest.fn(
@@ -392,6 +537,8 @@ describe('AgentProcessor 多轮重放', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c2', kind: 'run' },
@@ -406,7 +553,7 @@ describe('AgentProcessor 多轮重放', () => {
     expect(planText).toContain('请勿重新拆解');
   });
 
-  it('起沙箱后、调 LLM 前加载技能：uploadSkillsToSandbox 以 (sandbox, defs) 调用', async () => {
+  it('起沙箱后、调 LLM 前挂载技能：mountSkills 以 sandbox 策略收到模式过滤后的技能', async () => {
     const def: SkillDef = {
       name: 'tvc-director',
       description: '',
@@ -418,6 +565,7 @@ describe('AgentProcessor 多轮重放', () => {
     const history = [{ role: 'user', content: { text: '测试加载' } }];
 
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest.fn().mockResolvedValue(makeConv()),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -443,16 +591,28 @@ describe('AgentProcessor 多轮重放', () => {
     const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
 
     let streamCalledAt = -1;
-    let uploadCalledAt = -1;
+    let mountCalledAt = -1;
     let order = 0;
-    const fakeSandbox = { id: 'sbx-1' };
+    const fakeSandbox = {
+      id: 'sbx-1',
+      visibleRoot: '/workspace',
+      skillsDir: '/workspace/skills',
+    };
     (getUserSandbox as jest.Mock).mockResolvedValueOnce(fakeSandbox);
-    (uploadSkillsToSandbox as jest.Mock).mockClear();
-    (uploadSkillsToSandbox as jest.Mock).mockImplementationOnce(() => {
-      uploadCalledAt = order++;
-      return Promise.resolve(undefined);
+    // 模式过滤后的技能集（只剩 tvc-director）
+    const filtered = [{ name: def.name, files: def.files }];
+    (resolveMode as jest.Mock).mockReturnValue(
+      makeAssembly({ skills: filtered }),
+    );
+    (mountSkills as jest.Mock).mockImplementationOnce(() => {
+      mountCalledAt = order++;
+      return Promise.resolve({
+        backend: fakeSandbox,
+        skillsDir: '/workspace/skills',
+      });
     });
 
+    let capturedOpts: { backend?: unknown; skillsDir?: string } | undefined;
     const fakeAgent = {
       stream: jest.fn(async () => {
         streamCalledAt = order++;
@@ -460,7 +620,12 @@ describe('AgentProcessor 多轮重放', () => {
       }),
       getState: jest.fn(async () => ({ tasks: [] })),
     };
-    (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
+    (buildAgent as jest.Mock).mockImplementation(
+      (opts: { backend?: unknown; skillsDir?: string }) => {
+        capturedOpts = opts;
+        return fakeAgent;
+      },
+    );
 
     const proc = new AgentProcessor(
       prisma,
@@ -473,15 +638,24 @@ describe('AgentProcessor 多轮重放', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'seed1', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
 
-    // 加载技能必须以 (sandbox, defs) 调用，且发生在 agent.stream（调 LLM）之前
-    expect(uploadSkillsToSandbox).toHaveBeenCalledWith(fakeSandbox, [def]);
-    expect(uploadCalledAt).toBeGreaterThanOrEqual(0);
-    expect(uploadCalledAt).toBeLessThan(streamCalledAt);
+    // 挂载必须以 (sandbox 策略, 模式过滤后的技能) 调用，且发生在 agent.stream（调 LLM）之前
+    expect(mountSkills).toHaveBeenCalledWith({
+      strategy: 'sandbox',
+      sandbox: fakeSandbox,
+      skills: filtered,
+    });
+    expect(mountCalledAt).toBeGreaterThanOrEqual(0);
+    expect(mountCalledAt).toBeLessThan(streamCalledAt);
+    // backend / skillsDir 取自沙箱口径
+    expect(capturedOpts?.backend).toBe(fakeSandbox);
+    expect(capturedOpts?.skillsDir).toBe('/workspace/skills');
   });
 
   it('有沙箱时轮内每 30s 心跳续期、轮结束即停：模型思考期间沙箱不会因闲置 1 分钟而暂停', async () => {
@@ -489,6 +663,7 @@ describe('AgentProcessor 多轮重放', () => {
     try {
       const history = [{ role: 'user', content: { text: '想一想' } }];
       const prisma = {
+        generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
         conversation: {
           update: jest.fn().mockResolvedValue(makeConv()),
           updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -541,6 +716,8 @@ describe('AgentProcessor 多轮重放', () => {
         sandboxSettingsMock,
         mcpMock,
         backgroundMock,
+        registry,
+        modesMock,
       );
       const done = proc.process({
         data: { conversationId: 'c1', kind: 'run' },
@@ -557,7 +734,7 @@ describe('AgentProcessor 多轮重放', () => {
     }
   });
 
-  it('无沙箱时不加载技能：uploadSkillsToSandbox 不被调用', async () => {
+  it('无沙箱 → mountSkills 走 memory 策略（/skills 内存只读 store），技能仍是模式过滤后的', async () => {
     const def: SkillDef = {
       name: 'tvc-director',
       description: '',
@@ -569,6 +746,7 @@ describe('AgentProcessor 多轮重放', () => {
     const history = [{ role: 'user', content: { text: '无沙箱' } }];
 
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest.fn().mockResolvedValue(makeConv()),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -595,7 +773,10 @@ describe('AgentProcessor 多轮重放', () => {
 
     // 默认 mock 已返回 null（无沙箱）；显式确保本用例不被上个用例的 once 影响
     (getUserSandbox as jest.Mock).mockResolvedValueOnce(null);
-    (uploadSkillsToSandbox as jest.Mock).mockClear();
+    const filtered = [{ name: def.name, files: def.files }];
+    (resolveMode as jest.Mock).mockReturnValue(
+      makeAssembly({ skills: filtered }),
+    );
 
     const fakeAgent = {
       stream: jest.fn(async () => (async function* () {})()),
@@ -614,12 +795,18 @@ describe('AgentProcessor 多轮重放', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'no-sbx', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
 
-    expect(uploadSkillsToSandbox).not.toHaveBeenCalled();
+    expect(mountSkills).toHaveBeenCalledWith({
+      strategy: 'memory',
+      skillsDir: '/skills',
+      skills: filtered,
+    });
   });
 
   it('起沙箱失败（一般故障）→ 降级并提示「沙箱创建失败」', async () => {
@@ -634,6 +821,7 @@ describe('AgentProcessor 多轮重放', () => {
     const history = [{ role: 'user', content: { text: '无沙箱' } }];
 
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest.fn().mockResolvedValue(makeConv()),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -661,7 +849,6 @@ describe('AgentProcessor 多轮重放', () => {
     (getUserSandbox as jest.Mock).mockRejectedValueOnce(
       new Error('network down'),
     );
-    (uploadSkillsToSandbox as jest.Mock).mockClear();
 
     const fakeAgent = {
       stream: jest.fn(async () => (async function* () {})()),
@@ -680,6 +867,8 @@ describe('AgentProcessor 多轮重放', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'no-sbx', kind: 'run' },
@@ -709,6 +898,7 @@ describe('AgentProcessor 多轮重放', () => {
     const history = [{ role: 'user', content: { text: '无沙箱' } }];
 
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest.fn().mockResolvedValue(makeConv()),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -738,7 +928,6 @@ describe('AgentProcessor 多轮重放', () => {
         name: 'SandboxNetworkUnsupportedError',
       }),
     );
-    (uploadSkillsToSandbox as jest.Mock).mockClear();
 
     const fakeAgent = {
       stream: jest.fn(async () => (async function* () {})()),
@@ -757,6 +946,8 @@ describe('AgentProcessor 多轮重放', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'no-sbx', kind: 'run' },
@@ -785,6 +976,7 @@ describe('AgentProcessor 多轮重放', () => {
     const history = [{ role: 'user', content: { text: '测试' } }];
 
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest.fn().mockResolvedValue(makeConv({ userId: 'user-99' })),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -837,6 +1029,8 @@ describe('AgentProcessor 多轮重放', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'uid1', kind: 'run' },
@@ -856,6 +1050,7 @@ describe('AgentProcessor 多轮重放', () => {
     };
 
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest
           .fn()
@@ -910,6 +1105,8 @@ describe('AgentProcessor 多轮重放', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: {
@@ -923,10 +1120,11 @@ describe('AgentProcessor 多轮重放', () => {
     expect(capturedConfig?.configurable?.userId).toBe('user-resume');
   });
 
-  it('buildAgent 收到 hasSandbox:false（无沙箱时降级）', async () => {
+  it('无沙箱：传给 resolveMode 的 env 只有固有能力，没有 sandbox / workspace / workspace_write', async () => {
     const history = [{ role: 'user', content: { text: '测试' } }];
 
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest.fn().mockResolvedValue(makeConv()),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -951,17 +1149,11 @@ describe('AgentProcessor 多轮重放', () => {
 
     const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
 
-    let capturedOpts: { hasSandbox?: boolean } | undefined;
     const fakeAgent = {
       stream: jest.fn(async () => (async function* () {})()),
       getState: jest.fn(async () => ({ tasks: [] })),
     };
-    (buildAgent as jest.Mock).mockImplementation(
-      (opts: { hasSandbox?: boolean }) => {
-        capturedOpts = opts;
-        return fakeAgent;
-      },
-    );
+    (buildAgent as jest.Mock).mockReturnValue(fakeAgent);
 
     const proc = new AgentProcessor(
       prisma,
@@ -974,19 +1166,35 @@ describe('AgentProcessor 多轮重放', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'ha1', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
 
-    // getUserSandbox mock 返回 null，所以 hasSandbox 应为 false
-    expect(capturedOpts?.hasSandbox).toBe(false);
+    // getUserSandbox mock 返回 null，所以 env 不含沙箱三项
+    const input = (resolveMode as jest.Mock).mock.calls[0][0] as {
+      env: { capabilities: Set<string>; workspace?: string; skillsDir: string };
+      registry: unknown;
+      envPromptBlock: string;
+    };
+    expect([...input.env.capabilities].sort()).toEqual([
+      'background',
+      'email',
+      'media_api',
+    ]);
+    expect(input.env.workspace).toBeUndefined();
+    expect(input.env.skillsDir).toBe('/skills');
+    expect(input.registry).toBe(registry);
+    expect(input.envPromptBlock).not.toContain('## 工作区与沙箱执行');
   });
 
-  it('buildAgent 收到 extraTools（包含 generate_image + generate_video 两个工具）', async () => {
-    const history = [{ role: 'user', content: { text: '测试媒体工具注入' } }];
+  it('buildAgent 收到 instantiateTools 产出的 tools / interruptOn（send_email 的审批来自描述符，不再硬编码）', async () => {
+    const history = [{ role: 'user', content: { text: '测试工具装配' } }];
 
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest.fn().mockResolvedValue(makeConv()),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -1011,9 +1219,18 @@ describe('AgentProcessor 多轮重放', () => {
 
     const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
 
+    const assembly = makeAssembly({ mcpServers: [] });
+    (resolveMode as jest.Mock).mockReturnValue(assembly);
+    const produced = {
+      tools: [{ name: 'send_email' }, { name: 'generate_image' }],
+      interruptOn: { send_email: true },
+    };
+    (instantiateTools as jest.Mock).mockReturnValue(produced);
+
     type Captured = {
-      extraTools?: unknown[];
-      extraInterruptOn?: Record<string, true>;
+      tools?: unknown[];
+      interruptOn?: Record<string, unknown>;
+      interruptOnOverride?: unknown;
     };
     let capturedOpts: Captured | undefined;
     const fakeAgent = {
@@ -1025,9 +1242,6 @@ describe('AgentProcessor 多轮重放', () => {
       return fakeAgent;
     });
 
-    // createMediaTools mock 已在顶层 jest.mock 返回 2 个工具占位对象
-    (createMediaTools as jest.Mock).mockClear();
-
     const proc = new AgentProcessor(
       prisma,
       streamSvc,
@@ -1039,20 +1253,94 @@ describe('AgentProcessor 多轮重放', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'mt1', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
 
-    // worker 注入 send_email + 闭包注入的 2 个媒体工具；send_email 仍须走审批
-    expect(capturedOpts?.extraTools).toHaveLength(3);
-    expect(capturedOpts?.extraInterruptOn).toMatchObject({ send_email: true });
-    expect(createMediaTools).toHaveBeenCalledTimes(1);
+    // ctx：会话 / 用户 id 由 worker 给，host 带本轮沙箱（无）与装配出的 MCP server 清单
+    expect(instantiateTools).toHaveBeenCalledWith(
+      assembly,
+      expect.objectContaining({
+        conversationId: 'mt1',
+        userId: 'u1',
+        host: { sandbox: null, mcpServers: [] },
+      }),
+      expect.any(Function),
+    );
+    expect(capturedOpts?.tools).toBe(produced.tools);
+    expect(capturedOpts?.interruptOn).toEqual({ send_email: true });
+    expect(capturedOpts?.interruptOnOverride).toBeUndefined();
   });
 
-  it('有媒体资产时 buildAgent 收到的 systemPromptExtra 含「媒体资产」与 versionId', async () => {
+  /** 跑一轮，返回 buildAgent 收到的 dynamicContext 各 provider 在空 runtime 下产出的文本。 */
+  async function dynamicTextsWith(generations: unknown[]) {
     const history = [{ role: 'user', content: { text: '继续' } }];
-    const fakeGenerations = [
+    const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
+      conversation: {
+        update: jest.fn().mockResolvedValue(makeConv()),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(makeConv()),
+      },
+      message: {
+        findMany: jest.fn().mockResolvedValue(history),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(history.length),
+        create: jest.fn().mockResolvedValue({}),
+      },
+    } as unknown as PrismaService;
+    const streamSvc = {
+      publish: jest.fn().mockResolvedValue(undefined),
+    } as unknown as StreamService;
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([]),
+      getFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as SkillsService;
+    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
+
+    let providers: readonly DynamicContextProvider[] = [];
+    const fakeAgent = {
+      stream: jest.fn(async () => (async function* () {})()),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    };
+    (buildAgent as jest.Mock).mockImplementation(
+      (opts: { dynamicContext?: readonly DynamicContextProvider[] }) => {
+        providers = opts.dynamicContext ?? [];
+        return fakeAgent;
+      },
+    );
+    const media = makeMediaService(generations);
+    const proc = new AgentProcessor(
+      prisma,
+      streamSvc,
+      skills,
+      {},
+      queue,
+      media,
+      new AbortRegistry(),
+      sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
+      registry,
+      modesMock,
+    );
+    await proc.process({
+      data: { conversationId: 'media1', kind: 'run' },
+    } as Job<{ conversationId: string; kind: 'run' }>);
+
+    const texts: string[] = [];
+    for (const p of providers) {
+      const parts = await p({ context: {} });
+      for (const part of parts ?? []) texts.push(part.text);
+    }
+    return { providers, texts, media };
+  }
+
+  it('动态上下文三个 provider：计划 / 媒体清单 / MCP App 上下文；有媒体资产时清单含 versionId', async () => {
+    const { providers, texts, media } = await dynamicTextsWith([
       {
         id: 'gen-abc',
         type: 'image',
@@ -1064,119 +1352,20 @@ describe('AgentProcessor 多轮重放', () => {
           },
         ],
       },
-    ];
-
-    const prisma = {
-      conversation: {
-        update: jest.fn().mockResolvedValue(makeConv()),
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findUniqueOrThrow: jest.fn().mockResolvedValue(makeConv()),
-      },
-      message: {
-        findMany: jest.fn().mockResolvedValue(history),
-        findFirst: jest.fn().mockResolvedValue(null),
-        count: jest.fn().mockResolvedValue(history.length),
-        create: jest.fn().mockResolvedValue({}),
-      },
-    } as unknown as PrismaService;
-
-    const streamSvc = {
-      publish: jest.fn().mockResolvedValue(undefined),
-    } as unknown as StreamService;
-    const skills = {
-      effectiveSkillsFor: jest.fn().mockResolvedValue([]),
-      getFor: jest.fn().mockResolvedValue(undefined),
-    } as unknown as SkillsService;
-    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
-
-    let capturedExtra = '';
-    const fakeAgent = {
-      stream: jest.fn(async () => (async function* () {})()),
-      getState: jest.fn(async () => ({ tasks: [] })),
-    };
-    (buildAgent as jest.Mock).mockImplementation(
-      (opts: { systemPromptExtra?: string }) => {
-        capturedExtra = opts.systemPromptExtra ?? '';
-        return fakeAgent;
-      },
-    );
-
-    const proc = new AgentProcessor(
-      prisma,
-      streamSvc,
-      skills,
-      {},
-      queue,
-      makeMediaService(fakeGenerations),
-      new AbortRegistry(),
-      sandboxSettingsMock,
-      mcpMock,
-      backgroundMock,
-    );
-    await proc.process({
-      data: { conversationId: 'media1', kind: 'run' },
-    } as Job<{ conversationId: string; kind: 'run' }>);
-
-    expect(capturedExtra).toContain('媒体资产');
-    expect(capturedExtra).toContain('ver-cuid1234567890');
+    ]);
+    expect(providers).toHaveLength(3);
+    expect(providers[0]).toBe(activePlanProvider);
+    const joined = texts.join('\n');
+    expect(joined).toContain('媒体资产');
+    expect(joined).toContain('ver-cuid1234567890');
+    // 同一 run 内媒体清单只查一次（provider 每次模型调用都跑，闭包缓存）
+    await providers[1]({ context: {} });
+    expect(media.listForConversation).toHaveBeenCalledTimes(1);
   });
 
-  it('无媒体资产时 buildAgent 收到的 systemPromptExtra 不含「媒体资产」', async () => {
-    const history = [{ role: 'user', content: { text: '继续' } }];
-
-    const prisma = {
-      conversation: {
-        update: jest.fn().mockResolvedValue(makeConv()),
-        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findUniqueOrThrow: jest.fn().mockResolvedValue(makeConv()),
-      },
-      message: {
-        findMany: jest.fn().mockResolvedValue(history),
-        findFirst: jest.fn().mockResolvedValue(null),
-        count: jest.fn().mockResolvedValue(history.length),
-        create: jest.fn().mockResolvedValue({}),
-      },
-    } as unknown as PrismaService;
-
-    const streamSvc = {
-      publish: jest.fn().mockResolvedValue(undefined),
-    } as unknown as StreamService;
-    const skills = {
-      effectiveSkillsFor: jest.fn().mockResolvedValue([]),
-      getFor: jest.fn().mockResolvedValue(undefined),
-    } as unknown as SkillsService;
-    const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
-
-    let capturedExtra = '';
-    const fakeAgent = {
-      stream: jest.fn(async () => (async function* () {})()),
-      getState: jest.fn(async () => ({ tasks: [] })),
-    };
-    (buildAgent as jest.Mock).mockImplementation(
-      (opts: { systemPromptExtra?: string }) => {
-        capturedExtra = opts.systemPromptExtra ?? '';
-        return fakeAgent;
-      },
-    );
-
-    // 空资产列表
-    const proc = new AgentProcessor(
-      prisma,
-      streamSvc,
-      skills,
-      {},
-      queue,
-      makeMediaService([]),
-      new AbortRegistry(),
-      sandboxSettingsMock,
-      mcpMock,
-      backgroundMock,
-    );
-    await proc.process({
-      data: { conversationId: 'media2', kind: 'run' },
-    } as Job<{ conversationId: string; kind: 'run' }>);
-
-    expect(capturedExtra).not.toContain('媒体资产');
+  it('无媒体资产时动态上下文不含「媒体资产」', async () => {
+    const { texts } = await dynamicTextsWith([]);
+    expect(texts.join('\n')).not.toContain('媒体资产');
   });
 });
 
@@ -1220,6 +1409,7 @@ describe('AgentProcessor 流式聚合落库', () => {
 
     const created: { type: string; content: unknown; role: string }[] = [];
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest.fn().mockResolvedValue(makeConv()),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -1278,6 +1468,8 @@ describe('AgentProcessor 流式聚合落库', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'agg1', kind: 'run' },
@@ -1332,6 +1524,7 @@ describe('AgentProcessor 思考深度与思考过程', () => {
   }) {
     const created: { type: string; content: unknown; seq: number }[] = [];
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest.fn().mockResolvedValue(makeConv(opts.conv)),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -1399,6 +1592,8 @@ describe('AgentProcessor 思考深度与思考过程', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'th1', kind: opts.kind ?? 'run' },
@@ -1482,17 +1677,42 @@ describe('AgentProcessor 思考深度与思考过程', () => {
   });
 });
 
-describe('AgentProcessor 网页预览工具注入', () => {
-  let lastWorkspace: string | undefined;
+describe('AgentProcessor 模式装配', () => {
+  const modeRow = {
+    id: 'm1',
+    userId: 'u1',
+    name: '生图',
+    systemPrompt: '生图专用',
+    toolNames: ['generate_image'],
+    mcpServerIds: [],
+    skillNames: ['tvc-director'],
+    defaultModel: null,
+    defaultThinkingLevel: null,
+    createdAt: new Date(),
+    updatedAt: new Date(),
+  };
 
-  /** 跑一轮空流，返回 buildAgent 收到的工具名。 */
-  async function toolNamesWith(sandbox: unknown) {
+  /** 跑一轮空流，返回 agentMode.findFirst / generalModeSetting.findUnique 与 resolveMode 收到的入参。 */
+  async function runWith(
+    conv: Record<string, unknown>,
+    sandbox: unknown,
+    generalSetting: { systemPrompt: string | null } | null = null,
+    fragmentRows: { fragmentId: string; text: string }[] = [],
+    customRows: { fragmentId: string; text: string }[] = [],
+  ) {
     (getUserSandbox as jest.Mock).mockResolvedValueOnce(sandbox);
+    const fragmentFindMany = jest.fn().mockResolvedValue(fragmentRows);
+    const customFindMany = jest.fn().mockResolvedValue(customRows);
+    const agentModeFindFirst = jest
+      .fn()
+      .mockResolvedValue(conv.modeId === 'm1' ? modeRow : null);
+    const generalFindUnique = jest.fn().mockResolvedValue(generalSetting);
     const prisma = {
+      generalModeSetting: { findUnique: generalFindUnique },
       conversation: {
-        update: jest.fn().mockResolvedValue(makeConv()),
+        update: jest.fn().mockResolvedValue(makeConv(conv)),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
-        findUniqueOrThrow: jest.fn().mockResolvedValue(makeConv()),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(makeConv(conv)),
       },
       message: {
         findMany: jest.fn().mockResolvedValue([]),
@@ -1500,27 +1720,33 @@ describe('AgentProcessor 网页预览工具注入', () => {
         count: jest.fn().mockResolvedValue(0),
         create: jest.fn().mockResolvedValue({}),
       },
+      agentMode: { findFirst: agentModeFindFirst },
+      promptFragmentOverride: { findMany: fragmentFindMany },
+      customPromptFragment: { findMany: customFindMany },
     } as unknown as PrismaService;
-    let names: string[] = [];
-    (buildAgent as jest.Mock).mockImplementation(
-      (o: { extraTools?: { name: string }[]; workspace?: string }) => {
-        names = (o.extraTools ?? []).map((t) => t.name);
-        lastWorkspace = o.workspace;
-        return {
-          stream: jest.fn(async () => (async function* () {})()),
-          getState: jest.fn(async () => ({ tasks: [] })),
-        };
-      },
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([] as SkillDef[]),
+      getFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as SkillsService;
+    // 真实 ModesService（只用到 fragmentOverrides / customFragments 读库）：断言片段来自
+    // promptFragmentOverride / customPromptFragment 表
+    const modes = new ModesService(
+      prisma,
+      registry,
+      skills,
+      mcpMock,
+      sandboxSettingsMock,
     );
+    (buildAgent as jest.Mock).mockImplementation(() => ({
+      stream: jest.fn(async () => (async function* () {})()),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    }));
     const proc = new AgentProcessor(
       prisma,
       {
         publish: jest.fn().mockResolvedValue(undefined),
       } as unknown as StreamService,
-      {
-        effectiveSkillsFor: jest.fn().mockResolvedValue([] as SkillDef[]),
-        getFor: jest.fn().mockResolvedValue(undefined),
-      } as unknown as SkillsService,
+      skills,
       {},
       { add: jest.fn().mockResolvedValue({}) } as unknown as Queue,
       makeMediaService(),
@@ -1528,40 +1754,174 @@ describe('AgentProcessor 网页预览工具注入', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modes,
     );
     await proc.process({
       data: { conversationId: 'pv1', kind: 'run' },
     } as Job<{ conversationId: string; kind: 'run' }>);
-    return names;
+    const input = (resolveMode as jest.Mock).mock.calls[0][0] as {
+      mode: unknown;
+      generalPrompt?: string | null;
+      fragmentOverrides?: Record<string, string>;
+      customFragments?: Record<string, string>;
+      env: { capabilities: Set<string>; workspace?: string; skillsDir: string };
+      envPromptBlock: string;
+    };
+    return {
+      agentModeFindFirst,
+      generalFindUnique,
+      fragmentFindMany,
+      customFindMany,
+      input,
+    };
   }
 
-  it('有沙箱 → 媒体工具之外再注入 preview_page 与 sync_media_to_sandbox', async () => {
-    expect(await toolNamesWith({ id: 'sbx-1' })).toEqual([
-      'send_email',
-      'generate_image',
-      'generate_video',
-      'preview_page',
-      'sync_media_to_sandbox',
-    ]);
+  it('conv.modeId 存在 → 按 (id, userId) 查模式，传给 resolveMode 的 mode 是收窄后的行', async () => {
+    const { agentModeFindFirst, input } = await runWith({ modeId: 'm1' }, null);
+    expect(agentModeFindFirst).toHaveBeenCalledWith({
+      where: { id: 'm1', userId: 'u1' },
+    });
+    expect(input.mode).toEqual({
+      id: 'm1',
+      name: '生图',
+      systemPrompt: '生图专用',
+      toolNames: ['generate_image'],
+      mcpServerIds: [],
+      skillNames: ['tvc-director'],
+      defaultModel: null,
+      defaultThinkingLevel: null,
+    });
   });
 
-  it('有沙箱 → buildAgent 收到沙箱的工作区路径（系统提示与技能库目录据此生成）', async () => {
-    await toolNamesWith({ id: 'sbx-1', visibleRoot: '/workspace' });
-    expect(lastWorkspace).toBe('/workspace');
+  it('conv.modeId 指向已删除的模式 → mode: null（回通用模式）', async () => {
+    const { input } = await runWith({ modeId: 'gone' }, null);
+    expect(input.mode).toBeNull();
   });
 
-  it('无沙箱 → 不注入 preview_page / sync_media_to_sandbox（没有工作区）', async () => {
-    expect(await toolNamesWith(null)).toEqual([
-      'send_email',
-      'generate_image',
-      'generate_video',
+  it('conv.modeId 为空 → 不查模式表，mode: null', async () => {
+    const { agentModeFindFirst, input } = await runWith({ modeId: null }, null);
+    expect(agentModeFindFirst).not.toHaveBeenCalled();
+    expect(input.mode).toBeNull();
+  });
+
+  it('mode 为 null → 读该用户的通用模式设置，自定义提示词作为 generalPrompt 传给 resolveMode', async () => {
+    const { generalFindUnique, input } = await runWith({ modeId: null }, null, {
+      systemPrompt: '我的通用提示 {{platform.language}}',
+    });
+    expect(generalFindUnique).toHaveBeenCalledWith({
+      where: { userId: 'u1' },
+      select: { systemPrompt: true },
+    });
+    expect(input.mode).toBeNull();
+    expect(input.generalPrompt).toBe('我的通用提示 {{platform.language}}');
+  });
+
+  it('选的模式已被删（回通用）→ 同样读通用设置；没有设置行 → generalPrompt: null（用默认）', async () => {
+    const { generalFindUnique, input } = await runWith(
+      { modeId: 'gone' },
+      null,
+      null,
+    );
+    expect(generalFindUnique).toHaveBeenCalledTimes(1);
+    expect(input.mode).toBeNull();
+    expect(input.generalPrompt).toBeNull();
+  });
+
+  it('fragmentOverrides 来自该用户的 promptFragmentOverride 行（库里残留的未知片段 id 忽略）', async () => {
+    const { fragmentFindMany, input } = await runWith(
+      { modeId: null },
+      null,
+      null,
+      [
+        { fragmentId: 'platform.language', text: '只说英文' },
+        { fragmentId: 'platform.retired', text: '旧片段' },
+      ],
+    );
+    expect(fragmentFindMany).toHaveBeenCalledWith({
+      where: { userId: 'u1' },
+      select: { fragmentId: true, text: true },
+    });
+    expect(input.fragmentOverrides).toEqual({
+      'platform.language': '只说英文',
+    });
+  });
+
+  it('选了模式 → 同样传入该用户的片段改写；没有改写 → 空对象', async () => {
+    const withRows = await runWith({ modeId: 'm1' }, null, null, [
+      { fragmentId: 'platform.injection_guard', text: '自定义防注入' },
     ]);
+    expect(withRows.input.fragmentOverrides).toEqual({
+      'platform.injection_guard': '自定义防注入',
+    });
+    (resolveMode as jest.Mock).mockClear();
+    const none = await runWith({ modeId: 'm1' }, null);
+    expect(none.input.fragmentOverrides).toEqual({});
+  });
+
+  it('customFragments 来自该用户的 customPromptFragment 行（id → 正文）；没有行 → 空对象', async () => {
+    const { customFindMany, input } = await runWith(
+      { modeId: 'm1' },
+      null,
+      null,
+      [],
+      [
+        { fragmentId: 'custom.tone', text: '语气友好' },
+        { fragmentId: 'custom.sign', text: '落款 {{skills_dir}}' },
+      ],
+    );
+    expect(customFindMany).toHaveBeenCalledWith({
+      where: { userId: 'u1' },
+      orderBy: { createdAt: 'asc' },
+      select: { fragmentId: true, text: true },
+    });
+    expect(input.customFragments).toEqual({
+      'custom.tone': '语气友好',
+      'custom.sign': '落款 {{skills_dir}}',
+    });
+    (resolveMode as jest.Mock).mockClear();
+    const none = await runWith({ modeId: null }, null);
+    expect(none.input.customFragments).toEqual({});
+  });
+
+  it('选了模式 → 不读通用模式设置，generalPrompt: null', async () => {
+    const { generalFindUnique, input } = await runWith({ modeId: 'm1' }, null, {
+      systemPrompt: '不该用到',
+    });
+    expect(generalFindUnique).not.toHaveBeenCalled();
+    expect(input.generalPrompt).toBeNull();
+  });
+
+  it('有沙箱 → env 含 sandbox / workspace / workspace_write，路径取自沙箱，环境段含沙箱守则', async () => {
+    const { input } = await runWith(
+      {},
+      {
+        id: 'sbx-1',
+        visibleRoot: '/workspace',
+        skillsDir: '/workspace/skills',
+      },
+    );
+    expect([...input.env.capabilities].sort()).toEqual(
+      [
+        'background',
+        'email',
+        'media_api',
+        'sandbox',
+        'workspace',
+        'workspace_write',
+      ].sort(),
+    );
+    expect(input.env.workspace).toBe('/workspace');
+    expect(input.env.skillsDir).toBe('/workspace/skills');
+    expect(input.envPromptBlock).toContain('## 工作区与沙箱执行');
+    expect(input.envPromptBlock).toContain('`/workspace`');
   });
 });
 
 describe('AgentProcessor 主动停止', () => {
   const makeDeps = () => {
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest.fn().mockResolvedValue(makeConv()),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -1614,6 +1974,8 @@ describe('AgentProcessor 主动停止', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c-stop', kind: 'run' },
@@ -1665,6 +2027,8 @@ describe('AgentProcessor 主动停止', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c-gate', kind: 'run' },
@@ -1697,6 +2061,8 @@ describe('AgentProcessor 主动停止', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c-quiet', kind: 'run' },
@@ -1710,6 +2076,7 @@ describe('AgentProcessor 主动停止', () => {
 describe('AgentProcessor 超时按 toolName 分叉', () => {
   const makeDeps = () => {
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
       },
@@ -1737,6 +2104,8 @@ describe('AgentProcessor 超时按 toolName 分叉', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
 
   const timeoutJob = (toolName?: string) =>
@@ -1823,6 +2192,7 @@ describe('AgentProcessor token 会计', () => {
   it('每次模型调用落一行（归到触发本轮的用户消息）并推会话累计；已记账 / 同轮回显的不重复记', async () => {
     const usageRows: Record<string, unknown>[] = [];
     const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
         update: jest.fn().mockResolvedValue(makeConv()),
         updateMany: jest.fn().mockResolvedValue({ count: 1 }),
@@ -1885,6 +2255,8 @@ describe('AgentProcessor token 会计', () => {
       sandboxSettingsMock,
       mcpMock,
       backgroundMock,
+      registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c1', kind: 'run' },

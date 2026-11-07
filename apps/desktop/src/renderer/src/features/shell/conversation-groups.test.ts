@@ -18,6 +18,7 @@ function conv(id: string, updatedAt: number, pinnedAt: number | null = null): Co
     createdAt: updatedAt,
     updatedAt,
     pinnedAt,
+    modeId: null,
   };
 }
 

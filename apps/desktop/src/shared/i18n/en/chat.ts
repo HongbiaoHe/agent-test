@@ -172,6 +172,13 @@ export const chat = {
     button: 'Permission: {{label}}',
     list: 'Permission',
   },
+  mode: {
+    general: 'General',
+    generalHint: 'Every tool, connector and skill',
+    summary: '{{tools}} tools · {{servers}} connectors · {{skills}} skills',
+    button: 'Mode: {{label}}',
+    list: 'Mode',
+  },
   modelHint: {
     gemini38Flash: 'Fast · default',
     gemini4Argon: 'Most powerful · flagship',

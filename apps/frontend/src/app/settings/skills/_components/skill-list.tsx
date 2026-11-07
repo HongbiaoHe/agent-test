@@ -167,6 +167,8 @@ function SkillCard({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: SKILLS_QUERY_KEY });
       qc.invalidateQueries({ queryKey: skillDetailKey(skill.name) });
+      // 斜杠命令补全只列启用的技能
+      qc.invalidateQueries({ queryKey: ["commands"] });
     },
   });
 
@@ -175,6 +177,7 @@ function SkillCard({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: SKILLS_QUERY_KEY });
       qc.removeQueries({ queryKey: skillDetailKey(skill.name) });
+      qc.invalidateQueries({ queryKey: ["commands"] });
     },
   });
 
@@ -187,6 +190,8 @@ function SkillCard({
     onSuccess: () => {
       qc.invalidateQueries({ queryKey: SKILLS_QUERY_KEY });
       qc.invalidateQueries({ queryKey: skillDetailKey(skill.name) });
+      // 重装可能改了说明 / 名字：斜杠命令补全跟着刷新
+      qc.invalidateQueries({ queryKey: ["commands"] });
     },
   });
 

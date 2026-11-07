@@ -320,9 +320,11 @@ function McpAppFrame({
         .catch(() => undefined)
         .finally(() => void bridge.close());
     };
-    // bridge 与 iframe 生命周期绑定在资源上：只在换了资源 / 换了工具调用时重建
+    // bridge 与 iframe 生命周期绑定在资源上：只在换了资源 / 换了工具调用时重建。
+    // 不依赖 app：线程每来一个实时事件都会整段重折叠、parseMcpApp 产出新对象（内容不变），
+    // 依赖它会在流式回复期间反复拆建 bridge、重载 iframe，卡片最终停在空白
     // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [resource, app, toolCallId]);
+  }, [resource, toolCallId]);
 
   // 显示模式变化通知 App（容器尺寸随之变化）
   useEffect(() => {

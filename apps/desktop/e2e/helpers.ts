@@ -48,7 +48,7 @@ export async function skipLoginIfShown(page: Page): Promise<void> {
   await expect(main).toBeVisible();
 }
 
-export type SettingsSection = '账号' | '外观' | '模型' | '工作区' | '技能' | '连接器';
+export type SettingsSection = '账号' | '外观' | '模型' | '工作区' | '技能' | '连接器' | '模式';
 
 /** 打开设置弹窗并切到某个分类（弹窗已开着就直接切） */
 export async function openSettings(page: Page, section: SettingsSection): Promise<void> {
@@ -95,7 +95,9 @@ export async function sendAndWait(page: Page, text: string, opts: { approve?: bo
 
 /** 等这一轮结束：遇到审批面板就点 Approve（返回批准了几次） */
 export async function waitTurn(page: Page, { approve = true }: { approve?: boolean } = {}): Promise<number> {
-  const send = page.getByRole('button', { name: '发送', exact: true });
+  // includeHidden：agent 调 preview_page 后网页预览以模态弹窗自动打开，弹窗把聊天区标成 aria-hidden，
+  // 默认的 getByRole 就再也找不到「发送」——这一轮其实已结束，却会一直等到超时。按钮仍在 DOM 里且可见（只是被盖住）。
+  const send = page.getByRole('button', { name: '发送', exact: true, includeHidden: true });
   const panel = page.getByTestId('approval-panel');
   let approved = 0;
   const deadline = Date.now() + 180_000;

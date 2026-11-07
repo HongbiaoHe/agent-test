@@ -1,3 +1,4 @@
+import Link from "next/link";
 import { redirect } from "next/navigation";
 import { auth } from "@/auth";
 
@@ -7,6 +8,8 @@ const API_BASE = process.env.BACKEND_INTERNAL_URL ?? "http://localhost:3101";
 interface ConvItem {
   id: string;
   goal: string;
+  /** 用户重命名的标题；null = 未命名，回退显示 goal */
+  title: string | null;
   status: string;
   createdAt: string;
 }
@@ -51,15 +54,20 @@ export default async function ConversationsPage() {
       ) : (
         <ul className="space-y-2">
           {items.map((c) => (
-            <li key={c.id} className="rounded-lg border bg-card p-3">
-              <div className="flex items-center justify-between gap-2">
-                <span className="truncate text-sm font-medium">{c.goal}</span>
+            <li key={c.id}>
+              <Link
+                href={`/agent/${c.id}`}
+                className="flex items-center justify-between gap-2 rounded-lg border bg-card p-3 transition-colors hover:bg-accent focus-visible:ring-2 focus-visible:ring-ring focus-visible:outline-none"
+              >
+                <span className="truncate text-sm font-medium">
+                  {c.title?.trim() || c.goal.trim() || "New conversation"}
+                </span>
                 <span
                   className={`shrink-0 text-xs ${STATUS_STYLE[c.status] ?? "text-muted-foreground"}`}
                 >
                   {c.status}
                 </span>
-              </div>
+              </Link>
             </li>
           ))}
         </ul>

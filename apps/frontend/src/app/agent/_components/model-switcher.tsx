@@ -30,6 +30,7 @@ export function ModelSwitcher({
         variant="ghost"
         size="xs"
         disabled={disabled}
+        data-testid="model-switcher"
         aria-haspopup="listbox"
         aria-expanded={open}
         onClick={() => setOpen((v) => !v)}

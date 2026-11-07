@@ -31,6 +31,24 @@ export const errors = {
     notFound: '会话不存在：{{id}}',
     workspaceLocked: '会话已经开始，不能再更换工作目录；请新建会话',
     interrupted: '运行中断：应用在运行中退出或 agent 进程崩溃，请重新发送。',
+    busyModeSwitch: '会话正在运行或等待审批，结束后再切换模式',
+  },
+  modes: {
+    notFound: '模式不存在：{{id}}',
+    unknownPlaceholder: '提示词里有未知的占位符：{{ids}}（只能引用 platform.* 片段和已有的 custom.* 片段）',
+    fragmentNotFound: '片段不存在：{{id}}',
+    fragmentInvalidVariable: '片段里只能使用 {{variable}}，不支持：{{vars}}',
+    fragmentTextLength: '片段正文不能为空，且不超过 {{max}} 字',
+    fragmentInvalidId: '片段 id 格式不对：{{id}}（应为 custom. 加 1～48 位小写字母、数字或下划线）',
+    fragmentExists: '片段已存在：{{id}}',
+    fragmentTitleLength: '片段显示名不能为空，且不超过 {{max}} 字',
+    fragmentBuiltinTitle: '内置片段 {{id}} 没有显示名，不能修改',
+    fragmentBuiltinDelete: '内置片段 {{id}} 不能删除，只能恢复默认',
+    fragmentCustomNoDefault: '自建片段 {{id}} 没有默认正文，正文不能为空',
+    fragmentInUse: '片段 {{id}} 仍被引用，不能删除：{{refs}}',
+    fragmentRefMode: '模式「{{name}}」',
+    fragmentRefGeneral: '通用模式',
+    fragmentRefSeparator: '、',
   },
   run: {
     busy: '这个会话正在运行，请先等它结束或点停止',
@@ -100,5 +118,18 @@ export const errors = {
   },
   background: {
     notFound: '后台任务不存在：{{id}}',
+  },
+  /** 视频剪辑器（video.* RPC、导出） */
+  video: {
+    ffmpegMissing: '找不到 ffmpeg / ffprobe，无法处理视频（请重新安装 Spark）',
+    notProject: '不是剪辑工程文件（须以 .sparkvideo.json 结尾）：{{path}}',
+    invalidProject: '工程校验不通过：{{issues}}',
+    notMedia: '无法识别的媒体文件：{{path}}',
+    probeFailed: '读取素材信息失败：{{path}}（{{error}}）',
+    emptyTimeline: '视频轨上还没有片段，无法导出',
+    missingMedia: '找不到素材：{{paths}}',
+    importNotFile: '不是文件：{{path}}',
+    jobNotFound: '导出任务不存在：{{id}}',
+    exportFailed: 'ffmpeg 导出失败（退出码 {{code}}）：{{detail}}',
   },
 } as const;

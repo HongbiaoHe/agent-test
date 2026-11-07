@@ -34,6 +34,7 @@ const conversationRow = z.object({
   created_at: z.number(),
   updated_at: z.number(),
   pinned_at: z.number().nullable(),
+  mode_id: z.string().nullable(),
 });
 
 const usageRow = z.object({
@@ -73,6 +74,7 @@ function toSummary(
     createdAt: r.created_at,
     updatedAt: r.updated_at,
     pinnedAt: r.pinned_at,
+    modeId: r.mode_id,
   };
 }
 
@@ -155,22 +157,35 @@ export class ConversationRepo {
   create(
     model: string | null,
     workspace: { dir?: string; permission?: WorkspacePermission } = {},
+    /** 所选模式（null = 通用模式）；模式的默认思考档位由调用方经 update 回填 */
+    modeId: string | null = null,
   ): ConversationSummary {
     const now = Date.now();
     const id = randomUUID();
     this.db
       .prepare(
-        `INSERT INTO conversation (id, title, goal, status, model, thinking_level, workspace_dir, permission, created_at, updated_at)
-         VALUES (?, NULL, '', 'idle', ?, NULL, ?, ?, ?, ?)`,
+        `INSERT INTO conversation (id, title, goal, status, model, thinking_level, workspace_dir, permission, mode_id, created_at, updated_at)
+         VALUES (?, NULL, '', 'idle', ?, NULL, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
         model,
         workspace.dir ?? this.defaultWorkspace(),
         workspace.permission ?? 'ask',
+        modeId,
         now,
         now,
       );
+    return this.require(id);
+  }
+
+  /** 切模式（下一轮运行生效）：运行中 / 等审批时拒绝（决策 8）；不动 updated_at */
+  setMode(id: string, modeId: string | null): ConversationSummary {
+    const cur = this.require(id);
+    if (cur.status === 'running' || cur.status === 'waiting_approval') {
+      throw new Error(hostI18n.t('errors.conversation.busyModeSwitch'));
+    }
+    this.db.prepare('UPDATE conversation SET mode_id = ? WHERE id = ?').run(modeId, id);
     return this.require(id);
   }
 

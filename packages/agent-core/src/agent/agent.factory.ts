@@ -1,14 +1,24 @@
+import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
+import type { StructuredToolInterface } from '@langchain/core/tools';
 import { initChatModel } from 'langchain/chat_models/universal';
-import { createDeepAgent, StateBackend } from 'deepagents';
-import { createMiddleware } from 'langchain';
+import { type AnyBackendProtocol, createDeepAgent } from 'deepagents';
+import {
+  createMiddleware,
+  modelCallLimitMiddleware,
+  toolCallLimitMiddleware,
+} from 'langchain';
 import { z } from 'zod';
-import { injectActivePlan, injectSkillReadPolicy } from './plan-injection';
+import {
+  createDynamicContextMiddleware,
+  type DynamicContextProvider,
+} from '../modes/dynamic-context';
+import type { ToolInterruptOn } from '../modes/tool-registry';
+import { injectSkillReadPolicy } from './plan-injection';
 import { keepsNativeBlocks, stripNonPortableBlocks } from './portable-content';
 import { type ThinkingLevel, thinkingModelParams } from './thinking-level';
 import { resolveModelName } from './models';
 import { askUserTool } from './tools/ask-user.tool';
-import { getWeatherTool } from './tools/get-weather.tool';
-import { composeSystemPrompt } from './system-prompt';
+import { recoverToolInputError } from './tool-input-recovery';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Context schema
@@ -16,9 +26,8 @@ import { composeSystemPrompt } from './system-prompt';
 
 /**
  * 运行时 context schema：
- * - activePlan：worker 经 `context.activePlan` 传入「当前任务计划」文本。
- * - userId：必填。技能库按用户隔离（StoreBackend namespace = [userId, 'skills']），
- *   缺失即 schema 校验报错（双保险：namespace factory 内还有 throw 守卫，杜绝静默共享技能库）。
+ * - activePlan：worker 经 `context.activePlan` 传入「当前任务计划」文本（activePlanProvider 读）。
+ * - userId：必填（thread 作用域、审计），缺失即 schema 校验报错。
  */
 const contextSchema = z.object({
   activePlan: z.string().optional(),
@@ -30,26 +39,18 @@ const contextSchema = z.object({
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 计划延续中间件：把 worker 经 runtime context 传入的「当前任务计划」追加到系统提示**末尾**。
- *
- * deepagents 内置 todoListMiddleware 会往系统提示追加一段鼓励「随时重订计划」的说明，多轮里这会
- * 诱导模型整表重写 todos、把没做完的步骤冲掉。createDeepAgent 的 middleware 数组里，自定义中间件
- * 排在 todoListMiddleware 之后 = 更内层，其 systemMessage.concat 发生得更晚 = 离模型最近
- * （recency）。把「沿用既定计划、勿整表重写」放在最后，才能盖过那句「随时重订」。注入逻辑见
- * plan-injection.ts，计划文本由 worker 从 DB 算出（见 agent.processor.buildActivePlan）。
- */
-const planContinuationMiddleware = createMiddleware({
-  name: 'planContinuationMiddleware',
-  wrapModelCall: injectActivePlan as never,
-});
-
-/**
  * 杠杆3：把「引用文件必读」硬规则注入系统提示末尾（recency 最强位置），提升 SKILL.md 里
  * references/sub-skill 的按需 read_file 触发率。逻辑见 plan-injection.injectSkillReadPolicy。
  */
 const skillReadPolicyMiddleware = createMiddleware({
   name: 'skillReadPolicyMiddleware',
   wrapModelCall: injectSkillReadPolicy as never,
+});
+
+/** 工具入参校验不过 → 把问题回给模型改参重试，而不是整轮失败（见 tool-input-recovery.ts） */
+const toolInputRecoveryMiddleware = createMiddleware({
+  name: 'toolInputRecoveryMiddleware',
+  wrapToolCall: recoverToolInputError,
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -70,7 +71,6 @@ function resolveChatModel(
   thinkingLevel?: ThinkingLevel | null,
 ) {
   const name = resolveModelName(model);
-  // 思考深度按模型能力映射成各家参数（deepseek 只有开关、gemini 支持分级，见 thinking-level.ts）
   const thinking = thinkingModelParams(name, thinkingLevel);
   if (name.includes(':')) return initChatModel(name, thinking);
   return initChatModel(name, { modelProvider: 'google-genai', ...thinking });
@@ -80,66 +80,53 @@ function resolveChatModel(
 // BuildAgentOptions
 // ─────────────────────────────────────────────────────────────────────────────
 
-export interface BuildAgentOptions {
-  /** RedisSaver 实例；配 interruptOn 审批时必须传。 */
-  checkpointer?: unknown;
-  /** 追加到系统提示末尾（如 /command 强制使用某技能的指令）。 */
-  systemPromptExtra?: string;
-  /**
-   * 本次回答模型（前端可切换），`provider:model` 形式（见 models.ts 白名单）；
-   * 裸名按 google-genai 兼容处理；缺省时回退 env GOOGLE_GENAI_MODEL / 代码默认。
-   */
-  model?: string;
-  /** 思考深度档位（前端可切换）；缺省/null = auto（跟随模型默认）。 */
-  thinkingLevel?: ThinkingLevel | null;
+export interface AgentGuardrails {
+  /** 单个 thread 的模型调用上限，超出即结束本轮（防失控长跑） */
+  modelCallLimit?: number;
+  /** 单个 thread 的工具调用上限，超出后不再执行工具但继续让模型收尾 */
+  toolCallLimit?: number;
+}
 
+/**
+ * 装配参数全部来自 resolveMode / instantiateTools / mountSkills 的产物，buildAgent 本身不再拼提示词、
+ * 不再认识任何宿主工具——它只负责把「模式装配结果」交给 deepagents，并挂上 core 的内置中间件。
+ */
+export interface BuildAgentOptions {
+  /** resolveMode 产出的系统提示（宿主可在其后接 run 内稳定的静态尾段，如 /command 激活技能全文） */
+  systemPrompt: string;
+  /** instantiateTools 产出的工具（内置 ask_user 由这里追加，宿主不用传） */
+  tools: readonly StructuredToolInterface[];
+  /** instantiateTools 产出的审批表 */
+  interruptOn?: Record<string, ToolInterruptOn>;
   /**
-   * 默认 backend（agent 文件工具/skills/execute 的落点）。沙箱模式传 GuardedSandbox 实例；
-   * 缺省 = new StateBackend()（无沙箱：无技能、无 execute）。
-   * 标记 unknown 以避免引入 deepagents 类型到调用方，worker 层直接传实例即可。
+   * 口子：宿主按运行期策略覆盖 / 追加审批（如 desktop 按权限档位让内置 execute / write_file 走审批，
+   * 或画布按 approvalMode 决定哪些工具要确认）。同名以这里为准。
    */
-  defaultBackend?: unknown;
-  /**
-   * 是否为沙箱模式（对应 Daytona / E2B 沙箱 backend）。
-   * true → 追加沙箱系统提示区块（execute 守则）。技能文件由 worker 在调用前写入沙箱盘。
-   * 缺省 = false。
-   */
-  hasSandbox?: boolean;
-  /**
-   * 沙箱模式下 agent 眼中的工作区路径（GuardedSandbox.visibleRoot，正常为 /workspace）。
-   * 系统提示里的路径与技能库扫描目录（`${workspace}/skills/`）都由它决定。
-   */
-  workspace?: string;
-  /**
-   * 宿主专属的系统提示段落，接在通用段之后（backend 传生图 / 配音 / 附件等说明，见 backend-prompt.ts）。
-   */
-  hostPromptSections?: string;
-  /**
-   * 有工作区时追加的执行区块（backend 传沙箱区块，desktop 传本机工作区区块）。
-   * 仅在 hasSandbox 且 workspace 非空时生效。
-   */
-  workspacePromptBlock?: (workspace: string) => string;
-  /**
-   * 技能库扫描目录（agent 眼中的路径）；缺省 = `${workspace}/skills`。
-   * desktop 的工作区是用户自选目录，技能放在应用管理的运行目录，经 CompositeBackend 路由挂载。
-   */
-  skillsDir?: string;
-  /**
-   * 业务工具（如 media 生图/生视频、send_email）由宿主闭包注入——agent 模块不依赖业务模块，
-   * 耦合点收敛在宿主，保持 agent.factory 的低耦合边界。
-   */
-  extraTools?: unknown[];
-  /**
-   * 额外需要审批的工具（如 send_email、用户设为「需审批」的 MCP 工具、desktop 未信任工作区时的
-   * execute），并进 interruptOn，走同一套 HITL 审批流。
-   */
-  extraInterruptOn?: Record<string, true>;
+  interruptOnOverride?: Record<
+    string,
+    boolean | { allowedDecisions: string[] }
+  >;
+  /** mountSkills 产出的 backend（沙箱 / CompositeBackend / desktop 本机目录） */
+  backend: AnyBackendProtocol;
+  /** 技能库目录（agent 眼中的路径），deepagents skills 中间件扫它 */
+  skillsDir: string;
+  /** `provider:model`（见 models.ts 白名单）；裸名按 google-genai 兼容处理；缺省回退 env / 默认 */
+  model?: string;
+  /** 口子：已构造好的模型实例（explicit cache 之类的包装留给宿主做）；给了就忽略 model / thinkingLevel */
+  modelInstance?: BaseChatModel;
+  /** 思考深度档位；缺省 / null = auto */
+  thinkingLevel?: ThinkingLevel | null;
+  /** RedisSaver / SqliteSaver；配 interruptOn 审批时必须传 */
+  checkpointer?: unknown;
+  /** 每次模型调用前取的动态上下文（计划、媒体清单、MCP app 上下文、画布状态……） */
+  dynamicContext?: readonly DynamicContextProvider[];
+  /** 口子：失控守护 */
+  guardrails?: AgentGuardrails;
 }
 
 /**
  * buildAgent 对外暴露的最小 agent 接口：只声明 worker 实际调用的方法，
- * 避免把 deepagents 内部类型泄漏到调用方（保持 agent.factory 的低耦合边界），
- * 同时让调用点不再退化成 any。
+ * 避免把 deepagents 内部类型泄漏到调用方，同时让调用点不再退化成 any。
  */
 export interface BuiltAgent {
   stream(
@@ -154,30 +141,22 @@ export interface BuiltAgent {
 // ─────────────────────────────────────────────────────────────────────────────
 
 /**
- * 装配主 agent：多提供商模型（initChatModel 动态切换）+ 内置工具 + get_weather + ask_user，
- * 其余工具（含需审批的 send_email）由宿主经 extraTools / extraInterruptOn 注入。
+ * 装配主 agent：模型（实例或按名解析）+ 模式装配出的工具 + 内置 ask_user + 中间件链。
  *
- * Skills 来源：`${workspace}/skills/` 直接读 backend（沙箱模式下即沙箱磁盘的 `${workspaceRoot}/skills/`）。
- *   技能文件由 worker 在起沙箱后、调 LLM 前用 uploadSkillsToSandbox 写入沙箱盘（见 agent.processor），
- *   deepagents 的 skills 中间件在 beforeAgent 扫该目录即可读到。
- *   无沙箱（StateBackend 兜底）时为空 → 不提供任何技能（设计：无沙箱=无技能）。
- *
- * defaultBackend / hasSandbox 均可选，缺省 = new StateBackend()（无沙箱，无技能、无 execute）。
+ * 中间件顺序即 recency（数组靠后 = 更内层 = systemMessage.concat 更晚 = 离模型更近）：
+ *   守护（guardrails）→ 动态上下文（计划等）→ 技能必读规则（离模型最近）→ 内容块净化（作用于最终发出的消息）
  */
-export async function buildAgent(
-  opts: BuildAgentOptions = {},
-): Promise<BuiltAgent> {
-  const model = await resolveChatModel(opts.model, opts.thinkingLevel);
-
-  // backend = 沙箱（GuardedSandbox）或 StateBackend 兜底；技能库不单独路由到内存 store，
-  // 直接读 backend：沙箱模式落在 ${workspaceRoot}/skills/，无沙箱则为空（不提供技能）。
-  const backend =
-    (opts.defaultBackend as StateBackend | undefined) ?? new StateBackend();
+export async function buildAgent(opts: BuildAgentOptions): Promise<BuiltAgent> {
+  const model =
+    opts.modelInstance ??
+    (await resolveChatModel(opts.model, opts.thinkingLevel));
 
   // 内容块净化（与画布同一套，见 portable-content.ts）：非 Gemini 模型收不下 checkpoint 里的
-  // provider 原生块（换过模型的 thinking / functionCall）与工具结果里的 image 块（read_file 读图片），
-  // 会整轮 4xx 且每轮重放、会话永久跑不动。只改发给模型的那一份，不写回 state。
-  const contentSanitizer = keepsNativeBlocks(resolveModelName(opts.model))
+  // provider 原生块与工具结果里的 image 块，会整轮 4xx 且每轮重放。只改发给模型的那一份。
+  const nativeOk = opts.modelInstance
+    ? false
+    : keepsNativeBlocks(resolveModelName(opts.model));
+  const contentSanitizer = nativeOk
     ? null
     : createMiddleware({
         name: 'portableContentMiddleware',
@@ -188,43 +167,47 @@ export async function buildAgent(
           }),
       });
 
-  // 中间件顺序即 recency：计划延续 → 技能必读规则（离模型最近）；净化排最内层，作用于最终发出的消息。
+  const guardrails = [
+    ...(opts.guardrails?.modelCallLimit
+      ? [
+          modelCallLimitMiddleware({
+            threadLimit: opts.guardrails.modelCallLimit,
+            exitBehavior: 'end',
+          }),
+        ]
+      : []),
+    ...(opts.guardrails?.toolCallLimit
+      ? [
+          toolCallLimitMiddleware({
+            threadLimit: opts.guardrails.toolCallLimit,
+            exitBehavior: 'continue',
+          }),
+        ]
+      : []),
+  ];
+
   const middleware = [
-    planContinuationMiddleware,
+    ...guardrails,
+    createDynamicContextMiddleware(opts.dynamicContext ?? []),
     skillReadPolicyMiddleware,
     ...(contentSanitizer ? [contentSanitizer] : []),
+    // 最内层：先于 deepagents 的中间件接住工具入参校验错误
+    toolInputRecoveryMiddleware,
   ];
 
   return createDeepAgent({
     model,
-    systemPrompt:
-      composeSystemPrompt(opts.hasSandbox ? opts.workspace : undefined, {
-        hostSections: opts.hostPromptSections,
-        workspaceBlock: opts.workspacePromptBlock,
-        skillsDir: opts.skillsDir,
-      }) + (opts.systemPromptExtra ?? ''),
-    tools: [
-      getWeatherTool,
-      askUserTool,
-      ...((opts.extraTools ?? []) as never[]),
-    ],
-    backend,
-    // 技能库扫描目录：沙箱工作区下的 skills/（无沙箱时 StateBackend 为空，不提供技能）
-    skills: [
-      opts.skillsDir
-        ? `${opts.skillsDir}/`
-        : opts.workspace
-          ? `${opts.workspace}/skills/`
-          : '/skills/',
-    ],
+    systemPrompt: opts.systemPrompt,
+    tools: [askUserTool, ...opts.tools] as never[],
+    backend: opts.backend,
+    skills: [`${opts.skillsDir.replace(/\/+$/, '')}/`],
     contextSchema,
-    // 顺序即 recency：数组靠后 = 更内层 = systemMessage.concat 更晚 = 离模型更近。
     middleware,
-    // ask_user 只允许两种决策：approve=采纳建议答案（原参执行）；edit=前端把用户答案
-    // 写进 args.answers 后执行（本版 langchain HITL 无 respond，用 edit 承载用户答案）。
-    // 不提供 reject——对「提问」语义无意义（设计 §已确认的需求决策）。
+    // ask_user 只允许两种决策：approve=采纳建议答案；edit=前端把用户答案写进 args.answers 后执行。
+    // 不提供 reject——对「提问」语义无意义。
     interruptOn: {
-      ...opts.extraInterruptOn,
+      ...opts.interruptOn,
+      ...opts.interruptOnOverride,
       ask_user: { allowedDecisions: ['approve', 'edit'] },
     },
     checkpointer: opts.checkpointer as never,

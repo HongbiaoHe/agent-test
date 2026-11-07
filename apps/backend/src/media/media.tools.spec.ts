@@ -3,9 +3,10 @@
  * - list_media_models 透传目录
  * - generate_* 以正确类型/参数调 createAgentGenerations，返回 queued + generations
  * - 校验不通过 → invalid_params + issues（不 throw，交回模型改参）
- * - prompt 超过 2000 字符被 zod schema 拒绝
+ * - prompt 不在 schema 层卡 2000：长提示词交给服务端按模型上限校验；只有异常超长（> MEDIA_PROMPT_SCHEMA_MAX）被 schema 拒绝
  * - BusinessException → 返回 error JSON（不上抛）；普通 Error → 继续上抛
  */
+import { MEDIA_PROMPT_SCHEMA_MAX } from '@agent-test/agent-core/media/media-tools';
 import { HttpStatus } from '@nestjs/common';
 import { BusinessException } from '../common/errors/business.exception';
 import { ErrorCodes } from '../common/errors/error-code';
@@ -186,10 +187,28 @@ describe('createMediaTools', () => {
     expect(parsed.hint).toContain('list_media_models');
   });
 
-  it('prompt 超过 2000 字符被 schema 拒绝（不调服务）', async () => {
+  it('长提示词（如 5000 字的 Seedance 2.5 提示词）不在 schema 层被拒，交给服务端按模型上限校验', async () => {
+    const svc = buildSvc(jest.fn().mockResolvedValue(okResult));
+    const prompt = 'x'.repeat(5000);
+    await tools(svc).video.invoke({ prompt, model: 'seedance-2.5' });
+    expect(svc.createAgentGenerations).toHaveBeenCalledWith(
+      'conv-1',
+      'user-1',
+      'video',
+      {
+        prompt,
+        model: 'seedance-2.5',
+        count: 1,
+      },
+    );
+  });
+
+  it('异常超长的 prompt（> MEDIA_PROMPT_SCHEMA_MAX）被 schema 拒绝（不调服务）', async () => {
     const svc = buildSvc(jest.fn());
     await expect(
-      tools(svc).image.invoke({ prompt: 'x'.repeat(2001) }),
+      tools(svc).image.invoke({
+        prompt: 'x'.repeat(MEDIA_PROMPT_SCHEMA_MAX + 1),
+      }),
     ).rejects.toThrow();
     expect(svc.createAgentGenerations).not.toHaveBeenCalled();
   });

@@ -9,7 +9,9 @@ import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { agent } from '@/lib/agent-client';
+import { MODE_CATALOG_KEY, MODES_QUERY_KEY } from '@/lib/api';
 import { ChatView } from './features/chat/chat-view';
+import { readModePreference } from './features/modes/mode-preference';
 import { LoginView } from './features/auth/login-view';
 import { useWebAccount } from './features/auth/use-web-account';
 import { SettingsDialog, type SettingsSection } from './features/settings/settings-dialog';
@@ -20,6 +22,7 @@ import { SidebarResizeHandle } from './features/shell/sidebar-resize-handle';
 import { COLLAPSED_HEADER_INSET, SidebarToggle } from './features/shell/sidebar-toggle';
 import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, useSidebarLayout } from './features/shell/use-sidebar-layout';
 import { FileViewerProvider } from './features/viewer/file-viewer';
+import { VideoEditorOpenerContext, VideoEditorView } from './features/video-editor';
 
 function Home({
   hasAnyKey,
@@ -33,7 +36,8 @@ function Home({
   const { t } = useTranslation();
   const qc = useQueryClient();
   const create = useMutation({
-    mutationFn: () => agent.call('conversations.create', {}),
+    // 新会话带上最近用的模式（agent-host 按模式回填默认模型 / 思考档位；模式已删则按通用建）
+    mutationFn: () => agent.call('conversations.create', { modeId: readModePreference() ?? undefined }),
     onSuccess: (c) => {
       void qc.invalidateQueries({ queryKey: ['conversations'] });
       onNavigate({ kind: 'chat', id: c.id });
@@ -102,6 +106,11 @@ export function App() {
           void qc.invalidateQueries({ queryKey: ['commands'] });
         }
         if (e.type === 'mcp-changed') void qc.invalidateQueries({ queryKey: ['mcp-servers'] });
+        if (e.type === 'modes-changed') void qc.invalidateQueries({ queryKey: MODES_QUERY_KEY });
+        // 模式编辑器的目录（可勾选的工具 / 连接器 / 技能）跟着技能、连接器、模式一起刷新
+        if (e.type === 'skills-changed' || e.type === 'mcp-changed' || e.type === 'modes-changed') {
+          void qc.invalidateQueries({ queryKey: MODE_CATALOG_KEY });
+        }
       }),
     [qc],
   );
@@ -140,6 +149,8 @@ export function App() {
     layout.closePeek();
     setView(v);
   };
+  const openVideoEditor = (target: { conversationId: string; path: string }) =>
+    navigate({ kind: 'video', conversationId: target.conversationId, path: target.path });
   const sidebarProps = {
     view,
     width: layout.width,
@@ -194,15 +205,27 @@ export function App() {
         {/* data-view：e2e 失败时打印当前视图（排查过「对话区被换掉」的偶发问题） */}
         <main
           className="min-w-0 flex-1"
-          data-view={view.kind === 'chat' ? `chat:${view.id}` : view.kind}
+          data-view={view.kind === 'chat' ? `chat:${view.id}` : view.kind === 'video' ? `video:${view.path}` : view.kind}
         >
           {view.kind === 'chat' && (
-            <ChatView
-              key={view.id}
-              id={view.id}
-              hasKey={hasKey}
+            // 对话里的工程卡片 / 工作区面板经这个上下文切到剪辑器
+            <VideoEditorOpenerContext.Provider value={openVideoEditor}>
+              <ChatView
+                key={view.id}
+                id={view.id}
+                hasKey={hasKey}
+                headerInset={layout.collapsed ? COLLAPSED_HEADER_INSET : undefined}
+                onDeleted={() => navigate({ kind: 'home' })}
+              />
+            </VideoEditorOpenerContext.Provider>
+          )}
+          {view.kind === 'video' && (
+            <VideoEditorView
+              key={`${view.conversationId}:${view.path}`}
+              conversationId={view.conversationId}
+              path={view.path}
               headerInset={layout.collapsed ? COLLAPSED_HEADER_INSET : undefined}
-              onDeleted={() => navigate({ kind: 'home' })}
+              onBack={() => navigate({ kind: 'chat', id: view.conversationId })}
             />
           )}
           {view.kind === 'home' && (

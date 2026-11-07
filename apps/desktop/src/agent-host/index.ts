@@ -16,13 +16,17 @@ import { NodeSqliteSaver } from './db/checkpointer';
 import { ConversationRepo } from './db/conversations';
 import { openDatabase } from './db/database';
 import { McpStore } from './mcp/mcp-store';
+import { ModeStore } from './modes/mode-store';
 import { createOAuthCallbackServer, OAUTH_REDIRECT_URI } from './mcp/oauth-callback';
 import { installEnvProxy } from './proxy';
 import { BackgroundService } from './background/background-service';
 import { setHostLocale } from './i18n';
 import { createHandlers, dispatch } from './rpc-server';
 import { RunService } from './run/run-service';
+import { buildDesktopRegistry } from './run/tool-registry';
 import { SkillStore } from './skills/skill-store';
+import { ffmpegBinaries } from './video/ffmpeg-paths';
+import { VideoService } from './video/video-service';
 import { WebApi } from './web-media/web-api';
 import { ProcessTracker } from './workspace/process-tracker';
 
@@ -62,6 +66,7 @@ function broadcast(event: HostEvent): void {
 const listChanged = () => broadcast({ kind: 'event', type: 'conversations-changed' });
 const mcpChanged = () => broadcast({ kind: 'event', type: 'mcp-changed' });
 const skillsChanged = () => broadcast({ kind: 'event', type: 'skills-changed' });
+const modesChanged = () => broadcast({ kind: 'event', type: 'modes-changed' });
 
 const settingsSchema = z.object({
   workspaceDir: z.string(),
@@ -117,12 +122,18 @@ if (mcp.hasPendingAuth()) {
 const webApi = WebApi.fromEnv();
 if (webApi) log(`已登录 Web 账号，媒体生成经 ${webApi.baseUrl}`);
 
+const modes = new ModeStore(db);
+// 工具注册表：启动时登记一次；后台任务服务在 RunService 之后才装配，经 getter 延迟取（只在运行期 create 时用到）
+const registry = buildDesktopRegistry({ webApi, skills, skillsChanged, background: () => background });
+
 const runs = new RunService({
   webApi,
   repo,
   checkpointer,
   skills,
   mcp,
+  modes,
+  registry,
   processes,
   config,
   skillsChanged,
@@ -156,17 +167,34 @@ try {
   log(`恢复后台任务失败：${String(e)}`);
 }
 
+// 剪辑器：工程读写 / 文件监听 / 导出（ffmpeg 路径由 main 经 SPARK_FFMPEG_PATH / SPARK_FFPROBE_PATH 注入）
+try {
+  const ff = ffmpegBinaries();
+  log(`ffmpeg：${ff.ffmpeg}；ffprobe：${ff.ffprobe}`);
+} catch (e) {
+  log(`未找到 ffmpeg / ffprobe：${String(e)}`);
+}
+const video = new VideoService({
+  workspaceOf: (conversationId) => repo.require(conversationId).workspaceDir,
+  emit: broadcast,
+  binaries: ffmpegBinaries,
+});
+
 const handlers = createHandlers({
+  video,
   background,
   webApi,
   repo,
   runs,
   skills,
   mcp,
+  modes,
+  registry,
   config,
   listChanged,
   mcpChanged,
   skillsChanged,
+  modesChanged,
 });
 
 const requestSchema = z.object({

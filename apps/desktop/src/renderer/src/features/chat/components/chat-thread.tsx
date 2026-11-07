@@ -24,7 +24,7 @@ import { Button } from "@/components/ui/button";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
-import { getConversationTokenUsage, type SkillKind, listCommands } from "@/lib/api";
+import { getConversationTokenUsage, type SkillKind, listCommands, listModes, MODES_QUERY_KEY } from "@/lib/api";
 import { currentLocale } from "@/lib/i18n";
 import type { ThinkingLevel } from "@/lib/thinking-level";
 import { cn } from "@/lib/utils";
@@ -41,8 +41,10 @@ import { ChatMessage } from "./chat-message";
 import { DayDivider } from "./day-divider";
 import { MediaGroup } from "./media-card";
 import { ModelSwitcher } from "./model-switcher";
+import { ModeSwitcher } from "./mode-switcher";
 import { PermissionSwitcher } from "./permission-switcher";
 import { PreviewCard } from "./preview-card";
+import { VideoProjectCard } from "@/features/video-editor";
 import { WorkspaceFilesButton } from "./workspace-panel";
 import { TaskPlanPanel } from "./task-plan-panel";
 import { ThinkingIndicator } from "./thinking-indicator";
@@ -82,6 +84,8 @@ export function ChatThread({
   onPermissionChange,
   canChangeWorkspace,
   onChangeWorkspace,
+  modeId,
+  onModeChange,
 }: {
   title: string;
   conversationId: string | null;
@@ -124,6 +128,9 @@ export function ChatThread({
   /** 还没发过消息时才能换目录 */
   canChangeWorkspace: boolean;
   onChangeWorkspace: () => void;
+  /** 会话模式（null = 通用）；运行中禁切 */
+  modeId: string | null;
+  onModeChange: (modeId: string | null) => void;
 }) {
   const { t } = useTranslation();
   const [usageOpen, setUsageOpen] = useState(false);
@@ -148,11 +155,17 @@ export function ChatThread({
     useChatScroll(items, conversationId);
 
   // 可用命令（/ 自动补全）
-  const { data: commands = [] } = useQuery({
+  const { data: allCommands = [] } = useQuery({
     queryKey: ["commands"],
     queryFn: listCommands,
     staleTime: 5 * 60_000,
   });
+  const { data: modes = [] } = useQuery({ queryKey: MODES_QUERY_KEY, queryFn: listModes });
+  // 当前模式只列它勾选的技能（通用模式 / 模式已删 → 全列）；/skills 安装命令不是技能，始终可用
+  const currentMode = modeId ? modes.find((m) => m.id === modeId) : undefined;
+  const commands = currentMode
+    ? allCommands.filter((c) => c.name === "skills" || currentMode.skillNames.includes(c.name))
+    : allCommands;
 
   // 正在输入命令名（以 / 开头且还没空格）→ 弹补全
   const cmdPrefix =
@@ -389,6 +402,12 @@ export function ChatThread({
                     </div>
                   ) : r.item.kind === "preview" ? (
                     <PreviewCard key={r.item.id} spec={r.item.spec} />
+                  ) : r.item.kind === "video_project" ? (
+                    <VideoProjectCard
+                      key={r.item.id}
+                      conversationId={conversationId as string}
+                      info={r.item.info}
+                    />
                   ) : r.item.kind === "bg_task" ? (
                     <BackgroundTaskCard
                       key={r.item.id}
@@ -552,6 +571,12 @@ export function ChatThread({
                     <span className="truncate">{workspaceDir.split("/").filter(Boolean).pop() ?? workspaceDir}</span>
                   </Button>
                 )}
+                <ModeSwitcher
+                  value={modeId}
+                  modes={modes}
+                  onChange={onModeChange}
+                  disabled={busy}
+                />
                 <PermissionSwitcher
                   value={permission}
                   onChange={onPermissionChange}

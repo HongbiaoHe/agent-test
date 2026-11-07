@@ -17,4 +17,9 @@ export class CreateConversationDto {
   @IsOptional()
   @IsIn(THINKING_LEVELS)
   thinkingLevel?: string;
+
+  /** 选用的模式（AgentMode.id）；缺省 = 通用模式。模式的默认模型 / 档位只在创建时回填。 */
+  @IsOptional()
+  @IsString()
+  modeId?: string;
 }

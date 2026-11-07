@@ -6,8 +6,22 @@
  * - 运行中的流式事件以 HostEvent 推送。
  */
 import type { TokenReport } from '@agent-test/agent-core/agent/token-usage';
+import type { Capability } from '@agent-test/agent-core/modes/capabilities';
+import {
+  type AgentMode,
+  AgentModeInputSchema,
+  GeneralModeSettingsSchema,
+} from '@agent-test/agent-core/modes/mode.schema';
+import {
+  FragmentTextSchema,
+  FragmentTitleSchema,
+  type PromptFragmentId,
+} from '@agent-test/agent-core/modes/prompt-fragments';
+import type { Unavailable } from '@agent-test/agent-core/modes/resolve-mode';
+import type { ToolCatalogEntry } from '@agent-test/agent-core/modes/tool-registry';
 import { z } from 'zod';
 import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
+import type { VideoProject } from '@agent-test/video-schema';
 import type { ConnectResult, McpAppResource, McpPreset, McpServer } from './mcp';
 import { WORKSPACE_PERMISSIONS, type WorkspacePermission } from './workspace';
 
@@ -37,7 +51,64 @@ export interface ConversationSummary {
   updatedAt: number;
   /** 置顶时刻（ms）；未置顶为 null。侧栏「已置顶」按它倒序 */
   pinnedAt: number | null;
+  /** 会话所选 agent 模式；null = 通用模式（全部工具 / 连接器 / 技能） */
+  modeId: string | null;
 }
+
+/** 设置页「模式」编辑器的目录：可勾选的工具 / 连接器 / 技能、片段占位符、通用提示词（生效的，含用户覆盖）、本环境能力 */
+export interface ModeCatalog {
+  tools: ToolCatalogEntry[];
+  mcpServers: { id: string; name: string; slug: string }[];
+  skills: { name: string; description: string }[];
+  /** 可插入的片段 id：内置 platform.* 在前，自建 custom.* 在后 */
+  fragments: string[];
+  generalPrompt: string;
+  capabilities: Capability[];
+}
+
+export interface ModePreview {
+  systemPrompt: string;
+  unavailable: Unavailable[];
+}
+
+/** 通用模式（modeId 为 null）的设置：名称固定、工具 / 连接器 / 技能恒为全部，只能改提示词与默认模型 */
+export interface GeneralModeView {
+  /** 生效的提示词：用户覆盖过取覆盖，否则 = defaultPrompt */
+  systemPrompt: string;
+  /** 用户是否覆盖过提示词（库里 system_prompt 非 NULL） */
+  isCustom: boolean;
+  /** core 的 GENERAL_MODE_PROMPT（「恢复默认」回填用；renderer 不能从 core 的 CJS dist 取值） */
+  defaultPrompt: string;
+  defaultModel: string | null;
+  defaultThinkingLevel: string | null;
+}
+
+/**
+ * 一个片段：
+ * - builtin：内置平台片段（{{platform.xxx}}），本机只存一份改写，没改写的用 core 默认正文；
+ * - custom：用户自建片段（{{custom.xxx}}），id 创建后不可改，没有默认正文。
+ */
+export type PromptFragmentView =
+  | {
+      kind: 'builtin';
+      id: PromptFragmentId;
+      title: null;
+      /** 生效正文（改写过取改写，否则 = defaultText）；里面的 {{skills_dir}} 未替换 */
+      text: string;
+      /** core 的默认正文（「恢复默认」回填用；renderer 不能从 core 的 CJS dist 取值） */
+      defaultText: string;
+      /** 是否改写过默认正文 */
+      isCustom: boolean;
+    }
+  | {
+      kind: 'custom';
+      id: string;
+      title: string;
+      text: string;
+      defaultText: null;
+      /** 自建片段没有默认正文可「改写」，恒为 false */
+      isCustom: false;
+    };
 
 /** 会话搜索的一条结果：snippet 是命中的消息片段（只命中标题时为 null） */
 export interface ConversationSearchHit {
@@ -154,6 +225,45 @@ export const hitlDecisionSchema = z.discriminatedUnion('type', [
 ]);
 export type HitlDecision = z.infer<typeof hitlDecisionSchema>;
 
+/** ── 视频剪辑器（videos/*.sparkvideo.json，见 @agent-test/video-schema）──────────────────── */
+
+/** 工作区里的一个剪辑工程（列表用） */
+export interface VideoProjectSummary {
+  /** 工作区相对路径，如 videos/promo.sparkvideo.json */
+  path: string;
+  name: string;
+  /** 成片时长（秒）；工程损坏时为 null */
+  duration: number | null;
+  /** 文件修改时间（ms） */
+  mtimeMs: number;
+}
+
+/** 读工程：损坏（JSON 解析失败 / schema 不过）时 project 为 null，issues 给出原因，编辑器据此报错而不是白屏 */
+export interface VideoProjectFile {
+  path: string;
+  project: VideoProject | null;
+  issues: string[];
+  /** 文件修改时间（ms）：写回时作为 baseMtimeMs 做冲突检测 */
+  mtimeMs: number;
+}
+
+/** 写工程：baseMtimeMs 与磁盘不一致 = 期间被外部（agent）改过，不写入，返回 conflict */
+export type VideoWriteResult = { ok: true; mtimeMs: number } | { ok: false; conflict: true; mtimeMs: number };
+
+/** ffprobe 读出的素材信息 */
+export interface VideoMediaProbe {
+  /** 工作区相对路径 */
+  path: string;
+  kind: 'video' | 'audio' | 'image';
+  /** 秒；图片为 null */
+  duration: number | null;
+  width: number | null;
+  height: number | null;
+  hasAudio: boolean;
+}
+
+export type VideoExportStatus = 'running' | 'done' | 'failed' | 'cancelled';
+
 export const rpcSchemas = {
   'host.status': z.object({}),
   'models.list': z.object({}),
@@ -162,6 +272,8 @@ export const rpcSchemas = {
     model: z.string().optional(),
     workspaceDir: z.string().min(1).optional(),
     permission: z.enum(WORKSPACE_PERMISSIONS).optional(),
+    /** 所选模式；模式带默认模型 / 思考档位时只在这里回填（之后以会话自己的值为准） */
+    modeId: z.string().min(1).optional(),
   }),
   'conversations.get': z.object({ id }),
   'conversations.update': z.object({
@@ -174,8 +286,37 @@ export const rpcSchemas = {
     permission: z.enum(WORKSPACE_PERMISSIONS).optional(),
     /** 只有还没发过消息的会话能改目录（附件、历史里的路径都依赖它） */
     workspaceDir: z.string().min(1).optional(),
+    /** 切模式：null = 回到通用模式；运行中 / 等审批时拒绝 */
+    modeId: z.string().nullable().optional(),
   }),
   'conversations.delete': z.object({ id }),
+  'modes.list': z.object({}),
+  'modes.create': AgentModeInputSchema,
+  'modes.update': AgentModeInputSchema.extend({ id }),
+  'modes.delete': z.object({ id }),
+  'modes.catalog': z.object({}),
+  /** 用编辑中的内容算最终系统提示与不可用清单（不落库） */
+  'modes.preview': AgentModeInputSchema,
+  'modes.general.get': z.object({}),
+  /** 整份覆盖；systemPrompt 为 null = 恢复默认提示词 */
+  'modes.general.update': GeneralModeSettingsSchema,
+  /** 用编辑中的通用提示词算最终系统提示（不落库）；null = 默认提示词 */
+  'modes.general.preview': GeneralModeSettingsSchema.pick({ systemPrompt: true }),
+  /** 内置 4 个平台片段（固定顺序），其后是自建片段（按 id 排序） */
+  'modes.fragments.list': z.object({}),
+  /**
+   * 改片段：内置片段只能改 text（null 或与默认相同 = 恢复默认）；自建片段可改 title / text（text 不能为 null）。
+   * 正文里只能用 {{skills_dir}}，未知 id 报错
+   */
+  'modes.fragments.update': z.object({
+    id: z.string().min(1),
+    text: FragmentTextSchema.nullable().optional(),
+    title: FragmentTitleSchema.optional(),
+  }),
+  /** 新建自建片段：id 须为 custom.<小写字母 / 数字 / 下划线，1～48 位>（host 校验并给出本地化报错），已存在报错 */
+  'modes.fragments.create': z.object({ id: z.string().min(1), title: FragmentTitleSchema, text: FragmentTextSchema }),
+  /** 删除自建片段：内置片段不能删；仍被模式或自定义的通用提示词引用时拒绝并列出引用处 */
+  'modes.fragments.delete': z.object({ id: z.string().min(1) }),
   /** 按标题与消息正文搜索（不区分大小写的子串匹配） */
   'conversations.search': z.object({ query: z.string().trim().min(1).max(200) }),
   'conversations.tokenReport': z.object({ id }),
@@ -203,6 +344,32 @@ export const rpcSchemas = {
     decisions: z.array(hitlDecisionSchema).min(1),
   }),
   'run.stop': z.object({ conversationId: id }),
+  // 视频剪辑器：path 一律是工作区相对路径，conversationId 决定是哪个工作区
+  'video.list': z.object({ conversationId: z.string().min(1) }),
+  /** 读工程，同时开始监听该文件（外部修改推 video-file-changed） */
+  'video.read': z.object({ conversationId: z.string().min(1), path: z.string().min(1) }),
+  /** 不再监听（编辑器关闭 / 切换工程时调用） */
+  'video.close': z.object({ conversationId: z.string().min(1), path: z.string().min(1) }),
+  /** 写回工程：project 在 host 侧用 parseProject 校验，不合法直接报错 */
+  'video.write': z.object({
+    conversationId: z.string().min(1),
+    path: z.string().min(1),
+    project: z.unknown(),
+    /** 读取时的 mtimeMs；省略 = 强制覆盖（用户在冲突提示里选了「保留我的修改」） */
+    baseMtimeMs: z.number().optional(),
+  }),
+  'video.probe': z.object({ conversationId: z.string().min(1), paths: z.array(z.string().min(1)).min(1).max(50) }),
+  /** 把用户在本机选的文件复制进工作区 media/imports/，返回工作区相对路径与探测信息 */
+  'video.importFiles': z.object({ conversationId: z.string().min(1), sourcePaths: z.array(z.string().min(1)).min(1).max(20) }),
+  /** 导出成片到 exports/：height 为 null = 按工程画布原尺寸，否则按该高度等比缩放（720 / 1080） */
+  'video.export': z.object({
+    conversationId: z.string().min(1),
+    path: z.string().min(1),
+    height: z.union([z.literal(720), z.literal(1080)]).nullable(),
+    /** 字幕原文 → 剪辑器按预览同一字体量宽断好行的文本（行间 \n），导出按它排，与预览一致 */
+    wrappedSubtitles: z.record(z.string(), z.string()).optional(),
+  }),
+  'video.exportCancel': z.object({ jobId: z.string().min(1) }),
   'skills.list': z.object({}),
   'skills.get': z.object({ name: id }),
   'skills.install': z.object({ folder: z.string().min(1) }),
@@ -262,6 +429,19 @@ export interface RpcResults {
   'conversations.get': ConversationDetail;
   'conversations.update': ConversationSummary;
   'conversations.delete': { ok: true };
+  'modes.list': AgentMode[];
+  'modes.create': AgentMode;
+  'modes.update': AgentMode;
+  'modes.delete': { ok: true };
+  'modes.catalog': ModeCatalog;
+  'modes.preview': ModePreview;
+  'modes.general.get': GeneralModeView;
+  'modes.general.update': GeneralModeView;
+  'modes.general.preview': ModePreview;
+  'modes.fragments.list': PromptFragmentView[];
+  'modes.fragments.update': PromptFragmentView;
+  'modes.fragments.create': PromptFragmentView;
+  'modes.fragments.delete': { ok: true };
   'conversations.search': ConversationSearchHit[];
   'conversations.tokenReport': TokenReport;
   'background.list': BackgroundTaskView[];
@@ -276,6 +456,14 @@ export interface RpcResults {
   'run.start': { ok: true };
   'run.resume': { ok: true };
   'run.stop': { ok: true };
+  'video.list': VideoProjectSummary[];
+  'video.read': VideoProjectFile;
+  'video.close': { ok: true };
+  'video.write': VideoWriteResult;
+  'video.probe': VideoMediaProbe[];
+  'video.importFiles': VideoMediaProbe[];
+  'video.export': { jobId: string; outputPath: string };
+  'video.exportCancel': { ok: true };
   'skills.list': SkillInfo[];
   'skills.get': SkillDetail;
   'skills.install': SkillInfo;
@@ -325,6 +513,20 @@ export type HostEvent =
   | { kind: 'event'; type: 'conversations-changed' }
   | { kind: 'event'; type: 'mcp-changed' }
   | { kind: 'event'; type: 'skills-changed' }
+  /** 模式增删改、通用模式 / 平台片段改写（设置页列表、会话内选择器据此刷新） */
+  | { kind: 'event'; type: 'modes-changed' }
+  /** 编辑器正在打开的工程文件被外部（agent / 用户手改）修改了 */
+  | { kind: 'event'; type: 'video-file-changed'; conversationId: string; path: string; mtimeMs: number }
+  /** 导出进度：progress 0～1；done 时带 outputPath（工作区相对），failed 时带 error */
+  | {
+      kind: 'event';
+      type: 'video-export';
+      jobId: string;
+      status: VideoExportStatus;
+      progress: number;
+      outputPath?: string;
+      error?: string;
+    }
   /** 系统浏览器里的 OAuth 授权完成（loopback 回调）：成功 / 失败都推，连接中的按钮据此结束 */
   | { kind: 'event'; type: 'mcp-oauth'; ok: boolean; serverId?: string; error?: string };
 

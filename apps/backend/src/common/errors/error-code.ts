@@ -5,7 +5,7 @@ export interface ErrorDef {
 
 /**
  * 业务错误集中定义，按域分段：
- * 1xxxx 会话域 / 2xxxx agent 域 / 3xxxx 认证域(passkey) / 4xxxx 技能与沙箱域 / 5xxxx 系统域 / 6xxxx 媒体生成域 / 7xxxx 画布域 / 11xxxx 设计域
+ * 1xxxx 会话域 / 2xxxx agent 域 / 3xxxx 认证域(passkey) / 4xxxx 技能与沙箱域 / 5xxxx 系统域 / 6xxxx 媒体生成域 / 7xxxx 画布域 / 11xxxx 设计域 / 12xxxx 模式域
  * 新增业务错误只需往这里加一条。
  */
 export const ErrorCodes = {
@@ -291,5 +291,32 @@ export const ErrorCodes = {
   DESIGN_DECOMPOSE_UNAVAILABLE: {
     code: 110009,
     message: 'Layer decomposition is not configured (BYTEPLUS_ARK_API_KEY)',
+  },
+  // 模式域（modes 模块，12xxxx）
+  MODE_NOT_FOUND: { code: 120001, message: 'Mode not found' },
+  MODE_INVALID: { code: 120002, message: 'Invalid mode' },
+  // message 运行时替换成「未知占位符：platform.xxx」
+  MODE_INVALID_PLACEHOLDER: {
+    code: 120003,
+    message: 'Unknown placeholder in system prompt',
+  },
+  MODE_FRAGMENT_NOT_FOUND: {
+    code: 120004,
+    message: 'Prompt fragment not found',
+  },
+  // message 运行时替换成「片段里只能使用 {{skills_dir}}，不支持：xxx」
+  MODE_FRAGMENT_INVALID_VARIABLE: {
+    code: 120005,
+    message: 'Unsupported variable in prompt fragment',
+  },
+  // message 运行时替换成「片段 custom.xxx 已存在」（409）
+  MODE_FRAGMENT_EXISTS: {
+    code: 120006,
+    message: 'Prompt fragment already exists',
+  },
+  // message 运行时替换成「片段 custom.xxx 仍被使用：模式 A、通用模式」（409）
+  MODE_FRAGMENT_IN_USE: {
+    code: 120007,
+    message: 'Prompt fragment is still in use',
   },
 } as const satisfies Record<string, ErrorDef>;

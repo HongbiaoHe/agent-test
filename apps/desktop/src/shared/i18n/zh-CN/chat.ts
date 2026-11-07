@@ -166,6 +166,13 @@ export const chat = {
     button: '权限：{{label}}',
     list: '权限',
   },
+  mode: {
+    general: '通用',
+    generalHint: '全部工具、连接器与技能',
+    summary: '{{tools}} 工具 · {{servers}} 连接器 · {{skills}} 技能',
+    button: '模式：{{label}}',
+    list: '模式',
+  },
   modelHint: {
     gemini38Flash: '快速 · 默认',
     gemini4Argon: '最强 · 旗舰',

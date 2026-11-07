@@ -117,7 +117,7 @@ export function BackgroundTaskCard({
   const endedAt = task.finishedAt ? Date.parse(task.finishedAt) : undefined;
 
   return (
-    <div className="rounded-xl border border-border bg-card p-3">
+    <div className="rounded-xl border border-border bg-card p-3" data-testid="background-task-card">
       <div className="flex items-center gap-3">
         <span className="flex size-8 shrink-0 items-center justify-center rounded-lg bg-muted">
           <Icon className="size-4 text-muted-foreground" />

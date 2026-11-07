@@ -110,6 +110,9 @@
       "**/*.(t|j)s"
     ],
     "coverageDirectory": "../coverage",
-    "testEnvironment": "node"
+    "testEnvironment": "node",
+    "moduleNameMapper": {
+      "^@langchain/langgraph-sdk$": "<rootDir>/__mocks__/langgraph-sdk.cjs"
+    }
   }
 }

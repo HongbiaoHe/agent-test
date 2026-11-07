@@ -30,6 +30,25 @@ export const errors = {
     notFound: 'Chat not found: {{id}}',
     workspaceLocked: "This chat has already started, so its workspace can't be changed. Start a new chat",
     interrupted: 'Run interrupted: the app quit or the agent process crashed while running. Please send again.',
+    busyModeSwitch: 'This chat is running or waiting for approval. Switch modes once it finishes',
+  },
+  modes: {
+    notFound: 'Mode not found: {{id}}',
+    unknownPlaceholder:
+      'The prompt contains unknown placeholders: {{ids}} (only platform.* fragments and existing custom.* fragments can be referenced)',
+    fragmentNotFound: 'Fragment not found: {{id}}',
+    fragmentInvalidVariable: 'Fragments can only use {{variable}}; not supported: {{vars}}',
+    fragmentTextLength: 'Fragment text must be non-empty and at most {{max}} characters',
+    fragmentInvalidId: 'Invalid fragment id: {{id}} (expected custom. followed by 1–48 lowercase letters, digits or underscores)',
+    fragmentExists: 'Fragment already exists: {{id}}',
+    fragmentTitleLength: 'Fragment name must be non-empty and at most {{max}} characters',
+    fragmentBuiltinTitle: 'Built-in fragment {{id}} has no name to change',
+    fragmentBuiltinDelete: "Built-in fragment {{id}} can't be deleted, only restored to default",
+    fragmentCustomNoDefault: 'Custom fragment {{id}} has no default text; its text cannot be empty',
+    fragmentInUse: "Fragment {{id}} is still referenced and can't be deleted: {{refs}}",
+    fragmentRefMode: 'mode "{{name}}"',
+    fragmentRefGeneral: 'General mode',
+    fragmentRefSeparator: ', ',
   },
   run: {
     busy: 'This chat is running. Wait for it to finish or click Stop',
@@ -98,5 +117,18 @@ export const errors = {
   },
   background: {
     notFound: 'Background task not found: {{id}}',
+  },
+  /** Video editor (video.* RPC, export) */
+  video: {
+    ffmpegMissing: 'ffmpeg / ffprobe not found, cannot process video (please reinstall Spark)',
+    notProject: 'Not a video project file (must end with .sparkvideo.json): {{path}}',
+    invalidProject: 'Project validation failed: {{issues}}',
+    notMedia: 'Unrecognized media file: {{path}}',
+    probeFailed: 'Failed to read media info: {{path}} ({{error}})',
+    emptyTimeline: 'The video track has no clips yet, nothing to export',
+    missingMedia: 'Media not found: {{paths}}',
+    importNotFile: 'Not a file: {{path}}',
+    jobNotFound: 'Export job not found: {{id}}',
+    exportFailed: 'ffmpeg export failed (exit code {{code}}): {{detail}}',
   },
 } satisfies MessageShape<typeof source>;

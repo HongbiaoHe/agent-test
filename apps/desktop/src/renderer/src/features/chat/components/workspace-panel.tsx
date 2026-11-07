@@ -14,6 +14,7 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { isVideoProjectPath, useOpenVideoEditor } from "@/features/video-editor";
 import { useFileViewer } from "@/features/viewer/viewer-context";
 import { cn } from "@/lib/utils";
 
@@ -40,6 +41,7 @@ export function WorkspaceFilesButton({
   const [selected, setSelected] = useState<string | null>(null);
   const qc = useQueryClient();
   const viewer = useFileViewer();
+  const openVideoEditor = useOpenVideoEditor();
   const abs = (rel: string) => `${workspaceDir.replace(/\/$/, "")}/${rel}`;
 
   const refresh = () => {
@@ -114,7 +116,16 @@ export function WorkspaceFilesButton({
                 <FileTree
                   conversationId={conversationId}
                   selected={selected}
-                  onSelect={setSelected}
+                  onSelect={(path) => {
+                    // 剪辑工程：进剪辑器视图，不走文件预览
+                    if (openVideoEditor && isVideoProjectPath(path)) {
+                      setOpen(false);
+                      setSelected(null);
+                      openVideoEditor({ conversationId, path });
+                      return;
+                    }
+                    setSelected(path);
+                  }}
                 />
               </div>
             </ScrollArea>

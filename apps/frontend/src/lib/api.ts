@@ -76,6 +76,8 @@ export interface Conversation {
   messages: ConversationMessage[];
   /** 会话累计 token（顶栏徽标基底；运行期由 token_usage 事件覆盖） */
   totalTokens: number;
+  /** 会话使用的模式；null = 通用模式（全部工具 / 连接器 / 技能） */
+  modeId: string | null;
 }
 
 /** 侧栏列表项（GET /conversations，不含 messages）。 */
@@ -88,16 +90,19 @@ export interface ConversationListItem {
   createdAt: string;
   /** 置顶时刻；null = 未置顶 */
   pinnedAt: string | null;
+  /** 会话使用的模式；null = 通用模式 */
+  modeId: string | null;
 }
 
 /** 创建空会话（idle，不带首条消息、不触发运行）：先建会话再进入，首条消息走 appendMessage。 */
 export function createEmptyConversation(
   model?: string,
   thinkingLevel?: string,
+  modeId?: string | null,
 ): Promise<{ conversationId: string }> {
   return request("/conversations", {
     method: "POST",
-    body: JSON.stringify({ model, thinkingLevel }),
+    body: JSON.stringify({ model, thinkingLevel, modeId }),
   });
 }
 
@@ -232,6 +237,17 @@ export function setConversationPinned(
   return request(`/conversations/${id}`, {
     method: "PATCH",
     body: JSON.stringify({ pinned }),
+  });
+}
+
+/** 切换会话模式；null = 回到通用模式。会话 running / queued / waiting_approval 时后端 409。 */
+export function setConversationMode(
+  id: string,
+  modeId: string | null,
+): Promise<{ id: string; modeId: string | null }> {
+  return request(`/conversations/${id}`, {
+    method: "PATCH",
+    body: JSON.stringify({ modeId }),
   });
 }
 
@@ -1360,4 +1376,176 @@ export function sendOtpCode(email: string): Promise<{ success: boolean; code?: s
     method: "POST",
     body: JSON.stringify({ email }),
   });
+}
+
+// ---- Agent modes（/settings/modes）----
+
+/** 用户私有的 agent 模式：完整 system prompt + 勾选的工具 / MCP server / 技能 + 可选默认模型。 */
+export interface AgentMode {
+  id: string;
+  name: string;
+  systemPrompt: string;
+  /** 勾选的代码工具名（内置工具永远在、不进勾选） */
+  toolNames: string[];
+  /** 勾选的 MCP server id */
+  mcpServerIds: string[];
+  /** 勾选的已装技能名 */
+  skillNames: string[];
+  /** 新建会话时回填的默认模型；null = 跟随会话 */
+  defaultModel: string | null;
+  defaultThinkingLevel: string | null;
+  createdAt: string;
+  updatedAt: string;
+}
+
+/** 新建 / 修改 / 预览模式的入参（去掉 id 与时间戳）。 */
+export type AgentModeInput = Omit<AgentMode, "id" | "createdAt" | "updatedAt">;
+
+/** 可勾选的代码工具描述；requires 中任一不在 capabilities 里 = 本环境不可用（仍可勾，运行时降级跳过）。 */
+export interface ModeCatalogTool {
+  name: string;
+  title: string;
+  description: string;
+  requires: string[];
+}
+
+/** GET /modes/catalog：编辑器可选项 + 可插入的占位符 + 通用模式提示词 + 本环境 capability。 */
+export interface ModeCatalog {
+  tools: ModeCatalogTool[];
+  mcpServers: { id: string; name: string; slug: string }[];
+  skills: { name: string; description: string }[];
+  /** 可插入的占位符 id（正文写成 `{{id}}`） */
+  fragments: string[];
+  /** 通用模式的提示词（「Duplicate general」用它预填） */
+  generalPrompt: string;
+  capabilities: string[];
+}
+
+/** POST /modes/preview：拼装后的最终提示词 + 本环境不可用的勾选项。 */
+export interface ModePreview {
+  systemPrompt: string;
+  unavailable: { kind: "tool" | "mcp_server" | "skill"; name: string; reason: string }[];
+}
+
+export function listModes(): Promise<AgentMode[]> {
+  return request("/modes");
+}
+
+export function getModeCatalog(): Promise<ModeCatalog> {
+  return request("/modes/catalog");
+}
+
+export function createMode(input: AgentModeInput): Promise<AgentMode> {
+  return request("/modes", { method: "POST", body: JSON.stringify(input) });
+}
+
+export function updateMode(id: string, input: AgentModeInput): Promise<AgentMode> {
+  return request(`/modes/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(input),
+  });
+}
+
+/** 删除模式；引用它的会话 modeId 由后端置空（回到通用模式）。 */
+export function deleteMode(id: string): Promise<{ id: string }> {
+  return request(`/modes/${encodeURIComponent(id)}`, { method: "DELETE" });
+}
+
+/** 未保存的表单也能预览（未知占位符时后端 400，message 为「未知占位符：xxx」）。 */
+export function previewMode(input: AgentModeInput): Promise<ModePreview> {
+  return request("/modes/preview", { method: "POST", body: JSON.stringify(input) });
+}
+
+/**
+ * GET/PUT /modes/general：用户对通用模式（会话没选模式）的设置。工具 / 连接器 / 技能恒为全部，
+ * 这里只有提示词与新建会话回填的默认模型 / 思考档位。
+ */
+export interface GeneralModeSettings {
+  /** 生效的提示词：自定义的，或默认的 defaultPrompt */
+  systemPrompt: string;
+  /** 是否自定义过提示词 */
+  isCustom: boolean;
+  /** 平台默认提示词（「Restore default」回到它） */
+  defaultPrompt: string;
+  defaultModel: string | null;
+  defaultThinkingLevel: string | null;
+}
+
+/** PUT /modes/general 的入参：systemPrompt 为 null = 恢复默认提示词。 */
+export interface GeneralModeInput {
+  systemPrompt: string | null;
+  defaultModel: string | null;
+  defaultThinkingLevel: string | null;
+}
+
+export function getGeneralMode(): Promise<GeneralModeSettings> {
+  return request("/modes/general");
+}
+
+export function updateGeneralMode(input: GeneralModeInput): Promise<GeneralModeSettings> {
+  return request("/modes/general", { method: "PUT", body: JSON.stringify(input) });
+}
+
+/** 预览通用模式的最终提示词（null = 默认提示词；未知占位符时后端 400）。 */
+export function previewGeneralMode(systemPrompt: string | null): Promise<ModePreview> {
+  return request("/modes/general/preview", {
+    method: "POST",
+    body: JSON.stringify({ systemPrompt }),
+  });
+}
+
+/**
+ * GET /modes/fragments：提示词片段。两类：
+ * - 内置 `platform.*`（固定 4 个）：可改写正文（只对自己生效）、恢复默认，不能删；
+ * - 自建 `custom.<名字>`：id 创建后不可改，可改显示名与正文；仍被模式或通用提示词引用时不能删。
+ * 正文里唯一可用的变量是 `{{skills_dir}}`。列表里内置在前，自建按创建时间在后。
+ */
+export interface PromptFragment {
+  kind: "builtin" | "custom";
+  /** 片段 id，如 platform.language / custom.tone */
+  id: string;
+  /** 自建片段的显示名；内置为 null */
+  title: string | null;
+  /** 生效的正文：内置为改写过的或默认的 defaultText */
+  text: string;
+  /** 内置片段的平台默认正文（「Restore default」回到它）；自建为 null */
+  defaultText: string | null;
+  /** 内置片段是否改写过；自建恒为 false */
+  isCustom: boolean;
+}
+
+/** 自建片段 id 的前缀；名字只能用小写字母、数字、下划线，1～48 位（与后端 / core 一致）。 */
+export const CUSTOM_FRAGMENT_PREFIX = "custom.";
+export const CUSTOM_FRAGMENT_NAME_PATTERN = /^[a-z0-9_]{1,48}$/;
+
+export function listFragments(): Promise<PromptFragment[]> {
+  return request("/modes/fragments");
+}
+
+/** 新建自建片段（id 已存在时后端 409，id 不合法 / 用了 `{{skills_dir}}` 以外的变量时 400）。 */
+export function createFragment(input: {
+  id: string;
+  title: string;
+  text: string;
+}): Promise<PromptFragment> {
+  return request("/modes/fragments", { method: "POST", body: JSON.stringify(input) });
+}
+
+/**
+ * 改片段：内置片段传 `{ text }`，text 为 null（或与默认相同）= 恢复默认；
+ * 自建片段传 `{ title?, text? }`（至少一个，text 不能为 null）。用了 `{{skills_dir}}` 以外的变量时后端 400。
+ */
+export function updateFragment(
+  id: string,
+  body: { text: string | null } | { title?: string; text?: string },
+): Promise<PromptFragment> {
+  return request(`/modes/fragments/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify(body),
+  });
+}
+
+/** 删自建片段；仍被引用时后端 409，message 列出引用处（「片段 custom.x 仍被使用：模式 A、通用模式」）。 */
+export function deleteFragment(id: string): Promise<{ id: string }> {
+  return request(`/modes/fragments/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

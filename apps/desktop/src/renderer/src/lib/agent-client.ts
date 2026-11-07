@@ -25,6 +25,23 @@ const eventSchema = z.discriminatedUnion('type', [
   z.object({ kind: z.literal('event'), type: z.literal('conversations-changed') }),
   z.object({ kind: z.literal('event'), type: z.literal('mcp-changed') }),
   z.object({ kind: z.literal('event'), type: z.literal('skills-changed') }),
+  z.object({ kind: z.literal('event'), type: z.literal('modes-changed') }),
+  z.object({
+    kind: z.literal('event'),
+    type: z.literal('video-file-changed'),
+    conversationId: z.string(),
+    path: z.string(),
+    mtimeMs: z.number(),
+  }),
+  z.object({
+    kind: z.literal('event'),
+    type: z.literal('video-export'),
+    jobId: z.string(),
+    status: z.enum(['running', 'done', 'failed', 'cancelled']),
+    progress: z.number(),
+    outputPath: z.string().optional(),
+    error: z.string().optional(),
+  }),
   z.object({
     kind: z.literal('event'),
     type: z.literal('mcp-oauth'),

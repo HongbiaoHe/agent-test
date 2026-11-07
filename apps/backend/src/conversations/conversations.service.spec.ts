@@ -28,6 +28,7 @@ import { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
 const mockPrisma = {
   conversation: {
     findFirst: jest.fn(),
+    findUniqueOrThrow: jest.fn(),
     create: jest.fn(),
     update: jest.fn(),
     findMany: jest.fn(),
@@ -36,6 +37,8 @@ const mockPrisma = {
     create: jest.fn(),
     count: jest.fn(),
   },
+  agentMode: { findFirst: jest.fn() },
+  generalModeSetting: { findUnique: jest.fn() },
 };
 
 const mockSkills = { getFor: jest.fn() };
@@ -315,6 +318,165 @@ describe('ConversationsService – 空会话创建与续聊', () => {
     });
   });
 
+  it('选了模式：校验归属后写入 modeId；没给模型 / 档位时用模式默认值回填', async () => {
+    mockPrisma.conversation.create.mockResolvedValue({ id: 'conv-m' });
+    mockPrisma.agentMode.findFirst.mockResolvedValue({
+      id: 'm1',
+      defaultModel: 'deepseek:deepseek-flash',
+      defaultThinkingLevel: 'high',
+    });
+
+    await service.create(
+      undefined,
+      'tenant-1',
+      'u1',
+      undefined,
+      undefined,
+      'm1',
+    );
+
+    expect(mockPrisma.agentMode.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'm1', userId: 'u1' } }),
+    );
+    expect(mockPrisma.conversation.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        modeId: 'm1',
+        model: 'deepseek:deepseek-flash',
+        thinkingLevel: 'high',
+      }),
+    });
+  });
+
+  it('选了模式但 body 自带模型 / 档位：以 body 为准，不被模式默认值覆盖', async () => {
+    mockPrisma.conversation.create.mockResolvedValue({ id: 'conv-m2' });
+    mockPrisma.agentMode.findFirst.mockResolvedValue({
+      id: 'm1',
+      defaultModel: 'deepseek:deepseek-flash',
+      defaultThinkingLevel: 'high',
+    });
+
+    await service.create(
+      undefined,
+      'tenant-1',
+      'u1',
+      'google-genai:gemini-3.8-flash',
+      'off',
+      'm1',
+    );
+
+    expect(mockPrisma.conversation.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        modeId: 'm1',
+        model: 'google-genai:gemini-3.8-flash',
+        thinkingLevel: 'off',
+      }),
+    });
+  });
+
+  it('没选模式（通用）且没给模型 / 档位：用该用户通用模式设置的默认值回填', async () => {
+    mockPrisma.conversation.create.mockResolvedValue({ id: 'conv-g' });
+    mockPrisma.generalModeSetting.findUnique.mockResolvedValueOnce({
+      defaultModel: 'deepseek:deepseek-flash',
+      defaultThinkingLevel: 'high',
+    });
+
+    await service.create(undefined, 'tenant-1', 'u1');
+
+    expect(mockPrisma.generalModeSetting.findUnique).toHaveBeenCalledWith({
+      where: { userId: 'u1' },
+      select: { defaultModel: true, defaultThinkingLevel: true },
+    });
+    expect(mockPrisma.agentMode.findFirst).not.toHaveBeenCalled();
+    expect(mockPrisma.conversation.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        modeId: undefined,
+        model: 'deepseek:deepseek-flash',
+        thinkingLevel: 'high',
+      }),
+    });
+  });
+
+  it('通用模式：body 自带的模型 / 档位优先；只缺一项时只回填那一项；都给了不查设置', async () => {
+    mockPrisma.conversation.create.mockResolvedValue({ id: 'conv-g2' });
+    mockPrisma.generalModeSetting.findUnique.mockResolvedValueOnce({
+      defaultModel: 'deepseek:deepseek-flash',
+      defaultThinkingLevel: 'high',
+    });
+
+    await service.create(
+      undefined,
+      'tenant-1',
+      'u1',
+      'google-genai:gemini-3.8-flash',
+    );
+    expect(mockPrisma.conversation.create).toHaveBeenLastCalledWith({
+      data: expect.objectContaining({
+        model: 'google-genai:gemini-3.8-flash',
+        thinkingLevel: 'high',
+      }),
+    });
+
+    mockPrisma.generalModeSetting.findUnique.mockClear();
+    await service.create(
+      undefined,
+      'tenant-1',
+      'u1',
+      'google-genai:gemini-3.8-flash',
+      'off',
+    );
+    expect(mockPrisma.generalModeSetting.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('通用模式没有设置行 → 不回填（模型 / 档位保持 undefined）', async () => {
+    mockPrisma.conversation.create.mockResolvedValue({ id: 'conv-g3' });
+    mockPrisma.generalModeSetting.findUnique.mockResolvedValueOnce(null);
+
+    await service.create(undefined, 'tenant-1', 'u1');
+
+    expect(mockPrisma.conversation.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        model: undefined,
+        thinkingLevel: undefined,
+      }),
+    });
+  });
+
+  it('选了模式：不读通用模式设置', async () => {
+    mockPrisma.conversation.create.mockResolvedValue({ id: 'conv-m3' });
+    mockPrisma.agentMode.findFirst.mockResolvedValue({
+      id: 'm1',
+      defaultModel: null,
+      defaultThinkingLevel: null,
+    });
+
+    await service.create(
+      undefined,
+      'tenant-1',
+      'u1',
+      undefined,
+      undefined,
+      'm1',
+    );
+
+    expect(mockPrisma.generalModeSetting.findUnique).not.toHaveBeenCalled();
+  });
+
+  it('模式不存在 / 不属于该用户 → MODE_NOT_FOUND(404)，不建会话', async () => {
+    mockPrisma.agentMode.findFirst.mockResolvedValue(null);
+
+    await expect(
+      service.create(
+        undefined,
+        'tenant-1',
+        'u1',
+        undefined,
+        undefined,
+        'ghost',
+      ),
+    ).rejects.toMatchObject({ errCode: ErrorCodes.MODE_NOT_FOUND.code });
+    expect(mockPrisma.conversation.create).not.toHaveBeenCalled();
+  });
+
   it('追加时带了思考档位就更新到会话上（resume/超时兜底复用）；没带则不动既有档位', async () => {
     mockPrisma.conversation.findFirst.mockResolvedValue({
       id: 'conv-1',
@@ -436,11 +598,13 @@ describe('ConversationsService – 置顶与删除', () => {
   const prisma = {
     conversation: {
       findFirst: jest.fn(),
+      findUniqueOrThrow: jest.fn(),
       findMany: jest.fn(),
       update: jest.fn(),
       updateMany: jest.fn(),
     },
     message: { count: jest.fn(), create: jest.fn() },
+    agentMode: { findFirst: jest.fn() },
   };
   const media = { cancelByConversation: jest.fn() };
 
@@ -520,9 +684,51 @@ describe('ConversationsService – 置顶与删除', () => {
     expect(cleared).toEqual({ title: null });
     expect(prisma.conversation.update).toHaveBeenCalledWith(
       expect.objectContaining({
-        select: { id: true, pinnedAt: true, title: true },
+        select: { id: true, pinnedAt: true, title: true, modeId: true },
       }),
     );
+  });
+
+  it('切模式：空闲态写入 modeId（先校验模式归属）；null 回通用模式', async () => {
+    prisma.conversation.findUniqueOrThrow.mockResolvedValue({ status: 'done' });
+    prisma.agentMode.findFirst.mockResolvedValue({ id: 'm1' });
+    await service.update('conv-1', 'tenant-1', { modeId: 'm1' });
+    await service.update('conv-1', 'tenant-1', { modeId: null });
+    const [set, cleared] = prisma.conversation.update.mock.calls.map(
+      (c) => (c[0] as { data: Record<string, unknown> }).data,
+    );
+    expect(set).toEqual({ modeId: 'm1' });
+    expect(cleared).toEqual({ modeId: null });
+    expect(prisma.agentMode.findFirst).toHaveBeenCalledTimes(1);
+    expect(prisma.agentMode.findFirst).toHaveBeenCalledWith(
+      expect.objectContaining({ where: { id: 'm1', userId: 'u1' } }),
+    );
+  });
+
+  it('切模式：running / queued / waiting_approval → CONVERSATION_BUSY(409)，不写库', async () => {
+    for (const status of ['running', 'queued', 'waiting_approval']) {
+      prisma.conversation.findUniqueOrThrow.mockResolvedValue({ status });
+      await expect(
+        service.update('conv-1', 'tenant-1', { modeId: 'm1' }),
+      ).rejects.toMatchObject({
+        errCode: ErrorCodes.CONVERSATION_BUSY.code,
+        status: 409,
+      });
+    }
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
+    // 置顶 / 重命名不受忙碌限制，也不查状态
+    prisma.conversation.findUniqueOrThrow.mockClear();
+    await service.update('conv-1', 'tenant-1', { pinned: true });
+    expect(prisma.conversation.findUniqueOrThrow).not.toHaveBeenCalled();
+  });
+
+  it('切到不属于该用户的模式 → MODE_NOT_FOUND(404)', async () => {
+    prisma.conversation.findUniqueOrThrow.mockResolvedValue({ status: 'idle' });
+    prisma.agentMode.findFirst.mockResolvedValue(null);
+    await expect(
+      service.update('conv-1', 'tenant-1', { modeId: 'ghost' }),
+    ).rejects.toMatchObject({ errCode: ErrorCodes.MODE_NOT_FOUND.code });
+    expect(prisma.conversation.update).not.toHaveBeenCalled();
   });
 
   it('别人的 / 已删除的会话：置顶、重命名与删除都 404，不写库', async () => {

@@ -167,10 +167,12 @@ test('技能安装与调用、附件、MCP 工具与 App 卡片、/skills add', 
   // 对话 3：MCP App 卡片——在 spark-mcp:// 沙箱里渲染，收到工具结果，并能自己回调工具
   await newChat(page);
   await sendAndWait(page, '调用 e2e 连接器的 show_card 工具，然后只回复「卡片已展示」。');
-  const card = page.frameLocator('iframe[title="e2e app"]').frameLocator('iframe');
+  // 卡片 iframe 的 title 走 i18n（extensions.mcp.app.frameTitle），e2e 固定 zh-CN →「<连接器名> 应用」
+  const cardFrame = 'iframe[title="e2e 应用"]';
+  const card = page.frameLocator(cardFrame).frameLocator('iframe');
   await expect(card.getByText('APP-RESULT:card-data-77')).toBeVisible({ timeout: 30_000 });
   await expect(card.getByText('APP-CALL:mcp-secret-99')).toBeVisible({ timeout: 30_000 });
-  const src = await page.locator('iframe[title="e2e app"]').getAttribute('src');
+  const src = await page.locator(cardFrame).getAttribute('src');
   expect(src).toMatch(/^spark-mcp:\/\/m-[a-f0-9]{16}\//);
   await page.screenshot({ path: join(screens, '8b-mcp-app.png') });
 

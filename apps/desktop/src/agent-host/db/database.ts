@@ -128,6 +128,53 @@ const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE conversation ADD COLUMN pinned_at INTEGER;
   `,
+  // v7：agent 模式（对应 backend 的 AgentMode；JSON 列存 TEXT）+ 会话所选模式（NULL = 通用模式）。
+  // 删模式时由 ModeStore 把引用它的会话 mode_id 置空，不用外键级联
+  `
+  CREATE TABLE agent_mode (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    system_prompt TEXT NOT NULL,
+    tool_names TEXT NOT NULL DEFAULT '[]',
+    mcp_server_ids TEXT NOT NULL DEFAULT '[]',
+    skill_names TEXT NOT NULL DEFAULT '[]',
+    default_model TEXT,
+    default_thinking_level TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  ALTER TABLE conversation ADD COLUMN mode_id TEXT;
+  `,
+  // v8：通用模式（mode_id 为 NULL 的会话）的用户覆盖：单行表，id 恒为 1；没有行 = 全用默认。
+  // system_prompt 为 NULL = 用 core 的 GENERAL_MODE_PROMPT
+  `
+  CREATE TABLE general_mode (
+    id INTEGER PRIMARY KEY CHECK (id = 1),
+    system_prompt TEXT,
+    default_model TEXT,
+    default_thinking_level TEXT,
+    updated_at INTEGER NOT NULL
+  );
+  `,
+  // v9：平台片段（{{platform.xxx}}）的用户改写：一行一个片段，id 为 core 的 PROMPT_FRAGMENT_IDS 之一；
+  // 没有行 = 用 core 默认正文（恢复默认即删行）
+  `
+  CREATE TABLE prompt_fragment (
+    id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  `,
+  // v10：用户自建片段（{{custom.xxx}}）：id 创建后不可改，正文 / 显示名可改；仍被模式或通用提示词引用时不能删
+  `
+  CREATE TABLE custom_prompt_fragment (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 export type Db = DatabaseSync;

@@ -27,6 +27,7 @@ import { ScrollArea } from "@/components/ui/scroll-area";
 import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import {
+  type AgentMode,
   getConversationTokenUsage,
   type MessageAttachment,
   type SkillKind,
@@ -46,6 +47,7 @@ import { isAskUserApproval, QuestionPanel } from "./question-panel";
 import { ChatMessage } from "./chat-message";
 import { DayDivider } from "./day-divider";
 import { MediaGroup } from "./media-card";
+import { ModeSwitcher } from "./mode-switcher";
 import { ModelSwitcher } from "./model-switcher";
 import { PreviewCard } from "./preview-card";
 import { SandboxStatusButton } from "./sandbox-panel";
@@ -79,6 +81,9 @@ export function ChatThread({
   onSend,
   onStop,
   stopping,
+  mode,
+  onModeChange,
+  modeSwitching,
   model,
   onModelChange,
   thinkingLevel,
@@ -107,6 +112,11 @@ export function ChatThread({
   onStop: () => void;
   /** 停止指令请求中（HTTP 在途）：按钮转圈并禁用，防重复点击 */
   stopping: boolean;
+  /** 当前会话的模式；null = 通用模式（全部技能可用） */
+  mode: AgentMode | null;
+  onModeChange: (modeId: string | null) => void;
+  /** 模式切换请求在途：切换器禁用防重复点击 */
+  modeSwitching: boolean;
   model: string;
   onModelChange: (model: string) => void;
   /** 思考深度（对当前模型生效的档位） */
@@ -126,8 +136,10 @@ export function ChatThread({
   const [dragging, setDragging] = useState(false);
   const attachmentsBlocked =
     attachments.uploading || attachments.items.some((it) => it.status === "error");
+  // 历史加载中不许发：基底随后到达会重置实时增量、把状态同步成 idle，乐观气泡与运行态会丢
   const canSend =
     !busy &&
+    !isLoading &&
     !attachmentsBlocked &&
     (draft.trim().length > 0 || attachments.ready.length > 0);
   // 滚动编排：发送后把这条消息顶到视口顶部，回复在其下方生长而视图不动；
@@ -135,12 +147,16 @@ export function ChatThread({
   const { contentRef, spacerRef, atLatest, armAnchor, jumpToLatest } =
     useChatScroll(items, conversationId);
 
-  // 可用命令（/ 自动补全）
-  const { data: commands = [] } = useQuery({
+  // 可用命令（/ 自动补全）：有模式时只列模式技能集内的；通用模式全列。
+  // 不在集内的技能硬敲进来当普通文本（后端同样不识别）
+  const { data: allCommands = [] } = useQuery({
     queryKey: ["commands"],
     queryFn: listCommands,
     staleTime: 5 * 60_000,
   });
+  const commands = mode
+    ? allCommands.filter((c) => mode.skillNames.includes(c.name))
+    : allCommands;
 
   // 正在输入命令名（以 / 开头且还没空格）→ 弹补全
   const cmdPrefix =
@@ -434,7 +450,10 @@ export function ChatThread({
 
           {/* 命令补全面板（输入 / 时浮在输入框上方，按分类 Built-in/GitHub 分组）*/}
           {showCmdMenu && (
-            <div className="absolute bottom-full mb-2 max-h-72 w-full overflow-y-auto rounded-xl border bg-popover p-1.5 shadow-lg">
+            <div
+              data-testid="command-menu"
+              className="absolute bottom-full mb-2 max-h-72 w-full overflow-y-auto rounded-xl border bg-popover p-1.5 shadow-lg"
+            >
               {groupedKinds.map(([kind, cmds]) => (
                 <div key={kind}>
                   <div className="px-2 py-1 text-[11px] font-medium tracking-wide text-muted-foreground uppercase">
@@ -501,9 +520,14 @@ export function ChatThread({
               // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
               className="max-h-40 min-h-0 resize-none border-0 bg-transparent px-4 pt-3.5 pb-1.5 text-base shadow-none focus-visible:border-0 focus-visible:ring-0 md:text-sm dark:bg-transparent"
             />
-            {/* 工具条：左侧附件 + 模型切换 + 思考深度，右侧发送 */}
+            {/* 工具条：左侧模式 + 附件 + 模型切换 + 思考深度，右侧发送 */}
             <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
               <div className="flex min-w-0 items-center gap-1">
+                <ModeSwitcher
+                  value={mode?.id ?? null}
+                  onChange={onModeChange}
+                  disabled={busy || modeSwitching}
+                />
                 <Button
                   variant="ghost"
                   size="icon-sm"

@@ -2,6 +2,7 @@
  * 拷自 Web 的聊天组件所用的数据接口（同名同形），桌面端改由 agent-host RPC 提供。
  * Web 原版见 apps/frontend/src/lib/api.ts；这里只保留聊天界面实际用到的部分。
  */
+import type { AgentModeInput, GeneralModeSettings } from '@agent-test/agent-core/modes/mode.schema';
 import type { DirEntry, FilePreview, StoredMessage } from '../../../shared/rpc';
 import { z } from 'zod';
 import { agent } from './agent-client';
@@ -202,6 +203,52 @@ export const createCustomSkill = (input: CustomSkillInput & { name: string }) =>
 
 export const updateCustomSkill = (name: string, input: CustomSkillInput) =>
   agent.call('skills.saveCustom', { name, ...input, mode: 'edit' });
+
+// ——— agent 模式（同 Web lib/api.ts 的 listModes 等；数据存在本机 SQLite）———
+export type { AgentMode, AgentModeInput, GeneralModeSettings } from '@agent-test/agent-core/modes/mode.schema';
+export type { GeneralModeView, ModeCatalog, ModePreview, PromptFragmentView } from '../../../shared/rpc';
+
+export const MODES_QUERY_KEY = ['modes'] as const;
+export const MODE_CATALOG_KEY = ['mode-catalog'] as const;
+/** 挂在 MODES_QUERY_KEY 下：modes-changed 事件按前缀一起失效 */
+export const GENERAL_MODE_KEY = ['modes', 'general'] as const;
+/** 同样挂在 MODES_QUERY_KEY 下：片段改写广播 modes-changed，按前缀失效 */
+export const PROMPT_FRAGMENTS_KEY = ['modes', 'fragments'] as const;
+
+export const listModes = () => agent.call('modes.list', {});
+
+export const createMode = (input: AgentModeInput) => agent.call('modes.create', input);
+
+export const updateMode = (id: string, input: AgentModeInput) => agent.call('modes.update', { id, ...input });
+
+export const deleteMode = (id: string) => agent.call('modes.delete', { id });
+
+export const getModeCatalog = () => agent.call('modes.catalog', {});
+
+/** 用编辑中的内容算最终系统提示与不可用清单（不落库） */
+export const previewMode = (input: AgentModeInput) => agent.call('modes.preview', input);
+
+/** 通用模式设置（生效提示词 / 是否自定义 / 默认提示词 / 默认模型） */
+export const getGeneralMode = () => agent.call('modes.general.get', {});
+
+/** 整份覆盖；systemPrompt 为 null = 恢复默认提示词 */
+export const updateGeneralMode = (input: GeneralModeSettings) => agent.call('modes.general.update', input);
+
+export const previewGeneralMode = (systemPrompt: string | null) => agent.call('modes.general.preview', { systemPrompt });
+
+/** 内置 4 个平台片段（生效正文 / 默认正文 / 是否改写过），其后是自建片段 */
+export const listPromptFragments = () => agent.call('modes.fragments.list', {});
+
+/** 改片段：内置只改 text（null 或与默认相同 = 恢复默认）；自建可改 title / text */
+export const updatePromptFragment = (id: string, patch: { text?: string | null; title?: string }) =>
+  agent.call('modes.fragments.update', { id, ...patch });
+
+/** 新建自建片段（id 为 custom.<名字>，创建后不可改） */
+export const createPromptFragment = (input: { id: string; title: string; text: string }) =>
+  agent.call('modes.fragments.create', input);
+
+/** 删除自建片段；仍被模式或通用提示词引用时 host 拒绝并在报错里列出引用处 */
+export const deletePromptFragment = (id: string) => agent.call('modes.fragments.delete', { id });
 
 /** 解析 install 落库的 source 串（github:owner/repo#path@ref），供「更新」按钮重装同源（同 Web） */
 export function parseGithubSource(source: string): InstallSkillInput | null {
