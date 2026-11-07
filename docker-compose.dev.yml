@@ -20,10 +20,24 @@ services:
     image: redis/redis-stack-server:latest
     ports:
       - "6379:6379"
+    environment:
+      # AOF 每秒刷盘：崩溃/OOM 最多丢约 1 秒（只靠 RDB 时丢上次快照后的全部改动）。
+      # maxmemory + noeviction：满了写入直接报错，而不是悄悄淘汰 checkpoint；
+      # 3gb ≈ 历史高峰日写入量的 3 倍（旧 checkpoint 24h 过期，见 LatestPersistentRedisSaver）。
+      REDIS_ARGS: "--appendonly yes --appendfsync everysec --maxmemory 3gb --maxmemory-policy noeviction"
+    # OOM 只杀这个容器，不再拖垮整个 Docker VM（2026-11-06 批量删除触发 BGSAVE fork 撑爆 8G VM）
+    mem_limit: 4g
+    # 镜像默认 StopTimeout=1s，停容器时来不及落盘就被强杀
+    stop_grace_period: 60s
     volumes:
-      - ./.docker-data/redis:/data
+      # named volume：bind mount 下 RDB/AOF「写新文件再 rename」会让 Docker VM 攥住旧文件不放，
+      # 曾 12 小时泄漏 119G 磁盘。旧数据仍在 ./.docker-data/redis（已不再使用，可手动删除）。
+      - redis-data:/data
     healthcheck:
       test: ["CMD", "redis-cli", "ping"]
       interval: 5s
       timeout: 3s
       retries: 20
+
+volumes:
+  redis-data:
