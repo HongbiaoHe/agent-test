@@ -34,10 +34,21 @@ export const errors = {
   },
   modes: {
     notFound: 'Mode not found: {{id}}',
-    unknownPlaceholder: 'The prompt contains unknown placeholders: {{ids}} (only platform.* fragments can be referenced)',
+    unknownPlaceholder:
+      'The prompt contains unknown placeholders: {{ids}} (only platform.* fragments and existing custom.* fragments can be referenced)',
     fragmentNotFound: 'Fragment not found: {{id}}',
     fragmentInvalidVariable: 'Fragments can only use {{variable}}; not supported: {{vars}}',
     fragmentTextLength: 'Fragment text must be non-empty and at most {{max}} characters',
+    fragmentInvalidId: 'Invalid fragment id: {{id}} (expected custom. followed by 1–48 lowercase letters, digits or underscores)',
+    fragmentExists: 'Fragment already exists: {{id}}',
+    fragmentTitleLength: 'Fragment name must be non-empty and at most {{max}} characters',
+    fragmentBuiltinTitle: 'Built-in fragment {{id}} has no name to change',
+    fragmentBuiltinDelete: "Built-in fragment {{id}} can't be deleted, only restored to default",
+    fragmentCustomNoDefault: 'Custom fragment {{id}} has no default text; its text cannot be empty',
+    fragmentInUse: "Fragment {{id}} is still referenced and can't be deleted: {{refs}}",
+    fragmentRefMode: 'mode "{{name}}"',
+    fragmentRefGeneral: 'General mode',
+    fragmentRefSeparator: ', ',
   },
   run: {
     busy: 'This chat is running. Wait for it to finish or click Stop',

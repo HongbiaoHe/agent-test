@@ -1,6 +1,6 @@
 /**
  * 设置 → 模式（对应 Web /settings/modes）：通用卡片 + 列表 + 新建 / 从通用复制 / 编辑 / 删除，编辑器里可预览最终提示词；
- * 下方是平台片段（改写内置 {{platform.xxx}} 的正文）。
+ * 下方是平台片段（改写内置 {{platform.xxx}} 的正文；新建 / 编辑 / 删除自建的 {{custom.xxx}}）。
  */
 import { useQuery } from '@tanstack/react-query';
 import { Copy, Plus } from 'lucide-react';

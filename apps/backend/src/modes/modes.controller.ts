@@ -11,6 +11,7 @@ import {
 import { CurrentUser } from '../auth/current-user.decorator';
 import { type AuthUser, JwtAuthGuard } from '../auth/jwt-auth.guard';
 import {
+  CreateFragmentDto,
   FragmentInputDto,
   GeneralModeInputDto,
   GeneralModePreviewDto,
@@ -27,8 +28,11 @@ import { ModesService } from './modes.service';
  *   GET    /modes/general  → 通用模式设置（生效提示词 / 是否自定义 / 默认提示词 / 默认模型与档位）
  *   PUT    /modes/general  → 整体替换通用模式设置（systemPrompt null = 恢复默认）
  *   POST   /modes/general/preview → 预览通用模式的最终系统提示
- *   GET    /modes/fragments → 平台片段列表（生效正文 / 默认正文 / 是否改写过）
- *   PUT    /modes/fragments/:fragmentId → 改写片段正文（text null 或与默认相同 = 恢复默认）
+ *   GET    /modes/fragments → 片段列表：内置（生效正文 / 默认正文 / 是否改写过）+ 自建（按创建时间）
+ *   POST   /modes/fragments → 新建自建片段 custom.<名字>（id 已存在 → 409）
+ *   PUT    /modes/fragments/:fragmentId → 内置：改写正文（text null 或与默认相同 = 恢复默认）；
+ *                                         自建：改 title / 正文
+ *   DELETE /modes/fragments/:fragmentId → 删自建片段（内置 → 400；仍被模式或通用提示词引用 → 409）
  *   PUT    /modes/:id      → 整体更新
  *   DELETE /modes/:id      → 删除（引用它的会话回到通用模式）
  */
@@ -85,6 +89,14 @@ export class ModesController {
     return this.modes.listFragments(user.userId);
   }
 
+  @Post('fragments')
+  createFragment(
+    @Body() dto: CreateFragmentDto,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.modes.createFragment(user.userId, dto);
+  }
+
   @Put('fragments/:fragmentId')
   updateFragment(
     @Param('fragmentId') fragmentId: string,
@@ -92,6 +104,14 @@ export class ModesController {
     @CurrentUser() user: AuthUser,
   ) {
     return this.modes.updateFragment(user.userId, fragmentId, dto);
+  }
+
+  @Delete('fragments/:fragmentId')
+  removeFragment(
+    @Param('fragmentId') fragmentId: string,
+    @CurrentUser() user: AuthUser,
+  ) {
+    return this.modes.removeFragment(user.userId, fragmentId);
   }
 
   @Put(':id')

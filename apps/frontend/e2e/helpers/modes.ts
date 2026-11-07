@@ -71,3 +71,22 @@ export async function resetFragments(page: Page): Promise<void> {
     if (f.isCustom) await setFragment(page, f.id, null);
   }
 }
+
+/** 用接口新建自建片段（id 形如 custom.<名字>）。 */
+export function createCustomFragment(
+  page: Page,
+  input: { id: string; title: string; text: string },
+): Promise<PromptFragment> {
+  return apiOk<PromptFragment>(page, "/modes/fragments", { method: "POST", body: input });
+}
+
+/**
+ * 清理：删掉全部自建片段。要排在删模式、重置通用设置之后，否则会被引用保护（409）挡住。
+ */
+export async function deleteAllCustomFragments(page: Page): Promise<void> {
+  for (const f of await listFragments(page)) {
+    if (f.kind === "custom") {
+      await apiOk(page, `/modes/fragments/${encodeURIComponent(f.id)}`, { method: "DELETE" });
+    }
+  }
+}

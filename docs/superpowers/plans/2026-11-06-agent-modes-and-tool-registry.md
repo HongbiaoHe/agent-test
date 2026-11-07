@@ -761,4 +761,5 @@ ALTER TABLE conversation ADD COLUMN mode_id TEXT;
 
 - **2026-11-07 通用模式可编辑**（推翻决策 1 中「通用模式不落库」）：每个用户可覆盖通用模式的提示词与默认模型 / 思考档位，可恢复默认；工具、连接器、技能仍恒为「全部，含以后新增」。web 存 `GeneralModeSetting`，desktop 存 `general_mode` 单行表；core 由 `resolveMode` 的 `generalPrompt` 接收。
 - **2026-11-07 平台片段可编辑**（推翻决策 2 中「用户不能自定义片段」）：只能改写内置 4 个片段的正文、恢复默认，不能新增；按用户各自覆盖。片段正文里唯一可用的变量是 `{{skills_dir}}`（技能库目录，随环境替换），其余 `{{xxx}}`（含片段互相引用）保存时拒绝。core 提供 `PROMPT_FRAGMENT_DEFAULTS` / `renderFragment` / `findInvalidFragmentVariables`，`resolveMode` 新增 `fragmentOverrides`。web 存 `PromptFragmentOverride`，desktop 存 `prompt_fragment`。
+- **2026-11-07 自定义片段**（推翻上一条里的「不能新增」）：用户可新建 `custom.<小写字母数字下划线 1～48>` 片段，模式与通用提示词用 `{{custom.xxx}}` 引用；id 创建后不可改，只改显示名与正文；仍被模式或通用提示词引用时拒绝删除并列出引用处。正文同样只允许 `{{skills_dir}}`。core 提供 `CustomFragmentIdSchema` / `findFragmentReferences`，`findUnknownPlaceholders` 接收自定义 id，`resolveMode` 新增 `customFragments`。web 存 `CustomPromptFragment`，desktop 存 `custom_prompt_fragment`。
 - **2026-11-07 测试**：两端都有 Playwright 端到端套件（web `apps/frontend/e2e`，desktop `apps/desktop/e2e`），改完要两端都跑。

@@ -341,8 +341,8 @@ function EditorForm({
             </div>
           )}
           <p className="text-xs text-muted-foreground">
-            Placeholders are expanded with platform-defined text when the agent
-            runs. Unknown placeholders are rejected on save.
+            Placeholders are expanded with the fragment text (see Prompt
+            fragments) when the agent runs. Unknown placeholders are rejected on save.
           </p>
         </div>
 

@@ -1,9 +1,18 @@
 "use client";
 
-import { useQuery } from "@tanstack/react-query";
-import { Pencil } from "lucide-react";
+import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
+import { Loader2, Pencil, Plus, Trash2 } from "lucide-react";
 import { useState } from "react";
 
+import {
+  AlertDialog,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
@@ -13,28 +22,36 @@ import {
   TooltipContent,
   TooltipTrigger,
 } from "@/components/ui/tooltip";
-import { listFragments, type PromptFragment } from "@/lib/api";
+import { deleteFragment, listFragments, type PromptFragment } from "@/lib/api";
 
-import { FragmentEditor, FRAGMENTS_QUERY_KEY } from "./fragment-editor";
+import { FragmentEditor, type FragmentEditorTarget, FRAGMENTS_QUERY_KEY } from "./fragment-editor";
+import { MODE_CATALOG_KEY } from "./mode-editor";
 
 /**
- * 「Platform fragments」区块：内置 4 个片段（不能新增），每行 id + 正文首行 + 改写标记 + 编辑。
- * 片段被所有引用它的模式共用；改写只对当前用户生效。
+ * 「Prompt fragments」区块：内置 4 个片段（可改写 / 恢复默认）在前，用户自建片段（可新建 / 编辑 / 删除）在后。
+ * 片段被所有引用它的模式共用；改写与自建都只对当前用户生效。
  */
 export function FragmentSection() {
-  const [editing, setEditing] = useState<PromptFragment | null>(null);
+  const [editor, setEditor] = useState<FragmentEditorTarget | null>(null);
+  const [pendingDelete, setPendingDelete] = useState<PromptFragment | null>(null);
   const query = useQuery({ queryKey: FRAGMENTS_QUERY_KEY, queryFn: listFragments });
 
   return (
-    <section className="space-y-3" aria-labelledby="platform-fragments-title">
-      <div className="space-y-1">
-        <h3 id="platform-fragments-title" className="text-base font-semibold">
-          Platform fragments
-        </h3>
-        <p className="text-sm text-muted-foreground">
-          The text each <code className="font-mono text-xs">{"{{platform.*}}"}</code> placeholder
-          expands to. Your edits apply to every mode that uses the fragment, and only for you.
-        </p>
+    <section className="space-y-3" aria-labelledby="prompt-fragments-title">
+      <div className="flex items-start justify-between gap-4">
+        <div className="space-y-1">
+          <h3 id="prompt-fragments-title" className="text-base font-semibold">
+            Prompt fragments
+          </h3>
+          <p className="text-sm text-muted-foreground">
+            The text each <code className="font-mono text-xs">{"{{platform.*}}"}</code> or{" "}
+            <code className="font-mono text-xs">{"{{custom.*}}"}</code> placeholder expands to.
+            Edit the built-in ones or add your own; changes apply only to you.
+          </p>
+        </div>
+        <Button variant="outline" className="shrink-0" onClick={() => setEditor({ mode: "create" })}>
+          <Plus /> New fragment
+        </Button>
       </div>
 
       {query.isLoading ? (
@@ -48,16 +65,23 @@ export function FragmentSection() {
       ) : (
         <Card className="py-0">
           <CardContent className="px-0">
+            {/* 后端已按「内置在前、自建按创建时间在后」排好序 */}
             <ul className="divide-y">
               {query.data.map((f) => (
-                <FragmentRow key={f.id} fragment={f} onEdit={() => setEditing(f)} />
+                <FragmentRow
+                  key={f.id}
+                  fragment={f}
+                  onEdit={() => setEditor({ mode: "edit", fragment: f })}
+                  onDelete={f.kind === "custom" ? () => setPendingDelete(f) : undefined}
+                />
               ))}
             </ul>
           </CardContent>
         </Card>
       )}
 
-      <FragmentEditor fragment={editing} onClose={() => setEditing(null)} />
+      <FragmentEditor target={editor} onClose={() => setEditor(null)} />
+      <DeleteFragmentDialog fragment={pendingDelete} onClose={() => setPendingDelete(null)} />
     </section>
   );
 }
@@ -65,9 +89,11 @@ export function FragmentSection() {
 function FragmentRow({
   fragment,
   onEdit,
+  onDelete,
 }: {
   fragment: PromptFragment;
   onEdit: () => void;
+  onDelete?: () => void;
 }) {
   const firstLine = fragment.text.trim().split("\n")[0] ?? "";
   return (
@@ -77,26 +103,118 @@ function FragmentRow({
     >
       <div className="min-w-0 flex-1 space-y-1">
         <div className="flex flex-wrap items-center gap-2">
-          <code className="font-mono text-sm font-medium">{fragment.id}</code>
+          {fragment.title && (
+            <span className="truncate text-sm font-medium">{fragment.title}</span>
+          )}
+          <code
+            className={
+              fragment.title
+                ? "font-mono text-xs text-muted-foreground"
+                : "font-mono text-sm font-medium"
+            }
+          >
+            {fragment.id}
+          </code>
           {fragment.isCustom && <Badge variant="outline">Customized</Badge>}
         </div>
         <p className="line-clamp-1 text-sm text-muted-foreground">{firstLine}</p>
       </div>
-      <Tooltip>
-        <TooltipTrigger
-          render={
-            <Button
-              variant="ghost"
-              size="icon-sm"
-              aria-label={`Edit ${fragment.id}`}
-              onClick={onEdit}
-            />
-          }
-        >
-          <Pencil />
-        </TooltipTrigger>
-        <TooltipContent>Edit</TooltipContent>
-      </Tooltip>
+      <div className="flex shrink-0 items-center gap-1">
+        <Tooltip>
+          <TooltipTrigger
+            render={
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={`Edit ${fragment.id}`}
+                onClick={onEdit}
+              />
+            }
+          >
+            <Pencil />
+          </TooltipTrigger>
+          <TooltipContent>Edit</TooltipContent>
+        </Tooltip>
+        {onDelete && (
+          <Tooltip>
+            <TooltipTrigger
+              render={
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={`Delete ${fragment.id}`}
+                  onClick={onDelete}
+                />
+              }
+            >
+              <Trash2 />
+            </TooltipTrigger>
+            <TooltipContent>Delete</TooltipContent>
+          </Tooltip>
+        )}
+      </div>
     </li>
+  );
+}
+
+/**
+ * 删除自建片段的确认框。仍被模式或通用提示词引用时后端 409，message 列出引用处：
+ * 弹窗不关、就地显示（全局 toast 也会弹一次）。
+ */
+function DeleteFragmentDialog({
+  fragment,
+  onClose,
+}: {
+  fragment: PromptFragment | null;
+  onClose: () => void;
+}) {
+  const qc = useQueryClient();
+  const deleteMut = useMutation({
+    mutationFn: (id: string) => deleteFragment(id),
+    onSuccess: () => {
+      void qc.invalidateQueries({ queryKey: FRAGMENTS_QUERY_KEY });
+      // 插入按钮里不再有它
+      void qc.invalidateQueries({ queryKey: MODE_CATALOG_KEY });
+      onClose();
+    },
+  });
+
+  return (
+    <AlertDialog
+      open={fragment !== null}
+      onOpenChange={(open) => {
+        if (open || deleteMut.isPending) return;
+        deleteMut.reset();
+        onClose();
+      }}
+    >
+      <AlertDialogContent size="sm">
+        <AlertDialogHeader>
+          <AlertDialogTitle>Delete fragment?</AlertDialogTitle>
+          <AlertDialogDescription>
+            <code className="block font-mono text-xs break-all text-foreground">
+              {fragment?.id}
+            </code>
+            Modes can no longer reference it. This can&apos;t be undone.
+          </AlertDialogDescription>
+        </AlertDialogHeader>
+        {deleteMut.isError && (
+          <p className="text-center text-sm text-destructive" role="alert">
+            {deleteMut.error instanceof Error ? deleteMut.error.message : "Delete failed"}
+          </p>
+        )}
+        <AlertDialogFooter>
+          <AlertDialogCancel disabled={deleteMut.isPending}>Cancel</AlertDialogCancel>
+          <Button
+            variant="destructive"
+            disabled={deleteMut.isPending}
+            onClick={() => fragment && deleteMut.mutate(fragment.id)}
+          >
+            {deleteMut.isPending && <Loader2 className="animate-spin" />}
+            Delete
+          </Button>
+        </AlertDialogFooter>
+      </AlertDialogContent>
+    </AlertDialog>
   );
 }

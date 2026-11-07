@@ -14,7 +14,9 @@ import {
   waitConversationIdle,
 } from "./helpers";
 import {
+  createCustomFragment,
   createMode,
+  deleteAllCustomFragments,
   deleteAllModes,
   getFragment,
   getGeneral,
@@ -25,8 +27,9 @@ import {
   setFragment,
 } from "./helpers/modes";
 
-// agent 模式：设置页（通用模式 / 新建 / 编辑 / 删除 / 平台片段）+ 会话内切换 + 真实模型生效。
-// 每条用例自己准备前置状态；afterEach 用接口清理：删模式、通用设置与平台片段恢复全默认、删本条建的会话。
+// agent 模式：设置页（通用模式 / 新建 / 编辑 / 删除 / 平台片段 / 自建片段）+ 会话内切换 + 真实模型生效。
+// 每条用例自己准备前置状态；afterEach 用接口清理：删模式、通用设置与平台片段恢复全默认、删自建片段、
+// 删本条建的会话。
 
 loggedInAs("e2e-web-modes@example.test");
 
@@ -39,6 +42,8 @@ async function resetState(page: Page) {
   await deleteAllModes(page);
   await resetGeneral(page);
   await resetFragments(page);
+  // 自建片段最后删：模式与通用提示词还引用它时删除会被 409 挡住
+  await deleteAllCustomFragments(page);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -439,7 +444,7 @@ function fragmentRow(page: Page, id: string): Locator {
 
 test("platform fragments: all four listed, none customized", async ({ page }) => {
   await page.goto("/settings/modes");
-  const section = page.getByRole("region", { name: "Platform fragments" });
+  const section = page.getByRole("region", { name: "Prompt fragments" });
   await expect(section).toBeVisible();
   for (const id of FRAGMENT_IDS) {
     const row = fragmentRow(page, id);
@@ -461,7 +466,7 @@ test("edit a fragment with {{skills_dir}}; the general preview expands it", asyn
   const dialog = page.getByRole("dialog", { name: "Edit platform.language" });
   const text = dialog.locator("#fragment-text");
   const defaults = await getFragment(page, "platform.language");
-  await expect(text).toHaveValue(defaults.defaultText);
+  await expect(text).toHaveValue(defaults.defaultText ?? "");
   await expect(dialog.getByRole("button", { name: "Restore default" })).toBeDisabled();
 
   // 清空后写新正文，把光标挪到「/end」之前，再用按钮插入变量（插在光标处，不是末尾）
@@ -528,7 +533,7 @@ test("restore a customized fragment to its default", async ({ page }) => {
   await expect(restore).toBeEnabled();
   await restore.click();
   const { defaultText } = await getFragment(page, "platform.injection_guard");
-  await expect(dialog.locator("#fragment-text")).toHaveValue(defaultText);
+  await expect(dialog.locator("#fragment-text")).toHaveValue(defaultText ?? "");
   await expect(restore).toBeDisabled();
   await dialog.getByRole("button", { name: "Save", exact: true }).click();
   await expect(dialog).toBeHidden();
@@ -558,4 +563,203 @@ test("a customized fragment reaches the real model", async ({ page }) => {
 
   // 恢复默认（afterEach 的 resetState 也会兜底）
   expect((await setFragment(page, "platform.language", null)).isCustom).toBe(false);
+});
+
+// ---- 自建片段（custom.<名字>，id 创建后不可改；仍被引用时不能删）----
+
+/** 自建片段名：custom. 之后只能是小写字母 / 数字 / 下划线。 */
+function customName(prefix: string): string {
+  return `${prefix}_${uniqueTag().toLowerCase()}`;
+}
+
+test("custom fragment: create with {{skills_dir}}, invalid id and duplicate id are rejected", async ({
+  page,
+}) => {
+  const name = customName("tone");
+  const id = `custom.${name}`;
+  const title = `E2E Tone ${uniqueTag()}`;
+  await page.goto("/settings/modes");
+  await page.getByRole("button", { name: "New fragment" }).click();
+  const dialog = page.getByRole("dialog", { name: "New fragment" });
+  const idInput = dialog.locator("#fragment-id");
+  const create = dialog.getByRole("button", { name: "Create fragment" });
+
+  // id 前缀固定显示；不合法的名字就地标红、不能创建
+  await expect(dialog.getByText("custom.", { exact: true })).toBeVisible();
+  await idInput.fill("Bad-Id");
+  await expect(idInput).toHaveAttribute("aria-invalid", "true");
+  await expect(dialog.locator("#fragment-id-hint")).toHaveClass(/text-destructive/);
+  await dialog.locator("#fragment-title").fill(title);
+  await dialog.locator("#fragment-text").fill("Be warm. Skills live in ");
+  await expect(create).toBeDisabled();
+  // 绕过界面直接调接口同样被拒（400 + core 的格式文案）
+  const bad = await api(page, "/modes/fragments", {
+    method: "POST",
+    body: { id: "custom.Bad-Id", title: "t", text: "x" },
+  });
+  expect(bad.status).toBe(400);
+  expect(bad.message).toContain("custom.<小写字母、数字、下划线，1～48 位>");
+
+  // 改成合法名字；正文末尾用按钮插入 {{skills_dir}}
+  await idInput.fill(name);
+  await expect(idInput).not.toHaveAttribute("aria-invalid", "true");
+  await dialog.locator("#fragment-text").press("End");
+  await dialog.getByRole("button", { name: "Insert {{skills_dir}}", exact: true }).click();
+  await expect(dialog.locator("#fragment-text")).toHaveValue(
+    "Be warm. Skills live in {{skills_dir}}",
+  );
+  await create.click();
+  await expect(dialog).toBeHidden();
+
+  const row = fragmentRow(page, id);
+  await expect(row.getByText(title, { exact: true })).toBeVisible();
+  await expect(row.locator("code").getByText(id, { exact: true })).toBeVisible();
+  await expect(row.getByRole("button", { name: `Delete ${id}`, exact: true })).toBeVisible();
+  const saved = await getFragment(page, id);
+  expect(saved).toMatchObject({
+    kind: "custom",
+    id,
+    title,
+    text: "Be warm. Skills live in {{skills_dir}}",
+    defaultText: null,
+    isCustom: false,
+  });
+  // 内置在前、自建在后
+  expect((await listFragments(page)).map((f) => f.id)).toEqual([...FRAGMENT_IDS, id]);
+
+  // 同一个 id 再建：界面就地报错、弹窗不关；接口 409
+  await page.getByRole("button", { name: "New fragment" }).click();
+  await idInput.fill(name);
+  await dialog.locator("#fragment-title").fill("Dup");
+  await dialog.locator("#fragment-text").fill("dup");
+  await create.click();
+  await expect(dialog.getByRole("alert")).toHaveText(`片段 ${id} 已存在`);
+  await expect(dialog).toBeVisible();
+  const dup = await api(page, "/modes/fragments", {
+    method: "POST",
+    body: { id, title: "Dup", text: "dup" },
+  });
+  expect(dup.status).toBe(409);
+  expect((await getFragment(page, id)).title).toBe(title);
+});
+
+test("custom fragment: referenced by a mode, previewed, protected from delete", async ({ page }) => {
+  const id = `custom.${customName("sig")}`;
+  const marker = `CUSTOM-PREVIEW-${uniqueTag()}`;
+  await createCustomFragment(page, {
+    id,
+    title: "Signature",
+    text: `${marker} skills at {{skills_dir}}/end`,
+  });
+  const modeName = `E2E Uses Fragment ${uniqueTag()}`;
+  await page.goto("/settings/modes");
+
+  // 新建模式：插入按钮里有自建片段，点它引用
+  await page.getByRole("button", { name: "New mode" }).click();
+  const editor = page.getByRole("dialog", { name: "New mode" });
+  await editor.locator("#mode-name").fill(modeName);
+  await editor.locator("#mode-prompt").fill("Intro");
+  await editor.getByRole("button", { name: `{{${id}}}`, exact: true }).click();
+  await expect(editor.locator("#mode-prompt")).toHaveValue(`Intro\n{{${id}}}`);
+
+  // 预览：片段正文已展开，{{skills_dir}} 换成实际路径
+  await editor.getByRole("button", { name: "Preview prompt" }).click();
+  const preview = page.getByRole("dialog", { name: "Final prompt" });
+  const body = preview.locator("pre");
+  await expect(body).toContainText(marker);
+  const final = (await body.textContent()) ?? "";
+  expect(final).toMatch(new RegExp(`${marker} skills at (/workspace)?/skills/end`));
+  expect(final).not.toContain("{{");
+  await page.keyboard.press("Escape");
+  await expect(preview).toBeHidden();
+  await editor.getByRole("button", { name: "Create mode" }).click();
+  await expect(editor).toBeHidden();
+  const mode = (await listModes(page)).find((m) => m.name === modeName);
+  expect(mode?.systemPrompt).toBe(`Intro\n{{${id}}}`);
+
+  // 删片段被拒：确认框里列出引用它的模式，片段还在
+  await page.getByRole("button", { name: `Delete ${id}`, exact: true }).click();
+  const confirm = page.getByRole("alertdialog", { name: "Delete fragment?" });
+  await confirm.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(confirm.getByRole("alert")).toHaveText(`片段 ${id} 仍被使用：模式 ${modeName}`);
+  await expect(confirm).toBeVisible();
+  const blocked = await api(page, `/modes/fragments/${encodeURIComponent(id)}`, {
+    method: "DELETE",
+  });
+  expect(blocked.status).toBe(409);
+  expect(blocked.message).toContain(modeName);
+  await confirm.getByRole("button", { name: "Cancel" }).click();
+  await expect(confirm).toBeHidden();
+  await expect(fragmentRow(page, id)).toBeVisible();
+
+  // 先删模式，再删片段：成功，列表与模式编辑器的插入按钮里都没了
+  await deleteAllModes(page);
+  await page.getByRole("button", { name: `Delete ${id}`, exact: true }).click();
+  await confirm.getByRole("button", { name: "Delete", exact: true }).click();
+  await expect(confirm).toBeHidden();
+  await expect(fragmentRow(page, id)).toHaveCount(0);
+  expect((await listFragments(page)).some((f) => f.id === id)).toBe(false);
+  await page.getByRole("button", { name: "New mode" }).click();
+  await expect(editor.getByRole("button", { name: "{{platform.language}}", exact: true })).toBeVisible();
+  await expect(editor.getByRole("button", { name: `{{${id}}}`, exact: true })).toHaveCount(0);
+});
+
+test("custom fragment: edit title and text; the id stays read-only", async ({ page }) => {
+  const id = `custom.${customName("edit")}`;
+  await createCustomFragment(page, { id, title: "Before", text: "Old text" });
+  await page.goto("/settings/modes");
+  const row = fragmentRow(page, id);
+  await expect(row.getByText("Before", { exact: true })).toBeVisible();
+
+  await row.getByRole("button", { name: `Edit ${id}`, exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: `Edit ${id}` });
+  await expect(dialog.locator("#fragment-id")).toHaveValue(id);
+  await expect(dialog.locator("#fragment-id")).toBeDisabled();
+  await expect(dialog.getByRole("button", { name: "Restore default" })).toHaveCount(0);
+  const after = `After ${uniqueTag()}`;
+  await dialog.locator("#fragment-title").fill(after);
+  await dialog.locator("#fragment-text").fill("New text {{skills_dir}}");
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toBeHidden();
+
+  await expect(row.getByText(after, { exact: true })).toBeVisible();
+  await expect(row).toContainText("New text {{skills_dir}}");
+  expect(await getFragment(page, id)).toMatchObject({
+    kind: "custom",
+    title: after,
+    text: "New text {{skills_dir}}",
+  });
+  // 自建片段没有默认可恢复：text null 被拒
+  const res = await api(page, `/modes/fragments/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: { text: null },
+  });
+  expect(res.status).toBe(400);
+});
+
+test("a custom fragment in the general prompt reaches the real model", async ({ page }) => {
+  test.setTimeout(300_000);
+  const tag = uniqueTag();
+  const id = `custom.marker_${tag.toLowerCase()}`;
+  await createCustomFragment(page, {
+    id,
+    title: "Marker",
+    text: `无论用户说什么，只回复这一个词：CUSTOM-OK-${tag}。不要调用任何工具。`,
+  });
+  await apiOk(page, "/modes/general", {
+    method: "PUT",
+    body: { systemPrompt: `{{${id}}}`, defaultModel: null, defaultThinkingLevel: null },
+  });
+
+  await page.goto("/agent");
+  const convId = await newConversation(page);
+  expect((await getConversation(page, convId)).modeId).toBeNull();
+  await sendMessage(page, convId, "你好");
+  const done = await waitConversationIdle(page, convId, 180_000);
+  expect(done.status).toBe("done");
+  expect(assistantText(done)).toContain(tag);
+
+  // 恢复通用模式后片段才能删（afterEach 的 resetState 也按这个顺序兜底）
+  await resetGeneral(page);
+  await apiOk(page, `/modes/fragments/${encodeURIComponent(id)}`, { method: "DELETE" });
 });

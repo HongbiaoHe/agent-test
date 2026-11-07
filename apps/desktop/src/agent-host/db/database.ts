@@ -165,6 +165,16 @@ const MIGRATIONS: readonly string[] = [
     updated_at INTEGER NOT NULL
   );
   `,
+  // v10：用户自建片段（{{custom.xxx}}）：id 创建后不可改，正文 / 显示名可改；仍被模式或通用提示词引用时不能删
+  `
+  CREATE TABLE custom_prompt_fragment (
+    id TEXT PRIMARY KEY,
+    title TEXT NOT NULL,
+    text TEXT NOT NULL,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 export type Db = DatabaseSync;

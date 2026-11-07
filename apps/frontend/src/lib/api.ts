@@ -1495,28 +1495,57 @@ export function previewGeneralMode(systemPrompt: string | null): Promise<ModePre
 }
 
 /**
- * GET /modes/fragments：平台片段（模式提示词里 `{{platform.xxx}}` 展开成的正文）。片段集合固定为内置 4 个；
- * 每个用户可以改写正文（只对自己生效），正文里唯一可用的变量是 `{{skills_dir}}`。
+ * GET /modes/fragments：提示词片段。两类：
+ * - 内置 `platform.*`（固定 4 个）：可改写正文（只对自己生效）、恢复默认，不能删；
+ * - 自建 `custom.<名字>`：id 创建后不可改，可改显示名与正文；仍被模式或通用提示词引用时不能删。
+ * 正文里唯一可用的变量是 `{{skills_dir}}`。列表里内置在前，自建按创建时间在后。
  */
 export interface PromptFragment {
-  /** 片段 id，如 platform.language */
+  kind: "builtin" | "custom";
+  /** 片段 id，如 platform.language / custom.tone */
   id: string;
-  /** 生效的正文：改写过的，或默认的 defaultText */
+  /** 自建片段的显示名；内置为 null */
+  title: string | null;
+  /** 生效的正文：内置为改写过的或默认的 defaultText */
   text: string;
-  /** 平台默认正文（「Restore default」回到它） */
-  defaultText: string;
-  /** 是否改写过 */
+  /** 内置片段的平台默认正文（「Restore default」回到它）；自建为 null */
+  defaultText: string | null;
+  /** 内置片段是否改写过；自建恒为 false */
   isCustom: boolean;
 }
+
+/** 自建片段 id 的前缀；名字只能用小写字母、数字、下划线，1～48 位（与后端 / core 一致）。 */
+export const CUSTOM_FRAGMENT_PREFIX = "custom.";
+export const CUSTOM_FRAGMENT_NAME_PATTERN = /^[a-z0-9_]{1,48}$/;
 
 export function listFragments(): Promise<PromptFragment[]> {
   return request("/modes/fragments");
 }
 
-/** 改写片段正文；text 为 null（或与默认相同）= 恢复默认。用了 `{{skills_dir}}` 以外的变量时后端 400。 */
-export function updateFragment(id: string, text: string | null): Promise<PromptFragment> {
+/** 新建自建片段（id 已存在时后端 409，id 不合法 / 用了 `{{skills_dir}}` 以外的变量时 400）。 */
+export function createFragment(input: {
+  id: string;
+  title: string;
+  text: string;
+}): Promise<PromptFragment> {
+  return request("/modes/fragments", { method: "POST", body: JSON.stringify(input) });
+}
+
+/**
+ * 改片段：内置片段传 `{ text }`，text 为 null（或与默认相同）= 恢复默认；
+ * 自建片段传 `{ title?, text? }`（至少一个，text 不能为 null）。用了 `{{skills_dir}}` 以外的变量时后端 400。
+ */
+export function updateFragment(
+  id: string,
+  body: { text: string | null } | { title?: string; text?: string },
+): Promise<PromptFragment> {
   return request(`/modes/fragments/${encodeURIComponent(id)}`, {
     method: "PUT",
-    body: JSON.stringify({ text }),
+    body: JSON.stringify(body),
   });
+}
+
+/** 删自建片段；仍被引用时后端 409，message 列出引用处（「片段 custom.x 仍被使用：模式 A、通用模式」）。 */
+export function deleteFragment(id: string): Promise<{ id: string }> {
+  return request(`/modes/fragments/${encodeURIComponent(id)}`, { method: "DELETE" });
 }

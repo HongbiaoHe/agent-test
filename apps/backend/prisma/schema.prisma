@@ -473,13 +473,30 @@ model GeneralModeSetting {
 }
 
 /// 用户改写的平台片段正文（{{platform.xxx}} 占位符展开时用），每个用户每个片段至多一行；
-/// 没有行 = 用 agent-core 的 PROMPT_FRAGMENT_DEFAULTS（「恢复默认」即删行）。片段集合固定为内置 4 个，不能新增。
+/// 没有行 = 用 agent-core 的 PROMPT_FRAGMENT_DEFAULTS（「恢复默认」即删行）。内置片段固定 4 个；用户自建片段见 CustomPromptFragment。
 model PromptFragmentOverride {
   userId     String
   /// 片段 id（platform.language / platform.slash_command / platform.skill_loading / platform.injection_guard）
   fragmentId String   @db.VarChar(64)
   /// 改写后的正文；唯一可用的变量是 {{skills_dir}}（运行时替换成技能库目录）
   text       String   @db.Text
+  updatedAt  DateTime @updatedAt
+
+  @@id([userId, fragmentId])
+}
+
+/// 用户自建的提示词片段（模式正文 / 通用提示词里以 {{custom.xxx}} 引用），按用户隔离。
+/// id 创建后不可改（引用永不断），只能改显示名与正文；仍被该用户的模式或通用提示词引用时不能删。
+model CustomPromptFragment {
+  userId     String
+  /// 片段 id：custom. + 1～48 位小写字母 / 数字 / 下划线（见 agent-core CustomFragmentIdSchema）
+  fragmentId String   @db.VarChar(64)
+  /// 显示名（设置页列表展示用，不进提示词）
+  title      String   @db.VarChar(100)
+  /// 正文；唯一可用的变量是 {{skills_dir}}，不能再引用其他片段
+  text       String   @db.Text
+  /// 列表按创建时间排序
+  createdAt  DateTime @default(now())
   updatedAt  DateTime @updatedAt
 
   @@id([userId, fragmentId])

@@ -299,6 +299,8 @@ export class RunService {
         generalPrompt: mode ? null : this.deps.modes.getGeneral().systemPrompt,
         // 用户改写过的平台片段（通用模式与普通模式都生效）
         fragmentOverrides: this.deps.modes.fragmentOverrides(),
+        // 用户自建片段（{{custom.xxx}}）
+        customFragments: this.deps.modes.customFragments(),
         registry: this.deps.registry,
         env,
         installedSkills: await this.deps.skills.listFiles(),

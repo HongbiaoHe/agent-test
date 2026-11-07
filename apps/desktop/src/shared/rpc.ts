@@ -12,7 +12,11 @@ import {
   AgentModeInputSchema,
   GeneralModeSettingsSchema,
 } from '@agent-test/agent-core/modes/mode.schema';
-import { FragmentTextSchema, type PromptFragmentId } from '@agent-test/agent-core/modes/prompt-fragments';
+import {
+  FragmentTextSchema,
+  FragmentTitleSchema,
+  type PromptFragmentId,
+} from '@agent-test/agent-core/modes/prompt-fragments';
 import type { Unavailable } from '@agent-test/agent-core/modes/resolve-mode';
 import type { ToolCatalogEntry } from '@agent-test/agent-core/modes/tool-registry';
 import { z } from 'zod';
@@ -55,6 +59,7 @@ export interface ModeCatalog {
   tools: ToolCatalogEntry[];
   mcpServers: { id: string; name: string; slug: string }[];
   skills: { name: string; description: string }[];
+  /** 可插入的片段 id：内置 platform.* 在前，自建 custom.* 在后 */
   fragments: string[];
   generalPrompt: string;
   capabilities: Capability[];
@@ -77,15 +82,32 @@ export interface GeneralModeView {
   defaultThinkingLevel: string | null;
 }
 
-/** 一个内置平台片段（{{platform.xxx}}）：本机只存一份改写，没改写的用 core 默认正文 */
-export interface PromptFragmentView {
-  id: PromptFragmentId;
-  /** 生效正文（改写过取改写，否则 = defaultText）；里面的 {{skills_dir}} 未替换 */
-  text: string;
-  /** core 的默认正文（「恢复默认」回填用；renderer 不能从 core 的 CJS dist 取值） */
-  defaultText: string;
-  isCustom: boolean;
-}
+/**
+ * 一个片段：
+ * - builtin：内置平台片段（{{platform.xxx}}），本机只存一份改写，没改写的用 core 默认正文；
+ * - custom：用户自建片段（{{custom.xxx}}），id 创建后不可改，没有默认正文。
+ */
+export type PromptFragmentView =
+  | {
+      kind: 'builtin';
+      id: PromptFragmentId;
+      title: null;
+      /** 生效正文（改写过取改写，否则 = defaultText）；里面的 {{skills_dir}} 未替换 */
+      text: string;
+      /** core 的默认正文（「恢复默认」回填用；renderer 不能从 core 的 CJS dist 取值） */
+      defaultText: string;
+      /** 是否改写过默认正文 */
+      isCustom: boolean;
+    }
+  | {
+      kind: 'custom';
+      id: string;
+      title: string;
+      text: string;
+      defaultText: null;
+      /** 自建片段没有默认正文可「改写」，恒为 false */
+      isCustom: false;
+    };
 
 /** 会话搜索的一条结果：snippet 是命中的消息片段（只命中标题时为 null） */
 export interface ConversationSearchHit {
@@ -240,10 +262,21 @@ export const rpcSchemas = {
   'modes.general.update': GeneralModeSettingsSchema,
   /** 用编辑中的通用提示词算最终系统提示（不落库）；null = 默认提示词 */
   'modes.general.preview': GeneralModeSettingsSchema.pick({ systemPrompt: true }),
-  /** 内置 4 个平台片段（固定顺序） */
+  /** 内置 4 个平台片段（固定顺序），其后是自建片段（按 id 排序） */
   'modes.fragments.list': z.object({}),
-  /** 改写片段正文；text 为 null 或与默认相同 = 恢复默认。正文里只能用 {{skills_dir}}，未知 id 报错 */
-  'modes.fragments.update': z.object({ id: z.string().min(1), text: FragmentTextSchema.nullable() }),
+  /**
+   * 改片段：内置片段只能改 text（null 或与默认相同 = 恢复默认）；自建片段可改 title / text（text 不能为 null）。
+   * 正文里只能用 {{skills_dir}}，未知 id 报错
+   */
+  'modes.fragments.update': z.object({
+    id: z.string().min(1),
+    text: FragmentTextSchema.nullable().optional(),
+    title: FragmentTitleSchema.optional(),
+  }),
+  /** 新建自建片段：id 须为 custom.<小写字母 / 数字 / 下划线，1～48 位>（host 校验并给出本地化报错），已存在报错 */
+  'modes.fragments.create': z.object({ id: z.string().min(1), title: FragmentTitleSchema, text: FragmentTextSchema }),
+  /** 删除自建片段：内置片段不能删；仍被模式或自定义的通用提示词引用时拒绝并列出引用处 */
+  'modes.fragments.delete': z.object({ id: z.string().min(1) }),
   /** 按标题与消息正文搜索（不区分大小写的子串匹配） */
   'conversations.search': z.object({ query: z.string().trim().min(1).max(200) }),
   'conversations.tokenReport': z.object({ id }),
@@ -341,6 +374,8 @@ export interface RpcResults {
   'modes.general.preview': ModePreview;
   'modes.fragments.list': PromptFragmentView[];
   'modes.fragments.update': PromptFragmentView;
+  'modes.fragments.create': PromptFragmentView;
+  'modes.fragments.delete': { ok: true };
   'conversations.search': ConversationSearchHit[];
   'conversations.tokenReport': TokenReport;
   'background.list': BackgroundTaskView[];

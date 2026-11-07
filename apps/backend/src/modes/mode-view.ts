@@ -10,6 +10,7 @@ import {
 } from '@agent-test/agent-core/modes/prompt-fragments';
 import type {
   AgentMode as AgentModeRow,
+  CustomPromptFragment,
   GeneralModeSetting,
 } from '@prisma/client';
 
@@ -51,14 +52,31 @@ export function toGeneralModeView(
   };
 }
 
-/** GET /modes/fragments 单项、PUT /modes/fragments/:fragmentId 的返回形状。 */
-export interface PromptFragmentView {
-  id: PromptFragmentId;
-  /** 生效的正文：用户改写的，没改写则是默认 */
-  text: string;
-  defaultText: string;
-  isCustom: boolean;
-}
+/**
+ * GET /modes/fragments 单项、POST / PUT /modes/fragments 的返回形状。
+ * kind 区分内置（platform.*，可改写 / 恢复默认，不能删）与用户自建（custom.*，可改 title / 正文、可删）。
+ * isCustom 沿用旧语义「内置片段是否被改写过」，自建片段恒为 false。
+ */
+export type PromptFragmentView =
+  | {
+      kind: 'builtin';
+      id: PromptFragmentId;
+      /** 内置片段没有显示名 */
+      title: null;
+      /** 生效的正文：用户改写的，没改写则是默认 */
+      text: string;
+      defaultText: string;
+      isCustom: boolean;
+    }
+  | {
+      kind: 'custom';
+      id: string;
+      title: string;
+      text: string;
+      /** 自建片段没有默认正文可恢复 */
+      defaultText: null;
+      isCustom: false;
+    };
 
 export function toFragmentView(
   id: PromptFragmentId,
@@ -66,9 +84,24 @@ export function toFragmentView(
 ): PromptFragmentView {
   const custom = overrides[id];
   return {
+    kind: 'builtin',
     id,
+    title: null,
     text: custom ?? PROMPT_FRAGMENT_DEFAULTS[id],
     defaultText: PROMPT_FRAGMENT_DEFAULTS[id],
     isCustom: custom !== undefined,
+  };
+}
+
+export function toCustomFragmentView(
+  row: Pick<CustomPromptFragment, 'fragmentId' | 'title' | 'text'>,
+): PromptFragmentView {
+  return {
+    kind: 'custom',
+    id: row.fragmentId,
+    title: row.title,
+    text: row.text,
+    defaultText: null,
+    isCustom: false,
   };
 }

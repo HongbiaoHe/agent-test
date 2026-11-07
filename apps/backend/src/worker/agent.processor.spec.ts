@@ -44,9 +44,10 @@ const mcpMock = {
 const backgroundMock = {
   deliverPending: jest.fn().mockResolvedValue(undefined),
 } as unknown as BackgroundService;
-// 用户没改写任何平台片段（片段来源另有「模式装配」用例走真实 ModesService 读库）
+// 用户没改写任何平台片段、也没有自建片段（片段来源另有「模式装配」用例走真实 ModesService 读库）
 const modesMock = {
   fragmentOverrides: jest.fn().mockResolvedValue({}),
+  customFragments: jest.fn().mockResolvedValue({}),
 } as unknown as ModesService;
 // 注册表只是透传给 resolveMode（已 mock），空表即可；真实注册表另有 tool-registry.provider.spec
 const registry = new ToolRegistry<BackendHost>();
@@ -1697,9 +1698,11 @@ describe('AgentProcessor 模式装配', () => {
     sandbox: unknown,
     generalSetting: { systemPrompt: string | null } | null = null,
     fragmentRows: { fragmentId: string; text: string }[] = [],
+    customRows: { fragmentId: string; text: string }[] = [],
   ) {
     (getUserSandbox as jest.Mock).mockResolvedValueOnce(sandbox);
     const fragmentFindMany = jest.fn().mockResolvedValue(fragmentRows);
+    const customFindMany = jest.fn().mockResolvedValue(customRows);
     const agentModeFindFirst = jest
       .fn()
       .mockResolvedValue(conv.modeId === 'm1' ? modeRow : null);
@@ -1719,12 +1722,14 @@ describe('AgentProcessor 模式装配', () => {
       },
       agentMode: { findFirst: agentModeFindFirst },
       promptFragmentOverride: { findMany: fragmentFindMany },
+      customPromptFragment: { findMany: customFindMany },
     } as unknown as PrismaService;
     const skills = {
       effectiveSkillsFor: jest.fn().mockResolvedValue([] as SkillDef[]),
       getFor: jest.fn().mockResolvedValue(undefined),
     } as unknown as SkillsService;
-    // 真实 ModesService（只用到 fragmentOverrides 读库）：断言片段来自 promptFragmentOverride 表
+    // 真实 ModesService（只用到 fragmentOverrides / customFragments 读库）：断言片段来自
+    // promptFragmentOverride / customPromptFragment 表
     const modes = new ModesService(
       prisma,
       registry,
@@ -1759,10 +1764,17 @@ describe('AgentProcessor 模式装配', () => {
       mode: unknown;
       generalPrompt?: string | null;
       fragmentOverrides?: Record<string, string>;
+      customFragments?: Record<string, string>;
       env: { capabilities: Set<string>; workspace?: string; skillsDir: string };
       envPromptBlock: string;
     };
-    return { agentModeFindFirst, generalFindUnique, fragmentFindMany, input };
+    return {
+      agentModeFindFirst,
+      generalFindUnique,
+      fragmentFindMany,
+      customFindMany,
+      input,
+    };
   }
 
   it('conv.modeId 存在 → 按 (id, userId) 查模式，传给 resolveMode 的 mode 是收窄后的行', async () => {
@@ -1845,6 +1857,31 @@ describe('AgentProcessor 模式装配', () => {
     (resolveMode as jest.Mock).mockClear();
     const none = await runWith({ modeId: 'm1' }, null);
     expect(none.input.fragmentOverrides).toEqual({});
+  });
+
+  it('customFragments 来自该用户的 customPromptFragment 行（id → 正文）；没有行 → 空对象', async () => {
+    const { customFindMany, input } = await runWith(
+      { modeId: 'm1' },
+      null,
+      null,
+      [],
+      [
+        { fragmentId: 'custom.tone', text: '语气友好' },
+        { fragmentId: 'custom.sign', text: '落款 {{skills_dir}}' },
+      ],
+    );
+    expect(customFindMany).toHaveBeenCalledWith({
+      where: { userId: 'u1' },
+      orderBy: { createdAt: 'asc' },
+      select: { fragmentId: true, text: true },
+    });
+    expect(input.customFragments).toEqual({
+      'custom.tone': '语气友好',
+      'custom.sign': '落款 {{skills_dir}}',
+    });
+    (resolveMode as jest.Mock).mockClear();
+    const none = await runWith({ modeId: null }, null);
+    expect(none.input.customFragments).toEqual({});
   });
 
   it('选了模式 → 不读通用模式设置，generalPrompt: null', async () => {

@@ -189,7 +189,8 @@ export class AgentProcessor extends WorkerHost {
       // 不满足 capability 的工具降级跳过并写进系统提示。MCP 按工具快照装配（不连 server），
       // run 与 resume 都要装：审批通过后的续跑得能执行被批准的 MCP 工具。
       // 通用模式读该用户的提示词覆盖（没有行 / 为 NULL → resolveMode 用 GENERAL_MODE_PROMPT）。
-      // 平台片段的用户改写对通用模式与普通模式都生效（没改写的用 core 默认）。
+      // 平台片段的用户改写对通用模式与普通模式都生效（没改写的用 core 默认）；
+      // 用户自建片段（{{custom.xxx}}）同样两种模式都可引用。
       const modeRow = conv.modeId
         ? await this.prisma.agentMode.findFirst({
             where: { id: conv.modeId, userId: conv.userId },
@@ -201,13 +202,17 @@ export class AgentProcessor extends WorkerHost {
             where: { userId: conv.userId },
             select: { systemPrompt: true },
           });
-      const fragmentOverrides = await this.modes.fragmentOverrides(conv.userId);
+      const [fragmentOverrides, customFragments] = await Promise.all([
+        this.modes.fragmentOverrides(conv.userId),
+        this.modes.customFragments(conv.userId),
+      ]);
       const env = backendEnvironment(sandbox);
       const mcpServers = await this.mcp.runtimeServers(conv.userId);
       const assembly = resolveMode({
         mode: modeRow ? toAgentMode(modeRow) : null,
         generalPrompt: generalSetting?.systemPrompt ?? null,
         fragmentOverrides,
+        customFragments,
         registry: this.registry,
         env,
         installedSkills: defs,

@@ -4,7 +4,9 @@
  *   未知占位符被拒、改名；
  * - 会话里：切换模式 → / 命令面板只列该模式勾的技能 → 切回通用；删模式 → 会话回落通用；
  * - 平台片段：列出 4 个内置片段、改写（插入 {{skills_dir}}）后预览生效、非法变量被拒、恢复默认；
- * - 真实模型：模式提示词 / 自定义的通用提示词 / 改写的平台片段确实进了系统提示（需要 SPARK_E2E_GOOGLE_API_KEY）。
+ * - 自建片段：新建、非法 / 重复 id 被拒、改显示名与正文；模式经插入按钮引用后预览展开；被引用时删除被拒并列出模式名，
+ *   删掉模式后可删；
+ * - 真实模型：模式提示词 / 自定义的通用提示词 / 改写的平台片段 / 自建片段确实进了系统提示（需要 SPARK_E2E_GOOGLE_API_KEY）。
  * 每个用例自建临时目录与前置数据（失败重跑时模块顶层的目录会是新的空目录）。
  */
 import { randomUUID } from 'node:crypto';
@@ -101,6 +103,29 @@ async function editFragment(page: Page, id: string, text: string | null): Promis
   else await editor.getByLabel('片段正文').fill(text);
   await editor.getByRole('button', { name: '保存' }).click();
   await expect(editor).toBeHidden();
+}
+
+/** 设置 → 模式 → 平台片段 → 新建片段：填 id 名字（不含 custom. 前缀）/ 显示名 / 正文，创建后等它出现在列表里 */
+async function createFragment(page: Page, opts: { name: string; title: string; text: string }): Promise<void> {
+  await openSettings(page, '模式');
+  await fragmentsSection(page).getByRole('button', { name: '新建片段' }).click();
+  const editor = page.getByRole('dialog', { name: '新建片段' });
+  await editor.getByLabel('ID', { exact: true }).fill(opts.name);
+  await editor.getByLabel('显示名').fill(opts.title);
+  await editor.getByLabel('片段正文').fill(opts.text);
+  await editor.getByRole('button', { name: '创建' }).click();
+  await expect(editor).toBeHidden();
+  await expect(fragmentRow(page, `custom.${opts.name}`)).toBeVisible();
+}
+
+/** 删除自建片段（确认后等它从列表消失） */
+async function deleteFragment(page: Page, id: string): Promise<void> {
+  await openSettings(page, '模式');
+  await fragmentRow(page, id).getByRole('button', { name: `删除 ${id}` }).click();
+  const confirm = page.getByRole('alertdialog');
+  await confirm.getByRole('button', { name: '删除' }).click();
+  await expect(confirm).toBeHidden();
+  await expect(fragmentRow(page, id)).toHaveCount(0);
 }
 
 test('设置 → 模式：通用卡片、自定义与恢复默认；新建（占位符插入 / 勾选 / 预览）、未知占位符被拒、改名', async () => {
@@ -290,6 +315,145 @@ test('设置 → 模式 → 平台片段：列出内置片段；插入 {{skills_
   await app.close();
 });
 
+test('设置 → 模式 → 自建片段：新建；非法 id / 重复 id 被拒；编辑显示名与正文（id 只读、没有恢复默认）', async () => {
+  const dirs = tempDirs('modes-custom-fragments');
+  const { app, page } = await launch(dirs);
+  await openSettings(page, '模式');
+  const section = fragmentsSection(page);
+  await expect(section.getByRole('listitem')).toHaveCount(4);
+
+  // a) 新建：前缀 custom. 固定显示；非法 id 即时提示、创建按钮不可用
+  await section.getByRole('button', { name: '新建片段' }).click();
+  let editor = page.getByRole('dialog', { name: '新建片段' });
+  await expect(editor.getByText('custom.', { exact: true })).toBeVisible();
+  const idInput = editor.getByLabel('ID', { exact: true });
+  const create = editor.getByRole('button', { name: '创建' });
+  await expect(create).toBeDisabled();
+  await editor.getByLabel('显示名').fill('E2E 语气');
+  await editor.getByLabel('片段正文').fill('语气要克制。\n第二行');
+  for (const bad of ['Tone', 'tone-x', 'a.b', '语气']) {
+    await idInput.fill(bad);
+    await expect(editor.getByText('只能使用小写字母、数字、下划线，1～48 位')).toBeVisible();
+    await expect(idInput).toHaveAttribute('aria-invalid', 'true');
+    await expect(create).toBeDisabled();
+  }
+  // 合法：提示消失，说明里的引用写法原样显示（i18next 不会把 {{custom.xxx}} 当插值吃掉）
+  await idInput.fill('e2e_tone');
+  await expect(editor.getByText('只能使用小写字母、数字、下划线，1～48 位')).toHaveCount(0);
+  await expect(editor.getByText('创建后不能修改')).toBeVisible();
+  await expect(editor.getByText('在模式提示词里用 {{custom.e2e_tone}} 引用它', { exact: false })).toBeVisible();
+  await expect(create).toBeEnabled();
+  await page.screenshot({ path: join(screens, 'modes-9-fragment-create.png') });
+  await create.click();
+  await expect(editor).toBeHidden();
+  const row = fragmentRow(page, 'custom.e2e_tone');
+  await expect(row).toContainText('E2E 语气');
+  await expect(row).toContainText('语气要克制。');
+  await expect(row.getByRole('button', { name: '删除 custom.e2e_tone' })).toBeVisible();
+  await expect(section.getByRole('listitem')).toHaveCount(5);
+  // 内置片段没有删除按钮
+  await expect(fragmentRow(page, 'platform.language').getByRole('button', { name: /^删除/ })).toHaveCount(0);
+
+  // b) 重复 id：host 拒绝，弹窗留着并显示报错；列表不变
+  await section.getByRole('button', { name: '新建片段' }).click();
+  editor = page.getByRole('dialog', { name: '新建片段' });
+  await editor.getByLabel('ID', { exact: true }).fill('e2e_tone');
+  await editor.getByLabel('显示名').fill('重复');
+  await editor.getByLabel('片段正文').fill('另一份正文');
+  await editor.getByRole('button', { name: '创建' }).click();
+  await expect(editor.getByRole('alert')).toContainText('片段已存在：custom.e2e_tone');
+  await expect(editor).toBeVisible();
+  await editor.getByRole('button', { name: '取消' }).click();
+  await expect(editor).toBeHidden();
+  await expect(section.getByRole('listitem')).toHaveCount(5);
+  await expect(row).toContainText('E2E 语气');
+
+  // c) 编辑：id 只读、没有「恢复默认」；改显示名与正文（插入 {{skills_dir}}）
+  await row.getByRole('button', { name: '编辑 custom.e2e_tone' }).click();
+  editor = page.getByRole('dialog', { name: '编辑片段：custom.e2e_tone' });
+  await expect(editor.getByLabel('ID', { exact: true })).toHaveValue('custom.e2e_tone');
+  await expect(editor.getByLabel('ID', { exact: true })).toHaveAttribute('readonly', '');
+  await expect(editor.getByRole('button', { name: '恢复默认' })).toHaveCount(0);
+  await expect(editor.getByLabel('显示名')).toHaveValue('E2E 语气');
+  await expect(editor.getByLabel('片段正文')).toHaveValue('语气要克制。\n第二行');
+  await editor.getByLabel('显示名').fill('E2E 语气 v2');
+  await editor.getByLabel('片段正文').fill('新正文，技能目录：');
+  await editor.getByRole('button', { name: '插入 {{skills_dir}}' }).click();
+  await expect(editor.getByLabel('片段正文')).toHaveValue('新正文，技能目录：{{skills_dir}}');
+  await editor.getByRole('button', { name: '保存' }).click();
+  await expect(editor).toBeHidden();
+  await expect(row).toContainText('E2E 语气 v2');
+  await expect(row).toContainText('新正文，技能目录：{{skills_dir}}');
+  // 重开：改动已落库
+  await row.getByRole('button', { name: '编辑 custom.e2e_tone' }).click();
+  editor = page.getByRole('dialog', { name: '编辑片段：custom.e2e_tone' });
+  await expect(editor.getByLabel('显示名')).toHaveValue('E2E 语气 v2');
+  await expect(editor.getByLabel('片段正文')).toHaveValue('新正文，技能目录：{{skills_dir}}');
+  await editor.getByRole('button', { name: '取消' }).click();
+  await expect(editor).toBeHidden();
+  await page.screenshot({ path: join(screens, 'modes-10-fragment-list.png') });
+
+  await closeSettings(page);
+  await app.close();
+});
+
+test('设置 → 模式 → 自建片段：模式经插入按钮引用、预览展开；被引用时删除被拒并列出模式名，删掉模式后可删', async () => {
+  const dirs = tempDirs('modes-custom-ref');
+  const { app, page } = await launch(dirs);
+  const token = `FRAG-REF-${randomUUID().slice(0, 8)}`;
+  await createFragment(page, { name: 'e2e_ref', title: '引用测试', text: `${token}\n技能目录：{{skills_dir}}` });
+
+  // a) 新建模式：插入按钮里有刚建的自建片段（目录已刷新），插入后预览里是片段正文
+  await page.getByRole('button', { name: '新建模式' }).click();
+  let editor = page.getByRole('dialog', { name: '新建模式' });
+  await editor.getByLabel('名称').fill('E2E 引用片段');
+  const prompt = editor.getByLabel('系统提示');
+  await prompt.fill('开头。');
+  await editor.getByRole('button', { name: '插入 custom.e2e_ref' }).click();
+  await expect(prompt).toHaveValue('开头。\n{{custom.e2e_ref}}');
+  await editor.getByRole('button', { name: '预览提示词' }).click();
+  const preview = page.getByRole('dialog', { name: '最终系统提示' });
+  const pre = preview.locator('pre');
+  await expect(pre).toContainText(`开头。\n${token}\n技能目录：<runtime>/skills`);
+  await expect(pre).not.toContainText('{{custom.');
+  await page.screenshot({ path: join(screens, 'modes-11-fragment-preview.png') });
+  await page.keyboard.press('Escape');
+  await expect(preview).toBeHidden();
+  await editor.getByRole('button', { name: '创建' }).click();
+  await expect(editor).toBeHidden();
+  await expect(modeCard(page, 'E2E 引用片段')).toBeVisible();
+
+  // b) 被模式引用：删除被拒，确认框里列出模式名；片段仍在
+  await fragmentRow(page, 'custom.e2e_ref').getByRole('button', { name: '删除 custom.e2e_ref' }).click();
+  const confirm = page.getByRole('alertdialog');
+  await expect(confirm).toContainText('删除片段「引用测试」？');
+  await confirm.getByRole('button', { name: '删除' }).click();
+  await expect(confirm.getByRole('alert')).toContainText('片段 custom.e2e_ref 仍被引用，不能删除：模式「E2E 引用片段」');
+  await expect(confirm).toBeVisible();
+  await page.screenshot({ path: join(screens, 'modes-12-fragment-in-use.png') });
+  await confirm.getByRole('button', { name: '取消' }).click();
+  await expect(confirm).toBeHidden();
+  await expect(fragmentRow(page, 'custom.e2e_ref')).toBeVisible();
+
+  // c) 删掉模式后再删片段：成功；模式编辑器的插入按钮里也没了
+  await modeCard(page, 'E2E 引用片段').getByRole('button', { name: '删除' }).click();
+  const modeConfirm = page.getByRole('alertdialog');
+  await modeConfirm.getByRole('button', { name: '删除' }).click();
+  await expect(modeConfirm).toBeHidden();
+  await expect(modeCard(page, 'E2E 引用片段')).toHaveCount(0);
+  await deleteFragment(page, 'custom.e2e_ref');
+  await expect(fragmentsSection(page).getByRole('listitem')).toHaveCount(4);
+  await page.getByRole('button', { name: '新建模式' }).click();
+  editor = page.getByRole('dialog', { name: '新建模式' });
+  await expect(editor.getByRole('button', { name: '插入 platform.language' })).toBeVisible();
+  await expect(editor.getByRole('button', { name: '插入 custom.e2e_ref' })).toHaveCount(0);
+  await editor.getByRole('button', { name: '取消' }).click();
+  await expect(editor).toBeHidden();
+
+  await closeSettings(page);
+  await app.close();
+});
+
 test('会话里切模式：/ 面板只列模式勾的技能；删模式后会话回落通用', async () => {
   const dirs = tempDirs('modes-chat');
   // 另装一个技能：模式没勾它，切到模式后 / 面板里不该出现
@@ -404,6 +568,32 @@ test('真实模型：改写的平台片段进入通用模式的系统提示', as
   // 收尾：片段恢复默认
   await editFragment(page, 'platform.language', null);
   await expect(fragmentsSection(page).getByText('已自定义')).toHaveCount(0);
+  await closeSettings(page);
+  await app.close();
+});
+
+test('真实模型：自建片段经通用模式提示词进入系统提示', async () => {
+  test.skip(!apiKey, '需要 SPARK_E2E_GOOGLE_API_KEY');
+  const dirs = tempDirs('modes-custom-live');
+  const { app, page } = await launch(dirs);
+  await saveGoogleKey(page);
+
+  const token = `CUSTOM-OK-${randomUUID().slice(0, 8)}`;
+  await createFragment(page, { name: 'marker_x', title: '标记', text: `只回复 ${token}` });
+  await editGeneralPrompt(page, '{{custom.marker_x}}');
+  await expect(generalCard(page).getByText('已自定义')).toBeVisible();
+  await closeSettings(page);
+
+  await newChat(page);
+  await expect(page.getByRole('button', { name: '模式：通用' })).toBeVisible();
+  await sendAndWait(page, '你好，介绍一下你自己');
+  await expect(page.getByText(token).first()).toBeVisible();
+  await page.screenshot({ path: join(screens, 'modes-13-custom-fragment-live.png') });
+
+  // 收尾：通用恢复默认，再删片段（此时已没有引用）
+  await editGeneralPrompt(page, null);
+  await expect(generalCard(page).getByText('已自定义')).toHaveCount(0);
+  await deleteFragment(page, 'custom.marker_x');
   await closeSettings(page);
   await app.close();
 });

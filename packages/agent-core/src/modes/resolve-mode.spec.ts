@@ -306,6 +306,39 @@ describe('resolveMode', () => {
     ).toBe(true);
   });
 
+  it('自建片段：模式与通用提示词都能引用 {{custom.xxx}}', () => {
+    const custom = { 'custom.tone1': '语气要活泼' };
+    const mode: AgentMode = {
+      id: 'm',
+      name: 'x',
+      systemPrompt: 'X {{custom.tone1}}',
+      toolNames: [],
+      mcpServerIds: [],
+      skillNames: [],
+      defaultModel: null,
+      defaultThinkingLevel: null,
+    };
+    const a = resolveMode({
+      mode,
+      customFragments: custom,
+      registry: registryOf(),
+      env,
+      installedSkills: [],
+      mcpServers: [],
+    });
+    expect(a.systemPrompt.startsWith('X 语气要活泼')).toBe(true);
+    const g = resolveMode({
+      mode: null,
+      generalPrompt: '{{custom.tone1}}',
+      customFragments: custom,
+      registry: registryOf(),
+      env,
+      installedSkills: [],
+      mcpServers: [],
+    });
+    expect(g.systemPrompt.startsWith('语气要活泼')).toBe(true);
+  });
+
   it('模式正文含未知占位符时抛错（保存时应已拦截，这里是最后防线）', () => {
     const mode: AgentMode = {
       id: 'm',

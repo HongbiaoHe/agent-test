@@ -309,4 +309,14 @@ export const ErrorCodes = {
     code: 120005,
     message: 'Unsupported variable in prompt fragment',
   },
+  // message 运行时替换成「片段 custom.xxx 已存在」（409）
+  MODE_FRAGMENT_EXISTS: {
+    code: 120006,
+    message: 'Prompt fragment already exists',
+  },
+  // message 运行时替换成「片段 custom.xxx 仍被使用：模式 A、通用模式」（409）
+  MODE_FRAGMENT_IN_USE: {
+    code: 120007,
+    message: 'Prompt fragment is still in use',
+  },
 } as const satisfies Record<string, ErrorDef>;

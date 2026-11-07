@@ -70,11 +70,31 @@ export class GeneralModePreviewDto {
 }
 
 /**
- * PUT /modes/fragments/:fragmentId 的请求体：text 必须显式给出，字符串 = 改写，null = 恢复默认；
- * 长度、变量（只允许 {{skills_dir}}）等语义校验在 ModesService 里经 core 完成。
+ * PUT /modes/fragments/:fragmentId 的请求体，按片段种类解释（语义校验在 ModesService 里经 core 完成）：
+ * - 内置 platform.*：text 必须显式给出，字符串 = 改写，null = 恢复默认；不接受 title；
+ * - 自建 custom.*：title / text 至少给一个；text 不能为 null（没有默认正文可恢复）。
  */
 export class FragmentInputDto {
-  @ValidateIf((o: FragmentInputDto) => o.text !== null)
+  @IsOptional()
   @IsString()
-  text!: string | null;
+  title?: string;
+
+  @ValidateIf((o: FragmentInputDto) => o.text != null)
+  @IsString()
+  text?: string | null;
+}
+
+/**
+ * POST /modes/fragments 的请求体：新建自建片段。id 格式（custom.<名字>）、title / 正文长度、
+ * 变量（只允许 {{skills_dir}}）等语义校验在 ModesService 里经 core 完成。
+ */
+export class CreateFragmentDto {
+  @IsString()
+  id!: string;
+
+  @IsString()
+  title!: string;
+
+  @IsString()
+  text!: string;
 }

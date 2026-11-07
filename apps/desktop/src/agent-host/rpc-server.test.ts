@@ -127,6 +127,54 @@ describe('通用模式 RPC', () => {
     expect((await h['modes.general.preview']({ systemPrompt: null })).systemPrompt).toContain(before[0].defaultText);
   });
 
+  it('自建片段：create / update / delete 广播 modes-changed；目录追加自建 id；通用与模式预览都展开自建片段', async () => {
+    const { h, modesChangedCount } = setup();
+    const created = await h['modes.fragments.create']({
+      id: 'custom.marker',
+      title: '标记',
+      text: 'CUSTOM-RPC 技能目录：{{skills_dir}}',
+    });
+    expect(created).toMatchObject({ kind: 'custom', id: 'custom.marker', title: '标记', defaultText: null });
+    expect(modesChangedCount()).toBe(1);
+    expect((await h['modes.fragments.list']({})).map((f) => f.id).slice(-1)).toEqual(['custom.marker']);
+    expect((await h['modes.catalog']({})).fragments).toEqual([
+      'platform.language',
+      'platform.slash_command',
+      'platform.skill_loading',
+      'platform.injection_guard',
+      'custom.marker',
+    ]);
+
+    const modeInput = {
+      name: 'p',
+      systemPrompt: 'MODE\n\n{{custom.marker}}',
+      toolNames: [],
+      mcpServerIds: [],
+      skillNames: [],
+      defaultModel: null,
+      defaultThinkingLevel: null,
+    };
+    const mode = await h['modes.preview'](modeInput);
+    expect(mode.systemPrompt.startsWith('MODE\n\nCUSTOM-RPC 技能目录：<runtime>/skills')).toBe(true);
+    const general = await h['modes.general.preview']({ systemPrompt: 'G\n{{custom.marker}}' });
+    expect(general.systemPrompt.startsWith('G\nCUSTOM-RPC 技能目录：<runtime>/skills')).toBe(true);
+    expect(general.systemPrompt).not.toContain('{{custom.marker}}');
+
+    // 改正文后预览跟着变
+    await h['modes.fragments.update']({ id: 'custom.marker', text: 'CUSTOM-RPC-2' });
+    expect(modesChangedCount()).toBe(2);
+    expect((await h['modes.preview'](modeInput)).systemPrompt.startsWith('MODE\n\nCUSTOM-RPC-2')).toBe(true);
+
+    // 被模式引用时删除被拒（不广播）；删掉模式后可删，目录里也没了
+    const saved = await h['modes.create'](modeInput);
+    expect(() => h['modes.fragments.delete']({ id: 'custom.marker' })).toThrow('模式「p」');
+    expect(modesChangedCount()).toBe(3);
+    await h['modes.delete']({ id: saved.id });
+    expect(await h['modes.fragments.delete']({ id: 'custom.marker' })).toEqual({ ok: true });
+    expect(modesChangedCount()).toBe(5);
+    expect((await h['modes.catalog']({})).fragments).not.toContain('custom.marker');
+  });
+
   it('新建会话：没带模式时用通用设置的默认模型 / 思考档位回填；模式优先；带了 model 以带的为准', async () => {
     const { s, h } = setup();
     const plain = await h['conversations.create']({});

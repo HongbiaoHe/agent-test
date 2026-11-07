@@ -1,9 +1,13 @@
 // 偏好服务会引入沙箱提供方 SDK（深 ESM 链，jest 加载失败）；偏好已整体 mock，不需要真实提供方
 jest.mock('../agent/sandbox-providers', () => ({}));
 import { tool } from '@langchain/core/tools';
+import { Prisma } from '@prisma/client';
 import { z } from 'zod';
 import { GENERAL_MODE_PROMPT } from '@agent-test/agent-core/modes/mode.schema';
-import { PROMPT_FRAGMENT_DEFAULTS } from '@agent-test/agent-core/modes/prompt-fragments';
+import {
+  isPromptFragmentId,
+  PROMPT_FRAGMENT_DEFAULTS,
+} from '@agent-test/agent-core/modes/prompt-fragments';
 import { ToolRegistry } from '@agent-test/agent-core/modes/tool-registry';
 import { isSandboxConfigured } from '../agent/sandbox';
 import type { BackendHost } from '../agent/tool-registry.provider';
@@ -43,6 +47,14 @@ function makeRegistry() {
 }
 
 const now = new Date('2026-11-06T00:00:00Z');
+
+/** customPromptFragment 行（mock 里 findMany 按 select 返回其子集即可） */
+interface CustomRow {
+  userId: string;
+  fragmentId: string;
+  title: string;
+  text: string;
+}
 const row = (extra: Record<string, unknown> = {}) => ({
   id: 'm1',
   userId: 'u1',
@@ -84,6 +96,33 @@ function makeService() {
         .mockResolvedValue([]),
       upsert: jest.fn().mockResolvedValue({}),
       deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
+    },
+    customPromptFragment: {
+      findMany: jest
+        .fn<Promise<CustomRow[]>, [{ select?: Record<string, boolean> }]>()
+        .mockResolvedValue([]),
+      findUnique: jest
+        .fn<Promise<{ fragmentId: string } | null>, []>()
+        .mockResolvedValue(null),
+      create: jest.fn((arg: { data: CustomRow }) =>
+        Promise.resolve({ ...arg.data, createdAt: now, updatedAt: now }),
+      ),
+      update: jest.fn(
+        (arg: {
+          where: { userId_fragmentId: { fragmentId: string } };
+          data: Partial<CustomRow>;
+        }) =>
+          Promise.resolve({
+            userId: 'u1',
+            fragmentId: arg.where.userId_fragmentId.fragmentId,
+            title: '旧标题',
+            text: '旧正文',
+            ...arg.data,
+            createdAt: now,
+            updatedAt: now,
+          }),
+      ),
+      delete: jest.fn().mockResolvedValue({}),
     },
     mcpServer: {
       findMany: jest
@@ -428,6 +467,9 @@ describe('ModesService 平台片段', () => {
       'platform.injection_guard',
     ]);
     for (const f of list) {
+      if (!isPromptFragmentId(f.id)) throw new Error(`unexpected ${f.id}`);
+      expect(f.kind).toBe('builtin');
+      expect(f.title).toBeNull();
       expect(f.isCustom).toBe(false);
       expect(f.text).toBe(PROMPT_FRAGMENT_DEFAULTS[f.id]);
       expect(f.defaultText).toBe(PROMPT_FRAGMENT_DEFAULTS[f.id]);
@@ -447,7 +489,9 @@ describe('ModesService 平台片段', () => {
     const list = await service.listFragments('u1');
     expect(list).toHaveLength(4);
     expect(list[0]).toEqual({
+      kind: 'builtin',
       id: 'platform.language',
+      title: null,
       text: '只说英文',
       defaultText: LANG,
       isCustom: true,
@@ -469,7 +513,9 @@ describe('ModesService 平台片段', () => {
       update: { text },
     });
     expect(view).toEqual({
+      kind: 'builtin',
       id: 'platform.language',
+      title: null,
       text,
       defaultText: LANG,
       isCustom: true,
@@ -489,7 +535,9 @@ describe('ModesService 平台片段', () => {
     });
     expect(prisma.promptFragmentOverride.upsert).not.toHaveBeenCalled();
     expect(view).toEqual({
+      kind: 'builtin',
       id: 'platform.language',
+      title: null,
       text: LANG,
       defaultText: LANG,
       isCustom: false,
@@ -563,5 +611,340 @@ describe('ModesService 平台片段', () => {
     ).toBe(true);
     expect(general.systemPrompt).not.toContain('{{skills_dir}}');
     expect(general.systemPrompt).not.toContain('## 回复语言');
+  });
+});
+
+describe('ModesService 自建片段', () => {
+  /** 该用户已有一个自建片段 custom.tone（findMany 按 select 返回需要的列） */
+  function withTone(prisma: ReturnType<typeof makeService>['prisma']) {
+    const tone: CustomRow = {
+      userId: 'u1',
+      fragmentId: 'custom.tone',
+      title: '语气',
+      text: '语气友好，技能在 {{skills_dir}}',
+    };
+    prisma.customPromptFragment.findMany.mockResolvedValue([tone]);
+    prisma.customPromptFragment.findUnique.mockResolvedValue({
+      fragmentId: 'custom.tone',
+    });
+    return tone;
+  }
+
+  it('list：内置 4 个在前，自建片段按创建时间在后（kind custom、有 title、defaultText null、isCustom false）', async () => {
+    const { service, prisma } = makeService();
+    withTone(prisma);
+    const list = await service.listFragments('u1');
+    expect(list.map((f) => f.id)).toEqual([
+      'platform.language',
+      'platform.slash_command',
+      'platform.skill_loading',
+      'platform.injection_guard',
+      'custom.tone',
+    ]);
+    expect(list[4]).toEqual({
+      kind: 'custom',
+      id: 'custom.tone',
+      title: '语气',
+      text: '语气友好，技能在 {{skills_dir}}',
+      defaultText: null,
+      isCustom: false,
+    });
+    expect(prisma.customPromptFragment.findMany).toHaveBeenCalledWith({
+      where: { userId: 'u1' },
+      orderBy: { createdAt: 'asc' },
+      select: { fragmentId: true, title: true, text: true },
+    });
+  });
+
+  it('create：合法 → 落库（title 去空白），返回自建片段视图', async () => {
+    const { service, prisma } = makeService();
+    const view = await service.createFragment('u1', {
+      id: 'custom.tone_2',
+      title: '  语气  ',
+      text: '技能在 {{skills_dir}}',
+    });
+    expect(prisma.customPromptFragment.create).toHaveBeenCalledWith({
+      data: {
+        userId: 'u1',
+        fragmentId: 'custom.tone_2',
+        title: '语气',
+        text: '技能在 {{skills_dir}}',
+      },
+    });
+    expect(view).toEqual({
+      kind: 'custom',
+      id: 'custom.tone_2',
+      title: '语气',
+      text: '技能在 {{skills_dir}}',
+      defaultText: null,
+      isCustom: false,
+    });
+  });
+
+  it.each([
+    ['大写与连字符', 'custom.Bad-Id'],
+    ['没有前缀', 'tone'],
+    ['名字为空', 'custom.'],
+    ['超过 48 位', `custom.${'a'.repeat(49)}`],
+    ['冒充内置前缀', 'platform.tone'],
+  ])(
+    'create：id %s → MODE_INVALID(400)，message 用 core 文案，不写库',
+    async (_, id) => {
+      const { service, prisma } = makeService();
+      const err = await service
+        .createFragment('u1', { id, title: 't', text: 'x' })
+        .catch((e: unknown) => e);
+      expect(err).toMatchObject({
+        errCode: ErrorCodes.MODE_INVALID.code,
+        message: 'id: id 格式为 custom.<小写字母、数字、下划线，1～48 位>',
+      });
+      expect(err).toHaveProperty('status', 400);
+      expect(prisma.customPromptFragment.create).not.toHaveBeenCalled();
+    },
+  );
+
+  it('create：title 空白 → MODE_INVALID(400)', async () => {
+    const { service, prisma } = makeService();
+    await expect(
+      service.createFragment('u1', { id: 'custom.a', title: '  ', text: 'x' }),
+    ).rejects.toMatchObject({ errCode: ErrorCodes.MODE_INVALID.code });
+    expect(prisma.customPromptFragment.create).not.toHaveBeenCalled();
+  });
+
+  it('create：id 已存在（唯一键冲突）→ MODE_FRAGMENT_EXISTS(409)「片段 custom.tone 已存在」', async () => {
+    const { service, prisma } = makeService();
+    prisma.customPromptFragment.create.mockRejectedValueOnce(
+      new Prisma.PrismaClientKnownRequestError('dup', {
+        code: 'P2002',
+        clientVersion: 'test',
+      }),
+    );
+    const err = await service
+      .createFragment('u1', { id: 'custom.tone', title: 't', text: 'x' })
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({
+      errCode: ErrorCodes.MODE_FRAGMENT_EXISTS.code,
+      message: '片段 custom.tone 已存在',
+    });
+    expect(err).toHaveProperty('status', 409);
+  });
+
+  it('create：{{skills_dir}} 以外的变量（含片段占位符）→ MODE_FRAGMENT_INVALID_VARIABLE(400)，不写库', async () => {
+    const { service, prisma } = makeService();
+    const err = await service
+      .createFragment('u1', {
+        id: 'custom.a',
+        title: 't',
+        text: '{{custom.b}} {{skills_dir}} {{platform.language}}',
+      })
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({
+      errCode: ErrorCodes.MODE_FRAGMENT_INVALID_VARIABLE.code,
+      message:
+        '片段里只能使用 {{skills_dir}}，不支持：custom.b, platform.language',
+    });
+    expect(err).toHaveProperty('status', 400);
+    expect(prisma.customPromptFragment.create).not.toHaveBeenCalled();
+  });
+
+  it('update：只改 title / 只改 text → 只更新给出的字段', async () => {
+    const { service, prisma } = makeService();
+    withTone(prisma);
+    const titled = await service.updateFragment('u1', 'custom.tone', {
+      title: ' 新标题 ',
+    });
+    expect(prisma.customPromptFragment.update).toHaveBeenLastCalledWith({
+      where: { userId_fragmentId: { userId: 'u1', fragmentId: 'custom.tone' } },
+      data: { title: '新标题' },
+    });
+    expect(titled).toMatchObject({ kind: 'custom', title: '新标题' });
+
+    const texted = await service.updateFragment('u1', 'custom.tone', {
+      text: '新正文 {{skills_dir}}',
+    });
+    expect(prisma.customPromptFragment.update).toHaveBeenLastCalledWith({
+      where: { userId_fragmentId: { userId: 'u1', fragmentId: 'custom.tone' } },
+      data: { text: '新正文 {{skills_dir}}' },
+    });
+    expect(texted).toMatchObject({ text: '新正文 {{skills_dir}}' });
+    expect(prisma.promptFragmentOverride.upsert).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['text: null（没有默认可恢复）', { text: null }],
+    ['title 与 text 都没给', {}],
+    ['非法变量', { text: '{{foo}}' }],
+  ])('update：%s → 400，不写库', async (_, body) => {
+    const { service, prisma } = makeService();
+    withTone(prisma);
+    const err = await service
+      .updateFragment('u1', 'custom.tone', body)
+      .catch((e: unknown) => e);
+    expect(err).toHaveProperty('status', 400);
+    expect(prisma.customPromptFragment.update).not.toHaveBeenCalled();
+  });
+
+  it('update：自建片段不存在 → MODE_FRAGMENT_NOT_FOUND(404)', async () => {
+    const { service, prisma } = makeService();
+    const err = await service
+      .updateFragment('u1', 'custom.ghost', { text: 'x' })
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({
+      errCode: ErrorCodes.MODE_FRAGMENT_NOT_FOUND.code,
+    });
+    expect(err).toHaveProperty('status', 404);
+    expect(prisma.customPromptFragment.update).not.toHaveBeenCalled();
+  });
+
+  it('update：内置片段带 title 或缺 text → MODE_INVALID(400)', async () => {
+    const { service, prisma } = makeService();
+    for (const body of [{ title: 't', text: 'x' }, {}]) {
+      await expect(
+        service.updateFragment('u1', 'platform.language', body),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.MODE_INVALID.code });
+    }
+    expect(prisma.promptFragmentOverride.upsert).not.toHaveBeenCalled();
+  });
+
+  it('remove：没被引用 → 删行，返回 { id }', async () => {
+    const { service, prisma } = makeService();
+    withTone(prisma);
+    prisma.agentMode.findMany.mockResolvedValue([
+      row({ systemPrompt: '{{custom.tone2}} {{platform.language}}' }),
+    ]);
+    prisma.generalModeSetting.findUnique.mockResolvedValue({
+      userId: 'u1',
+      systemPrompt: null,
+      defaultModel: null,
+      defaultThinkingLevel: null,
+      updatedAt: now,
+    });
+    expect(await service.removeFragment('u1', 'custom.tone')).toEqual({
+      id: 'custom.tone',
+    });
+    expect(prisma.customPromptFragment.delete).toHaveBeenCalledWith({
+      where: { userId_fragmentId: { userId: 'u1', fragmentId: 'custom.tone' } },
+    });
+  });
+
+  it('remove：被模式引用 → MODE_FRAGMENT_IN_USE(409)，message 列出模式名，不删', async () => {
+    const { service, prisma } = makeService();
+    withTone(prisma);
+    prisma.agentMode.findMany.mockResolvedValue([
+      row({ name: 'A', systemPrompt: '前 {{ custom.tone }} 后' }),
+      row({ name: '无关', systemPrompt: '{{platform.language}}' }),
+      row({ name: 'B', systemPrompt: '{{custom.tone}}' }),
+    ]);
+    const err = await service
+      .removeFragment('u1', 'custom.tone')
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({
+      errCode: ErrorCodes.MODE_FRAGMENT_IN_USE.code,
+      message: '片段 custom.tone 仍被使用：模式 A、模式 B',
+    });
+    expect(err).toHaveProperty('status', 409);
+    expect(prisma.agentMode.findMany).toHaveBeenCalledWith({
+      where: { userId: 'u1' },
+      orderBy: { createdAt: 'asc' },
+      select: { name: true, systemPrompt: true },
+    });
+    expect(prisma.customPromptFragment.delete).not.toHaveBeenCalled();
+  });
+
+  it('remove：被自定义通用提示词引用 → MODE_FRAGMENT_IN_USE(409)，message 含「通用模式」', async () => {
+    const { service, prisma } = makeService();
+    withTone(prisma);
+    prisma.agentMode.findMany.mockResolvedValue([]);
+    prisma.generalModeSetting.findUnique.mockResolvedValue({
+      userId: 'u1',
+      systemPrompt: '通用 {{custom.tone}}',
+      defaultModel: null,
+      defaultThinkingLevel: null,
+      updatedAt: now,
+    });
+    await expect(
+      service.removeFragment('u1', 'custom.tone'),
+    ).rejects.toMatchObject({
+      errCode: ErrorCodes.MODE_FRAGMENT_IN_USE.code,
+      message: '片段 custom.tone 仍被使用：通用模式',
+    });
+    expect(prisma.customPromptFragment.delete).not.toHaveBeenCalled();
+  });
+
+  it('remove：内置片段 → MODE_INVALID(400)；不存在的自建片段 → 404', async () => {
+    const { service, prisma } = makeService();
+    const builtin = await service
+      .removeFragment('u1', 'platform.language')
+      .catch((e: unknown) => e);
+    expect(builtin).toMatchObject({ errCode: ErrorCodes.MODE_INVALID.code });
+    expect(builtin).toHaveProperty('status', 400);
+    const ghost = await service
+      .removeFragment('u1', 'custom.ghost')
+      .catch((e: unknown) => e);
+    expect(ghost).toHaveProperty('status', 404);
+    expect(prisma.customPromptFragment.delete).not.toHaveBeenCalled();
+    expect(prisma.promptFragmentOverride.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('模式 create / 通用 put：引用已有自建片段可保存；引用不存在的自建片段 → MODE_INVALID_PLACEHOLDER', async () => {
+    const { service, prisma } = makeService();
+    withTone(prisma);
+    await service.create('u1', { name: 'a', systemPrompt: '{{custom.tone}}' });
+    expect(prisma.agentMode.create).toHaveBeenCalledTimes(1);
+    await service.updateGeneral('u1', { systemPrompt: '{{custom.tone}}' });
+    expect(prisma.generalModeSetting.upsert).toHaveBeenCalledTimes(1);
+
+    await expect(
+      service.create('u1', {
+        name: 'a',
+        systemPrompt: '{{custom.tone}} {{custom.ghost}}',
+      }),
+    ).rejects.toMatchObject({
+      errCode: ErrorCodes.MODE_INVALID_PLACEHOLDER.code,
+      message: '未知占位符：custom.ghost',
+    });
+    await expect(
+      service.updateGeneral('u1', { systemPrompt: '{{custom.ghost}}' }),
+    ).rejects.toMatchObject({
+      errCode: ErrorCodes.MODE_INVALID_PLACEHOLDER.code,
+    });
+    expect(prisma.agentMode.create).toHaveBeenCalledTimes(1);
+    expect(prisma.generalModeSetting.upsert).toHaveBeenCalledTimes(1);
+  });
+
+  it('catalog：fragments 在内置 id 后追加该用户的自建 id', async () => {
+    const { service, prisma } = makeService();
+    withTone(prisma);
+    const c = await service.catalog('u1');
+    expect(c.fragments).toEqual([
+      'platform.language',
+      'platform.slash_command',
+      'platform.skill_loading',
+      'platform.injection_guard',
+      'custom.tone',
+    ]);
+  });
+
+  it('preview / general preview：展开自建片段，{{skills_dir}} 换成实际路径', async () => {
+    const { service, prisma } = makeService();
+    withTone(prisma);
+    const mode = await service.preview('u1', {
+      name: 'a',
+      systemPrompt: '专用 {{custom.tone}}',
+    });
+    expect(mode.systemPrompt.startsWith('专用 语气友好，技能在 /skills')).toBe(
+      true,
+    );
+    const general = await service.previewGeneral('u1', {
+      systemPrompt: '通用 {{custom.tone}}',
+    });
+    expect(
+      general.systemPrompt.startsWith('通用 语气友好，技能在 /skills'),
+    ).toBe(true);
+    await expect(
+      service.preview('u1', { name: 'a', systemPrompt: '{{custom.ghost}}' }),
+    ).rejects.toMatchObject({
+      errCode: ErrorCodes.MODE_INVALID_PLACEHOLDER.code,
+    });
   });
 });

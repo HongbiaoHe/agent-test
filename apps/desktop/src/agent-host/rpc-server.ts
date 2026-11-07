@@ -58,7 +58,7 @@ async function modeCatalog(s: Services): Promise<ModeCatalog> {
     tools: s.registry.catalog(),
     mcpServers: s.mcp.list().servers.map(({ id, name, slug }) => ({ id, name, slug })),
     skills: skills.filter((x) => x.enabled).map(({ name, description }) => ({ name, description })),
-    fragments: [...PROMPT_FRAGMENT_IDS],
+    fragments: [...PROMPT_FRAGMENT_IDS, ...Object.keys(s.modes.customFragments())],
     generalPrompt: s.modes.getGeneral().systemPrompt ?? GENERAL_MODE_PROMPT,
     capabilities: [...catalogCapabilities(s)],
   };
@@ -185,6 +185,7 @@ export function createHandlers(s: Services): Handlers {
       const { systemPrompt, unavailable } = resolveMode({
         mode: { ...p, id: 'preview' },
         fragmentOverrides: s.modes.fragmentOverrides(),
+        customFragments: s.modes.customFragments(),
         ...(await previewEnv(s)),
       });
       return { systemPrompt, unavailable };
@@ -200,15 +201,26 @@ export function createHandlers(s: Services): Handlers {
         mode: null,
         generalPrompt: p.systemPrompt,
         fragmentOverrides: s.modes.fragmentOverrides(),
+        customFragments: s.modes.customFragments(),
         ...(await previewEnv(s)),
       });
       return { systemPrompt, unavailable };
     },
     'modes.fragments.list': () => s.modes.listFragments(),
-    'modes.fragments.update': (p) => {
-      const f = s.modes.updateFragment(p.id, p.text);
+    'modes.fragments.update': ({ id, ...patch }) => {
+      const f = s.modes.updateFragment(id, patch);
       s.modesChanged();
       return f;
+    },
+    'modes.fragments.create': (p) => {
+      const f = s.modes.createFragment(p);
+      s.modesChanged();
+      return f;
+    },
+    'modes.fragments.delete': (p) => {
+      s.modes.deleteFragment(p.id);
+      s.modesChanged();
+      return { ok: true };
     },
     'conversations.search': (p) => s.repo.search(p.query),
     'conversations.tokenReport': (p) => s.repo.tokenReport(p.id),

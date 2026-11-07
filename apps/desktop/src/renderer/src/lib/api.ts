@@ -236,12 +236,19 @@ export const updateGeneralMode = (input: GeneralModeSettings) => agent.call('mod
 
 export const previewGeneralMode = (systemPrompt: string | null) => agent.call('modes.general.preview', { systemPrompt });
 
-/** 内置 4 个平台片段（生效正文 / 默认正文 / 是否改写过） */
+/** 内置 4 个平台片段（生效正文 / 默认正文 / 是否改写过），其后是自建片段 */
 export const listPromptFragments = () => agent.call('modes.fragments.list', {});
 
-/** 改写片段正文；null（或与默认相同）= 恢复默认 */
-export const updatePromptFragment = (id: string, text: string | null) =>
-  agent.call('modes.fragments.update', { id, text });
+/** 改片段：内置只改 text（null 或与默认相同 = 恢复默认）；自建可改 title / text */
+export const updatePromptFragment = (id: string, patch: { text?: string | null; title?: string }) =>
+  agent.call('modes.fragments.update', { id, ...patch });
+
+/** 新建自建片段（id 为 custom.<名字>，创建后不可改） */
+export const createPromptFragment = (input: { id: string; title: string; text: string }) =>
+  agent.call('modes.fragments.create', input);
+
+/** 删除自建片段；仍被模式或通用提示词引用时 host 拒绝并在报错里列出引用处 */
+export const deletePromptFragment = (id: string) => agent.call('modes.fragments.delete', { id });
 
 /** 解析 install 落库的 source 串（github:owner/repo#path@ref），供「更新」按钮重装同源（同 Web） */
 export function parseGithubSource(source: string): InstallSkillInput | null {
