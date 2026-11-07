@@ -3,6 +3,11 @@ import {
   AgentModeSchema,
   GENERAL_MODE_PROMPT,
 } from '@agent-test/agent-core/modes/mode.schema';
+import {
+  type FragmentOverrides,
+  PROMPT_FRAGMENT_DEFAULTS,
+  type PromptFragmentId,
+} from '@agent-test/agent-core/modes/prompt-fragments';
 import type {
   AgentMode as AgentModeRow,
   GeneralModeSetting,
@@ -43,5 +48,27 @@ export function toGeneralModeView(
     defaultPrompt: GENERAL_MODE_PROMPT,
     defaultModel: row?.defaultModel ?? null,
     defaultThinkingLevel: row?.defaultThinkingLevel ?? null,
+  };
+}
+
+/** GET /modes/fragments 单项、PUT /modes/fragments/:fragmentId 的返回形状。 */
+export interface PromptFragmentView {
+  id: PromptFragmentId;
+  /** 生效的正文：用户改写的，没改写则是默认 */
+  text: string;
+  defaultText: string;
+  isCustom: boolean;
+}
+
+export function toFragmentView(
+  id: PromptFragmentId,
+  overrides: FragmentOverrides,
+): PromptFragmentView {
+  const custom = overrides[id];
+  return {
+    id,
+    text: custom ?? PROMPT_FRAGMENT_DEFAULTS[id],
+    defaultText: PROMPT_FRAGMENT_DEFAULTS[id],
+    isCustom: custom !== undefined,
   };
 }

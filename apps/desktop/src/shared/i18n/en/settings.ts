@@ -159,6 +159,17 @@ export const settings = {
       },
       failed: 'Preview failed',
     },
+    fragments: {
+      title: 'Platform fragments',
+      description: 'Platform rules that mode prompts reference via placeholders. Rewriting one changes every mode that references it; you can restore the default at any time.',
+      loadFailed: 'Failed to load platform fragments',
+      custom: 'Customized',
+      edit: 'Edit {{id}}',
+      editorTitle: 'Edit fragment: {{id}}',
+      textLabel: 'Fragment text',
+      insertVariable: 'Insert {{variable}}',
+      hint: 'Fragments are shared by every mode that references them; the only variable allowed is {{variable}} (replaced with the skills directory at run time).',
+    },
     capability: {
       sandbox: 'Remote sandbox',
       workspace: 'Workspace',

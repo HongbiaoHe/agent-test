@@ -27,6 +27,7 @@ import { SkillsService } from '../skills/skills.service';
 import { AbortRegistry } from '../agent/abort-registry';
 import type { BackgroundService } from '../background/background.service';
 import type { McpService } from '../mcp/mcp.service';
+import { ModesService } from '../modes/modes.service';
 import type { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
 import { AgentProcessor } from './agent.processor';
 
@@ -43,6 +44,10 @@ const mcpMock = {
 const backgroundMock = {
   deliverPending: jest.fn().mockResolvedValue(undefined),
 } as unknown as BackgroundService;
+// 用户没改写任何平台片段（片段来源另有「模式装配」用例走真实 ModesService 读库）
+const modesMock = {
+  fragmentOverrides: jest.fn().mockResolvedValue({}),
+} as unknown as ModesService;
 // 注册表只是透传给 resolveMode（已 mock），空表即可；真实注册表另有 tool-registry.provider.spec
 const registry = new ToolRegistry<BackendHost>();
 
@@ -174,6 +179,7 @@ describe('AgentProcessor 多轮重放', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c1', kind: 'run' },
@@ -270,6 +276,7 @@ describe('AgentProcessor 多轮重放', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c3', kind: 'run' },
@@ -375,6 +382,7 @@ describe('AgentProcessor 多轮重放', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c1', kind: 'run' },
@@ -454,6 +462,7 @@ describe('AgentProcessor 多轮重放', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c4', kind: 'run' },
@@ -528,6 +537,7 @@ describe('AgentProcessor 多轮重放', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c2', kind: 'run' },
@@ -628,6 +638,7 @@ describe('AgentProcessor 多轮重放', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'seed1', kind: 'run' },
@@ -705,6 +716,7 @@ describe('AgentProcessor 多轮重放', () => {
         mcpMock,
         backgroundMock,
         registry,
+        modesMock,
       );
       const done = proc.process({
         data: { conversationId: 'c1', kind: 'run' },
@@ -783,6 +795,7 @@ describe('AgentProcessor 多轮重放', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'no-sbx', kind: 'run' },
@@ -854,6 +867,7 @@ describe('AgentProcessor 多轮重放', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'no-sbx', kind: 'run' },
@@ -932,6 +946,7 @@ describe('AgentProcessor 多轮重放', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'no-sbx', kind: 'run' },
@@ -1014,6 +1029,7 @@ describe('AgentProcessor 多轮重放', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'uid1', kind: 'run' },
@@ -1089,6 +1105,7 @@ describe('AgentProcessor 多轮重放', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: {
@@ -1149,6 +1166,7 @@ describe('AgentProcessor 多轮重放', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'ha1', kind: 'run' },
@@ -1235,6 +1253,7 @@ describe('AgentProcessor 多轮重放', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'mt1', kind: 'run' },
@@ -1305,6 +1324,7 @@ describe('AgentProcessor 多轮重放', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'media1', kind: 'run' },
@@ -1448,6 +1468,7 @@ describe('AgentProcessor 流式聚合落库', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'agg1', kind: 'run' },
@@ -1571,6 +1592,7 @@ describe('AgentProcessor 思考深度与思考过程', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'th1', kind: opts.kind ?? 'run' },
@@ -1674,8 +1696,10 @@ describe('AgentProcessor 模式装配', () => {
     conv: Record<string, unknown>,
     sandbox: unknown,
     generalSetting: { systemPrompt: string | null } | null = null,
+    fragmentRows: { fragmentId: string; text: string }[] = [],
   ) {
     (getUserSandbox as jest.Mock).mockResolvedValueOnce(sandbox);
+    const fragmentFindMany = jest.fn().mockResolvedValue(fragmentRows);
     const agentModeFindFirst = jest
       .fn()
       .mockResolvedValue(conv.modeId === 'm1' ? modeRow : null);
@@ -1694,7 +1718,20 @@ describe('AgentProcessor 模式装配', () => {
         create: jest.fn().mockResolvedValue({}),
       },
       agentMode: { findFirst: agentModeFindFirst },
+      promptFragmentOverride: { findMany: fragmentFindMany },
     } as unknown as PrismaService;
+    const skills = {
+      effectiveSkillsFor: jest.fn().mockResolvedValue([] as SkillDef[]),
+      getFor: jest.fn().mockResolvedValue(undefined),
+    } as unknown as SkillsService;
+    // 真实 ModesService（只用到 fragmentOverrides 读库）：断言片段来自 promptFragmentOverride 表
+    const modes = new ModesService(
+      prisma,
+      registry,
+      skills,
+      mcpMock,
+      sandboxSettingsMock,
+    );
     (buildAgent as jest.Mock).mockImplementation(() => ({
       stream: jest.fn(async () => (async function* () {})()),
       getState: jest.fn(async () => ({ tasks: [] })),
@@ -1704,10 +1741,7 @@ describe('AgentProcessor 模式装配', () => {
       {
         publish: jest.fn().mockResolvedValue(undefined),
       } as unknown as StreamService,
-      {
-        effectiveSkillsFor: jest.fn().mockResolvedValue([] as SkillDef[]),
-        getFor: jest.fn().mockResolvedValue(undefined),
-      } as unknown as SkillsService,
+      skills,
       {},
       { add: jest.fn().mockResolvedValue({}) } as unknown as Queue,
       makeMediaService(),
@@ -1716,6 +1750,7 @@ describe('AgentProcessor 模式装配', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modes,
     );
     await proc.process({
       data: { conversationId: 'pv1', kind: 'run' },
@@ -1723,10 +1758,11 @@ describe('AgentProcessor 模式装配', () => {
     const input = (resolveMode as jest.Mock).mock.calls[0][0] as {
       mode: unknown;
       generalPrompt?: string | null;
+      fragmentOverrides?: Record<string, string>;
       env: { capabilities: Set<string>; workspace?: string; skillsDir: string };
       envPromptBlock: string;
     };
-    return { agentModeFindFirst, generalFindUnique, input };
+    return { agentModeFindFirst, generalFindUnique, fragmentFindMany, input };
   }
 
   it('conv.modeId 存在 → 按 (id, userId) 查模式，传给 resolveMode 的 mode 是收窄后的行', async () => {
@@ -1778,6 +1814,37 @@ describe('AgentProcessor 模式装配', () => {
     expect(generalFindUnique).toHaveBeenCalledTimes(1);
     expect(input.mode).toBeNull();
     expect(input.generalPrompt).toBeNull();
+  });
+
+  it('fragmentOverrides 来自该用户的 promptFragmentOverride 行（库里残留的未知片段 id 忽略）', async () => {
+    const { fragmentFindMany, input } = await runWith(
+      { modeId: null },
+      null,
+      null,
+      [
+        { fragmentId: 'platform.language', text: '只说英文' },
+        { fragmentId: 'platform.retired', text: '旧片段' },
+      ],
+    );
+    expect(fragmentFindMany).toHaveBeenCalledWith({
+      where: { userId: 'u1' },
+      select: { fragmentId: true, text: true },
+    });
+    expect(input.fragmentOverrides).toEqual({
+      'platform.language': '只说英文',
+    });
+  });
+
+  it('选了模式 → 同样传入该用户的片段改写；没有改写 → 空对象', async () => {
+    const withRows = await runWith({ modeId: 'm1' }, null, null, [
+      { fragmentId: 'platform.injection_guard', text: '自定义防注入' },
+    ]);
+    expect(withRows.input.fragmentOverrides).toEqual({
+      'platform.injection_guard': '自定义防注入',
+    });
+    (resolveMode as jest.Mock).mockClear();
+    const none = await runWith({ modeId: 'm1' }, null);
+    expect(none.input.fragmentOverrides).toEqual({});
   });
 
   it('选了模式 → 不读通用模式设置，generalPrompt: null', async () => {
@@ -1871,6 +1938,7 @@ describe('AgentProcessor 主动停止', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c-stop', kind: 'run' },
@@ -1923,6 +1991,7 @@ describe('AgentProcessor 主动停止', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c-gate', kind: 'run' },
@@ -1956,6 +2025,7 @@ describe('AgentProcessor 主动停止', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c-quiet', kind: 'run' },
@@ -1998,6 +2068,7 @@ describe('AgentProcessor 超时按 toolName 分叉', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
 
   const timeoutJob = (toolName?: string) =>
@@ -2148,6 +2219,7 @@ describe('AgentProcessor token 会计', () => {
       mcpMock,
       backgroundMock,
       registry,
+      modesMock,
     );
     await proc.process({
       data: { conversationId: 'c1', kind: 'run' },

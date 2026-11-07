@@ -89,6 +89,44 @@ describe('通用模式 RPC', () => {
     expect(custom.unavailable.map((u) => u.name)).toContain('generate_image');
   });
 
+  it('平台片段：list / update 广播 modes-changed；通用与模式预览都用改写后的正文，{{skills_dir}} 已替换', async () => {
+    const { h, modesChangedCount } = setup();
+    const before = await h['modes.fragments.list']({});
+    expect(before.map((f) => [f.id, f.isCustom])).toEqual([
+      ['platform.language', false],
+      ['platform.slash_command', false],
+      ['platform.skill_loading', false],
+      ['platform.injection_guard', false],
+    ]);
+
+    const text = '## 回复语言\nFRAG-RPC 技能目录：{{skills_dir}}';
+    const updated = await h['modes.fragments.update']({ id: 'platform.language', text });
+    expect(updated).toMatchObject({ id: 'platform.language', text, isCustom: true });
+    expect(modesChangedCount()).toBe(1);
+    expect((await h['modes.fragments.list']({})).find((f) => f.id === 'platform.language')?.isCustom).toBe(true);
+
+    const general = await h['modes.general.preview']({ systemPrompt: null });
+    expect(general.systemPrompt).toContain('FRAG-RPC 技能目录：<runtime>/skills');
+    expect(general.systemPrompt).not.toContain('{{skills_dir}}');
+    expect(general.systemPrompt).not.toContain(before[0].defaultText);
+
+    const mode = await h['modes.preview']({
+      name: 'p',
+      systemPrompt: 'MODE\n\n{{platform.language}}',
+      toolNames: [],
+      mcpServerIds: [],
+      skillNames: [],
+      defaultModel: null,
+      defaultThinkingLevel: null,
+    });
+    expect(mode.systemPrompt.startsWith('MODE\n\n## 回复语言\nFRAG-RPC 技能目录：<runtime>/skills')).toBe(true);
+
+    // 恢复默认后预览回到默认正文
+    await h['modes.fragments.update']({ id: 'platform.language', text: null });
+    expect(modesChangedCount()).toBe(2);
+    expect((await h['modes.general.preview']({ systemPrompt: null })).systemPrompt).toContain(before[0].defaultText);
+  });
+
   it('新建会话：没带模式时用通用设置的默认模型 / 思考档位回填；模式优先；带了 model 以带的为准', async () => {
     const { s, h } = setup();
     const plain = await h['conversations.create']({});

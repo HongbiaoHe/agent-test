@@ -1,7 +1,11 @@
 import {
   expandPlaceholders,
+  findInvalidFragmentVariables,
   findUnknownPlaceholders,
+  isPromptFragmentId,
+  PROMPT_FRAGMENT_DEFAULTS,
   PROMPT_FRAGMENT_IDS,
+  renderFragment,
 } from './prompt-fragments';
 
 describe('prompt fragments', () => {
@@ -44,5 +48,48 @@ describe('prompt fragments', () => {
 
   it('没有占位符的正文原样返回', () => {
     expect(expandPlaceholders('plain', { skillsDir: '/s' })).toBe('plain');
+  });
+});
+
+describe('片段覆盖与 {{skills_dir}}', () => {
+  it('默认正文里技能库路径写成 {{skills_dir}}，渲染时替换', () => {
+    expect(PROMPT_FRAGMENT_DEFAULTS['platform.slash_command']).toContain(
+      '{{skills_dir}}/<技能名>/SKILL.md',
+    );
+    expect(
+      renderFragment('platform.slash_command', { skillsDir: '/w/skills' }),
+    ).toContain('/w/skills/<技能名>/SKILL.md');
+    expect(
+      renderFragment('platform.slash_command', { skillsDir: '/w/skills' }),
+    ).not.toContain('{{');
+  });
+
+  it('覆盖只替换对应片段，{{skills_dir}} 在覆盖文本里同样展开；其它片段仍用默认', () => {
+    const out = expandPlaceholders(
+      '{{platform.language}}\n{{platform.slash_command}}',
+      {
+        skillsDir: '/s',
+        overrides: {
+          'platform.slash_command': '命令技能在 {{ skills_dir }} 下',
+        },
+      },
+    );
+    expect(out).toBe(
+      `${PROMPT_FRAGMENT_DEFAULTS['platform.language']}\n命令技能在 /s 下`,
+    );
+  });
+
+  it('findInvalidFragmentVariables：只允许 skills_dir，片段里不能再引用片段', () => {
+    expect(findInvalidFragmentVariables('a {{skills_dir}} b')).toEqual([]);
+    expect(
+      findInvalidFragmentVariables(
+        '{{foo}} {{platform.language}} {{foo}} {{skills_dir}}',
+      ),
+    ).toEqual(['foo', 'platform.language']);
+  });
+
+  it('isPromptFragmentId 只认内置 4 个', () => {
+    expect(isPromptFragmentId('platform.language')).toBe(true);
+    expect(isPromptFragmentId('platform.nope')).toBe(false);
   });
 });

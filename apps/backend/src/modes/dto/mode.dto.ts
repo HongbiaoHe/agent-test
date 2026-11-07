@@ -68,3 +68,13 @@ export class GeneralModePreviewDto {
   @IsString()
   systemPrompt!: string | null;
 }
+
+/**
+ * PUT /modes/fragments/:fragmentId 的请求体：text 必须显式给出，字符串 = 改写，null = 恢复默认；
+ * 长度、变量（只允许 {{skills_dir}}）等语义校验在 ModesService 里经 core 完成。
+ */
+export class FragmentInputDto {
+  @ValidateIf((o: FragmentInputDto) => o.text !== null)
+  @IsString()
+  text!: string | null;
+}

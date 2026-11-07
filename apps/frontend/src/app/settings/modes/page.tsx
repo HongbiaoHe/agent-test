@@ -7,11 +7,12 @@ import { useState } from "react";
 import { Button } from "@/components/ui/button";
 import { getGeneralMode, getModeCatalog } from "@/lib/api";
 
+import { FragmentSection } from "./_components/fragment-list";
 import { ModeEditor, MODE_CATALOG_KEY, type ModeEditorTarget } from "./_components/mode-editor";
 import { GENERAL_MODE_QUERY_KEY, GeneralModeCard, ModeList } from "./_components/mode-list";
 
 // /settings/modes：agent 模式管理——通用模式（置顶，只可编辑）+ 用户模式列表 / 新建 / 从通用模式复制 /
-// 编辑 / 删除 / 预览最终提示词。
+// 编辑 / 删除 / 预览最终提示词；页面底部是平台片段（{{platform.*}} 展开的正文，用户可改写）。
 export default function ModesSettingsPage() {
   const [editor, setEditor] = useState<ModeEditorTarget | null>(null);
   // 「Duplicate general」用生效的通用提示词（含用户自定义）+ 目录里全部可选项预填；与卡片 / 编辑器共用缓存
@@ -66,6 +67,7 @@ export default function ModesSettingsPage() {
         <GeneralModeCard onEdit={(settings) => setEditor({ mode: "general", settings })} />
         <ModeList onEdit={(item) => setEditor({ mode: "edit", item })} />
       </div>
+      <FragmentSection />
       <ModeEditor target={editor} onClose={() => setEditor(null)} />
     </div>
   );

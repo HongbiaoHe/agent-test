@@ -156,6 +156,15 @@ const MIGRATIONS: readonly string[] = [
     updated_at INTEGER NOT NULL
   );
   `,
+  // v9：平台片段（{{platform.xxx}}）的用户改写：一行一个片段，id 为 core 的 PROMPT_FRAGMENT_IDS 之一；
+  // 没有行 = 用 core 默认正文（恢复默认即删行）
+  `
+  CREATE TABLE prompt_fragment (
+    id TEXT PRIMARY KEY,
+    text TEXT NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  `,
 ];
 
 export type Db = DatabaseSync;

@@ -1493,3 +1493,30 @@ export function previewGeneralMode(systemPrompt: string | null): Promise<ModePre
     body: JSON.stringify({ systemPrompt }),
   });
 }
+
+/**
+ * GET /modes/fragments：平台片段（模式提示词里 `{{platform.xxx}}` 展开成的正文）。片段集合固定为内置 4 个；
+ * 每个用户可以改写正文（只对自己生效），正文里唯一可用的变量是 `{{skills_dir}}`。
+ */
+export interface PromptFragment {
+  /** 片段 id，如 platform.language */
+  id: string;
+  /** 生效的正文：改写过的，或默认的 defaultText */
+  text: string;
+  /** 平台默认正文（「Restore default」回到它） */
+  defaultText: string;
+  /** 是否改写过 */
+  isCustom: boolean;
+}
+
+export function listFragments(): Promise<PromptFragment[]> {
+  return request("/modes/fragments");
+}
+
+/** 改写片段正文；text 为 null（或与默认相同）= 恢复默认。用了 `{{skills_dir}}` 以外的变量时后端 400。 */
+export function updateFragment(id: string, text: string | null): Promise<PromptFragment> {
+  return request(`/modes/fragments/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: JSON.stringify({ text }),
+  });
+}

@@ -300,4 +300,13 @@ export const ErrorCodes = {
     code: 120003,
     message: 'Unknown placeholder in system prompt',
   },
+  MODE_FRAGMENT_NOT_FOUND: {
+    code: 120004,
+    message: 'Prompt fragment not found',
+  },
+  // message 运行时替换成「片段里只能使用 {{skills_dir}}，不支持：xxx」
+  MODE_FRAGMENT_INVALID_VARIABLE: {
+    code: 120005,
+    message: 'Unsupported variable in prompt fragment',
+  },
 } as const satisfies Record<string, ErrorDef>;

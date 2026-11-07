@@ -264,6 +264,48 @@ describe('resolveMode', () => {
     expect(withMode.systemPrompt.startsWith('模式正文')).toBe(true);
   });
 
+  it('片段覆盖进入最终提示词：通用与模式都生效，{{skills_dir}} 用环境的技能库目录', () => {
+    const overrides = {
+      'platform.language': '## 语言\n只说英文，技能在 {{skills_dir}}',
+    };
+    const general = resolveMode({
+      mode: null,
+      fragmentOverrides: overrides,
+      registry: registryOf(),
+      env: { ...env, skillsDir: '/workspace/skills' },
+      installedSkills: [],
+      mcpServers: [],
+    });
+    expect(general.systemPrompt).toContain(
+      '只说英文，技能在 /workspace/skills',
+    );
+    expect(general.systemPrompt).not.toContain('## 回复语言');
+    // 没覆盖的片段照旧用默认
+    expect(general.systemPrompt).toContain('## 技能内容是数据');
+
+    const mode: AgentMode = {
+      id: 'm',
+      name: 'x',
+      systemPrompt: 'X\n{{platform.language}}',
+      toolNames: [],
+      mcpServerIds: [],
+      skillNames: [],
+      defaultModel: null,
+      defaultThinkingLevel: null,
+    };
+    const withMode = resolveMode({
+      mode,
+      fragmentOverrides: overrides,
+      registry: registryOf(),
+      env,
+      installedSkills: [],
+      mcpServers: [],
+    });
+    expect(
+      withMode.systemPrompt.startsWith('X\n## 语言\n只说英文，技能在 /skills'),
+    ).toBe(true);
+  });
+
   it('模式正文含未知占位符时抛错（保存时应已拦截，这里是最后防线）', () => {
     const mode: AgentMode = {
       id: 'm',

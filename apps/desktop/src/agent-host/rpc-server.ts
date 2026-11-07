@@ -182,7 +182,11 @@ export function createHandlers(s: Services): Handlers {
     },
     'modes.catalog': () => modeCatalog(s),
     'modes.preview': async (p) => {
-      const { systemPrompt, unavailable } = resolveMode({ mode: { ...p, id: 'preview' }, ...(await previewEnv(s)) });
+      const { systemPrompt, unavailable } = resolveMode({
+        mode: { ...p, id: 'preview' },
+        fragmentOverrides: s.modes.fragmentOverrides(),
+        ...(await previewEnv(s)),
+      });
       return { systemPrompt, unavailable };
     },
     'modes.general.get': () => generalModeView(s.modes.getGeneral()),
@@ -195,9 +199,16 @@ export function createHandlers(s: Services): Handlers {
       const { systemPrompt, unavailable } = resolveMode({
         mode: null,
         generalPrompt: p.systemPrompt,
+        fragmentOverrides: s.modes.fragmentOverrides(),
         ...(await previewEnv(s)),
       });
       return { systemPrompt, unavailable };
+    },
+    'modes.fragments.list': () => s.modes.listFragments(),
+    'modes.fragments.update': (p) => {
+      const f = s.modes.updateFragment(p.id, p.text);
+      s.modesChanged();
+      return f;
     },
     'conversations.search': (p) => s.repo.search(p.query),
     'conversations.tokenReport': (p) => s.repo.tokenReport(p.id),

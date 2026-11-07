@@ -12,6 +12,7 @@ import {
   AgentModeInputSchema,
   GeneralModeSettingsSchema,
 } from '@agent-test/agent-core/modes/mode.schema';
+import { FragmentTextSchema, type PromptFragmentId } from '@agent-test/agent-core/modes/prompt-fragments';
 import type { Unavailable } from '@agent-test/agent-core/modes/resolve-mode';
 import type { ToolCatalogEntry } from '@agent-test/agent-core/modes/tool-registry';
 import { z } from 'zod';
@@ -74,6 +75,16 @@ export interface GeneralModeView {
   defaultPrompt: string;
   defaultModel: string | null;
   defaultThinkingLevel: string | null;
+}
+
+/** 一个内置平台片段（{{platform.xxx}}）：本机只存一份改写，没改写的用 core 默认正文 */
+export interface PromptFragmentView {
+  id: PromptFragmentId;
+  /** 生效正文（改写过取改写，否则 = defaultText）；里面的 {{skills_dir}} 未替换 */
+  text: string;
+  /** core 的默认正文（「恢复默认」回填用；renderer 不能从 core 的 CJS dist 取值） */
+  defaultText: string;
+  isCustom: boolean;
 }
 
 /** 会话搜索的一条结果：snippet 是命中的消息片段（只命中标题时为 null） */
@@ -229,6 +240,10 @@ export const rpcSchemas = {
   'modes.general.update': GeneralModeSettingsSchema,
   /** 用编辑中的通用提示词算最终系统提示（不落库）；null = 默认提示词 */
   'modes.general.preview': GeneralModeSettingsSchema.pick({ systemPrompt: true }),
+  /** 内置 4 个平台片段（固定顺序） */
+  'modes.fragments.list': z.object({}),
+  /** 改写片段正文；text 为 null 或与默认相同 = 恢复默认。正文里只能用 {{skills_dir}}，未知 id 报错 */
+  'modes.fragments.update': z.object({ id: z.string().min(1), text: FragmentTextSchema.nullable() }),
   /** 按标题与消息正文搜索（不区分大小写的子串匹配） */
   'conversations.search': z.object({ query: z.string().trim().min(1).max(200) }),
   'conversations.tokenReport': z.object({ id }),
@@ -324,6 +339,8 @@ export interface RpcResults {
   'modes.general.get': GeneralModeView;
   'modes.general.update': GeneralModeView;
   'modes.general.preview': ModePreview;
+  'modes.fragments.list': PromptFragmentView[];
+  'modes.fragments.update': PromptFragmentView;
   'conversations.search': ConversationSearchHit[];
   'conversations.tokenReport': TokenReport;
   'background.list': BackgroundTaskView[];
@@ -387,7 +404,7 @@ export type HostEvent =
   | { kind: 'event'; type: 'conversations-changed' }
   | { kind: 'event'; type: 'mcp-changed' }
   | { kind: 'event'; type: 'skills-changed' }
-  /** 模式增删改（设置页列表、会话内选择器据此刷新） */
+  /** 模式增删改、通用模式 / 平台片段改写（设置页列表、会话内选择器据此刷新） */
   | { kind: 'event'; type: 'modes-changed' }
   /** 系统浏览器里的 OAuth 授权完成（loopback 回调）：成功 / 失败都推，连接中的按钮据此结束 */
   | { kind: 'event'; type: 'mcp-oauth'; ok: boolean; serverId?: string; error?: string };

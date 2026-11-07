@@ -754,3 +754,11 @@ ALTER TABLE conversation ADD COLUMN mode_id TEXT;
 - [ ] web 端到端：preview 起 backend + frontend（先 `pm2 stop frontend`，测完恢复；视口测完 `preset=desktop`），走 Task 14/15 的流程；有沙箱与无沙箱（临时去掉 `DAYTONA_API_KEY`）各发一轮消息，确认无沙箱时技能仍能 `read_file` 到 `/skills/<name>/SKILL.md`。
 - [ ] 写 `## Verification` 节：每条命令 → 实际输出；每条事实 → file:line。
 - [ ] **不 commit**，把 diff 交给用户 review。
+
+---
+
+## 变更记录
+
+- **2026-11-07 通用模式可编辑**（推翻决策 1 中「通用模式不落库」）：每个用户可覆盖通用模式的提示词与默认模型 / 思考档位，可恢复默认；工具、连接器、技能仍恒为「全部，含以后新增」。web 存 `GeneralModeSetting`，desktop 存 `general_mode` 单行表；core 由 `resolveMode` 的 `generalPrompt` 接收。
+- **2026-11-07 平台片段可编辑**（推翻决策 2 中「用户不能自定义片段」）：只能改写内置 4 个片段的正文、恢复默认，不能新增；按用户各自覆盖。片段正文里唯一可用的变量是 `{{skills_dir}}`（技能库目录，随环境替换），其余 `{{xxx}}`（含片段互相引用）保存时拒绝。core 提供 `PROMPT_FRAGMENT_DEFAULTS` / `renderFragment` / `findInvalidFragmentVariables`，`resolveMode` 新增 `fragmentOverrides`。web 存 `PromptFragmentOverride`，desktop 存 `prompt_fragment`。
+- **2026-11-07 测试**：两端都有 Playwright 端到端套件（web `apps/frontend/e2e`，desktop `apps/desktop/e2e`），改完要两端都跑。

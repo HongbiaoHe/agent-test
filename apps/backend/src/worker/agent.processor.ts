@@ -43,6 +43,7 @@ import { appContextOf } from '../mcp/mcp-app-context';
 import { buildMcpPrompt } from '../mcp/mcp-agent-tools';
 import { McpService } from '../mcp/mcp.service';
 import { toAgentMode } from '../modes/mode-view';
+import { ModesService } from '../modes/modes.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { absolutizeRefPaths } from '../skills/skill-files';
 import { SkillsService } from '../skills/skills.service';
@@ -100,6 +101,7 @@ export class AgentProcessor extends WorkerHost {
     private readonly background: BackgroundService,
     @Inject(TOOL_REGISTRY)
     private readonly registry: ToolRegistry<BackendHost>,
+    private readonly modes: ModesService,
   ) {
     super();
   }
@@ -187,6 +189,7 @@ export class AgentProcessor extends WorkerHost {
       // 不满足 capability 的工具降级跳过并写进系统提示。MCP 按工具快照装配（不连 server），
       // run 与 resume 都要装：审批通过后的续跑得能执行被批准的 MCP 工具。
       // 通用模式读该用户的提示词覆盖（没有行 / 为 NULL → resolveMode 用 GENERAL_MODE_PROMPT）。
+      // 平台片段的用户改写对通用模式与普通模式都生效（没改写的用 core 默认）。
       const modeRow = conv.modeId
         ? await this.prisma.agentMode.findFirst({
             where: { id: conv.modeId, userId: conv.userId },
@@ -198,11 +201,13 @@ export class AgentProcessor extends WorkerHost {
             where: { userId: conv.userId },
             select: { systemPrompt: true },
           });
+      const fragmentOverrides = await this.modes.fragmentOverrides(conv.userId);
       const env = backendEnvironment(sandbox);
       const mcpServers = await this.mcp.runtimeServers(conv.userId);
       const assembly = resolveMode({
         mode: modeRow ? toAgentMode(modeRow) : null,
         generalPrompt: generalSetting?.systemPrompt ?? null,
+        fragmentOverrides,
         registry: this.registry,
         env,
         installedSkills: defs,

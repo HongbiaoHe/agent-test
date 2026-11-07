@@ -4,6 +4,7 @@
  * 保存时校验正文里的 {{platform.xxx}} 占位符（片段库没有的拒绝，决策 2）。
  * 删模式 → 引用它的会话 mode_id 置空（回到通用模式，决策 8）。
  * 通用模式（mode_id 为 NULL）的用户覆盖存单行表 `general_mode`（id = 1）：提示词 + 新建会话的默认模型 / 思考档位。
+ * 平台片段的改写存 `prompt_fragment`（一行一个片段；不能新增片段，正文里只能用 {{skills_dir}}）。
  */
 import { randomUUID } from 'node:crypto';
 import {
@@ -14,8 +15,19 @@ import {
   type GeneralModeSettings,
   GeneralModeSettingsSchema,
 } from '@agent-test/agent-core/modes/mode.schema';
-import { findUnknownPlaceholders } from '@agent-test/agent-core/modes/prompt-fragments';
+import {
+  findInvalidFragmentVariables,
+  findUnknownPlaceholders,
+  type FragmentOverrides,
+  FragmentTextSchema,
+  isPromptFragmentId,
+  PROMPT_FRAGMENT_DEFAULTS,
+  PROMPT_FRAGMENT_IDS,
+  type PromptFragmentId,
+  SKILLS_DIR_VARIABLE,
+} from '@agent-test/agent-core/modes/prompt-fragments';
 import { z } from 'zod';
+import type { PromptFragmentView } from '../../shared/rpc';
 import type { Db } from '../db/database';
 import { hostI18n } from '../i18n';
 import { transaction } from '../db/database';
@@ -41,6 +53,8 @@ const modeRow = z.object({
   created_at: z.number(),
   updated_at: z.number(),
 });
+
+const fragmentRow = z.object({ id: z.string(), text: z.string() });
 
 const generalRow = z.object({
   system_prompt: z.string().nullable(),
@@ -178,11 +192,65 @@ export class ModeStore {
     return this.getGeneral();
   }
 
+  /** 内置 4 个片段（按 PROMPT_FRAGMENT_IDS 顺序）：生效正文 + 默认正文 + 是否改写过 */
+  listFragments(): PromptFragmentView[] {
+    const overrides = this.fragmentOverrides();
+    return PROMPT_FRAGMENT_IDS.map((id) => fragmentView(id, overrides));
+  }
+
+  /** 改写过的片段正文（给 resolveMode）；库里残留的未知 id（core 下线了某片段）忽略 */
+  fragmentOverrides(): FragmentOverrides {
+    const out: FragmentOverrides = {};
+    for (const r of this.db.prepare('SELECT id, text FROM prompt_fragment').all()) {
+      const row = fragmentRow.parse(r);
+      if (isPromptFragmentId(row.id)) out[row.id] = row.text;
+    }
+    return out;
+  }
+
+  /** 改写片段正文；null 或与默认正文相同 = 恢复默认（删行，以后 core 默认更新也能跟上） */
+  updateFragment(id: string, text: string | null): PromptFragmentView {
+    if (!isPromptFragmentId(id)) throw new Error(hostI18n.t('errors.modes.fragmentNotFound', { id }));
+    if (text === null || text === PROMPT_FRAGMENT_DEFAULTS[id]) {
+      this.db.prepare('DELETE FROM prompt_fragment WHERE id = ?').run(id);
+    } else {
+      if (!FragmentTextSchema.safeParse(text).success) {
+        throw new Error(hostI18n.t('errors.modes.fragmentTextLength', { max: String(FragmentTextSchema.maxLength) }));
+      }
+      const invalid = findInvalidFragmentVariables(text);
+      if (invalid.length) {
+        throw new Error(
+          hostI18n.t('errors.modes.fragmentInvalidVariable', {
+            variable: `{{${SKILLS_DIR_VARIABLE}}}`,
+            vars: invalid.map((v) => `{{${v}}}`).join(', '),
+          }),
+        );
+      }
+      this.db
+        .prepare(
+          `INSERT INTO prompt_fragment (id, text, updated_at) VALUES (?, ?, ?)
+           ON CONFLICT (id) DO UPDATE SET text = excluded.text, updated_at = excluded.updated_at`,
+        )
+        .run(id, text, Date.now());
+    }
+    return fragmentView(id, this.fragmentOverrides());
+  }
+
   private validate(raw: AgentModeInput): AgentModeInput {
     const input = AgentModeInputSchema.parse(raw);
     assertKnownPlaceholders(input.systemPrompt);
     return input;
   }
+}
+
+function fragmentView(id: PromptFragmentId, overrides: FragmentOverrides): PromptFragmentView {
+  const custom = overrides[id];
+  return {
+    id,
+    text: custom ?? PROMPT_FRAGMENT_DEFAULTS[id],
+    defaultText: PROMPT_FRAGMENT_DEFAULTS[id],
+    isCustom: custom !== undefined,
+  };
 }
 
 function assertKnownPlaceholders(text: string): void {

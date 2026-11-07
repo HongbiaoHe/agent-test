@@ -35,6 +35,9 @@ export const errors = {
   modes: {
     notFound: '模式不存在：{{id}}',
     unknownPlaceholder: '提示詞裡有未知的佔位符：{{ids}}（只能引用 platform.* 片段）',
+    fragmentNotFound: '片段不存在：{{id}}',
+    fragmentInvalidVariable: '片段裡只能使用 {{variable}}，不支援：{{vars}}',
+    fragmentTextLength: '片段正文不能為空，且不超過 {{max}} 字',
   },
   run: {
     busy: '這個對話正在執行，請先等它結束或按停止',

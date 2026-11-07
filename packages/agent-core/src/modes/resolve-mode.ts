@@ -7,7 +7,7 @@ import {
 import type { RuntimeServer } from '../mcp/mcp-types';
 import type { Capability, RuntimeEnvironment } from './capabilities';
 import { type AgentMode, GENERAL_MODE_PROMPT } from './mode.schema';
-import { expandPlaceholders } from './prompt-fragments';
+import { expandPlaceholders, type FragmentOverrides } from './prompt-fragments';
 import type {
   ToolCreateContext,
   ToolDescriptor,
@@ -49,6 +49,8 @@ export interface ResolveModeInput<H> {
   mode: AgentMode | null;
   /** 用户覆盖的通用模式提示词（仅 mode 为 null 时用）；缺省 / null = GENERAL_MODE_PROMPT */
   generalPrompt?: string | null;
+  /** 用户改写过的平台片段正文（没改写的用 core 默认） */
+  fragmentOverrides?: FragmentOverrides;
   registry: ToolRegistry<H>;
   env: RuntimeEnvironment;
   installedSkills: readonly SkillFiles[];
@@ -132,7 +134,10 @@ export function resolveMode<H>(input: ResolveModeInput<H>): ModeAssembly<H> {
   const body = mode
     ? mode.systemPrompt
     : (input.generalPrompt ?? GENERAL_MODE_PROMPT);
-  let systemPrompt = expandPlaceholders(body, { skillsDir: env.skillsDir });
+  let systemPrompt = expandPlaceholders(body, {
+    skillsDir: env.skillsDir,
+    overrides: input.fragmentOverrides,
+  });
   const sections: string[] = [];
   for (const d of toolDescriptors) {
     const section =

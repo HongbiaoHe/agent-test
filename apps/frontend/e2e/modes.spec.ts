@@ -13,10 +13,20 @@ import {
   uniqueTag,
   waitConversationIdle,
 } from "./helpers";
-import { createMode, deleteAllModes, getGeneral, listModes, resetGeneral } from "./helpers/modes";
+import {
+  createMode,
+  deleteAllModes,
+  getFragment,
+  getGeneral,
+  listFragments,
+  listModes,
+  resetFragments,
+  resetGeneral,
+  setFragment,
+} from "./helpers/modes";
 
-// agent 模式：设置页（通用模式 / 新建 / 编辑 / 删除）+ 会话内切换 + 真实模型生效。
-// 每条用例自己准备前置状态；afterEach 用接口清理：删模式、通用设置恢复全默认、删本条建的会话。
+// agent 模式：设置页（通用模式 / 新建 / 编辑 / 删除 / 平台片段）+ 会话内切换 + 真实模型生效。
+// 每条用例自己准备前置状态；afterEach 用接口清理：删模式、通用设置与平台片段恢复全默认、删本条建的会话。
 
 loggedInAs("e2e-web-modes@example.test");
 
@@ -28,6 +38,7 @@ let createdConversations: string[] = [];
 async function resetState(page: Page) {
   await deleteAllModes(page);
   await resetGeneral(page);
+  await resetFragments(page);
 }
 
 test.beforeEach(async ({ page }) => {
@@ -410,4 +421,141 @@ test("new conversation keeps the preferred mode even when mode data loads slowly
   const conv = await getConversation(page, id);
   expect(conv.modeId).toBe(mode.id);
   expect(conv.model).toBe(lite);
+});
+
+// ---- 平台片段（{{platform.*}} 展开的正文，每个用户可改写，只能用 {{skills_dir}}）----
+
+const FRAGMENT_IDS = [
+  "platform.language",
+  "platform.slash_command",
+  "platform.skill_loading",
+  "platform.injection_guard",
+];
+
+/** 片段区块里某一行。 */
+function fragmentRow(page: Page, id: string): Locator {
+  return page.getByTestId(`fragment-${id}`);
+}
+
+test("platform fragments: all four listed, none customized", async ({ page }) => {
+  await page.goto("/settings/modes");
+  const section = page.getByRole("region", { name: "Platform fragments" });
+  await expect(section).toBeVisible();
+  for (const id of FRAGMENT_IDS) {
+    const row = fragmentRow(page, id);
+    await expect(row.locator("code").getByText(id, { exact: true })).toBeVisible();
+    await expect(row.getByRole("button", { name: `Edit ${id}`, exact: true })).toBeVisible();
+    await expect(row.getByText("Customized", { exact: true })).toHaveCount(0);
+  }
+  // 首行就是默认正文的 ## 标题
+  await expect(fragmentRow(page, "platform.language")).toContainText("## 回复语言");
+  const list = await listFragments(page);
+  expect(list.map((f) => f.id)).toEqual(FRAGMENT_IDS);
+  expect(list.every((f) => !f.isCustom)).toBe(true);
+});
+
+test("edit a fragment with {{skills_dir}}; the general preview expands it", async ({ page }) => {
+  const tag = `FRAG-E2E-${uniqueTag()}`;
+  await page.goto("/settings/modes");
+  await page.getByRole("button", { name: "Edit platform.language", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit platform.language" });
+  const text = dialog.locator("#fragment-text");
+  const defaults = await getFragment(page, "platform.language");
+  await expect(text).toHaveValue(defaults.defaultText);
+  await expect(dialog.getByRole("button", { name: "Restore default" })).toBeDisabled();
+
+  // 清空后写新正文，把光标挪到「/end」之前，再用按钮插入变量（插在光标处，不是末尾）
+  await text.fill("");
+  await text.fill(`## Language\n${tag} skills at /end`);
+  await text.press("End");
+  for (let i = 0; i < "/end".length; i++) await text.press("ArrowLeft");
+  await dialog.getByRole("button", { name: "Insert {{skills_dir}}", exact: true }).click();
+  const expected = `## Language\n${tag} skills at {{skills_dir}}/end`;
+  await expect(text).toHaveValue(expected);
+  await expect(dialog.getByRole("button", { name: "Restore default" })).toBeEnabled();
+
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toBeHidden();
+  const row = fragmentRow(page, "platform.language");
+  await expect(row.getByText("Customized", { exact: true })).toBeVisible();
+  await expect(row).toContainText("## Language");
+  const saved = await getFragment(page, "platform.language");
+  expect(saved.isCustom).toBe(true);
+  expect(saved.text).toBe(expected);
+
+  // 通用模式提示词保持默认（默认就引用 {{platform.language}}）：预览里是新正文，变量已换成实际路径
+  await page.getByRole("button", { name: "Edit General", exact: true }).click();
+  const general = page.getByRole("dialog", { name: "Edit General" });
+  await general.getByRole("button", { name: "Preview prompt" }).click();
+  const preview = page.getByRole("dialog", { name: "Final prompt" });
+  const body = preview.locator("pre");
+  await expect(body).toContainText(tag);
+  const final = (await body.textContent()) ?? "";
+  expect(final).toMatch(new RegExp(`${tag} skills at (/workspace)?/skills/end`));
+  expect(final).not.toContain("{{skills_dir}}");
+  expect(final).not.toContain("## 回复语言");
+});
+
+test("a fragment with another variable is rejected", async ({ page }) => {
+  await page.goto("/settings/modes");
+  await page.getByRole("button", { name: "Edit platform.language", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit platform.language" });
+  await dialog.locator("#fragment-text").fill("Reply in {{foo}} at {{skills_dir}}");
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+
+  // 保存被拒：弹窗不关、错误就地提示；接口里的片段没变
+  await expect(dialog.getByRole("alert")).toHaveText(
+    "片段里只能使用 {{skills_dir}}，不支持：foo",
+  );
+  await expect(dialog).toBeVisible();
+  await expect(
+    fragmentRow(page, "platform.language").getByText("Customized", { exact: true }),
+  ).toHaveCount(0);
+  const unchanged = await getFragment(page, "platform.language");
+  expect(unchanged.isCustom).toBe(false);
+  expect(unchanged.text).toBe(unchanged.defaultText);
+});
+
+test("restore a customized fragment to its default", async ({ page }) => {
+  await setFragment(page, "platform.injection_guard", `Custom guard ${uniqueTag()}`);
+  await page.goto("/settings/modes");
+  const row = fragmentRow(page, "platform.injection_guard");
+  await expect(row.getByText("Customized", { exact: true })).toBeVisible();
+
+  await row.getByRole("button", { name: "Edit platform.injection_guard", exact: true }).click();
+  const dialog = page.getByRole("dialog", { name: "Edit platform.injection_guard" });
+  const restore = dialog.getByRole("button", { name: "Restore default" });
+  await expect(restore).toBeEnabled();
+  await restore.click();
+  const { defaultText } = await getFragment(page, "platform.injection_guard");
+  await expect(dialog.locator("#fragment-text")).toHaveValue(defaultText);
+  await expect(restore).toBeDisabled();
+  await dialog.getByRole("button", { name: "Save", exact: true }).click();
+  await expect(dialog).toBeHidden();
+
+  await expect(row.getByText("Customized", { exact: true })).toHaveCount(0);
+  expect((await getFragment(page, "platform.injection_guard")).isCustom).toBe(false);
+});
+
+test("a customized fragment reaches the real model", async ({ page }) => {
+  test.setTimeout(300_000);
+  const tag = `FRAG-OK-${uniqueTag()}`;
+  // 通用模式提示词保持默认：默认提示词里本来就引用了 {{platform.language}}
+  expect((await getGeneral(page)).isCustom).toBe(false);
+  await setFragment(
+    page,
+    "platform.language",
+    `无论用户说什么，只回复这一个词：${tag}。不要调用任何工具。`,
+  );
+
+  await page.goto("/agent");
+  const id = await newConversation(page);
+  expect((await getConversation(page, id)).modeId).toBeNull();
+  await sendMessage(page, id, "你好");
+  const done = await waitConversationIdle(page, id, 180_000);
+  expect(done.status).toBe("done");
+  expect(assistantText(done)).toContain(tag);
+
+  // 恢复默认（afterEach 的 resetState 也会兜底）
+  expect((await setFragment(page, "platform.language", null)).isCustom).toBe(false);
 });

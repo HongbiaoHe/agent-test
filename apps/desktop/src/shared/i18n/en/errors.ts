@@ -35,6 +35,9 @@ export const errors = {
   modes: {
     notFound: 'Mode not found: {{id}}',
     unknownPlaceholder: 'The prompt contains unknown placeholders: {{ids}} (only platform.* fragments can be referenced)',
+    fragmentNotFound: 'Fragment not found: {{id}}',
+    fragmentInvalidVariable: 'Fragments can only use {{variable}}; not supported: {{vars}}',
+    fragmentTextLength: 'Fragment text must be non-empty and at most {{max}} characters',
   },
   run: {
     busy: 'This chat is running. Wait for it to finish or click Stop',

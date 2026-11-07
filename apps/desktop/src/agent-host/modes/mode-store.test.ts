@@ -1,6 +1,7 @@
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { PROMPT_FRAGMENT_DEFAULTS, PROMPT_FRAGMENT_IDS } from '@agent-test/agent-core/modes/prompt-fragments';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { ConversationRepo } from '../db/conversations';
 import { openDatabase } from '../db/database';
@@ -106,6 +107,68 @@ describe('ModeStore', () => {
       'platform.nope',
     );
     expect(store.getGeneral().systemPrompt).toBe('{{platform.language}}');
+  });
+
+  it('平台片段：没改写时按固定顺序列出 4 个默认正文；overrides 为空', () => {
+    const store = new ModeStore(openDatabase(join(dir, 'spark.db')));
+    const list = store.listFragments();
+    expect(list.map((f) => f.id)).toEqual([...PROMPT_FRAGMENT_IDS]);
+    for (const f of list) {
+      expect(f.text).toBe(PROMPT_FRAGMENT_DEFAULTS[f.id]);
+      expect(f.defaultText).toBe(PROMPT_FRAGMENT_DEFAULTS[f.id]);
+      expect(f.isCustom).toBe(false);
+    }
+    expect(store.fragmentOverrides()).toEqual({});
+  });
+
+  it('平台片段：改写生效并落库（重开库仍在），其它片段不受影响', () => {
+    const file = join(dir, 'spark.db');
+    const store = new ModeStore(openDatabase(file));
+    const text = '## 回复语言\n只用英文回复。技能在 {{skills_dir}}。';
+    expect(store.updateFragment('platform.language', text)).toEqual({
+      id: 'platform.language',
+      text,
+      defaultText: PROMPT_FRAGMENT_DEFAULTS['platform.language'],
+      isCustom: true,
+    });
+    expect(store.fragmentOverrides()).toEqual({ 'platform.language': text });
+    // 再改一次走 upsert
+    expect(store.updateFragment('platform.language', `${text}!`).text).toBe(`${text}!`);
+    const reopened = new ModeStore(openDatabase(file));
+    expect(reopened.fragmentOverrides()).toEqual({ 'platform.language': `${text}!` });
+    expect(reopened.listFragments().filter((f) => f.isCustom).map((f) => f.id)).toEqual(['platform.language']);
+  });
+
+  it('平台片段：传 null 或与默认相同的正文都按恢复默认处理（删行）', () => {
+    const store = new ModeStore(openDatabase(join(dir, 'spark.db')));
+    store.updateFragment('platform.language', '改写 A');
+    store.updateFragment('platform.injection_guard', '改写 B');
+
+    const reset = store.updateFragment('platform.language', null);
+    expect(reset).toMatchObject({ text: PROMPT_FRAGMENT_DEFAULTS['platform.language'], isCustom: false });
+    expect(store.fragmentOverrides()).toEqual({ 'platform.injection_guard': '改写 B' });
+
+    const same = store.updateFragment('platform.injection_guard', PROMPT_FRAGMENT_DEFAULTS['platform.injection_guard']);
+    expect(same.isCustom).toBe(false);
+    expect(store.fragmentOverrides()).toEqual({});
+  });
+
+  it('平台片段：{{skills_dir}} 以外的变量（含引用别的片段）被拒且不落库', () => {
+    const store = new ModeStore(openDatabase(join(dir, 'spark.db')));
+    store.updateFragment('platform.language', '旧正文 {{skills_dir}}');
+    expect(() => store.updateFragment('platform.language', '{{skills_dir}} {{foo}} {{platform.slash_command}}')).toThrow(
+      '片段里只能使用 {{skills_dir}}，不支持：{{foo}}, {{platform.slash_command}}',
+    );
+    expect(store.fragmentOverrides()).toEqual({ 'platform.language': '旧正文 {{skills_dir}}' });
+  });
+
+  it('平台片段：未知 id 拒绝（不能新增片段）；正文为空或超长拒绝', () => {
+    const store = new ModeStore(openDatabase(join(dir, 'spark.db')));
+    expect(() => store.updateFragment('platform.nope', '正文')).toThrow('片段不存在：platform.nope');
+    expect(() => store.updateFragment('custom.x', null)).toThrow('片段不存在：custom.x');
+    expect(() => store.updateFragment('platform.language', '')).toThrow('片段正文不能为空');
+    expect(() => store.updateFragment('platform.language', 'x'.repeat(20_001))).toThrow('20000');
+    expect(store.fragmentOverrides()).toEqual({});
   });
 
   it('会话切模式：空闲可切；运行中 / 等审批拒绝', () => {

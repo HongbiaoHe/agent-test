@@ -3,7 +3,8 @@
  * - 设置 → 模式：通用卡片（默认、可编辑不可删、自定义 / 恢复默认）；新建模式（占位符插入、勾选、预览）、
  *   未知占位符被拒、改名；
  * - 会话里：切换模式 → / 命令面板只列该模式勾的技能 → 切回通用；删模式 → 会话回落通用；
- * - 真实模型：模式提示词 / 自定义的通用提示词确实进了系统提示（需要 SPARK_E2E_GOOGLE_API_KEY）。
+ * - 平台片段：列出 4 个内置片段、改写（插入 {{skills_dir}}）后预览生效、非法变量被拒、恢复默认；
+ * - 真实模型：模式提示词 / 自定义的通用提示词 / 改写的平台片段确实进了系统提示（需要 SPARK_E2E_GOOGLE_API_KEY）。
  * 每个用例自建临时目录与前置数据（失败重跑时模块顶层的目录会是新的空目录）。
  */
 import { randomUUID } from 'node:crypto';
@@ -73,6 +74,31 @@ async function editGeneralPrompt(page: Page, prompt: string | null): Promise<voi
   const editor = page.getByRole('dialog', { name: '编辑通用模式' });
   if (prompt === null) await editor.getByRole('button', { name: '恢复默认' }).click();
   else await editor.getByLabel('系统提示').fill(prompt);
+  await editor.getByRole('button', { name: '保存' }).click();
+  await expect(editor).toBeHidden();
+}
+
+function fragmentsSection(page: Page): Locator {
+  return page.getByRole('dialog').getByRole('region', { name: '平台片段' });
+}
+
+function fragmentRow(page: Page, id: string): Locator {
+  return fragmentsSection(page)
+    .getByRole('listitem')
+    .filter({ has: page.getByText(id, { exact: true }) });
+}
+
+function fragmentEditor(page: Page, id: string): Locator {
+  return page.getByRole('dialog', { name: `编辑片段：${id}` });
+}
+
+/** 设置 → 模式 → 平台片段：把正文换成 text（null = 点「恢复默认」），保存后等弹窗关闭 */
+async function editFragment(page: Page, id: string, text: string | null): Promise<void> {
+  await openSettings(page, '模式');
+  await fragmentRow(page, id).getByRole('button', { name: `编辑 ${id}` }).click();
+  const editor = fragmentEditor(page, id);
+  if (text === null) await editor.getByRole('button', { name: '恢复默认' }).click();
+  else await editor.getByLabel('片段正文').fill(text);
   await editor.getByRole('button', { name: '保存' }).click();
   await expect(editor).toBeHidden();
 }
@@ -188,6 +214,82 @@ test('设置 → 模式：通用卡片、自定义与恢复默认；新建（占
   await app.close();
 });
 
+test('设置 → 模式 → 平台片段：列出内置片段；插入 {{skills_dir}} 改写后预览生效；非法变量被拒；恢复默认', async () => {
+  const dirs = tempDirs('modes-fragments');
+  const { app, page } = await launch(dirs);
+  await openSettings(page, '模式');
+
+  // a) 固定 4 个片段，都没改写
+  const section = fragmentsSection(page);
+  await expect(section.getByRole('listitem')).toHaveCount(4);
+  for (const id of ['platform.language', 'platform.slash_command', 'platform.skill_loading', 'platform.injection_guard']) {
+    await expect(fragmentRow(page, id)).toBeVisible();
+  }
+  await expect(fragmentRow(page, 'platform.language')).toContainText('## 回复语言');
+  await expect(section.getByText('已自定义')).toHaveCount(0);
+
+  // b) 编辑 platform.language：光标停在第二行末尾，插入 {{skills_dir}} → 插在光标处
+  const id = 'platform.language';
+  const token = `FRAG-E2E-${randomUUID().slice(0, 8)}`;
+  await fragmentRow(page, id).getByRole('button', { name: `编辑 ${id}` }).click();
+  let editor = fragmentEditor(page, id);
+  const text = editor.getByLabel('片段正文');
+  const defaultText = await text.inputValue();
+  expect(defaultText.startsWith('## 回复语言\n')).toBe(true);
+  await expect(editor.getByRole('button', { name: '恢复默认' })).toBeDisabled();
+  await text.fill(`## 回复语言\n${token} 技能目录：\n结尾`);
+  for (let i = 0; i < 3; i++) await text.press('ArrowLeft');
+  await editor.getByRole('button', { name: '插入 {{skills_dir}}' }).click();
+  const custom = `## 回复语言\n${token} 技能目录：{{skills_dir}}\n结尾`;
+  await expect(text).toHaveValue(custom);
+  await expect(editor.getByRole('button', { name: '恢复默认' })).toBeEnabled();
+  await page.screenshot({ path: join(screens, 'modes-6-fragment-editor.png') });
+  await editor.getByRole('button', { name: '保存' }).click();
+  await expect(editor).toBeHidden();
+  await expect(fragmentRow(page, id).getByText('已自定义')).toBeVisible();
+  await expect(section.getByText('已自定义')).toHaveCount(1);
+  await page.screenshot({ path: join(screens, 'modes-7-fragments.png') });
+
+  // c) 预览通用模式提示词：用的是改写后的正文，{{skills_dir}} 已替换成路径（预览用占位运行目录 <runtime>/skills）
+  await generalCard(page).getByRole('button', { name: '编辑' }).click();
+  const general = page.getByRole('dialog', { name: '编辑通用模式' });
+  await general.getByRole('button', { name: '预览提示词' }).click();
+  const preview = page.getByRole('dialog', { name: '最终系统提示' });
+  const pre = preview.locator('pre');
+  await expect(pre).toContainText(`${token} 技能目录：<runtime>/skills\n结尾`);
+  await expect(pre).not.toContainText('{{skills_dir}}');
+  await expect(pre).not.toContainText(defaultText);
+  await page.keyboard.press('Escape');
+  await expect(preview).toBeHidden();
+  await general.getByRole('button', { name: '取消' }).click();
+  await expect(general).toBeHidden();
+
+  // d) {{skills_dir}} 以外的变量：保存被拒、有错误提示；关掉重开，正文没变
+  await fragmentRow(page, id).getByRole('button', { name: `编辑 ${id}` }).click();
+  editor = fragmentEditor(page, id);
+  await expect(editor.getByLabel('片段正文')).toHaveValue(custom);
+  await editor.getByLabel('片段正文').fill(`${custom}\n{{foo}}`);
+  await editor.getByRole('button', { name: '保存' }).click();
+  await expect(editor.getByRole('alert')).toContainText('片段里只能使用 {{skills_dir}}，不支持：{{foo}}');
+  await expect(editor).toBeVisible();
+  await editor.getByRole('button', { name: '取消' }).click();
+  await expect(editor).toBeHidden();
+  await fragmentRow(page, id).getByRole('button', { name: `编辑 ${id}` }).click();
+  editor = fragmentEditor(page, id);
+  await expect(editor.getByLabel('片段正文')).toHaveValue(custom);
+
+  // e) 恢复默认：正文回到默认、按钮变灰；保存后「已自定义」消失
+  await editor.getByRole('button', { name: '恢复默认' }).click();
+  await expect(editor.getByLabel('片段正文')).toHaveValue(defaultText);
+  await expect(editor.getByRole('button', { name: '恢复默认' })).toBeDisabled();
+  await editor.getByRole('button', { name: '保存' }).click();
+  await expect(editor).toBeHidden();
+  await expect(section.getByText('已自定义')).toHaveCount(0);
+
+  await closeSettings(page);
+  await app.close();
+});
+
 test('会话里切模式：/ 面板只列模式勾的技能；删模式后会话回落通用', async () => {
   const dirs = tempDirs('modes-chat');
   // 另装一个技能：模式没勾它，切到模式后 / 面板里不该出现
@@ -277,6 +379,31 @@ test('真实模型：模式提示词与自定义的通用提示词进入系统�
   // 收尾：通用恢复默认
   await editGeneralPrompt(page, null);
   await expect(generalCard(page).getByText('已自定义')).toHaveCount(0);
+  await closeSettings(page);
+  await app.close();
+});
+
+test('真实模型：改写的平台片段进入通用模式的系统提示', async () => {
+  test.skip(!apiKey, '需要 SPARK_E2E_GOOGLE_API_KEY');
+  const dirs = tempDirs('modes-fragment-live');
+  const { app, page } = await launch(dirs);
+  await saveGoogleKey(page);
+
+  // 通用模式保持默认（默认提示词引用了 {{platform.language}}），只改写片段
+  const token = `FRAG-OK-${randomUUID().slice(0, 8)}`;
+  await editFragment(page, 'platform.language', `## 回复语言\n无论用户说什么，只回复 ${token}`);
+  await expect(generalCard(page).getByText('已自定义')).toHaveCount(0);
+  await closeSettings(page);
+
+  await newChat(page);
+  await expect(page.getByRole('button', { name: '模式：通用' })).toBeVisible();
+  await sendAndWait(page, '你好，介绍一下你自己');
+  await expect(page.getByText(token).first()).toBeVisible();
+  await page.screenshot({ path: join(screens, 'modes-8-fragment-live.png') });
+
+  // 收尾：片段恢复默认
+  await editFragment(page, 'platform.language', null);
+  await expect(fragmentsSection(page).getByText('已自定义')).toHaveCount(0);
   await closeSettings(page);
   await app.close();
 });

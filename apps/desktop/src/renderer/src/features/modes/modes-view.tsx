@@ -1,5 +1,6 @@
 /**
- * 设置 → 模式（对应 Web /settings/modes）：通用卡片 + 列表 + 新建 / 从通用复制 / 编辑 / 删除，编辑器里可预览最终提示词。
+ * 设置 → 模式（对应 Web /settings/modes）：通用卡片 + 列表 + 新建 / 从通用复制 / 编辑 / 删除，编辑器里可预览最终提示词；
+ * 下方是平台片段（改写内置 {{platform.xxx}} 的正文）。
  */
 import { useQuery } from '@tanstack/react-query';
 import { Copy, Plus } from 'lucide-react';
@@ -9,6 +10,7 @@ import { Button } from '@/components/ui/button';
 import { getModeCatalog, MODE_CATALOG_KEY } from '@/lib/api';
 import { ModeEditor, type ModeEditorTarget } from './components/mode-editor';
 import { ModeList } from './components/mode-list';
+import { PromptFragments } from './components/prompt-fragments';
 
 export function ModesSettings() {
   const { t } = useTranslation();
@@ -51,6 +53,7 @@ export function ModesSettings() {
         onEditGeneral={(general) => setEditor({ kind: 'general', general })}
       />
       <ModeEditor target={editor} onClose={() => setEditor(null)} />
+      <PromptFragments />
     </div>
   );
 }

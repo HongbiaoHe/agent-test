@@ -297,6 +297,8 @@ export class RunService {
         mode,
         // 通用模式用用户覆盖的提示词（没覆盖为 null → core 默认）；有模式时 core 不看它
         generalPrompt: mode ? null : this.deps.modes.getGeneral().systemPrompt,
+        // 用户改写过的平台片段（通用模式与普通模式都生效）
+        fragmentOverrides: this.deps.modes.fragmentOverrides(),
         registry: this.deps.registry,
         env,
         installedSkills: await this.deps.skills.listFiles(),

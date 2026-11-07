@@ -206,12 +206,14 @@ export const updateCustomSkill = (name: string, input: CustomSkillInput) =>
 
 // ——— agent 模式（同 Web lib/api.ts 的 listModes 等；数据存在本机 SQLite）———
 export type { AgentMode, AgentModeInput, GeneralModeSettings } from '@agent-test/agent-core/modes/mode.schema';
-export type { GeneralModeView, ModeCatalog, ModePreview } from '../../../shared/rpc';
+export type { GeneralModeView, ModeCatalog, ModePreview, PromptFragmentView } from '../../../shared/rpc';
 
 export const MODES_QUERY_KEY = ['modes'] as const;
 export const MODE_CATALOG_KEY = ['mode-catalog'] as const;
 /** 挂在 MODES_QUERY_KEY 下：modes-changed 事件按前缀一起失效 */
 export const GENERAL_MODE_KEY = ['modes', 'general'] as const;
+/** 同样挂在 MODES_QUERY_KEY 下：片段改写广播 modes-changed，按前缀失效 */
+export const PROMPT_FRAGMENTS_KEY = ['modes', 'fragments'] as const;
 
 export const listModes = () => agent.call('modes.list', {});
 
@@ -233,6 +235,13 @@ export const getGeneralMode = () => agent.call('modes.general.get', {});
 export const updateGeneralMode = (input: GeneralModeSettings) => agent.call('modes.general.update', input);
 
 export const previewGeneralMode = (systemPrompt: string | null) => agent.call('modes.general.preview', { systemPrompt });
+
+/** 内置 4 个平台片段（生效正文 / 默认正文 / 是否改写过） */
+export const listPromptFragments = () => agent.call('modes.fragments.list', {});
+
+/** 改写片段正文；null（或与默认相同）= 恢复默认 */
+export const updatePromptFragment = (id: string, text: string | null) =>
+  agent.call('modes.fragments.update', { id, text });
 
 /** 解析 install 落库的 source 串（github:owner/repo#path@ref），供「更新」按钮重装同源（同 Web） */
 export function parseGithubSource(source: string): InstallSkillInput | null {

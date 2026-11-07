@@ -3,6 +3,7 @@ jest.mock('../agent/sandbox-providers', () => ({}));
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
 import { GENERAL_MODE_PROMPT } from '@agent-test/agent-core/modes/mode.schema';
+import { PROMPT_FRAGMENT_DEFAULTS } from '@agent-test/agent-core/modes/prompt-fragments';
 import { ToolRegistry } from '@agent-test/agent-core/modes/tool-registry';
 import { isSandboxConfigured } from '../agent/sandbox';
 import type { BackendHost } from '../agent/tool-registry.provider';
@@ -76,6 +77,13 @@ function makeService() {
       upsert: jest.fn((arg: { create: Record<string, unknown> }) =>
         Promise.resolve({ updatedAt: now, ...arg.create }),
       ),
+    },
+    promptFragmentOverride: {
+      findMany: jest
+        .fn<Promise<{ fragmentId: string; text: string }[]>, []>()
+        .mockResolvedValue([]),
+      upsert: jest.fn().mockResolvedValue({}),
+      deleteMany: jest.fn().mockResolvedValue({ count: 1 }),
     },
     mcpServer: {
       findMany: jest
@@ -404,5 +412,156 @@ describe('ModesService 通用模式设置', () => {
     ).rejects.toMatchObject({
       errCode: ErrorCodes.MODE_INVALID_PLACEHOLDER.code,
     });
+  });
+});
+
+describe('ModesService 平台片段', () => {
+  const LANG = PROMPT_FRAGMENT_DEFAULTS['platform.language'];
+
+  it('list：没有改写 → 4 个片段按固定顺序，正文 = 默认，isCustom 全为 false', async () => {
+    const { service, prisma } = makeService();
+    const list = await service.listFragments('u1');
+    expect(list.map((f) => f.id)).toEqual([
+      'platform.language',
+      'platform.slash_command',
+      'platform.skill_loading',
+      'platform.injection_guard',
+    ]);
+    for (const f of list) {
+      expect(f.isCustom).toBe(false);
+      expect(f.text).toBe(PROMPT_FRAGMENT_DEFAULTS[f.id]);
+      expect(f.defaultText).toBe(PROMPT_FRAGMENT_DEFAULTS[f.id]);
+    }
+    expect(prisma.promptFragmentOverride.findMany).toHaveBeenCalledWith({
+      where: { userId: 'u1' },
+      select: { fragmentId: true, text: true },
+    });
+  });
+
+  it('list：有改写 → 该片段返回改写正文、isCustom true，defaultText 仍是默认；残留的未知 id 忽略', async () => {
+    const { service, prisma } = makeService();
+    prisma.promptFragmentOverride.findMany.mockResolvedValue([
+      { fragmentId: 'platform.language', text: '只说英文' },
+      { fragmentId: 'platform.retired', text: '旧' },
+    ]);
+    const list = await service.listFragments('u1');
+    expect(list).toHaveLength(4);
+    expect(list[0]).toEqual({
+      id: 'platform.language',
+      text: '只说英文',
+      defaultText: LANG,
+      isCustom: true,
+    });
+    expect(list.slice(1).every((f) => !f.isCustom)).toBe(true);
+  });
+
+  it('update：改写 → 按 (userId, fragmentId) upsert，返回改写后的视图（{{skills_dir}} 允许）', async () => {
+    const { service, prisma } = makeService();
+    const text = '技能在 {{skills_dir}} 下';
+    const view = await service.updateFragment('u1', 'platform.language', {
+      text,
+    });
+    expect(prisma.promptFragmentOverride.upsert).toHaveBeenCalledWith({
+      where: {
+        userId_fragmentId: { userId: 'u1', fragmentId: 'platform.language' },
+      },
+      create: { userId: 'u1', fragmentId: 'platform.language', text },
+      update: { text },
+    });
+    expect(view).toEqual({
+      id: 'platform.language',
+      text,
+      defaultText: LANG,
+      isCustom: true,
+    });
+  });
+
+  it.each([
+    ['null', null],
+    ['与默认正文相同', LANG],
+  ])('update：text 为 %s → 恢复默认（删行，不 upsert）', async (_, text) => {
+    const { service, prisma } = makeService();
+    const view = await service.updateFragment('u1', 'platform.language', {
+      text,
+    });
+    expect(prisma.promptFragmentOverride.deleteMany).toHaveBeenCalledWith({
+      where: { userId: 'u1', fragmentId: 'platform.language' },
+    });
+    expect(prisma.promptFragmentOverride.upsert).not.toHaveBeenCalled();
+    expect(view).toEqual({
+      id: 'platform.language',
+      text: LANG,
+      defaultText: LANG,
+      isCustom: false,
+    });
+  });
+
+  it('update：{{skills_dir}} 以外的变量（含片段占位符）→ MODE_FRAGMENT_INVALID_VARIABLE(400)，不写库', async () => {
+    const { service, prisma } = makeService();
+    const err = await service
+      .updateFragment('u1', 'platform.language', {
+        text: '{{foo}} {{skills_dir}} {{platform.slash_command}} {{foo}}',
+      })
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({
+      errCode: ErrorCodes.MODE_FRAGMENT_INVALID_VARIABLE.code,
+      message:
+        '片段里只能使用 {{skills_dir}}，不支持：foo, platform.slash_command',
+    });
+    expect(err).toHaveProperty('status', 400);
+    expect(prisma.promptFragmentOverride.upsert).not.toHaveBeenCalled();
+    expect(prisma.promptFragmentOverride.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    ['空串', ''],
+    ['超过 20000 字', 'x'.repeat(20_001)],
+  ])('update：%s → MODE_INVALID(400)，不写库', async (_, text) => {
+    const { service, prisma } = makeService();
+    const err = await service
+      .updateFragment('u1', 'platform.language', { text })
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({ errCode: ErrorCodes.MODE_INVALID.code });
+    expect(err).toHaveProperty('status', 400);
+    expect(prisma.promptFragmentOverride.upsert).not.toHaveBeenCalled();
+  });
+
+  it('update：未知片段 id → MODE_FRAGMENT_NOT_FOUND(404)，不写库（不能新增片段）', async () => {
+    const { service, prisma } = makeService();
+    const err = await service
+      .updateFragment('u1', 'platform.custom', { text: 'x' })
+      .catch((e: unknown) => e);
+    expect(err).toMatchObject({
+      errCode: ErrorCodes.MODE_FRAGMENT_NOT_FOUND.code,
+    });
+    expect(err).toHaveProperty('status', 404);
+    expect(prisma.promptFragmentOverride.upsert).not.toHaveBeenCalled();
+    expect(prisma.promptFragmentOverride.deleteMany).not.toHaveBeenCalled();
+  });
+
+  it('preview / general preview：用该用户的片段改写展开占位符，{{skills_dir}} 换成实际路径', async () => {
+    const { service, prisma } = makeService();
+    prisma.promptFragmentOverride.findMany.mockResolvedValue([
+      {
+        fragmentId: 'platform.language',
+        text: '只说英文，技能在 {{skills_dir}}',
+      },
+    ]);
+    const mode = await service.preview('u1', {
+      name: 'a',
+      systemPrompt: '专用 {{platform.language}}',
+    });
+    // 无沙箱 → 技能目录 /skills
+    expect(mode.systemPrompt.startsWith('专用 只说英文，技能在 /skills')).toBe(
+      true,
+    );
+    const general = await service.previewGeneral('u1', {
+      systemPrompt: '通用 {{platform.language}}',
+    });
+    expect(
+      general.systemPrompt.startsWith('通用 只说英文，技能在 /skills'),
+    ).toBe(true);
+    expect(general.systemPrompt).not.toContain('{{skills_dir}}');
+    expect(general.systemPrompt).not.toContain('## 回复语言');
   });
 });

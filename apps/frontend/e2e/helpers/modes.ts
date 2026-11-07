@@ -1,7 +1,7 @@
-// modes 用例专用的接口工具（模式 CRUD、通用模式设置）。
+// modes 用例专用的接口工具（模式 CRUD、通用模式设置、平台片段）。
 import type { Page } from "@playwright/test";
 
-import type { AgentMode, AgentModeInput, GeneralModeSettings } from "@/lib/api";
+import type { AgentMode, AgentModeInput, GeneralModeSettings, PromptFragment } from "@/lib/api";
 
 import { apiOk } from "../helpers";
 
@@ -44,4 +44,30 @@ export async function resetGeneral(page: Page): Promise<void> {
     method: "PUT",
     body: { systemPrompt: null, defaultModel: null, defaultThinkingLevel: null },
   });
+}
+
+export function listFragments(page: Page): Promise<PromptFragment[]> {
+  return apiOk<PromptFragment[]>(page, "/modes/fragments");
+}
+
+/** 某个平台片段的当前状态（GET /modes/fragments 里按 id 取）。 */
+export async function getFragment(page: Page, id: string): Promise<PromptFragment> {
+  const found = (await listFragments(page)).find((f) => f.id === id);
+  if (!found) throw new Error(`fragment ${id} not listed`);
+  return found;
+}
+
+/** 用接口改写片段正文（null = 恢复默认）。 */
+export function setFragment(page: Page, id: string, text: string | null): Promise<PromptFragment> {
+  return apiOk<PromptFragment>(page, `/modes/fragments/${encodeURIComponent(id)}`, {
+    method: "PUT",
+    body: { text },
+  });
+}
+
+/** 清理：全部平台片段恢复默认。 */
+export async function resetFragments(page: Page): Promise<void> {
+  for (const f of await listFragments(page)) {
+    if (f.isCustom) await setFragment(page, f.id, null);
+  }
 }

@@ -148,6 +148,17 @@ export const settings = {
       },
       failed: '预览失败',
     },
+    fragments: {
+      title: '平台片段',
+      description: '模式提示词通过占位符引用的平台规则。改写后，所有引用它的模式都会用新正文；可随时恢复默认。',
+      loadFailed: '加载平台片段失败',
+      custom: '已自定义',
+      edit: '编辑 {{id}}',
+      editorTitle: '编辑片段：{{id}}',
+      textLabel: '片段正文',
+      insertVariable: '插入 {{variable}}',
+      hint: '片段会被所有引用它的模式共用；正文里只能使用 {{variable}}（运行时替换成技能库目录）。',
+    },
     capability: {
       sandbox: '远程沙箱',
       workspace: '工作区',
