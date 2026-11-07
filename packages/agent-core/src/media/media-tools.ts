@@ -101,9 +101,19 @@ export const mediaParamsSchema = z
     '档位参数，值必须取自 list_media_models 里该模型的 values（模型没有的维度不要传）。不传的必填项自动取第一个值',
   );
 
+/**
+ * prompt 在 schema 层只防明显异常的超长输入：各模型的真实上限差别很大（目录 max_prompt 从 1500 到 10 万字符不等），
+ * 按所选模型的上限校验交给服务端，超了回 invalid_params 让模型改短重试（见 list_media_models 的 maxPromptChars）。
+ */
+export const MEDIA_PROMPT_SCHEMA_MAX = 200_000;
+
 const generateSchema = z.object({
-  // 设计 §安全：prompt 上限 2000 字符（schema 层兜底，超长由 zod 直接拒绝）
-  prompt: z.string().max(2000).describe('图像/视频生成提示词（已与用户确认）'),
+  prompt: z
+    .string()
+    .max(MEDIA_PROMPT_SCHEMA_MAX)
+    .describe(
+      '图像/视频生成提示词（已与用户确认）。长度不能超过所选模型的 maxPromptChars（list_media_models）',
+    ),
   model: z
     .string()
     .optional()
@@ -145,7 +155,7 @@ const audioParam = (desc: string) => z.string().optional().describe(desc);
 const generateAudioSchema = generateSchema.extend({
   prompt: z
     .string()
-    .max(2000)
+    .max(MEDIA_PROMPT_SCHEMA_MAX)
     .describe(
       '要念的文本（已与用户确认）。seed-audio 中文单次约 400 字内，更长请分段多次生成',
     ),

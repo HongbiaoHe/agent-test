@@ -18,6 +18,7 @@ import { keepsNativeBlocks, stripNonPortableBlocks } from './portable-content';
 import { type ThinkingLevel, thinkingModelParams } from './thinking-level';
 import { resolveModelName } from './models';
 import { askUserTool } from './tools/ask-user.tool';
+import { recoverToolInputError } from './tool-input-recovery';
 
 // ─────────────────────────────────────────────────────────────────────────────
 // Context schema
@@ -44,6 +45,12 @@ const contextSchema = z.object({
 const skillReadPolicyMiddleware = createMiddleware({
   name: 'skillReadPolicyMiddleware',
   wrapModelCall: injectSkillReadPolicy as never,
+});
+
+/** 工具入参校验不过 → 把问题回给模型改参重试，而不是整轮失败（见 tool-input-recovery.ts） */
+const toolInputRecoveryMiddleware = createMiddleware({
+  name: 'toolInputRecoveryMiddleware',
+  wrapToolCall: recoverToolInputError,
 });
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -184,6 +191,8 @@ export async function buildAgent(opts: BuildAgentOptions): Promise<BuiltAgent> {
     createDynamicContextMiddleware(opts.dynamicContext ?? []),
     skillReadPolicyMiddleware,
     ...(contentSanitizer ? [contentSanitizer] : []),
+    // 最内层：先于 deepagents 的中间件接住工具入参校验错误
+    toolInputRecoveryMiddleware,
   ];
 
   return createDeepAgent({

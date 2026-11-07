@@ -85,6 +85,7 @@ describe('buildAgent', () => {
       'dynamicContextMiddleware',
       'skillReadPolicyMiddleware',
       'portableContentMiddleware',
+      'toolInputRecoveryMiddleware',
     ]);
   });
 
@@ -99,6 +100,7 @@ describe('buildAgent', () => {
     expect(lastCall().middleware.map((m) => m.name)).toEqual([
       'dynamicContextMiddleware',
       'skillReadPolicyMiddleware',
+      'toolInputRecoveryMiddleware',
     ]);
   });
 
