@@ -23,6 +23,14 @@ import { backgroundPrompt, createBackgroundTools, RUN_IN_BACKGROUND_TOOL } from 
 import { createPreviewPageTool, PREVIEW_PAGE_TOOL } from '../preview/preview-page.tool';
 import { createSaveSkillTool, SAVE_SKILL_TOOL } from '../skills/save-skill.tool';
 import type { SkillStore } from '../skills/skill-store';
+import { ffmpegBinaries } from '../video/ffmpeg-paths';
+import {
+  CHECK_VIDEO_PROJECT_TOOL,
+  checkVideoProjectTool,
+  CREATE_VIDEO_PROJECT_TOOL,
+  createVideoProjectTool,
+  VIDEO_PROJECT_PROMPT,
+} from '../video/video-tools';
 import type { WebApi } from '../web-media/web-api';
 import { createSyncMediaTool, createWebMediaTools, SYNC_MEDIA_TOOL } from '../web-media/web-media';
 
@@ -151,6 +159,28 @@ export function buildDesktopRegistry(deps: DesktopRegistryDeps): DesktopRegistry
       description: '为工作区里的 HTML 产物或本机端口弹出可交互预览窗口',
       requires: ['workspace'],
       create: (ctx) => createPreviewPageTool({ workspaceDir: ctx.host.workspaceDir }),
+    },
+    {
+      name: CREATE_VIDEO_PROJECT_TOOL,
+      title: '新建剪辑工程',
+      description: '把生成的视频 / 图片 / 音频或工作区文件拼成可在剪辑器里编辑、导出的工程（引用 versionId 需登录 Web 账号）',
+      requires: ['workspace_write'],
+      promptSection: VIDEO_PROJECT_PROMPT,
+      create: (ctx) =>
+        createVideoProjectTool({
+          conversationId: ctx.conversationId,
+          workspaceDir: ctx.host.workspaceDir,
+          webApi: deps.webApi,
+          ffprobe: () => ffmpegBinaries().ffprobe,
+        }),
+    },
+    {
+      name: CHECK_VIDEO_PROJECT_TOOL,
+      title: '检查剪辑工程',
+      description: '只读校验剪辑工程：格式问题、缺失素材、成片总时长',
+      requires: ['workspace'],
+      promptSection: VIDEO_PROJECT_PROMPT,
+      create: (ctx) => checkVideoProjectTool({ workspaceDir: ctx.host.workspaceDir }),
     },
   ]);
 }

@@ -9,6 +9,19 @@ files:
 extraResources:
   - from: resources/skills
     to: skills
+  # 剪辑器的探测 / 导出：打包后在 Contents/Resources/ffmpeg/，main 经 SPARK_FFMPEG_PATH / SPARK_FFPROBE_PATH 传给 agent-host。
+  # 只分发 scripts/build-ffmpeg.sh 从官方源码自建的 GPL 版（ffmpeg-static 含 nonfree、不可再分发，仅供开发 / 测试）。
+  # 目录名用 ${arch}（arm64 / x64）；beforePack 钩子检查对应架构的自建产物存在且不含 nonfree。
+  - from: resources/ffmpeg/darwin-${arch}
+    to: ffmpeg
+    filter:
+      - ffmpeg
+      - ffprobe
+      - BUILDINFO.txt
+  # GPL 合规材料：各组件许可证原文 + 对应源码获取方式（SOURCES.md）
+  - from: resources/ffmpeg-licenses
+    to: ffmpeg/licenses
+beforePack: ./scripts/check-ffmpeg.cjs
 mac:
   target: dir
   category: public.app-category.productivity

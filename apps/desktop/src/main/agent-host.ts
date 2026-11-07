@@ -15,6 +15,7 @@ import {
   AGENT_PORT_MESSAGE,
   type HostControlMessage,
 } from '../shared/desktop';
+import { FFMPEG_PATH_ENV, FFPROBE_PATH_ENV, localBuildBinaries, packageBinaries } from '../agent-host/video/ffmpeg-paths';
 import { appLocale } from './i18n';
 import type { DesktopStore } from './store';
 
@@ -127,6 +128,15 @@ export class AgentHostManager {
     env.SPARK_BUILTIN_SKILLS = app.isPackaged
       ? join(process.resourcesPath, 'skills')
       : join(app.getAppPath(), 'resources', 'skills');
+    // 剪辑器的 ffmpeg / ffprobe：打包后随 extraResources 放在 Resources/ffmpeg；
+    // 开发时优先 scripts/build-ffmpeg.sh 的自建产物，没有再用 ffmpeg-static / ffprobe-static 包里的
+    const ff = app.isPackaged
+      ? { ffmpeg: join(process.resourcesPath, 'ffmpeg', 'ffmpeg'), ffprobe: join(process.resourcesPath, 'ffmpeg', 'ffprobe') }
+      : (localBuildBinaries(app.getAppPath()) ?? packageBinaries(join(app.getAppPath(), 'package.json')));
+    if (ff) {
+      env[FFMPEG_PATH_ENV] = ff.ffmpeg;
+      env[FFPROBE_PATH_ENV] = ff.ffprobe;
+    }
     env.MCP_TOKEN_ENC_KEY = this.store.mcpEncryptionKey();
     // Web 账号：登录后生图 / 生视频 / 配音经 Web 后端调 aigc（令牌过期 / 未登录就不注入，工具不挂载）
     const webToken = this.store.webToken();

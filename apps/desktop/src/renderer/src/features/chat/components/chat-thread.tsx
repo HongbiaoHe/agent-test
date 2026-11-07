@@ -44,6 +44,7 @@ import { ModelSwitcher } from "./model-switcher";
 import { ModeSwitcher } from "./mode-switcher";
 import { PermissionSwitcher } from "./permission-switcher";
 import { PreviewCard } from "./preview-card";
+import { VideoProjectCard } from "@/features/video-editor";
 import { WorkspaceFilesButton } from "./workspace-panel";
 import { TaskPlanPanel } from "./task-plan-panel";
 import { ThinkingIndicator } from "./thinking-indicator";
@@ -401,6 +402,12 @@ export function ChatThread({
                     </div>
                   ) : r.item.kind === "preview" ? (
                     <PreviewCard key={r.item.id} spec={r.item.spec} />
+                  ) : r.item.kind === "video_project" ? (
+                    <VideoProjectCard
+                      key={r.item.id}
+                      conversationId={conversationId as string}
+                      info={r.item.info}
+                    />
                   ) : r.item.kind === "bg_task" ? (
                     <BackgroundTaskCard
                       key={r.item.id}

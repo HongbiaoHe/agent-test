@@ -119,4 +119,17 @@ export const errors = {
   background: {
     notFound: '后台任务不存在：{{id}}',
   },
+  /** 视频剪辑器（video.* RPC、导出） */
+  video: {
+    ffmpegMissing: '找不到 ffmpeg / ffprobe，无法处理视频（请重新安装 Spark）',
+    notProject: '不是剪辑工程文件（须以 .sparkvideo.json 结尾）：{{path}}',
+    invalidProject: '工程校验不通过：{{issues}}',
+    notMedia: '无法识别的媒体文件：{{path}}',
+    probeFailed: '读取素材信息失败：{{path}}（{{error}}）',
+    emptyTimeline: '视频轨上还没有片段，无法导出',
+    missingMedia: '找不到素材：{{paths}}',
+    importNotFile: '不是文件：{{path}}',
+    jobNotFound: '导出任务不存在：{{id}}',
+    exportFailed: 'ffmpeg 导出失败（退出码 {{code}}）：{{detail}}',
+  },
 } as const;

@@ -6,6 +6,7 @@ import { resolveMode } from '@agent-test/agent-core/modes/resolve-mode';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase } from '../db/database';
 import { SkillStore } from '../skills/skill-store';
+import { VIDEO_PROJECT_PROMPT } from '../video/video-tools';
 import { buildDesktopRegistry, desktopCapabilities } from './tool-registry';
 
 let dir: string;
@@ -23,6 +24,7 @@ function registry(webApi: null = null) {
 
 const MEDIA = ['list_media_models', 'generate_image', 'generate_video', 'generate_audio', 'clone_voice'];
 const BACKGROUND = ['watch_until', 'run_in_background', 'schedule_wakeup', 'cancel_background_task'];
+const VIDEO = ['create_video_project', 'check_video_project'];
 
 describe('desktop 工具注册表', () => {
   it('登记全部描述符（含没登录时的媒体工具）；目录可序列化、requires 齐全', () => {
@@ -33,6 +35,7 @@ describe('desktop 工具注册表', () => {
       'sync_media_to_sandbox',
       ...BACKGROUND,
       'preview_page',
+      ...VIDEO,
     ]);
     const byName = Object.fromEntries(reg.catalog().map((t) => [t.name, t.requires]));
     expect(byName.save_skill).toEqual([]);
@@ -41,6 +44,10 @@ describe('desktop 工具注册表', () => {
     expect(byName.run_in_background).toEqual(['background', 'workspace_write']);
     expect(byName.watch_until).toEqual(['background']);
     expect(byName.preview_page).toEqual(['workspace']);
+    expect(byName.create_video_project).toEqual(['workspace_write']);
+    expect(byName.check_video_project).toEqual(['workspace']);
+    expect(reg.get('create_video_project')?.promptSection).toBe(VIDEO_PROJECT_PROMPT);
+    expect(reg.get('check_video_project')?.promptSection).toBe(VIDEO_PROJECT_PROMPT);
     expect(reg.get('save_skill')?.interruptOn).toBe(true);
     for (const name of MEDIA) expect(reg.get(name)?.promptSection).toBe(MEDIA_GENERATION_PROMPT);
   });
@@ -58,7 +65,9 @@ describe('desktop 工具注册表', () => {
       skillsDir: join(dir, 'runtime', 'skills'),
     };
     const a = resolveMode({ mode: null, registry: reg, env, installedSkills: [], mcpServers: [] });
-    expect(a.toolDescriptors.map((t) => t.name)).toEqual(['save_skill', 'preview_page']);
+    // 通用模式自动带上剪辑工具（不依赖 Web 登录）；工程格式说明段只拼一次
+    expect(a.toolDescriptors.map((t) => t.name)).toEqual(['save_skill', 'preview_page', ...VIDEO]);
+    expect(a.systemPrompt.split(VIDEO_PROJECT_PROMPT)).toHaveLength(2);
     expect(a.unavailable.map((u) => u.name).sort()).toEqual([...MEDIA, 'sync_media_to_sandbox', ...BACKGROUND].sort());
     expect(a.unavailable.every((u) => u.reason.startsWith('missing_capability:'))).toBe(true);
     expect(a.systemPrompt).not.toContain(MEDIA_GENERATION_PROMPT);

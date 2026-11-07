@@ -4,3 +4,5 @@ node_modules
 test-results
 playwright-report
 release-next
+# scripts/build-ffmpeg.sh 的产物（二进制几十 MB，按需本地构建；BUILDINFO 随二进制一起忽略，避免和产物对不上）
+resources/ffmpeg/darwin-*/

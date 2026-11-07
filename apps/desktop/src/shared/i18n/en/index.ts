@@ -6,5 +6,6 @@ import { viewer } from './viewer';
 import { settings } from './settings';
 import { extensions } from './extensions';
 import { errors } from './errors';
+import { video } from './video';
 
-export const en = { common, shell, chat, agent, viewer, settings, extensions, errors };
+export const en = { common, shell, chat, agent, viewer, settings, extensions, errors, video };

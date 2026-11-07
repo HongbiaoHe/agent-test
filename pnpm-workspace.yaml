@@ -21,6 +21,8 @@ allowBuilds:
   # skia-canvas：后端设计模块的 Konva 同构渲染器，postinstall 下载预编译原生二进制
   skia-canvas: true
   unrs-resolver: true
+  # desktop 视频剪辑器：postinstall 下载 ffmpeg 二进制（需 NODE_USE_ENV_PROXY=1 + HTTPS_PROXY 才走代理）
+  ffmpeg-static: true
 
 # 允许这些包运行构建/postinstall 脚本：
 #   sharp / unrs-resolver: 原生模块，允许构建以确保二进制 binding 正确

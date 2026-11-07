@@ -26,7 +26,11 @@ export default defineConfig({
   renderer: {
     root: resolve(import.meta.dirname, 'src/renderer'),
     resolve: {
-      alias: { '@': resolve(import.meta.dirname, 'src/renderer/src') },
+      alias: {
+        '@': resolve(import.meta.dirname, 'src/renderer/src'),
+        // video-schema 的 dist 是 CommonJS，renderer 里 import 值（layoutVideoTrack 等）会出问题：直接让 Vite 编译源码
+        '@agent-test/video-schema': resolve(import.meta.dirname, '../../packages/video-schema/src/index.ts'),
+      },
     },
     plugins: [react(), tailwindcss()],
     build: {

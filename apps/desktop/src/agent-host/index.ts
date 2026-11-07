@@ -25,6 +25,8 @@ import { createHandlers, dispatch } from './rpc-server';
 import { RunService } from './run/run-service';
 import { buildDesktopRegistry } from './run/tool-registry';
 import { SkillStore } from './skills/skill-store';
+import { ffmpegBinaries } from './video/ffmpeg-paths';
+import { VideoService } from './video/video-service';
 import { WebApi } from './web-media/web-api';
 import { ProcessTracker } from './workspace/process-tracker';
 
@@ -165,7 +167,21 @@ try {
   log(`恢复后台任务失败：${String(e)}`);
 }
 
+// 剪辑器：工程读写 / 文件监听 / 导出（ffmpeg 路径由 main 经 SPARK_FFMPEG_PATH / SPARK_FFPROBE_PATH 注入）
+try {
+  const ff = ffmpegBinaries();
+  log(`ffmpeg：${ff.ffmpeg}；ffprobe：${ff.ffprobe}`);
+} catch (e) {
+  log(`未找到 ffmpeg / ffprobe：${String(e)}`);
+}
+const video = new VideoService({
+  workspaceOf: (conversationId) => repo.require(conversationId).workspaceDir,
+  emit: broadcast,
+  binaries: ffmpegBinaries,
+});
+
 const handlers = createHandlers({
+  video,
   background,
   webApi,
   repo,

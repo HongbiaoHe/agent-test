@@ -2,6 +2,11 @@ import type { Todo } from "@/components/agent/todo-list";
 import { parseAttachments } from "@/components/attachments/attachments";
 import type { McpAppArtifact, McpAuthRequired } from "@/components/mcp/api";
 import type { PreviewSpec } from "@/features/viewer/preview-target";
+import {
+  parseVideoProjectResult,
+  VIDEO_PROJECT_TOOL,
+  type VideoProjectCardInfo,
+} from "@/features/video-editor/lib/tool-result";
 
 import {
   BACKGROUND_TOOLS,
@@ -90,6 +95,8 @@ export type ThreadItem =
   // 网页预览卡片：agent 调 preview_page 成功后（tool_end）在工具 chip 之后追加，可再次打开预览。
   // 只存「预览什么」——预览地址带短期令牌/会话 id，打开时现签，不进 thread 状态。
   | { kind: "preview"; id: string; spec: PreviewSpec }
+  // 剪辑工程卡片（桌面端）：create_video_project 成功后在工具 chip 之后追加，「打开剪辑器」进剪辑器视图
+  | { kind: "video_project"; id: string; info: VideoProjectCardInfo }
   // MCP App 卡片：MCP 工具结果带 UI 资源时（tool_end.mcpApp）在工具 chip 之后追加，iframe 渲染 App。
   // callId 是对应的 tool call id：App 的 ui/update-model-context 按它归档，去重也按它。
   | { kind: "mcp_app"; id: string; callId: string; app: McpAppArtifact }
@@ -468,6 +475,10 @@ function reduceEvent(input: ThreadState, ev: NormalizedEvent): ThreadState {
       if (name === "preview_page") {
         const spec = parsePreviewResult(ev.payload?.content);
         if (spec) items.push({ kind: "preview", id: id(), spec });
+      }
+      if (name === VIDEO_PROJECT_TOOL) {
+        const info = parseVideoProjectResult(ev.payload?.content);
+        if (info) items.push({ kind: "video_project", id: id(), info });
       }
       // MCP 工具：卡片锚点按 tool call id 去重（历史折叠后 live 又收到同一个 tool_end 时不重复插）
       const mcpCallId = typeof callId === "string" ? callId : "";

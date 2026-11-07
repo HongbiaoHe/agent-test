@@ -21,6 +21,7 @@ import type { Unavailable } from '@agent-test/agent-core/modes/resolve-mode';
 import type { ToolCatalogEntry } from '@agent-test/agent-core/modes/tool-registry';
 import { z } from 'zod';
 import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
+import type { VideoProject } from '@agent-test/video-schema';
 import type { ConnectResult, McpAppResource, McpPreset, McpServer } from './mcp';
 import { WORKSPACE_PERMISSIONS, type WorkspacePermission } from './workspace';
 
@@ -224,6 +225,45 @@ export const hitlDecisionSchema = z.discriminatedUnion('type', [
 ]);
 export type HitlDecision = z.infer<typeof hitlDecisionSchema>;
 
+/** ── 视频剪辑器（videos/*.sparkvideo.json，见 @agent-test/video-schema）──────────────────── */
+
+/** 工作区里的一个剪辑工程（列表用） */
+export interface VideoProjectSummary {
+  /** 工作区相对路径，如 videos/promo.sparkvideo.json */
+  path: string;
+  name: string;
+  /** 成片时长（秒）；工程损坏时为 null */
+  duration: number | null;
+  /** 文件修改时间（ms） */
+  mtimeMs: number;
+}
+
+/** 读工程：损坏（JSON 解析失败 / schema 不过）时 project 为 null，issues 给出原因，编辑器据此报错而不是白屏 */
+export interface VideoProjectFile {
+  path: string;
+  project: VideoProject | null;
+  issues: string[];
+  /** 文件修改时间（ms）：写回时作为 baseMtimeMs 做冲突检测 */
+  mtimeMs: number;
+}
+
+/** 写工程：baseMtimeMs 与磁盘不一致 = 期间被外部（agent）改过，不写入，返回 conflict */
+export type VideoWriteResult = { ok: true; mtimeMs: number } | { ok: false; conflict: true; mtimeMs: number };
+
+/** ffprobe 读出的素材信息 */
+export interface VideoMediaProbe {
+  /** 工作区相对路径 */
+  path: string;
+  kind: 'video' | 'audio' | 'image';
+  /** 秒；图片为 null */
+  duration: number | null;
+  width: number | null;
+  height: number | null;
+  hasAudio: boolean;
+}
+
+export type VideoExportStatus = 'running' | 'done' | 'failed' | 'cancelled';
+
 export const rpcSchemas = {
   'host.status': z.object({}),
   'models.list': z.object({}),
@@ -304,6 +344,32 @@ export const rpcSchemas = {
     decisions: z.array(hitlDecisionSchema).min(1),
   }),
   'run.stop': z.object({ conversationId: id }),
+  // 视频剪辑器：path 一律是工作区相对路径，conversationId 决定是哪个工作区
+  'video.list': z.object({ conversationId: z.string().min(1) }),
+  /** 读工程，同时开始监听该文件（外部修改推 video-file-changed） */
+  'video.read': z.object({ conversationId: z.string().min(1), path: z.string().min(1) }),
+  /** 不再监听（编辑器关闭 / 切换工程时调用） */
+  'video.close': z.object({ conversationId: z.string().min(1), path: z.string().min(1) }),
+  /** 写回工程：project 在 host 侧用 parseProject 校验，不合法直接报错 */
+  'video.write': z.object({
+    conversationId: z.string().min(1),
+    path: z.string().min(1),
+    project: z.unknown(),
+    /** 读取时的 mtimeMs；省略 = 强制覆盖（用户在冲突提示里选了「保留我的修改」） */
+    baseMtimeMs: z.number().optional(),
+  }),
+  'video.probe': z.object({ conversationId: z.string().min(1), paths: z.array(z.string().min(1)).min(1).max(50) }),
+  /** 把用户在本机选的文件复制进工作区 media/imports/，返回工作区相对路径与探测信息 */
+  'video.importFiles': z.object({ conversationId: z.string().min(1), sourcePaths: z.array(z.string().min(1)).min(1).max(20) }),
+  /** 导出成片到 exports/：height 为 null = 按工程画布原尺寸，否则按该高度等比缩放（720 / 1080） */
+  'video.export': z.object({
+    conversationId: z.string().min(1),
+    path: z.string().min(1),
+    height: z.union([z.literal(720), z.literal(1080)]).nullable(),
+    /** 字幕原文 → 剪辑器按预览同一字体量宽断好行的文本（行间 \n），导出按它排，与预览一致 */
+    wrappedSubtitles: z.record(z.string(), z.string()).optional(),
+  }),
+  'video.exportCancel': z.object({ jobId: z.string().min(1) }),
   'skills.list': z.object({}),
   'skills.get': z.object({ name: id }),
   'skills.install': z.object({ folder: z.string().min(1) }),
@@ -390,6 +456,14 @@ export interface RpcResults {
   'run.start': { ok: true };
   'run.resume': { ok: true };
   'run.stop': { ok: true };
+  'video.list': VideoProjectSummary[];
+  'video.read': VideoProjectFile;
+  'video.close': { ok: true };
+  'video.write': VideoWriteResult;
+  'video.probe': VideoMediaProbe[];
+  'video.importFiles': VideoMediaProbe[];
+  'video.export': { jobId: string; outputPath: string };
+  'video.exportCancel': { ok: true };
   'skills.list': SkillInfo[];
   'skills.get': SkillDetail;
   'skills.install': SkillInfo;
@@ -441,6 +515,18 @@ export type HostEvent =
   | { kind: 'event'; type: 'skills-changed' }
   /** 模式增删改、通用模式 / 平台片段改写（设置页列表、会话内选择器据此刷新） */
   | { kind: 'event'; type: 'modes-changed' }
+  /** 编辑器正在打开的工程文件被外部（agent / 用户手改）修改了 */
+  | { kind: 'event'; type: 'video-file-changed'; conversationId: string; path: string; mtimeMs: number }
+  /** 导出进度：progress 0～1；done 时带 outputPath（工作区相对），failed 时带 error */
+  | {
+      kind: 'event';
+      type: 'video-export';
+      jobId: string;
+      status: VideoExportStatus;
+      progress: number;
+      outputPath?: string;
+      error?: string;
+    }
   /** 系统浏览器里的 OAuth 授权完成（loopback 回调）：成功 / 失败都推，连接中的按钮据此结束 */
   | { kind: 'event'; type: 'mcp-oauth'; ok: boolean; serverId?: string; error?: string };
 

@@ -1,0 +1,29 @@
+{
+  "name": "@agent-test/video-schema",
+  "version": "0.0.1",
+  "private": true,
+  "description": "desktop 视频剪辑工程的共享 zod schema 与时间线计算（create_video_project 工具、剪辑器、导出器三方共用）",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "default": "./dist/index.js"
+    }
+  },
+  "files": ["dist"],
+  "scripts": {
+    "build": "tsc -p tsconfig.json",
+    "dev": "tsc -p tsconfig.json --watch",
+    "test": "node --import tsx --test src/*.test.ts",
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "prepare": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "tsx": "^4.22.3",
+    "typescript": "^5.7.3"
+  }
+}

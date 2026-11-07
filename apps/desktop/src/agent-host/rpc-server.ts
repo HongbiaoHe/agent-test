@@ -28,6 +28,7 @@ import type { RunConfig, RunService } from './run/run-service';
 import { type DesktopRegistry, desktopCapabilities } from './run/tool-registry';
 import { parseSkillSource, skillsAddArgs } from './skills/github-install';
 import type { SkillStore } from './skills/skill-store';
+import type { VideoService } from './video/video-service';
 import type { WebApi } from './web-media/web-api';
 import { listDir, readFilePreview } from './workspace/files';
 
@@ -45,6 +46,7 @@ export interface Services {
   modesChanged: () => void;
   background: BackgroundService;
   webApi: WebApi | null;
+  video: VideoService;
 }
 
 /** 设置页目录用的能力集：按新会话默认档位（ask）算，运行期再按会话实际权限重算 */
@@ -243,6 +245,20 @@ export function createHandlers(s: Services): Handlers {
       return { root, entries: await listDir(root, p.path) };
     },
     'workspace.read': (p) => readFilePreview(s.repo.require(p.conversationId).workspaceDir, p.path),
+    'video.list': (p) => s.video.list(p.conversationId),
+    'video.read': (p) => s.video.read(p.conversationId, p.path),
+    'video.close': (p) => {
+      s.video.close(p.conversationId, p.path);
+      return { ok: true };
+    },
+    'video.write': (p) => s.video.write(p.conversationId, p.path, p.project, p.baseMtimeMs),
+    'video.probe': (p) => s.video.probe(p.conversationId, p.paths),
+    'video.importFiles': (p) => s.video.importFiles(p.conversationId, p.sourcePaths),
+    'video.export': (p) => s.video.startExport(p.conversationId, p.path, p.height, p.wrappedSubtitles),
+    'video.exportCancel': (p) => {
+      s.video.cancelExport(p.jobId);
+      return { ok: true };
+    },
     'conversations.delete': async (p) => {
       if (s.runs.isRunning(p.id)) s.runs.stop(p.id);
       s.background.cancelByConversation(p.id);

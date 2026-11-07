@@ -11,7 +11,10 @@
     "noEmit": true,
     "types": [],
     "baseUrl": ".",
-    "paths": { "@/*": ["src/renderer/src/*"] }
+    "paths": {
+      "@/*": ["src/renderer/src/*"],
+      "@agent-test/video-schema": ["../../packages/video-schema/src/index.ts"]
+    }
   },
   "include": ["src/renderer/src", "src/shared", "src/preload/api.d.ts"]
 }

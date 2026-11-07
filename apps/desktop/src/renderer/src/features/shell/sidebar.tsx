@@ -29,7 +29,15 @@ import { useConversationActions } from '../conversations/use-conversation-action
 import type { SettingsSection } from '../settings/settings-dialog';
 import { type GroupKey, groupConversations } from './conversation-groups';
 
-export type View = { kind: 'chat'; id: string } | { kind: 'home' };
+export type View =
+  | { kind: 'chat'; id: string }
+  | { kind: 'home' }
+  /** 剪辑器：path 是该会话工作区里的工程文件（videos/*.sparkvideo.json），「返回对话」回到 conversationId */
+  | { kind: 'video'; conversationId: string; path: string };
+
+/** 当前视图属于哪个会话（侧栏高亮、删除会话时回首页） */
+const viewConversationId = (v: View): string | null =>
+  v.kind === 'chat' ? v.id : v.kind === 'video' ? v.conversationId : null;
 
 function StatusDot({ status }: { status: ConversationSummary['status'] }) {
   const cls =
@@ -175,7 +183,7 @@ export function Sidebar({
     onError: (e) => toast.error(e.message),
   });
   const actions = useConversationActions((id) => {
-    if (view.kind === 'chat' && view.id === id) onNavigate({ kind: 'home' });
+    if (viewConversationId(view) === id) onNavigate({ kind: 'home' });
   });
   const [renaming, setRenaming] = useState<ConversationRef | null>(null);
   const [deleting, setDeleting] = useState<ConversationRef | null>(null);
@@ -232,7 +240,7 @@ export function Sidebar({
                       <ConversationItem
                         key={c.id}
                         conv={c}
-                        active={view.kind === 'chat' && view.id === c.id}
+                        active={viewConversationId(view) === c.id}
                         onOpen={() => onNavigate({ kind: 'chat', id: c.id })}
                         onTogglePin={() => actions.setPinned.mutate({ id: c.id, pinned: c.pinnedAt === null })}
                         onRename={() => setRenaming(ref)}

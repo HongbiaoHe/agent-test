@@ -92,41 +92,63 @@ async function download(url: string, dest: string): Promise<void> {
   await rename(`${dest}.part`, dest);
 }
 
+export interface SyncedMedia {
+  versionId: string;
+  type: string;
+  /** 工作区内的绝对路径 */
+  path: string;
+}
+
+export type SyncMediaResult =
+  | { error: unknown }
+  | { synced: SyncedMedia[]; errors?: { versionId: string; reason: string }[] };
+
+/**
+ * 把本会话的媒体（用户附件、生成产物）下载进本机工作区 `<工作区>/media/<versionId>/<文件名>`。
+ * 可改正的业务错误（含登录过期）以 `{ error }` 返回，单个版本下载失败记进 errors。
+ * sync_media_to_sandbox 与 create_video_project（引用 versionId 的片段）共用。
+ */
+export async function syncMediaToWorkspace(
+  api: WebApi,
+  conversationId: string,
+  workspaceDir: string,
+  versionIds: string[],
+): Promise<SyncMediaResult> {
+  const unique = [...new Set(versionIds)];
+  let resolved: z.infer<typeof sourcesSchema>;
+  try {
+    resolved = sourcesSchema.parse(await api.post('/media-api/sources', { scope: conversationId, versionIds: unique }));
+  } catch (e) {
+    const err = userError(e);
+    if (err !== null) return { error: err };
+    throw e;
+  }
+  const errors = [...resolved.errors];
+  const synced: SyncedMedia[] = [];
+  for (const src of resolved.sources) {
+    const path = join(workspaceDir, 'media', src.versionId, safeName(src.filename));
+    if (!src.url) {
+      errors.push({ versionId: src.versionId, reason: '这个版本没有可下载的地址' });
+      continue;
+    }
+    try {
+      await download(src.url, path);
+      synced.push({ versionId: src.versionId, type: src.type, path });
+    } catch (e) {
+      errors.push({ versionId: src.versionId, reason: `同步失败：${e instanceof Error ? e.message : String(e)}` });
+    }
+  }
+  return { synced, ...(errors.length ? { errors } : {}) };
+}
+
 /**
  * 同 Web 的 sync_media_to_sandbox：把本会话的媒体（用户附件、生成产物）下载进本机工作区
  * `<工作区>/media/<versionId>/<文件名>`，返回路径供 execute（ffmpeg 等）使用。只读会话不提供。
  */
 export function createSyncMediaTool(api: WebApi, conversationId: string, workspaceDir: string) {
   return tool(
-    async ({ versionIds }: { versionIds: string[] }) => {
-      const unique = [...new Set(versionIds)];
-      let resolved: z.infer<typeof sourcesSchema>;
-      try {
-        resolved = sourcesSchema.parse(
-          await api.post('/media-api/sources', { scope: conversationId, versionIds: unique }),
-        );
-      } catch (e) {
-        const err = userError(e);
-        if (err !== null) return JSON.stringify({ error: err });
-        throw e;
-      }
-      const errors = [...resolved.errors];
-      const synced: { versionId: string; type: string; path: string }[] = [];
-      for (const src of resolved.sources) {
-        const path = join(workspaceDir, 'media', src.versionId, safeName(src.filename));
-        if (!src.url) {
-          errors.push({ versionId: src.versionId, reason: '这个版本没有可下载的地址' });
-          continue;
-        }
-        try {
-          await download(src.url, path);
-          synced.push({ versionId: src.versionId, type: src.type, path });
-        } catch (e) {
-          errors.push({ versionId: src.versionId, reason: `同步失败：${e instanceof Error ? e.message : String(e)}` });
-        }
-      }
-      return JSON.stringify({ synced, ...(errors.length ? { errors } : {}) });
-    },
+    async ({ versionIds }: { versionIds: string[] }) =>
+      JSON.stringify(await syncMediaToWorkspace(api, conversationId, workspaceDir, versionIds)),
     {
       name: SYNC_MEDIA_TOOL,
       description:

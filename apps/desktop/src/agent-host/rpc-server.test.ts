@@ -1,7 +1,8 @@
-import { mkdtemp, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GENERAL_MODE_PROMPT } from '@agent-test/agent-core/modes/mode.schema';
+import { emptyProject } from '@agent-test/video-schema';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { BackgroundService } from './background/background-service';
 import { ConversationRepo } from './db/conversations';
@@ -12,6 +13,7 @@ import { createHandlers, type Services } from './rpc-server';
 import type { RunService } from './run/run-service';
 import { buildDesktopRegistry } from './run/tool-registry';
 import { SkillStore } from './skills/skill-store';
+import { VideoService } from './video/video-service';
 
 let dir: string;
 beforeEach(async () => {
@@ -27,8 +29,9 @@ function setup() {
   const db = openDatabase(join(dir, 'spark.db'));
   const skills = new SkillStore(db, join(dir, 'lib'));
   let modesChanged = 0;
+  const repo = new ConversationRepo(db, () => dir);
   const services: Services = {
-    repo: new ConversationRepo(db, () => dir),
+    repo,
     // 这些用例不碰运行 / 后台任务：在注入处收窄成真实类型
     runs: {} as unknown as RunService,
     background: {} as unknown as BackgroundService,
@@ -49,6 +52,11 @@ function setup() {
       modesChanged++;
     },
     webApi: null,
+    video: new VideoService({
+      workspaceOf: (id) => repo.require(id).workspaceDir,
+      emit: () => undefined,
+      binaries: () => ({ ffmpeg: 'ffmpeg', ffprobe: 'ffprobe' }),
+    }),
   };
   return { s: services, h: createHandlers(services), modesChangedCount: () => modesChanged };
 }
@@ -202,5 +210,85 @@ describe('通用模式 RPC', () => {
     // 模式没设默认模型：落到全局默认，不借用通用模式的设置
     const withMode = await h['conversations.create']({ modeId: mode.id });
     expect(withMode).toMatchObject({ model: DEFAULT_MODEL, thinkingLevel: null, modeId: mode.id });
+  });
+});
+
+describe('剪辑器 RPC（video.*）', () => {
+  const project = () => ({
+    ...emptyProject('rpc', { width: 640, height: 360 }),
+    video: [{ id: 'v1', type: 'image' as const, src: 'media/a.png', duration: 2, width: 640, height: 360 }],
+  });
+
+  it('write：不合法抛出带 issues 的错误；baseMtimeMs 与磁盘不一致 → conflict 且不写；省略 baseMtimeMs = 强制覆盖', async () => {
+    const { h, s } = setup();
+    const c = await h['conversations.create']({});
+    const path = 'videos/rpc.sparkvideo.json';
+    await expect(
+      h['video.write']({ conversationId: c.id, path, project: { ...project(), canvas: { width: 0, height: 1 } } }),
+    ).rejects.toThrow(/canvas\.width/);
+
+    const first = await h['video.write']({ conversationId: c.id, path, project: project() });
+    if (!first.ok) throw new Error('首次写入应成功');
+    const read = await h['video.read']({ conversationId: c.id, path });
+    expect(read).toMatchObject({ path, issues: [], mtimeMs: first.mtimeMs });
+    expect(read.project?.name).toBe('rpc');
+
+    // 外部（agent）改了文件 → 编辑器拿旧 mtime 写回得到 conflict，磁盘内容不变
+    await new Promise((r) => setTimeout(r, 20));
+    await writeFile(join(dir, path), JSON.stringify({ ...project(), name: 'agent 改的' }));
+    const conflict = await h['video.write']({ conversationId: c.id, path, project: { ...project(), name: '我的' }, baseMtimeMs: first.mtimeMs });
+    expect(conflict).toMatchObject({ ok: false, conflict: true });
+    expect(JSON.parse(await readFile(join(dir, path), 'utf8'))).toMatchObject({ name: 'agent 改的' });
+
+    const forced = await h['video.write']({ conversationId: c.id, path, project: { ...project(), name: '我的' } });
+    expect(forced.ok).toBe(true);
+    expect(JSON.parse(await readFile(join(dir, path), 'utf8'))).toMatchObject({ name: '我的' });
+    expect(await h['video.list']({ conversationId: c.id })).toEqual([
+      { path, name: '我的', duration: 2, mtimeMs: forced.mtimeMs },
+    ]);
+    s.video.dispose();
+  });
+
+  it('read：JSON 损坏 / schema 不过 → project 为 null + issues（不抛）', async () => {
+    const { h, s } = setup();
+    const c = await h['conversations.create']({});
+    await mkdir(join(dir, 'videos'), { recursive: true });
+    await writeFile(join(dir, 'videos/broken.sparkvideo.json'), '{ not json');
+    await writeFile(join(dir, 'videos/invalid.sparkvideo.json'), JSON.stringify({ version: 1, name: 'x' }));
+    const broken = await h['video.read']({ conversationId: c.id, path: 'videos/broken.sparkvideo.json' });
+    expect(broken.project).toBeNull();
+    expect(broken.issues[0]).toMatch(/^JSON/);
+    const invalid = await h['video.read']({ conversationId: c.id, path: 'videos/invalid.sparkvideo.json' });
+    expect(invalid.project).toBeNull();
+    expect(invalid.issues.some((i) => i.startsWith('canvas'))).toBe(true);
+    // 列表里照样出现，duration 为 null
+    const list = await h['video.list']({ conversationId: c.id });
+    expect(list.map((x) => [x.path, x.duration]).sort()).toEqual([
+      ['videos/broken.sparkvideo.json', null],
+      ['videos/invalid.sparkvideo.json', null],
+    ]);
+    s.video.dispose();
+  });
+
+  it('路径逃逸被拒：.. 出域、软链出域、绝对路径；非工程后缀也拒', async () => {
+    const { h } = setup();
+    const c = await h['conversations.create']({});
+    const outside = await mkdtemp(join(tmpdir(), 'spark-rpc-outside-'));
+    try {
+      await symlink(outside, join(dir, 'link'));
+      for (const path of ['../evil.sparkvideo.json', 'link/evil.sparkvideo.json', `${outside}/evil.sparkvideo.json`]) {
+        await expect(h['video.write']({ conversationId: c.id, path, project: project() })).rejects.toThrow(/不在工作区内/);
+      }
+      await writeFile(join(outside, 'x.sparkvideo.json'), JSON.stringify(project()));
+      await expect(h['video.read']({ conversationId: c.id, path: 'link/x.sparkvideo.json' })).rejects.toThrow(/不在工作区内/);
+      await expect(h['video.read']({ conversationId: c.id, path: '../x.sparkvideo.json' })).rejects.toThrow(/不在工作区内/);
+      await expect(h['video.probe']({ conversationId: c.id, paths: ['../../etc/hosts'] })).rejects.toThrow(/不在工作区内/);
+      await expect(h['video.probe']({ conversationId: c.id, paths: ['link/x.sparkvideo.json'] })).rejects.toThrow(/不在工作区内/);
+      await expect(h['video.write']({ conversationId: c.id, path: 'a.json', project: project() })).rejects.toThrow(/sparkvideo/);
+      // 软链指向工作区外：列表不跟随
+      expect(await h['video.list']({ conversationId: c.id })).toEqual([]);
+    } finally {
+      await rm(outside, { recursive: true, force: true });
+    }
   });
 });

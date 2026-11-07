@@ -116,4 +116,17 @@ export const errors = {
   background: {
     notFound: '背景工作不存在：{{id}}',
   },
+  /** 影片剪輯器（video.* RPC、匯出） */
+  video: {
+    ffmpegMissing: '找不到 ffmpeg / ffprobe，無法處理影片（請重新安裝 Spark）',
+    notProject: '不是剪輯專案檔（須以 .sparkvideo.json 結尾）：{{path}}',
+    invalidProject: '專案校驗未通過：{{issues}}',
+    notMedia: '無法辨識的媒體檔案：{{path}}',
+    probeFailed: '讀取素材資訊失敗：{{path}}（{{error}}）',
+    emptyTimeline: '影片軌上還沒有片段，無法匯出',
+    missingMedia: '找不到素材：{{paths}}',
+    importNotFile: '不是檔案：{{path}}',
+    jobNotFound: '匯出任務不存在：{{id}}',
+    exportFailed: 'ffmpeg 匯出失敗（結束碼 {{code}}）：{{detail}}',
+  },
 } satisfies MessageShape<typeof source>;

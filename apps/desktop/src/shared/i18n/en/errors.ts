@@ -118,4 +118,17 @@ export const errors = {
   background: {
     notFound: 'Background task not found: {{id}}',
   },
+  /** Video editor (video.* RPC, export) */
+  video: {
+    ffmpegMissing: 'ffmpeg / ffprobe not found, cannot process video (please reinstall Spark)',
+    notProject: 'Not a video project file (must end with .sparkvideo.json): {{path}}',
+    invalidProject: 'Project validation failed: {{issues}}',
+    notMedia: 'Unrecognized media file: {{path}}',
+    probeFailed: 'Failed to read media info: {{path}} ({{error}})',
+    emptyTimeline: 'The video track has no clips yet, nothing to export',
+    missingMedia: 'Media not found: {{paths}}',
+    importNotFile: 'Not a file: {{path}}',
+    jobNotFound: 'Export job not found: {{id}}',
+    exportFailed: 'ffmpeg export failed (exit code {{code}}): {{detail}}',
+  },
 } satisfies MessageShape<typeof source>;
