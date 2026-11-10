@@ -1,11 +1,7 @@
 /**
  * desktop 的环境段（resolveMode 的 envPromptBlock：本机工作区 / 附件；模式正文与工具段由 core 拼）
- * 与运行期注入：计划延续（activePlan）、已激活技能的 SKILL.md、MCP 卡片上下文。
- * 后几者逻辑对照 backend worker 的 buildActivePlan / buildSkillPrompt（apps/backend/src/worker/agent.processor.ts）。
+ * 与运行期注入：MCP 卡片上下文（计划延续与已激活技能的 SKILL.md 由 core run/turn-prompts 生成）。
  */
-import { absolutizeRefPaths } from '@agent-test/agent-core/skills/skill-files';
-import { parseCommand } from '@agent-test/agent-core/commands/parse-command';
-import { z } from 'zod';
 import type { WorkspacePermission } from '../../shared/workspace';
 
 /** 环境段：用户发来的附件（各段自带前导空行，同 core 约定） */
@@ -75,51 +71,3 @@ ${PERMISSION_RULES[permission]}
 - 命令失败时把 stderr 关键行告诉用户，不要静默重试超过 2 次。`;
 }
 
-const todosSchema = z.object({
-  todos: z.array(z.object({ content: z.string(), status: z.string() })),
-});
-
-/** 当前任务计划文本（最近一条 plan_update）；没有计划返回空串 */
-export function buildActivePlan(lastPlanContent: unknown): string {
-  const parsed = todosSchema.safeParse(lastPlanContent);
-  if (!parsed.success || parsed.data.todos.length === 0) return '';
-  const lines = parsed.data.todos
-    .map((t, i) => `${i + 1}. [${t.status}] ${t.content}`)
-    .join('\n');
-  return (
-    `## 当前任务计划（已存在，继续执行，请勿重新拆解）\n${lines}\n\n` +
-    `本会话已有上面这份既定计划，请在它的基础上继续：\n` +
-    `- 保留已有步骤的文本与顺序不变，逐步用 write_todos 推进状态（pending → in_progress → completed）；\n` +
-    `- 开始某一步前标记为 in_progress，完成后立即标记为 completed；\n` +
-    `- 不要把整张列表替换成新的，也不要删除、改写或重排已有步骤；仅当确实发现新子任务时，可在末尾追加。`
-  );
-}
-
-/**
- * 之前轮次已经用 /技能名 激活过某技能时，把它的 SKILL.md 全文注入系统提示，避免每轮重复 read_file。
- * 本轮才首次发起的 /command 不注入，交给通用段的「先 read_file SKILL.md」规则。
- */
-export async function buildSkillPrompt(
-  userTexts: string[],
-  skillMd: (name: string) => Promise<string | null>,
-  skillsDir: string,
-): Promise<string> {
-  if (userTexts.length === 0) return '';
-  const currentIndex = userTexts.length - 1;
-  let active: { name: string; md: string; index: number } | null = null;
-  for (let i = 0; i < userTexts.length; i++) {
-    const cmd = parseCommand(userTexts[i]);
-    if (!cmd) continue;
-    const md = await skillMd(cmd.name);
-    if (md) active = { name: cmd.name, md, index: i };
-  }
-  if (!active || active.index === currentIndex) return '';
-  const content = absolutizeRefPaths(active.name, active.md, skillsDir);
-  return (
-    `\n\n## 已加载技能：${active.name}（SKILL.md 已提供，请勿重复读取）\n` +
-    `本会话在之前的轮次已通过 \`/${active.name}\` 激活该技能，其 SKILL.md 全文见下。` +
-    `请直接据此继续，**不要再 read_file 读取 \`${skillsDir}/${active.name}/SKILL.md\`**；` +
-    `仅当需要其引用的 references/ 子技能等子文件时，才按需 read_file 那些子文件。\n\n` +
-    `<skill name="${active.name}">\n${content}\n</skill>`
-  );
-}

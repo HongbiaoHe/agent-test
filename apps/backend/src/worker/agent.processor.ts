@@ -1,4 +1,3 @@
-import { isBaseMessage } from '@langchain/core/messages';
 import { Prisma } from '@prisma/client';
 import { Command } from '@langchain/langgraph';
 import { InjectQueue, Processor, WorkerHost } from '@nestjs/bullmq';
@@ -9,9 +8,22 @@ import type { DynamicContextProvider } from '@agent-test/agent-core/modes/dynami
 import {
   instantiateTools,
   resolveMode,
-  type SkillFiles,
 } from '@agent-test/agent-core/modes/resolve-mode';
 import type { ToolRegistry } from '@agent-test/agent-core/modes/tool-registry';
+import {
+  priorMessageIds,
+  readInterrupt,
+} from '@agent-test/agent-core/run/agent-state';
+import { consumeAgentStream } from '@agent-test/agent-core/run/consume-stream';
+import {
+  historyFromRows,
+  type HistoryMessage,
+  roleOf,
+} from '@agent-test/agent-core/run/history';
+import {
+  buildActivePlan,
+  buildSkillPrompt,
+} from '@agent-test/agent-core/run/turn-prompts';
 import { mountSkills } from '@agent-test/agent-core/skills/skills-mount';
 import { AbortRegistry, AGENT_ABORTS } from '../agent/abort-registry';
 import { buildAgent } from '../agent/agent.factory';
@@ -24,14 +36,9 @@ import {
   TOOL_REGISTRY,
 } from '../agent/tool-registry.provider';
 import { SandboxSettingsService } from '../sandbox/sandbox-settings.service';
-import {
-  extractThinkingBlocks,
-  normalize,
-  RawEvent,
-} from '../agent/event-normalizer';
+import { RawEvent } from '../agent/event-normalizer';
 import { resolveModelName } from '../agent/models';
-import { ReasoningCollector } from '../agent/reasoning-parts';
-import { type CallUsage, extractUsages } from '../agent/token-usage';
+import type { CallUsage } from '../agent/token-usage';
 import { asThinkingLevel } from '../agent/thinking-level';
 import { parseCommand } from '../commands/parse-command';
 import { StreamService } from '../events/stream.service';
@@ -45,7 +52,6 @@ import { McpService } from '../mcp/mcp.service';
 import { toAgentMode } from '../modes/mode-view';
 import { ModesService } from '../modes/modes.service';
 import { PrismaService } from '../prisma/prisma.service';
-import { absolutizeRefPaths } from '../skills/skill-files';
 import { SkillsService } from '../skills/skills.service';
 
 interface JobData {
@@ -65,16 +71,6 @@ const TIMEOUT_MS = Number(process.env.APPROVAL_TIMEOUT_MS ?? 120000);
 const SANDBOX_HEARTBEAT_MS = 30_000;
 /** ask_user 的服务端兜底超时：前端 60s 倒计时是主路径，这里只兜「页面已关」，须给足思考时间 */
 const ASK_USER_TIMEOUT_MS = Number(process.env.ASK_USER_TIMEOUT_MS ?? 600000);
-
-const ROLE_BY_TYPE: Record<string, string> = {
-  message: 'assistant',
-  result: 'assistant',
-  plan_update: 'assistant',
-  tool_start: 'assistant',
-  tool_end: 'tool',
-  control_request: 'assistant',
-  error: 'assistant',
-};
 
 /** 一轮运行的 token 会计状态（见 prepareUsage）。 */
 interface UsageContext {
@@ -117,8 +113,6 @@ export class AgentProcessor extends WorkerHost {
     // 注册可中止句柄——必须在 timeout 早退之后：timeout job 与 resume run 可共存，
     // 在早退前注册会覆盖正在跑的 resume 的注册（停止设计 §worker 接入顺序）。
     const { signal, dispose } = this.aborts.register(conversationId);
-    // 流式文本缓冲提升到 try 外：停止收尾（catch 分支）需要 flush 残余文本
-    let buf = '';
     // 轮内沙箱心跳，finally 统一清掉（正常结束 / 失败 / 停止都不能漏）
     let heartbeat: NodeJS.Timeout | undefined;
     try {
@@ -130,7 +124,7 @@ export class AgentProcessor extends WorkerHost {
         data: { status: 'running' },
       });
       if (gate.count === 0) {
-        if (signal.aborted) await this.finalizeStopped(conversationId, '');
+        if (signal.aborted) await this.finalizeStopped(conversationId);
         return;
       }
       // CAS（updateMany）不返回记录，补一次读取拿本会话的 userId / 选定模型
@@ -274,9 +268,11 @@ export class AgentProcessor extends WorkerHost {
         runName = lastLabel || runName;
         input = { messages };
         // 只认当前模式勾选的技能：模式外的 /技能名 当普通文本（不注入全文）
-        skillPromptExtra = this.buildSkillPrompt(
-          assembly.skills,
-          messages,
+        skillPromptExtra = await buildSkillPrompt(
+          messages.filter((m) => m.role === 'user').map((m) => m.content),
+          (name) =>
+            assembly.skills.find((s) => s.name === name)?.files['SKILL.md'] ??
+            null,
           env.skillsDir,
         );
       }
@@ -284,7 +280,12 @@ export class AgentProcessor extends WorkerHost {
       // 既有任务计划经 runtime context 注入：activePlanProvider 会把它追加到系统提示
       // **末尾**（盖过 todoListMiddleware 的「随时重订」），根治多轮 todos 被整表替换、没执行完
       // 就换新列表。run/resume 都注入（resume 续跑同一轮，回注既有计划同样有益）。
-      const activePlan = await this.buildActivePlan(conversationId);
+      const lastPlan = await this.prisma.message.findFirst({
+        where: { conversationId, type: 'plan_update' },
+        orderBy: { seq: 'desc' },
+        select: { content: true },
+      });
+      const activePlan = buildActivePlan(lastPlan?.content);
 
       // ④ 建工具实例：描述符闭包里拿到 conversationId/userId（不经模型传递，无注入风险）、
       // 本轮沙箱与 MCP server 清单；需审批的（send_email、MCP ask）并进 interruptOn。
@@ -348,107 +349,35 @@ export class AgentProcessor extends WorkerHost {
 
       // resume 续跑时从已有消息数接着排 seq
       let seq = await this.prisma.message.count({ where: { conversationId } });
-      // 思考按「源消息」归集：一条 AIMessage 一块、一块落一行（规则见 reasoning-parts.ts）。
-      // 逐个增量落库会让表随字数膨胀，且刷新后要靠前端再拼回去。priorIds = run 开始前 checkpoint
-      // 里就有的消息（审批 resume 时 updates 流会把它们整批回放），其思考已在上一段落过库，必须排掉。
-      const reasoning = new ReasoningCollector(
-        await this.priorMessageIds(agent, config),
-      );
-      /** 收口：把本段新产生的思考按源消息各落一行。时机 = 思考之后的第一个其它事件或本轮结束。 */
-      const flushReasoning = async () => {
-        for (const part of reasoning.drain()) {
-          await this.persist(
-            conversationId,
-            { type: 'reasoning', payload: part },
-            seq++,
-          );
-        }
-      };
-      /** 收下一块思考并推流（null = collector 判定该丢：历史重放 / 同轮回显 / 空文本）。 */
-      const pushReasoning = async (
-        part: { sourceId: string; text: string } | null,
-      ) => {
-        if (!part) return;
-        await this.stream.publish(conversationId, {
-          type: 'reasoning',
-          payload: part,
-        });
-      };
-      // 逐字 token 实时推流但不逐条落库（否则每条 token 一行、表爆炸）；改为按助手文本段累积，
-      // 在遇到边界（工具调用/结果/计划/审批）或流结束时，把累积文本收口成一条完整 message：
-      // 推流 + 落库都用「用户实际看到的累积文本」，从而 live 与刷新恢复一致、结尾不再被更短的聚合覆盖。
-      // （buf 声明在 try 外，停止收尾需要它）
-      const flush = async (override?: string) => {
-        const text = override ?? buf;
-        buf = '';
-        if (!text) return;
-        const msg: RawEvent = { type: 'message', payload: { text } };
-        await this.stream.publish(conversationId, msg);
-        await this.persist(conversationId, msg, seq++);
-      };
       // token 会计（同画布）：本轮归属的用户消息、已记账的 AIMessage id（跨 run 幂等）、会话累计起点
       const usage = await this.prepareUsage(conversationId);
-      // provider 没回模型名时（google-genai）的回落值：与 buildAgent 实际装配的模型同一口径
-      const modelName = resolveModelName(conv.model);
-      for await (const chunk of stream) {
-        const [ns, mode, data] = chunk as [string[], string, unknown];
-        // Gemini 的思考正文只能从 updates 拿（messages 流会把它丢掉，见
-        // extractThinkingBlocks 注释）。整段一次给出，非流式。
-        if (mode === 'updates') {
-          // token 落库：updates 模式的完整 AIMessage 带 usage_metadata（按 message id 去重）
-          for (const call of extractUsages(data, usage.seen, modelName)) {
-            await this.recordUsage(conversationId, usage, call);
-          }
-          for (const part of extractThinkingBlocks(data)) {
-            await pushReasoning(reasoning.takeBlock(part.id, part.text));
-          }
-        }
-        const raw = normalize(ns, mode, data);
-        if (!raw) continue;
-        // DeepSeek 的思考经 messages 流逐块增量到达
-        if (raw.type === 'reasoning') {
-          const p = raw.payload as { text?: string; sourceId?: string };
-          await pushReasoning(
-            reasoning.appendDelta(
-              String(p.sourceId ?? ''),
-              String(p.text ?? ''),
+      // 流的消费规则（文本段收口、思考归集、token 记账、停止时收口残余文本）都在 core 的
+      // consumeAgentStream；这里只给落点：推 Redis Stream、写 message 表、写 token 明细表。
+      await consumeAgentStream(
+        stream,
+        {
+          emit: (event) => this.stream.publish(conversationId, event),
+          persist: (event) => this.persist(conversationId, event, seq++),
+          recordUsage: (call) => this.recordUsage(conversationId, usage, call),
+        },
+        {
+          // run 开始前 checkpoint 里就有的消息：审批 resume 时 updates 会整批回放，其思考已落过库
+          priorIds: await priorMessageIds(agent, config, () =>
+            this.logger.warn(
+              'priorMessageIds 读取 checkpoint 失败，本轮不排除历史思考',
             ),
-          );
-          continue;
-        }
-        // 思考之后的第一个事件即代表这段思考已结束 → 先收口落库，保证 seq 顺序在前
-        await flushReasoning();
-        if (raw.type === 'token') {
-          buf += String((raw.payload as { text?: string }).text ?? '');
-          await this.stream.publish(conversationId, raw);
-          continue;
-        }
-        // updates 聚合出的 message 文本可能短于逐字流（如思考/工具叙述被裁剪）：优先用累积的 buf
-        // 收口；buf 为空（非流式模型，未产生 token）时才退回 updates 文本，避免文本丢失。
-        if (raw.type === 'message') {
-          await flush(
-            buf || String((raw.payload as { text?: string }).text ?? ''),
-          );
-          continue;
-        }
-        // 其余非文本事件（tool_start/tool_end/plan_update/control_request）是文本段边界：
-        // 先把已累积文本收口成 message，再推送并落库该事件。
-        await flush();
-        await this.stream.publish(conversationId, raw);
-        await this.persist(conversationId, raw, seq++);
-      }
-      await flushReasoning();
-      await flush(); // 流自然结束、末段文本无后继事件触发时收尾
-
-      // 流结束后检测审批中断（state.tasks 是 LangGraph 内部概念，勿与业务表混淆）
-      const state = (await agent.getState(config)) as {
-        tasks?: { interrupts?: { value?: unknown }[] }[];
-      };
-      const interrupts = (state?.tasks ?? []).flatMap(
-        (t) => t.interrupts ?? [],
+          ),
+          seenUsageIds: usage.seen,
+          // provider 没回模型名时（google-genai）的回落值：与 buildAgent 实际装配的模型同一口径
+          fallbackModel: resolveModelName(conv.model),
+          signal,
+        },
       );
-      if (interrupts.length > 0) {
-        const value = interrupts[0]?.value;
+
+      // 流结束后检测审批中断
+      const interrupt = readInterrupt(await agent.getState(config));
+      if (interrupt) {
+        const { value, toolName: interruptToolName } = interrupt;
         this.logger.log(
           `conversation=${conversationId} 命中审批中断，等待用户决策`,
         );
@@ -458,7 +387,7 @@ export class AgentProcessor extends WorkerHost {
           data: { status: 'waiting_approval' },
         });
         if (toApproval.count === 0) {
-          await this.finalizeStopped(conversationId, '');
+          await this.finalizeStopped(conversationId);
           return;
         }
         const evt: RawEvent = { type: 'control_request', payload: value };
@@ -466,9 +395,6 @@ export class AgentProcessor extends WorkerHost {
         await this.persist(conversationId, evt, seq++);
         // 超时行为/时长按中断的工具分叉：ask_user 用长兜底（前端 60s 倒计时是主路径），
         // 其余（send_email 等审批）维持短超时自动拒绝
-        const interruptToolName = (
-          value as { actionRequests?: { name?: string }[] } | undefined
-        )?.actionRequests?.[0]?.name;
         await this.queue.add(
           'timeout',
           { conversationId, kind: 'timeout', toolName: interruptToolName },
@@ -488,7 +414,7 @@ export class AgentProcessor extends WorkerHost {
         data: { status: 'done' },
       });
       if (toDone.count === 0) {
-        await this.finalizeStopped(conversationId, '');
+        await this.finalizeStopped(conversationId);
         return;
       }
       // 持久化 result：历史据此收尾未完成的工具卡、置为 done；实时丢失/重连也能从历史对齐。
@@ -506,10 +432,11 @@ export class AgentProcessor extends WorkerHost {
           this.logger.warn(`投递后台任务通知失败：${String(e)}`),
         );
     } catch (e) {
-      // 用户主动停止：AbortError 不是失败——flush 残余文本 + 发 stopped result（状态已由端点置好）
+      // 用户主动停止：AbortError 不是失败——残余文本已由 consumeAgentStream 收口落库，
+      // 这里只发 stopped result（状态已由端点置好）
       if (signal.aborted) {
         this.logger.log(`agent 停止: conversation=${conversationId}`);
-        await this.finalizeStopped(conversationId, buf);
+        await this.finalizeStopped(conversationId);
         return;
       }
       this.logger.error(
@@ -535,10 +462,6 @@ export class AgentProcessor extends WorkerHost {
     }
   }
 
-  /**
-   * run 开始前 checkpoint 里已有的消息 id（同 canvas.processor.priorMessageIds）。
-   * 读不到就返回空集：功能降级为不排除，绝不因此让整轮跑挂掉。
-   */
   /**
    * 本轮 token 会计的起点：
    * - turnMessageId：触发本轮的用户消息（最新一条）。审批 resume 也是续这一轮，报表按它分轮；
@@ -576,14 +499,14 @@ export class AgentProcessor extends WorkerHost {
   }
 
   /**
-   * 记一次模型调用的 token：明细落库 + 推 token_usage（会话累计）给前端。
-   * 唯一键冲突（同一 AIMessage 已记过，如并发重放）= 已计入，跳过且不推流；其余失败只记日志。
+   * 记一次模型调用的 token 明细，返回记账后的会话累计（token_usage 事件由 consumeAgentStream 推）。
+   * 唯一键冲突（同一 AIMessage 已记过，如并发重放）= 已计入，返回 null 不推流；其余失败只记日志。
    */
   private async recordUsage(
     conversationId: string,
     ctx: UsageContext,
     call: CallUsage,
-  ): Promise<void> {
+  ): Promise<number | null> {
     try {
       await this.prisma.conversationTokenUsage.create({
         data: {
@@ -607,56 +530,18 @@ export class AgentProcessor extends WorkerHost {
       ) {
         this.logger.warn(`token 明细落库失败：${String(e)}`);
       }
-      return;
+      return null;
     }
     ctx.total += call.total;
-    await this.stream.publish(conversationId, {
-      type: 'token_usage',
-      payload: {
-        model: call.model,
-        input: call.input,
-        output: call.output,
-        total: call.total,
-        cacheRead: call.cacheRead,
-        cacheCreation: call.cacheCreation,
-        cumulativeTotal: ctx.total,
-      },
-    });
-  }
-
-  private async priorMessageIds(
-    agent: { getState(config: unknown): Promise<unknown> },
-    config: unknown,
-  ): Promise<Set<string>> {
-    const ids = new Set<string>();
-    try {
-      const state = (await agent.getState(config)) as {
-        values?: { messages?: unknown[] };
-      };
-      const msgs = state?.values?.messages;
-      if (!Array.isArray(msgs)) return ids;
-      for (const m of msgs) {
-        if (isBaseMessage(m) && m.id) ids.add(m.id);
-      }
-    } catch {
-      this.logger.warn(
-        'priorMessageIds 读取 checkpoint 失败，本轮不排除历史思考',
-      );
-    }
-    return ids;
+    return ctx.total;
   }
 
   /**
-   * 停止收尾：保留已累积的流式文本（leftover），补发并持久化 result{status:'stopped'}。
+   * 停止收尾：补发并持久化 result{status:'stopped'}（流式残余文本已由 consumeAgentStream 收口落库）。
    * 会话状态已由 stop 端点 CAS 置为 stopped，此处不改写（设计 §竞态规则）。
    */
-  private async finalizeStopped(conversationId: string, leftover: string) {
-    let seq = await this.prisma.message.count({ where: { conversationId } });
-    if (leftover) {
-      const msg: RawEvent = { type: 'message', payload: { text: leftover } };
-      await this.stream.publish(conversationId, msg);
-      await this.persist(conversationId, msg, seq++);
-    }
+  private async finalizeStopped(conversationId: string) {
+    const seq = await this.prisma.message.count({ where: { conversationId } });
     const evt: RawEvent = { type: 'result', payload: { status: 'stopped' } };
     await this.stream.publish(conversationId, evt);
     await this.persist(conversationId, evt, seq);
@@ -664,17 +549,10 @@ export class AgentProcessor extends WorkerHost {
   }
 
   /**
-   * 从 DB 重放该会话的完整对话历史（按 seq）。
-   * 包含 user/assistant 文本消息 + tool_end 工具结果。
-   * tool_call_id 为合成值（DB 不存原始 id），仅用于满足 LangChain ToolMessage 结构要求。
-   *
-   * 裁剪：取最近 200 条；若首条非 user，继续从头部移除直到首条为 user（保证对话起点的完整性）。
+   * 从 DB 重放该会话的完整对话历史（按 seq；窗口与 tool_end 的处理见 core historyFromRows）。
+   * 用户消息带附件时，末尾拼一段「[附件]」清单（见 userMessageText）。
    */
-  private async loadHistory(
-    conversationId: string,
-  ): Promise<{ role: string; content: string; tool_call_id?: string }[]> {
-    const MAX_MSGS = 200;
-
+  private async loadHistory(conversationId: string): Promise<HistoryMessage[]> {
     const rows = await this.prisma.message.findMany({
       where: {
         conversationId,
@@ -684,116 +562,7 @@ export class AgentProcessor extends WorkerHost {
       orderBy: { seq: 'asc' },
       select: { role: true, content: true, type: true, seq: true },
     });
-
-    let slice = rows.length > MAX_MSGS ? rows.slice(-MAX_MSGS) : rows;
-    while (slice.length > 0 && slice[0].role !== 'user') {
-      slice = slice.slice(1);
-    }
-
-    return slice.map((m) => {
-      if (m.type === 'tool_end') {
-        const payload = m.content as { name?: string; content?: unknown };
-        const text =
-          typeof payload.content === 'string'
-            ? payload.content
-            : JSON.stringify(payload.content);
-        return {
-          role: 'tool',
-          content: text,
-          tool_call_id: `synth_${payload.name ?? 'tool'}_${m.seq}`,
-        };
-      }
-      // 用户消息带附件时，末尾拼一段「[附件]」清单（见 userMessageText）
-      return {
-        role: m.role,
-        content:
-          m.role === 'user'
-            ? userMessageText(m.content)
-            : ((m.content as { text?: string })?.text ?? ''),
-      };
-    });
-  }
-
-  /**
-   * 算出该会话「当前任务计划」文本，供 worker 经 runtime context 传给 planContinuationMiddleware
-   * 注入系统提示末尾（见 agent.factory）。计划尚未产生（首轮）时返回空串，让模型自由完成首次拆解。
-   *
-   * 为什么需要它：多轮重放时模型在提示和消息里都看不到上一轮的任务计划——write_todos 产生的
-   * plan_update / tool 消息不在 loadHistory 的重放范围内，langchain 的 todoListMiddleware 也只注入
-   * 「如何使用 write_todos」的说明、从不注入当前 todos 列表，且其文案还鼓励「随时重订计划」。不回注
-   * 既有计划，模型每轮都会整表重写 todos、把没执行完的步骤冲掉（用户观察到的「频繁换新 todos」）。
-   *
-   * 措辞刻意只锁「整表替换/删改重排」，仍允许末尾追加新发现的子任务，避免过度僵化。
-   */
-  private async buildActivePlan(conversationId: string): Promise<string> {
-    const row = await this.prisma.message.findFirst({
-      where: { conversationId, type: 'plan_update' },
-      orderBy: { seq: 'desc' },
-      select: { content: true },
-    });
-    const todos = (
-      row?.content as { todos?: { content: string; status: string }[] } | null
-    )?.todos;
-    if (!Array.isArray(todos) || todos.length === 0) return '';
-
-    const lines = todos
-      .map((t, i) => `${i + 1}. [${t.status}] ${t.content}`)
-      .join('\n');
-    return (
-      `## 当前任务计划（已存在，继续执行，请勿重新拆解）\n${lines}\n\n` +
-      `本会话已有上面这份既定计划，请在它的基础上继续：\n` +
-      `- 保留已有步骤的文本与顺序不变，逐步用 write_todos 推进状态（pending → in_progress → completed）；\n` +
-      `- 开始某一步前标记为 in_progress，完成后立即标记为 completed；\n` +
-      `- 不要把整张列表替换成新的，也不要删除、改写或重排已有步骤；仅当确实发现新子任务时，可在末尾追加。`
-    );
-  }
-
-  /**
-   * 多轮续跑时，上一轮 read_file 读到的 SKILL.md 不会回到上下文里：loadHistory 只重放
-   * user/assistant 文本消息，read_file 的调用与结果落在 tool_start/tool_end（见 ROLE_BY_TYPE）
-   * 被排除，且 deepagents 跑完一轮不在 state 保留对话消息。于是每个后续轮次模型都缺少已激活
-   * 技能的 SKILL.md，只能反复 read_file 同一个 SKILL.md（用户观察到的「重复读取」）。
-   *
-   * 这里：若本会话在**之前的轮次**已通过 /command 激活了某技能（即最近一次能解析到已知技能的
-   * /command 不是本轮当前请求），就把该技能的 SKILL.md 全文注入系统提示，并显式告知无需再
-   * read_file 读取它——从根上消除重复读取。引用文档/子技能仍按需 read_file（progressive disclosure）。
-   * 本轮才首次发起的 /command 不注入，交由基础系统提示按 read_file 完成首次加载。
-   * SKILL.md 经 absolutizeRefPaths 改写相对引用，保证注入后正文里的 references 路径仍能命中虚拟 FS。
-   */
-  private buildSkillPrompt(
-    /** 本轮挂载的技能（= 当前模式勾选且已装的）；模式外的 /技能名 不算激活 */
-    skills: readonly SkillFiles[],
-    messages: { role: string; content: string }[],
-    /** 沙箱技能库目录（GuardedSandbox.skillsDir）；无沙箱时沿用默认 /skills 表述 */
-    skillsDir = '/skills',
-  ): string {
-    const users = messages.filter((m) => m.role === 'user');
-    if (users.length === 0) return '';
-    const current = users[users.length - 1];
-
-    let active: SkillFiles | undefined;
-    let activeMsg: { role: string; content: string } | undefined;
-    for (const m of users) {
-      const cmd = parseCommand(m.content);
-      if (!cmd) continue;
-      const def = skills.find((s) => s.name === cmd.name);
-      if (!def) continue;
-      active = def;
-      activeMsg = m;
-    }
-    // 没有激活任何技能，或激活就发生在本轮（首次加载，交给 read_file）→ 不注入
-    if (!active || activeMsg === current) return '';
-
-    const skillMd = active.files['SKILL.md'];
-    if (!skillMd) return '';
-    const content = absolutizeRefPaths(active.name, skillMd, skillsDir);
-    return (
-      `\n\n## 已加载技能：${active.name}（SKILL.md 已提供，请勿重复读取）\n` +
-      `本会话在之前的轮次已通过 \`/${active.name}\` 激活该技能，其 SKILL.md 全文见下。` +
-      `请直接据此继续，**不要再 read_file 读取 \`${skillsDir}/${active.name}/SKILL.md\`**；` +
-      `仅当需要其引用的 references/ 子技能等子文件时，才按需 read_file 那些子文件。\n\n` +
-      `<skill name="${active.name}">\n${content}\n</skill>`
-    );
+    return historyFromRows(rows, userMessageText);
   }
 
   /** 同一 run 内只算一次的异步值（动态上下文 provider 每次模型调用都会跑）。 */
@@ -885,7 +654,7 @@ export class AgentProcessor extends WorkerHost {
     await this.prisma.message.create({
       data: {
         conversationId,
-        role: ROLE_BY_TYPE[raw.type] ?? 'assistant',
+        role: roleOf(raw.type),
         type: raw.type,
         content: raw.payload as object,
         seq,

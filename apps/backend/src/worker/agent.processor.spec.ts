@@ -123,10 +123,19 @@ describe('AgentProcessor 多轮重放', () => {
     const history = [
       {
         role: 'user',
+        type: 'message',
         content: { text: '/tvc-director 帮我做一条30秒手表广告' },
       },
-      { role: 'assistant', content: { text: '（上一轮的分镜结果）' } },
-      { role: 'user', content: { text: '再短一点，改成15秒' } },
+      {
+        role: 'assistant',
+        type: 'message',
+        content: { text: '（上一轮的分镜结果）' },
+      },
+      {
+        role: 'user',
+        type: 'message',
+        content: { text: '再短一点，改成15秒' },
+      },
     ];
 
     const prisma = {
@@ -216,10 +225,19 @@ describe('AgentProcessor 多轮重放', () => {
     const history = [
       {
         role: 'user',
+        type: 'message',
         content: { text: '/tvc-director 帮我做一条30秒手表广告' },
       },
-      { role: 'assistant', content: { text: '（上一轮分镜）' } },
-      { role: 'user', content: { text: '再短一点，改成15秒' } },
+      {
+        role: 'assistant',
+        type: 'message',
+        content: { text: '（上一轮分镜）' },
+      },
+      {
+        role: 'user',
+        type: 'message',
+        content: { text: '再短一点，改成15秒' },
+      },
     ];
 
     const prisma = {
@@ -308,10 +326,19 @@ describe('AgentProcessor 多轮重放', () => {
     const history = [
       {
         role: 'user',
+        type: 'message',
         content: { text: '/tvc-director 帮我做一条30秒手表广告' },
       },
-      { role: 'assistant', content: { text: '（上一轮分镜）' } },
-      { role: 'user', content: { text: '再短一点，改成15秒' } },
+      {
+        role: 'assistant',
+        type: 'message',
+        content: { text: '（上一轮分镜）' },
+      },
+      {
+        role: 'user',
+        type: 'message',
+        content: { text: '再短一点，改成15秒' },
+      },
     ];
     const prisma = {
       generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
@@ -407,6 +434,7 @@ describe('AgentProcessor 多轮重放', () => {
     const history = [
       {
         role: 'user',
+        type: 'message',
         content: { text: '/tvc-director 帮我做一条30秒手表广告' },
       },
     ];
@@ -474,9 +502,13 @@ describe('AgentProcessor 多轮重放', () => {
 
   it('已有任务计划时，把既定计划注入系统提示并要求按计划逐步执行、不重新拆解', async () => {
     const history = [
-      { role: 'user', content: { text: '帮我规划上线流程' } },
-      { role: 'assistant', content: { text: '（上一轮回复）' } },
-      { role: 'user', content: { text: '继续' } },
+      { role: 'user', type: 'message', content: { text: '帮我规划上线流程' } },
+      {
+        role: 'assistant',
+        type: 'message',
+        content: { text: '（上一轮回复）' },
+      },
+      { role: 'user', type: 'message', content: { text: '继续' } },
     ];
     const plan = {
       todos: [
@@ -562,7 +594,9 @@ describe('AgentProcessor 多轮重放', () => {
       enabled: true,
       files: { 'SKILL.md': '# tvc' },
     };
-    const history = [{ role: 'user', content: { text: '测试加载' } }];
+    const history = [
+      { role: 'user', type: 'message', content: { text: '测试加载' } },
+    ];
 
     const prisma = {
       generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
@@ -661,7 +695,9 @@ describe('AgentProcessor 多轮重放', () => {
   it('有沙箱时轮内每 30s 心跳续期、轮结束即停：模型思考期间沙箱不会因闲置 1 分钟而暂停', async () => {
     jest.useFakeTimers();
     try {
-      const history = [{ role: 'user', content: { text: '想一想' } }];
+      const history = [
+        { role: 'user', type: 'message', content: { text: '想一想' } },
+      ];
       const prisma = {
         generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
         conversation: {
@@ -743,7 +779,9 @@ describe('AgentProcessor 多轮重放', () => {
       enabled: true,
       files: { 'SKILL.md': '# tvc' },
     };
-    const history = [{ role: 'user', content: { text: '无沙箱' } }];
+    const history = [
+      { role: 'user', type: 'message', content: { text: '无沙箱' } },
+    ];
 
     const prisma = {
       generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
@@ -818,7 +856,9 @@ describe('AgentProcessor 多轮重放', () => {
       enabled: true,
       files: { 'SKILL.md': '# tvc' },
     };
-    const history = [{ role: 'user', content: { text: '无沙箱' } }];
+    const history = [
+      { role: 'user', type: 'message', content: { text: '无沙箱' } },
+    ];
 
     const prisma = {
       generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
@@ -895,7 +935,9 @@ describe('AgentProcessor 多轮重放', () => {
       enabled: true,
       files: { 'SKILL.md': '# tvc' },
     };
-    const history = [{ role: 'user', content: { text: '无沙箱' } }];
+    const history = [
+      { role: 'user', type: 'message', content: { text: '无沙箱' } },
+    ];
 
     const prisma = {
       generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
@@ -973,7 +1015,9 @@ describe('AgentProcessor 多轮重放', () => {
   });
 
   it('stream config 的 configurable.userId === conv.userId', async () => {
-    const history = [{ role: 'user', content: { text: '测试' } }];
+    const history = [
+      { role: 'user', type: 'message', content: { text: '测试' } },
+    ];
 
     const prisma = {
       generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
@@ -1121,7 +1165,9 @@ describe('AgentProcessor 多轮重放', () => {
   });
 
   it('无沙箱：传给 resolveMode 的 env 只有固有能力，没有 sandbox / workspace / workspace_write', async () => {
-    const history = [{ role: 'user', content: { text: '测试' } }];
+    const history = [
+      { role: 'user', type: 'message', content: { text: '测试' } },
+    ];
 
     const prisma = {
       generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
@@ -1191,7 +1237,9 @@ describe('AgentProcessor 多轮重放', () => {
   });
 
   it('buildAgent 收到 instantiateTools 产出的 tools / interruptOn（send_email 的审批来自描述符，不再硬编码）', async () => {
-    const history = [{ role: 'user', content: { text: '测试工具装配' } }];
+    const history = [
+      { role: 'user', type: 'message', content: { text: '测试工具装配' } },
+    ];
 
     const prisma = {
       generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
@@ -1277,7 +1325,9 @@ describe('AgentProcessor 多轮重放', () => {
 
   /** 跑一轮，返回 buildAgent 收到的 dynamicContext 各 provider 在空 runtime 下产出的文本。 */
   async function dynamicTextsWith(generations: unknown[]) {
-    const history = [{ role: 'user', content: { text: '继续' } }];
+    const history = [
+      { role: 'user', type: 'message', content: { text: '继续' } },
+    ];
     const prisma = {
       generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
       conversation: {
@@ -1930,7 +1980,9 @@ describe('AgentProcessor 主动停止', () => {
       message: {
         findMany: jest
           .fn()
-          .mockResolvedValue([{ role: 'user', content: { text: 'hi' } }]),
+          .mockResolvedValue([
+            { role: 'user', type: 'message', content: { text: 'hi' } },
+          ]),
         findFirst: jest.fn().mockResolvedValue(null),
         count: jest.fn().mockResolvedValue(1),
         create: jest.fn().mockResolvedValue({}),

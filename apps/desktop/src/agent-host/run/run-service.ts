@@ -12,18 +12,11 @@
  */
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { isBaseMessage } from '@langchain/core/messages';
 import { Command } from '@langchain/langgraph';
-import { buildAgent, type BuiltAgent } from '@agent-test/agent-core/agent/agent.factory';
-import {
-  extractThinkingBlocks,
-  normalize,
-  type RawEvent,
-} from '@agent-test/agent-core/agent/event-normalizer';
+import { buildAgent } from '@agent-test/agent-core/agent/agent.factory';
+import type { RawEvent } from '@agent-test/agent-core/agent/event-normalizer';
 import { resolveModelName } from '@agent-test/agent-core/agent/models';
-import { ReasoningCollector } from '@agent-test/agent-core/agent/reasoning-parts';
 import { asThinkingLevel } from '@agent-test/agent-core/agent/thinking-level';
-import { type CallUsage, extractUsages } from '@agent-test/agent-core/agent/token-usage';
 import { parseCommand } from '@agent-test/agent-core/commands/parse-command';
 import type { RuntimeEnvironment } from '@agent-test/agent-core/modes/capabilities';
 import {
@@ -31,7 +24,10 @@ import {
   type DynamicContextProvider,
 } from '@agent-test/agent-core/modes/dynamic-context';
 import { instantiateTools, resolveMode } from '@agent-test/agent-core/modes/resolve-mode';
-import { z } from 'zod';
+import { priorMessageIds, readInterrupt } from '@agent-test/agent-core/run/agent-state';
+import { consumeAgentStream } from '@agent-test/agent-core/run/consume-stream';
+import { historyFromRows, type HistoryMessage, roleOf } from '@agent-test/agent-core/run/history';
+import { buildActivePlan, buildSkillPrompt } from '@agent-test/agent-core/run/turn-prompts';
 import type { HitlDecision } from '../../shared/rpc';
 import type { NodeSqliteSaver } from '../db/checkpointer';
 import type { ConversationRepo } from '../db/conversations';
@@ -48,8 +44,6 @@ import type { ProcessTracker } from '../workspace/process-tracker';
 import { buildWorkspaceBackend, permissionInterrupts } from '../workspace/workspace-backend';
 import { copyAttachments, userTextForModel } from './attachments';
 import {
-  buildActivePlan,
-  buildSkillPrompt,
   DESKTOP_ATTACHMENTS_SECTION,
   DESKTOP_MEDIA_ATTACHMENTS_NOTE,
   localWorkspaceBlock,
@@ -59,18 +53,6 @@ import { type DesktopRegistry, desktopCapabilities } from './tool-registry';
 
 /** 桌面端单用户：contextSchema 要求 userId 必填，固定传这个值 */
 export const LOCAL_USER_ID = 'local';
-const MAX_HISTORY = 200;
-
-const ROLE_BY_TYPE: Record<string, string> = {
-  message: 'assistant',
-  result: 'assistant',
-  plan_update: 'assistant',
-  tool_start: 'assistant',
-  tool_end: 'tool',
-  control_request: 'assistant',
-  reasoning: 'assistant',
-  error: 'assistant',
-};
 
 export interface RunConfig {
   /** 新会话默认工作区（会话自己的目录在 conversation.workspaceDir） */
@@ -106,22 +88,6 @@ interface ActiveRun {
   abort: AbortController;
   sandbox: LocalWorkspaceSandbox;
 }
-
-type HistoryMessage = { role: string; content: string; tool_call_id?: string };
-
-const textPayload = z.object({ text: z.string().optional() });
-const toolEndPayload = z.object({ name: z.string().optional(), content: z.unknown() });
-const interruptState = z.object({
-  tasks: z
-    .array(z.object({ interrupts: z.array(z.object({ value: z.unknown() })).optional() }))
-    .optional(),
-});
-const interruptValue = z.object({
-  actionRequests: z.array(z.object({ name: z.string().optional() })).optional(),
-});
-const stateMessages = z.object({
-  values: z.object({ messages: z.array(z.unknown()).optional() }).optional(),
-});
 
 export class BusyError extends Error {}
 
@@ -249,7 +215,7 @@ export class RunService {
       void run.sandbox.stop();
       return; // execute 的 catch / CAS 分支负责发 stopped result
     }
-    if (changed) this.finalizeStopped(conversationId, '');
+    if (changed) this.finalizeStopped(conversationId);
   }
 
   // ── 一轮运行 ─────────────────────────────────────────────────────────────
@@ -269,11 +235,10 @@ export class RunService {
     const runtimeDir = this.runtimeDir(conversationId);
     const inner = new LocalWorkspaceSandbox(workspaceDir, { tracker: this.deps.processes });
     this.active.set(conversationId, { abort, sandbox: inner });
-    let buf = '';
     /** 本轮正常结束：收尾后补投运行期间结束的后台任务通知（同 backend worker 在 done 之后 deliverPending） */
     let deliverAfter = false;
     const persist = (raw: RawEvent) =>
-      repo.appendMessage(conversationId, ROLE_BY_TYPE[raw.type] ?? 'assistant', raw.type, raw.payload);
+      repo.appendMessage(conversationId, roleOf(raw.type), raw.type, raw.payload);
     try {
       await mkdir(workspaceDir, { recursive: true });
       await mkdir(runtimeDir, { recursive: true });
@@ -383,87 +348,48 @@ export class RunService {
         subgraphs: true,
       });
 
-      const reasoning = new ReasoningCollector(await this.priorMessageIds(agent, config));
-      const flushReasoning = () => {
-        for (const part of reasoning.drain()) persist({ type: 'reasoning', payload: part });
-      };
-      const pushReasoning = (part: { sourceId: string; text: string } | null) => {
-        if (part) emit(conversationId, { type: 'reasoning', payload: part });
-      };
-      const flush = (override?: string) => {
-        const text = override ?? buf;
-        buf = '';
-        if (!text) return;
-        const msg: RawEvent = { type: 'message', payload: { text } };
-        emit(conversationId, msg);
-        persist(msg);
-      };
       const turnMessageId = repo.lastUserMessageId(conversationId) ?? conversationId;
-      const seen = repo.usageMessageIds(conversationId);
       let total = repo.totalTokens(conversationId);
-      const modelName = resolveModelName(conv.model ?? cfg.defaultModel);
-      const recordUsage = (call: CallUsage) => {
-        const ok = repo.recordUsage({ conversationId, turnMessageId, ...call });
-        if (!ok) return;
-        total += call.total;
-        emit(conversationId, {
-          type: 'token_usage',
-          payload: { ...call, cumulativeTotal: total },
-        });
-      };
+      // 流的消费规则（文本段收口、思考归集、token 记账、停止时收口残余文本）都在 core 的
+      // consumeAgentStream；这里只给落点：推给 renderer、写 message 表、写 token_usage 表。
+      await consumeAgentStream(
+        stream,
+        {
+          emit: (event) => emit(conversationId, event),
+          persist: (event) => {
+            persist(event);
+          },
+          recordUsage: (call) => {
+            if (!repo.recordUsage({ conversationId, turnMessageId, ...call })) return null;
+            total += call.total;
+            return total;
+          },
+        },
+        {
+          // run 开始前 checkpoint 里已有的消息：审批续跑时 updates 会整批回放，其思考已落过库
+          priorIds: await priorMessageIds(agent, config, () =>
+            this.deps.log?.('priorMessageIds 读取 checkpoint 失败，本轮不排除历史思考'),
+          ),
+          seenUsageIds: repo.usageMessageIds(conversationId),
+          fallbackModel: resolveModelName(conv.model ?? cfg.defaultModel),
+          signal: abort.signal,
+        },
+      );
 
-      for await (const chunk of stream) {
-        const [ns, mode, data] = z
-          .tuple([z.array(z.string()), z.string(), z.unknown()])
-          .parse(chunk);
-        if (mode === 'updates') {
-          for (const call of extractUsages(data, seen, modelName)) recordUsage(call);
-          for (const part of extractThinkingBlocks(data)) {
-            pushReasoning(reasoning.takeBlock(part.id, part.text));
-          }
-        }
-        const raw = normalize(ns, mode, data);
-        if (!raw) continue;
-        if (raw.type === 'reasoning') {
-          const p = z.object({ text: z.string(), sourceId: z.string() }).parse(raw.payload);
-          pushReasoning(reasoning.appendDelta(p.sourceId, p.text));
-          continue;
-        }
-        flushReasoning();
-        if (raw.type === 'token') {
-          buf += textPayload.parse(raw.payload).text ?? '';
-          emit(conversationId, raw);
-          continue;
-        }
-        if (raw.type === 'message') {
-          flush(buf || (textPayload.parse(raw.payload).text ?? ''));
-          continue;
-        }
-        flush();
-        emit(conversationId, raw);
-        persist(raw);
-      }
-      flushReasoning();
-      flush();
-
-      const state = interruptState.safeParse(await agent.getState(config));
-      const interrupts = state.success
-        ? (state.data.tasks ?? []).flatMap((t) => t.interrupts ?? [])
-        : [];
-      if (interrupts.length > 0) {
+      const interrupt = readInterrupt(await agent.getState(config));
+      if (interrupt) {
         if (!repo.transition(conversationId, ['running'], 'waiting_approval')) {
-          this.finalizeStopped(conversationId, '');
+          this.finalizeStopped(conversationId);
           return;
         }
-        const evt: RawEvent = { type: 'control_request', payload: interrupts[0].value };
+        const evt: RawEvent = { type: 'control_request', payload: interrupt.value };
         emit(conversationId, evt);
         persist(evt);
-        const toolName = interruptValue.safeParse(interrupts[0].value).data?.actionRequests?.[0]?.name;
-        this.deps.log?.(`conversation=${conversationId} 等待审批 ${toolName ?? ''}`);
+        this.deps.log?.(`conversation=${conversationId} 等待审批 ${interrupt.toolName ?? ''}`);
         return;
       }
       if (!repo.transition(conversationId, ['running'], 'done')) {
-        this.finalizeStopped(conversationId, '');
+        this.finalizeStopped(conversationId);
         return;
       }
       const resultEvt: RawEvent = { type: 'result', payload: { status: 'done' } };
@@ -471,8 +397,9 @@ export class RunService {
       persist(resultEvt);
       deliverAfter = true;
     } catch (e) {
+      // 用户停止：残余文本已由 consumeAgentStream 收口落库，这里只补发 result{stopped}
       if (abort.signal.aborted) {
-        this.finalizeStopped(conversationId, buf);
+        this.finalizeStopped(conversationId);
         return;
       }
       this.deps.log?.(`agent 失败 conversation=${conversationId}: ${String(e)}`);
@@ -492,67 +419,16 @@ export class RunService {
     }
   }
 
-  /** 停止收尾：保留已累积的流式文本，补发并落库 result{stopped} */
-  private finalizeStopped(conversationId: string, leftover: string): void {
+  /** 停止收尾：补发并落库 result{stopped}（流式残余文本已由 consumeAgentStream 收口落库） */
+  private finalizeStopped(conversationId: string): void {
     const { repo, emit } = this.deps;
-    if (leftover) {
-      const msg: RawEvent = { type: 'message', payload: { text: leftover } };
-      emit(conversationId, msg);
-      repo.appendMessage(conversationId, 'assistant', 'message', msg.payload);
-    }
     const evt: RawEvent = { type: 'result', payload: { status: 'stopped' } };
     emit(conversationId, evt);
     repo.appendMessage(conversationId, 'assistant', 'result', evt.payload);
   }
 
-  /** run 开始前 checkpoint 里已有的消息 id（审批续跑时 updates 会整批回放它们，其思考已落过库） */
-  private async priorMessageIds(agent: BuiltAgent, config: unknown): Promise<Set<string>> {
-    const ids = new Set<string>();
-    try {
-      const parsed = stateMessages.safeParse(await agent.getState(config));
-      for (const m of parsed.data?.values?.messages ?? []) {
-        if (isBaseMessage(m) && m.id) ids.add(m.id);
-      }
-    } catch {
-      this.deps.log?.('priorMessageIds 读取 checkpoint 失败，本轮不排除历史思考');
-    }
-    return ids;
-  }
-
-  /**
-   * 从 message 表重放完整对话历史（user / assistant 文本 + tool_end 结果），取最近 200 条且以 user 开头。
-   * tool_call_id 是合成值（库里不存原始 id），只为满足 ToolMessage 结构（同 backend loadHistory）。
-   */
-  private async loadHistory(conversationId: string): Promise<HistoryMessage[]> {
-    const rows = this.deps.repo
-      .messages(conversationId)
-      .filter(
-        (m) =>
-          (m.type === 'message' || m.type === 'tool_end') &&
-          (m.role === 'user' || m.role === 'assistant' || m.role === 'tool'),
-      );
-    let slice = rows.length > MAX_HISTORY ? rows.slice(-MAX_HISTORY) : rows;
-    while (slice.length > 0 && slice[0].role !== 'user') slice = slice.slice(1);
-    const out: HistoryMessage[] = [];
-    for (const m of slice) {
-      if (m.type === 'tool_end') {
-        const p = toolEndPayload.safeParse(m.content);
-        const content = p.success ? p.data.content : '';
-        out.push({
-          role: 'tool',
-          content: typeof content === 'string' ? content : JSON.stringify(content),
-          tool_call_id: `synth_${(p.success && p.data.name) || 'tool'}_${m.seq}`,
-        });
-        continue;
-      }
-      out.push({
-        role: m.role,
-        content:
-          m.role === 'user'
-            ? await userTextForModel(m.content)
-            : (textPayload.safeParse(m.content).data?.text ?? ''),
-      });
-    }
-    return out;
+  /** 从 message 表重放完整对话历史（窗口与 tool_end 的处理见 core historyFromRows） */
+  private loadHistory(conversationId: string): Promise<HistoryMessage[]> {
+    return historyFromRows(this.deps.repo.messages(conversationId), userTextForModel);
   }
 }

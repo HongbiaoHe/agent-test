@@ -10,7 +10,7 @@ import { NodeSqliteSaver } from './db/checkpointer';
 import { ConversationRepo } from './db/conversations';
 import { openDatabase } from './db/database';
 import { copyAttachments, userTextForModel } from './run/attachments';
-import { buildActivePlan } from './run/prompts';
+import { buildActivePlan } from '@agent-test/agent-core/run/turn-prompts';
 import { SkillInstallError, SkillStore } from './skills/skill-store';
 import { LocalWorkspaceSandbox, whitelistedEnv } from './workspace/local-sandbox';
 import { listDir, readFilePreview, WorkspacePathError } from './workspace/files';
