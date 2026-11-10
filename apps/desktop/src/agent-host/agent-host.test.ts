@@ -307,6 +307,21 @@ describe('会话工作区与权限', () => {
     expect(permissionInterrupts('read_only')).toEqual({});
   });
 
+  it('工作区是用户自己的项目：里面的 skills/ 是普通目录，能写；以注释结尾的命令照常执行', async () => {
+    const { workspace } = buildWorkspaceBackend({
+      inner: new LocalWorkspaceSandbox(dir),
+      workspaceDir: dir,
+      runtimeDir: join(dir, '.runtime'),
+      permission: 'auto',
+    });
+    const w = await workspace.write(`${dir}/skills/mine.md`, 'hello');
+    expect(w.error).toBeUndefined();
+    expect(await readFile(join(dir, 'skills/mine.md'), 'utf8')).toBe('hello');
+    const r = await workspace.execute('cat skills/mine.md # 看一眼');
+    expect(r.exitCode).toBe(0);
+    expect(r.output).toContain('hello');
+  });
+
   it('只读档位：工作区能读，写与执行被拒；运行目录始终只读，但 execute 能按绝对路径用它', async () => {
     const ws = join(dir, 'ws');
     const runtime = join(dir, 'runtime');

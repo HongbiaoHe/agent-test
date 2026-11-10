@@ -6,12 +6,14 @@
  *  - 入站：`/workspace/foo` 与相对 `foo` → ws/foo；`/` 与 '' → ws（文件工具缺省值）；真实 ws 路径原样接受
  *  - 工作区外的绝对路径（含旧约定的 `/foo`）与 `../` 逃逸 → error 形状、inner 未被调用、
  *    消息给出正确写法且不含真实路径
- *  - 出站：结果里的真实 ws 前缀改写为 /workspace（含 execute 输出）；readRaw.data 不动
- *  - execute → inner 收到 `cd '/workspace' && ( 原命令 )`——shell 与文件工具看到同一条路径
+ *  - 出站：结果里的真实 ws 前缀改写为 /workspace（含 execute 输出）；readRaw.data 不动；
+ *    文件正文（read 的 content、grep 的 text）原样返回——改写了模型就没法照着它 edit
+ *  - execute → inner 收到 `cd '/workspace' && eval '原命令（单引号已转义）'`——shell 与文件工具看到同一条路径
  *  - 软链建不了时 visibleRoot = 真实路径：两边同样一致
- *  - 技能库 /workspace/skills 只读；uploadFiles / downloadFiles 走同一映射
+ *  - 技能库 /workspace/skills 只读（skillsInWorkspace: false 时不设防）；uploadFiles / downloadFiles 走同一映射
  */
 
+import { execFileSync } from 'node:child_process';
 // GuardedSandbox 不依赖 deepagents 运行时，无需 jest.mock
 import { GuardedSandbox } from './guarded-sandbox';
 
@@ -195,6 +197,29 @@ describe('GuardedSandbox — 出站改写（真实路径 → /workspace）', () 
     };
     expect(result.data).toBe(data);
   });
+
+  it('read 的文件正文原样返回：模型照着读到的内容 edit 才匹配得上', async () => {
+    inner.read.mockResolvedValue({ content: `root=${WS}/app` });
+    const res = await guard.read('/workspace/a.txt');
+    expect(res.content).toBe(`root=${WS}/app`);
+    // 照读到的原文去改：oldString 与文件里的字节一致
+    await guard.edit('/workspace/a.txt', String(res.content), 'root=/x');
+    expect(inner.edit).toHaveBeenCalledWith(
+      `${WS}/a.txt`,
+      `root=${WS}/app`,
+      'root=/x',
+      undefined,
+    );
+  });
+
+  it('grep：命中文件的 path 改写，命中行 text 原样返回', async () => {
+    inner.grep.mockResolvedValue({
+      matches: [{ path: `${WS}/a.txt`, line: 1, text: `root=${WS}/app` }],
+    });
+    expect(await guard.grep('root')).toEqual({
+      matches: [{ path: '/workspace/a.txt', line: 1, text: `root=${WS}/app` }],
+    });
+  });
 });
 
 describe('GuardedSandbox — execute cwd 锚定', () => {
@@ -202,7 +227,35 @@ describe('GuardedSandbox — execute cwd 锚定', () => {
     const { inner, guard } = setup();
     const cmd = 'python3 /workspace/skills/docx/scripts/run.py --in a.txt';
     await guard.execute(cmd);
-    expect(inner.execute).toHaveBeenCalledWith(`cd '/workspace' && ( ${cmd} )`);
+    expect(inner.execute).toHaveBeenCalledWith(
+      `cd '/workspace' && eval '${cmd}'`,
+    );
+  });
+
+  it('以注释 / heredoc 结尾、含单引号的命令，包裹后照原意执行', async () => {
+    const { inner, guard } = setup();
+    const cases: Array<[string, string]> = [
+      ['echo hi # list files', 'hi\n'],
+      ["cat <<'EOF'\nit's $HOME\nEOF", "it's $HOME\n"],
+      [`echo 'a b' "it's"`, "a b it's\n"],
+    ];
+    for (const [cmd, expected] of cases) {
+      await guard.execute(cmd);
+      // 真跑一遍包裹后的命令（cd 换成 /tmp，其余原样）
+      const wrapped = String(inner.execute.mock.lastCall?.[0]).replace(
+        `cd '${VIS}'`,
+        "cd '/tmp'",
+      );
+      expect(
+        execFileSync('/bin/bash', ['-c', wrapped], { encoding: 'utf8' }),
+      ).toBe(expected);
+    }
+  });
+
+  it('单行命令包裹后仍是单行（desktop ProcessTracker 按 ps 命令行逐字比对）', async () => {
+    const { inner, guard } = setup();
+    await guard.execute('sleep 1 && echo late');
+    expect(String(inner.execute.mock.lastCall?.[0])).not.toContain('\n');
   });
 });
 
@@ -217,7 +270,7 @@ describe('GuardedSandbox — 软链建不了时退回真实路径', () => {
       truncated: false,
     });
     expect((await guard.execute('pwd')).output).toBe(`${WS}\n`);
-    expect(inner.execute).toHaveBeenCalledWith(`cd '${WS}' && ( pwd )`);
+    expect(inner.execute).toHaveBeenCalledWith(`cd '${WS}' && eval 'pwd'`);
     await guard.read(`${WS}/a.md`);
     expect(inner.read).toHaveBeenCalledWith(`${WS}/a.md`, undefined, undefined);
     const res = await guard.read('/workspace/a.md');
@@ -298,6 +351,22 @@ describe('GuardedSandbox — 技能库只读保护', () => {
     expect(e.error).toContain('只读技能库');
     expect(inner.write).not.toHaveBeenCalled();
     expect(inner.edit).not.toHaveBeenCalled();
+  });
+
+  it('skillsInWorkspace: false（技能库不在工作区）→ 工作区里的 skills/ 是普通目录，可写可改', async () => {
+    const inner = makeMockInner();
+    const guard = new GuardedSandbox(inner, WS, WS, {
+      skillsInWorkspace: false,
+    });
+    expect((await guard.write(`${WS}/skills/x.md`, 'x')).error).toBeUndefined();
+    expect((await guard.edit('skills/x.md', 'a', 'b')).error).toBeUndefined();
+    expect(inner.write).toHaveBeenCalledWith(`${WS}/skills/x.md`, 'x');
+    expect(inner.edit).toHaveBeenCalledWith(
+      `${WS}/skills/x.md`,
+      'a',
+      'b',
+      undefined,
+    );
   });
 
   it('非技能路径 → 正常委托 inner', async () => {

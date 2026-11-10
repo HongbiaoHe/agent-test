@@ -20,6 +20,9 @@
  *      其它绝对路径 / `../` 逃逸     → 返回 error 形状（不 throw），提示正确的路径写法
  *  - 出站（沙箱 → agent）：结果里的真实 workspaceRoot 前缀替换为 visibleRoot
  *      （ls/glob/grep 路径、write/edit 回显、execute 输出），模型只见到一种写法。
+ *      **文件正文不改写**（read 的 content、grep 命中行的 text）：入站的 edit/write 内容是原样透传的，
+ *      正文改写了，模型照着读到的内容给 oldString 就和文件里的字节对不上。正文里出现真实路径也无妨——
+ *      入站本来就接受真实工作区路径。
  *
  * ⚠️  execute 的安全边界说明：
  *   路径守卫只作用于文件工具（ls/read/readRaw/write/edit/glob/grep）。
@@ -40,7 +43,8 @@
  * skillsDir）才能读到；conversations 文件接口传真实路径或相对路径，均被接受。
  *
  * 技能库（`${workspaceRoot}/skills/`）只读：write/edit 命中直接拒绝，防 agent 改坏注入的技能文件
- * （每轮 run 前会重新上传，但运行中不应被污染）。
+ * （每轮 run 前会重新上传，但运行中不应被污染）。只在技能库确实放在工作区里时成立（web 沙箱）；
+ * desktop 的技能库在工作区之外，工作区是用户自己的项目，构造时传 `skillsInWorkspace: false`。
  *
  * start / isRunning / id 等 host 侧方法原样透传。
  */
@@ -76,6 +80,8 @@ export class GuardedSandbox {
     readonly workspaceRoot: string,
     /** agent 眼中的工作区路径（`/workspace` 软链；缺省 = 真实路径），见文件头 */
     readonly visibleRoot: string = workspaceRoot,
+    /** skillsInWorkspace：技能库是否放在 `${workspaceRoot}/skills/`（缺省 true = 该目录只读），见文件头 */
+    private readonly opts: { skillsInWorkspace?: boolean } = {},
   ) {}
 
   /** agent 眼中的技能库目录（deepagents skills 中间件扫描、SKILL.md 引用改写都用它）。 */
@@ -135,7 +141,10 @@ export class GuardedSandbox {
 
   /** 真实路径是否落在只读技能库 `${workspaceRoot}/skills/` 下。 */
   private isSkillsPath(real: string): boolean {
-    return GuardedSandbox.within(real, `${this.workspaceRoot}/skills`);
+    return (
+      this.opts.skillsInWorkspace !== false &&
+      GuardedSandbox.within(real, `${this.workspaceRoot}/skills`)
+    );
   }
 
   /** 出站：字符串里的真实工作区前缀替换为 visibleRoot（两者相同则不变）。 */
@@ -187,7 +196,11 @@ export class GuardedSandbox {
   ): Promise<ReadResult> {
     const real = this.toReal(filePath);
     if (!real) return { error: this.denyMsg(filePath) };
-    return this.sanitize(await this.inner.read(real, offset, limit));
+    // content 是文件正文，原样返回（见文件头）；仅 error 消息脱敏
+    const result = await this.inner.read(real, offset, limit);
+    return result.error === undefined
+      ? result
+      : { ...result, error: this.toVirtual(result.error) };
   }
 
   async readRaw(filePath: string): Promise<ReadRawResult> {
@@ -241,18 +254,33 @@ export class GuardedSandbox {
   ): Promise<GrepResult> {
     const real = this.toReal(searchPath ?? '/');
     if (!real) return { error: this.denyMsg(searchPath ?? '/') };
-    return this.sanitize(
-      await this.inner.grep(pattern, real, glob ?? undefined),
-    );
+    // 命中行的 text 是文件正文，原样返回（见文件头）；path 与 error 消息脱敏
+    const result = await this.inner.grep(pattern, real, glob ?? undefined);
+    return {
+      ...result,
+      ...(result.error !== undefined && {
+        error: this.toVirtual(result.error),
+      }),
+      ...(result.matches && {
+        matches: result.matches.map((m) => ({
+          ...m,
+          path: this.toVirtual(m.path),
+        })),
+      }),
+    };
   }
 
   // ─── execute（cwd 锚定 + 输出脱敏，无路径级硬隔离——见文件顶部说明）──────
 
   async execute(command: string): Promise<ExecuteResponse> {
     // cd 到 visibleRoot（/workspace 软链）：pwd 打印的就是文件工具认的那条路径。
-    // 单引号包围防空格，路径本身不含单引号（Daytona / E2B home 路径约定）
+    // 单引号包围防空格，路径本身不含单引号（Daytona / E2B home 路径约定）。
+    // 命令整段作为 eval 的单引号参数：命令以注释（`ls # 看一眼`）或 heredoc 结束符结尾时，
+    // 原先 `( cmd )` 同一行的右括号会被吞掉 → 语法错误。也不能靠换行闭合：desktop 的 ProcessTracker
+    // 按 ps 命令行逐字比对防误杀，ps 把换行显示成 `\012`，对不上就清不掉孤儿进程。
+    const quoted = command.replaceAll("'", `'\\''`);
     const result = await this.inner.execute(
-      `cd '${this.visibleRoot}' && ( ${command} )`,
+      `cd '${this.visibleRoot}' && eval '${quoted}'`,
     );
     // 输出里残留的真实工作区路径（pwd -P、报错栈等）改写为 visibleRoot
     return this.sanitize(result);

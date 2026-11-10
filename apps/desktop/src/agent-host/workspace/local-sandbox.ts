@@ -9,7 +9,7 @@
  *   2) 环境变量只给白名单（PATH / HOME / LANG / TMPDIR …），agent-host 进程里的模型 Key
  *      不会被命令意外打印出来——这只防误泄露，不是隔离：shell 能访问整台电脑，边界是审批门。
  *
- * 注意：GuardedSandbox.execute 会包一层 `cd '<root>' && ( … )`，工作区路径不得含单引号
+ * 注意：GuardedSandbox.execute 会包一层 `cd '<root>' && eval '…'`，工作区路径不得含单引号
  * （settings 写入时已校验）。
  */
 import { type ChildProcess, spawn } from 'node:child_process';

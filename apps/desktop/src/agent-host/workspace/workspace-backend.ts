@@ -75,7 +75,10 @@ export function buildWorkspaceBackend(opts: {
   permission: WorkspacePermission;
 }): WorkspaceBackend {
   const Sandbox = opts.permission === 'read_only' ? ReadOnlyGuardedSandbox : GuardedSandbox;
-  const workspace = new Sandbox(opts.inner, opts.workspaceDir, opts.workspaceDir);
+  // 技能库在 runtimeDir，不在工作区：用户项目里的 skills/ 是普通目录，不设只读
+  const workspace = new Sandbox(opts.inner, opts.workspaceDir, opts.workspaceDir, {
+    skillsInWorkspace: false,
+  });
   const runtime = new ReadOnlyFilesystemBackend({ rootDir: opts.runtimeDir, virtualMode: true });
   return {
     backend: new CompositeBackend(workspace, { [`${opts.runtimeDir}/`]: runtime }),
