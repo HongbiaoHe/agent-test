@@ -3,6 +3,7 @@ import type { StructuredToolInterface } from '@langchain/core/tools';
 import { initChatModel } from 'langchain/chat_models/universal';
 import { type AnyBackendProtocol, createDeepAgent } from 'deepagents';
 import {
+  type AgentMiddleware,
   createMiddleware,
   modelCallLimitMiddleware,
   toolCallLimitMiddleware,
@@ -108,8 +109,17 @@ export interface BuildAgentOptions {
   >;
   /** mountSkills 产出的 backend（沙箱 / CompositeBackend / desktop 本机目录） */
   backend: AnyBackendProtocol;
-  /** 技能库目录（agent 眼中的路径），deepagents skills 中间件扫它 */
-  skillsDir: string;
+  /**
+   * 技能库目录（agent 眼中的路径），deepagents skills 中间件扫它。
+   * 不传 = 不挂技能：没有 skills 中间件，也不注入「引用文件必读」规则（如设计 agent）。
+   */
+  skillsDir?: string;
+  /** 内置 ask_user（HITL 提问）；缺省开。全自动、不接 checkpointer 的宿主（设计 agent）传 false */
+  askUser?: boolean;
+  /**
+   * 口子：宿主自己的中间件（如设计 agent 把预览图补成用户消息），排在守护之后、core 内置中间件之前。
+   */
+  middleware?: readonly AgentMiddleware[];
   /** `provider:model`（见 models.ts 白名单）；裸名按 google-genai 兼容处理；缺省回退 env / 默认 */
   model?: string;
   /** 口子：已构造好的模型实例（explicit cache 之类的包装留给宿主做）；给了就忽略 model / thinkingLevel */
@@ -144,7 +154,8 @@ export interface BuiltAgent {
  * 装配主 agent：模型（实例或按名解析）+ 模式装配出的工具 + 内置 ask_user + 中间件链。
  *
  * 中间件顺序即 recency（数组靠后 = 更内层 = systemMessage.concat 更晚 = 离模型更近）：
- *   守护（guardrails）→ 动态上下文（计划等）→ 技能必读规则（离模型最近）→ 内容块净化（作用于最终发出的消息）
+ *   守护（guardrails）→ 宿主中间件 → 动态上下文（计划等）→ 技能必读规则（离模型最近，有技能才挂）
+ *   → 内容块净化（作用于最终发出的消息）→ 工具入参自愈
  */
 export async function buildAgent(opts: BuildAgentOptions): Promise<BuiltAgent> {
   const model =
@@ -188,28 +199,42 @@ export async function buildAgent(opts: BuildAgentOptions): Promise<BuiltAgent> {
 
   const middleware = [
     ...guardrails,
+    ...(opts.middleware ?? []),
     createDynamicContextMiddleware(opts.dynamicContext ?? []),
-    skillReadPolicyMiddleware,
+    ...(opts.skillsDir ? [skillReadPolicyMiddleware] : []),
     ...(contentSanitizer ? [contentSanitizer] : []),
     // 最内层：先于 deepagents 的中间件接住工具入参校验错误
     toolInputRecoveryMiddleware,
   ];
 
+  const askUser = opts.askUser !== false;
+  // 宿主的审批表：装配表 + 运行期覆盖（同名以覆盖为准）
+  const hostInterruptOn = { ...opts.interruptOn, ...opts.interruptOnOverride };
+  // 一项审批都没有就不挂 HITL 中间件（它在没有 checkpointer 时也无从中断）
+  const needsHitl = askUser || Object.keys(hostInterruptOn).length > 0;
+
   return createDeepAgent({
     model,
     systemPrompt: opts.systemPrompt,
-    tools: [askUserTool, ...opts.tools] as never[],
+    tools: (askUser
+      ? [askUserTool, ...opts.tools]
+      : [...opts.tools]) as never[],
     backend: opts.backend,
-    skills: [`${opts.skillsDir.replace(/\/+$/, '')}/`],
+    skills: opts.skillsDir
+      ? [`${opts.skillsDir.replace(/\/+$/, '')}/`]
+      : undefined,
     contextSchema,
     middleware,
     // ask_user 只允许两种决策：approve=采纳建议答案；edit=前端把用户答案写进 args.answers 后执行。
     // 不提供 reject——对「提问」语义无意义。
-    interruptOn: {
-      ...opts.interruptOn,
-      ...opts.interruptOnOverride,
-      ask_user: { allowedDecisions: ['approve', 'edit'] },
-    },
+    interruptOn: needsHitl
+      ? {
+          ...hostInterruptOn,
+          ...(askUser
+            ? { ask_user: { allowedDecisions: ['approve', 'edit'] } }
+            : {}),
+        }
+      : undefined,
     checkpointer: opts.checkpointer as never,
   });
 }

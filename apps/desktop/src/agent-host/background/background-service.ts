@@ -203,7 +203,9 @@ export class BackgroundService {
         now,
       );
     const out = createWriteStream(logPath);
-    const child = spawn('/bin/bash', ['-c', input.command], {
+    // 纯 ASCII 注释标记：崩溃清理时据此核对进程（见 ProcessTracker；ps 会转义中文与换行）
+    const marker = `#spark-proc:${randomUUID()}`;
+    const child = spawn('/bin/bash', ['-c', `${input.command}\n${marker}`], {
       cwd: input.cwd,
       env: whitelistedEnv(),
       detached: true,
@@ -212,7 +214,7 @@ export class BackgroundService {
     child.stdout?.pipe(out, { end: false });
     child.stderr?.pipe(out, { end: false });
     const pid = child.pid;
-    if (pid !== undefined) this.deps.processes?.add(pid, `/bin/bash -c ${input.command}`);
+    if (pid !== undefined) this.deps.processes?.add(pid, marker);
     this.children.set(id, child);
     let spawnError: Error | null = null;
     child.on('error', (e) => {

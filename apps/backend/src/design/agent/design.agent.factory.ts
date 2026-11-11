@@ -1,15 +1,11 @@
+import { buildAgent } from '@agent-test/agent-core/agent/agent.factory';
 import {
   DEFAULT_DESIGN_MODEL,
   DESIGN_MODEL_IDS,
 } from '@agent-test/design-schema';
-import { createDeepAgent, StateBackend } from 'deepagents';
-import {
-  createMiddleware,
-  modelCallLimitMiddleware,
-  toolCallLimitMiddleware,
-} from 'langchain';
-import { initChatModel } from 'langchain/chat_models/universal';
-import { thinkingModelParams } from '../../agent/thinking-level';
+import type { StructuredToolInterface } from '@langchain/core/tools';
+import { StateBackend } from 'deepagents';
+import { createMiddleware } from 'langchain';
 import { buildDesignSystemPrompt } from './design.prompt';
 import { buildPreviewInjection } from './preview-injection';
 
@@ -20,11 +16,12 @@ const previewInjectionMiddleware = createMiddleware({
 });
 
 /**
- * 设计 agent 装配。与主 agent、画布 agent 完全独立（独立提示词 / 工具 / 模型白名单 / 队列）。
+ * 设计 agent 装配：走 agent-core 的 buildAgent（与 Spark 同一套中间件链与工具入参自愈），
+ * 只换掉设计专属的部分（独立提示词 / 工具 / 模型白名单 / 预览图注入中间件）。
  *
  * 不接 checkpointer：每轮由 processor 从 DesignMessage 重放历史（deepagents 跑完一轮 state 为空，
- * 同 thread 续跑本来也拿不到上文）。也不设 interruptOn：问题 10 定的是全自动，
- * 防失控靠单次运行生图上限 + 调用次数中间件 + 停止按钮。
+ * 同 thread 续跑本来也拿不到上文）。也不挂技能、不要 ask_user、不设审批：问题 10 定的是全自动，
+ * 防失控靠单次运行生图上限 + 调用次数守护 + 停止按钮。
  */
 export function resolveDesignModel(model?: string | null): string {
   const ids: readonly string[] = DESIGN_MODEL_IDS;
@@ -33,26 +30,19 @@ export function resolveDesignModel(model?: string | null): string {
 
 export async function buildDesignAgent(opts: {
   model?: string | null;
-  tools: unknown[];
+  tools: readonly StructuredToolInterface[];
   /** 配了 BytePlus key：初始生成走「整图 + 拆层」，复刻 / 拆分直接拆原图 */
   seedream: boolean;
 }) {
-  const name = resolveDesignModel(opts.model);
-  // includeThoughts：让 Gemini 把思考正文随响应返回，对话面板逐段展示（auto 档不改思考深度）
-  const model = await initChatModel(name, {
-    modelProvider: 'google-genai',
-    ...thinkingModelParams(name, 'auto'),
-  });
-  return createDeepAgent({
-    model,
+  return buildAgent({
     systemPrompt: buildDesignSystemPrompt({ seedream: opts.seedream }),
-    // createDeepAgent 的 tools 参数是 StructuredTool 的联合，工具由 createDesignTools 产出（同画布写法）
-    tools: opts.tools as never[],
+    tools: opts.tools,
     backend: new StateBackend(),
-    middleware: [
-      modelCallLimitMiddleware({ threadLimit: 80, exitBehavior: 'end' }),
-      toolCallLimitMiddleware({ threadLimit: 200, exitBehavior: 'continue' }),
-      previewInjectionMiddleware,
-    ],
+    // 设计白名单全是裸 gemini 名：buildAgent 按 google-genai 装配，思考档位 auto（includeThoughts，
+    // 对话面板逐段展示思考）
+    model: resolveDesignModel(opts.model),
+    askUser: false,
+    guardrails: { modelCallLimit: 80, toolCallLimit: 200 },
+    middleware: [previewInjectionMiddleware],
   });
 }

@@ -103,7 +103,11 @@ export class LocalWorkspaceSandbox implements GuardableSandbox {
 
   execute(command: string): Promise<ExecuteResponse> {
     return new Promise((resolve) => {
-      const child = spawn('/bin/bash', ['-c', command], {
+      // 命令后另起一行带一个纯 ASCII 注释标记：reapOrphans 在 ps 命令行里找它来核对（防 pid 复用误杀）。
+      // 不比对整条命令行——ps 会把中文、换行等转义（`M-e…`、`\012`），含它们的命令永远对不上。
+      // 注释行不是命令，不改变退出码与输出。
+      const marker = `#spark-proc:${randomBytes(8).toString('hex')}`;
+      const child = spawn('/bin/bash', ['-c', `${command}\n${marker}`], {
         cwd: this.root,
         env: this.env,
         detached: true,
@@ -111,8 +115,7 @@ export class LocalWorkspaceSandbox implements GuardableSandbox {
       });
       this.running.add(child);
       const pid = child.pid;
-      // ps 显示的命令行就是 argv 用空格拼起来的样子（reapOrphans 据此核对，防 pid 复用误杀）
-      if (pid !== undefined) this.tracker?.add(pid, `/bin/bash -c ${command}`);
+      if (pid !== undefined) this.tracker?.add(pid, marker);
       const chunks: Buffer[] = [];
       let size = 0;
       let truncated = false;

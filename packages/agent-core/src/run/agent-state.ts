@@ -55,10 +55,17 @@ export interface PendingInterrupt {
   toolName?: string;
 }
 
-/** 取第一个挂起的中断；没有中断（本轮正常结束）返回 null */
+/**
+ * 取第一个挂起的中断；没有中断（本轮正常结束）返回 null。
+ * 快照形状认不出就抛错：当成「没有中断」会把停在审批上的会话静默标成 done，用户再也续不了跑。
+ */
 export function readInterrupt(state: unknown): PendingInterrupt | null {
   const parsed = interruptState.safeParse(state);
-  if (!parsed.success) return null;
+  if (!parsed.success) {
+    throw new Error(
+      `无法从 checkpoint 快照读取审批中断（LangGraph 快照形状变了？）：${parsed.error.message}`,
+    );
+  }
   const first = (parsed.data.tasks ?? []).flatMap((t) => t.interrupts ?? [])[0];
   if (!first) return null;
   return {

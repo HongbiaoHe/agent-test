@@ -106,9 +106,15 @@ function reasoningText(msg: {
 }): string {
   const deepseek = msg.additional_kwargs?.reasoning_content;
   if (typeof deepseek === 'string' && deepseek) return deepseek;
-  if (!Array.isArray(msg.content)) return '';
+  return thinkingText(msg.content);
+}
+
+/** 消息 content 里 Gemini 思考块（`{ type: 'thinking', thinking }`）的正文拼接；不是数组或没有思考块返回空串 */
+export function thinkingText(content: unknown): string {
+  if (!Array.isArray(content)) return '';
+  const blocks: unknown[] = content;
   let out = '';
-  for (const block of msg.content) {
+  for (const block of blocks) {
     if (isThinkingBlock(block)) out += block.thinking;
   }
   return out;
@@ -145,11 +151,7 @@ export function extractThinkingBlocks(data: unknown): ThinkingPart[] {
     if (!Array.isArray(msgs)) continue;
     for (const m of msgs) {
       if (!isBaseMessage(m) || !isAIMessage(m)) continue;
-      if (!Array.isArray(m.content)) continue;
-      let text = '';
-      for (const block of m.content) {
-        if (isThinkingBlock(block)) text += block.thinking;
-      }
+      const text = thinkingText(m.content);
       if (!text) continue;
       out.push({ id: m.id ?? '', text });
     }
@@ -191,7 +193,13 @@ function normalizeUpdate(data: unknown): RawEvent | null {
             },
           };
         }
-        if (last.text) return { type: 'message', payload: { text: last.text } };
+        // sourceId：同一条 AIMessage 会在多个节点回显，消费方据此只收口一次
+        if (last.text) {
+          return {
+            type: 'message',
+            payload: { text: last.text, sourceId: last.id ?? '' },
+          };
+        }
       }
     }
   }

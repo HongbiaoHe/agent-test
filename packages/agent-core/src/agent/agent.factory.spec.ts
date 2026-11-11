@@ -104,6 +104,46 @@ describe('buildAgent', () => {
     ]);
   });
 
+  it('全自动宿主（设计 agent）：不挂技能、不要 ask_user → 没有 skills / 技能必读 / ask_user / HITL；宿主中间件排在守护之后', async () => {
+    await buildAgent({
+      systemPrompt: '',
+      tools: [mk('add_layers')],
+      backend,
+      askUser: false,
+      model: 'gemini-3.8-flash',
+      guardrails: { modelCallLimit: 80, toolCallLimit: 200 },
+      // 只有 name 的对象本身就满足 AgentMiddleware 类型（钩子都是可选的），不需要断言
+      middleware: [{ name: 'designPreviewInjection' }],
+    });
+    const c = lastCall();
+    expect(c.tools.map((t) => t.name)).toEqual(['add_layers']);
+    expect(c.skills).toBeUndefined();
+    expect(c.interruptOn).toBeUndefined();
+    expect(c.middleware.map((m) => m.name)).toEqual([
+      'modelCallLimit',
+      'toolCallLimit',
+      'designPreviewInjection',
+      'dynamicContextMiddleware',
+      'toolInputRecoveryMiddleware',
+    ]);
+    // 裸 gemini 名按 google-genai 装配，思考档位 auto（与原设计 agent 一致）
+    expect(initChatModel).toHaveBeenCalledWith('gemini-3.8-flash', {
+      modelProvider: 'google-genai',
+      thinkingConfig: { includeThoughts: true },
+    });
+  });
+
+  it('不要 ask_user 但宿主有审批项：照常挂 HITL，只是没有 ask_user', async () => {
+    await buildAgent({
+      systemPrompt: '',
+      tools: [],
+      backend,
+      askUser: false,
+      interruptOn: { mail: true },
+    });
+    expect(lastCall().interruptOn).toEqual({ mail: true });
+  });
+
   it('modelInstance 给了就不调 initChatModel，直接用实例（并保守地加净化）', async () => {
     const instance = { kind: 'instance' } as never;
     await buildAgent({

@@ -3,6 +3,7 @@ import {
   AIMessageChunk,
   ToolMessage,
 } from '@langchain/core/messages';
+import { z } from 'zod';
 import type { RawEvent } from '../agent/event-normalizer';
 import type { CallUsage } from '../agent/token-usage';
 import {
@@ -35,6 +36,14 @@ function recordingSink(
     log.filter((l) => l.op === 'persist').map((l) => l.event);
   const emitted = () => log.filter((l) => l.op === 'emit').map((l) => l.event);
   return { sink, log, usages, persisted, emitted };
+}
+
+/** tool_start 载荷里的调用 id（没有 id 为 undefined） */
+function toolStartIds(payload: unknown): (string | undefined)[] {
+  return z
+    .object({ tool_calls: z.array(z.object({ id: z.string().optional() })) })
+    .parse(payload)
+    .tool_calls.map((c) => c.id);
 }
 
 async function* streamOf(chunks: unknown[]) {
@@ -165,6 +174,113 @@ describe('consumeAgentStream — 文本段收口', () => {
       ['plan_update', { todos: [{ content: 'a', status: 'pending' }] }],
       ['message', { text: '开始干' }],
     ]);
+  });
+
+  it('同一条正文（同一消息 id）跨节点回显只收口一次；不同消息的相同正文照常收口；没有 id 的不去重', async () => {
+    const { sink, persisted } = recordingSink();
+    const msg = (id: string | undefined, text: string) =>
+      new AIMessage({ id, content: text });
+    await consumeAgentStream(
+      streamOf([
+        token('好的'),
+        updateWith('model_request', msg('m1', '好的')),
+        updateWith('todoListMiddleware.after_model', msg('m1', '好的')),
+        // 另一条消息、正文恰好相同、中间没有别的事件：不能被当成回显吞掉
+        updateWith('model_request', msg('m2', '好的')),
+        updateWith('model_request', msg(undefined, '无 id')),
+        updateWith('todoListMiddleware.after_model', msg(undefined, '无 id')),
+      ]),
+      sink,
+      opts(),
+    );
+    expect(persisted().map((e) => e.payload)).toEqual([
+      { text: '好的' },
+      { text: '好的' },
+      { text: '无 id' },
+      { text: '无 id' },
+    ]);
+  });
+
+  it('同一工具调用（同一 tool_call id）跨节点回显只推一次；回显里夹带的新调用照常推', async () => {
+    const { sink, persisted } = recordingSink();
+    const calls = (...ids: (string | undefined)[]) =>
+      new AIMessageChunk({
+        content: '',
+        tool_calls: ids.map((id) => ({
+          name: 'add_layers',
+          args: {},
+          id,
+          type: 'tool_call' as const,
+        })),
+      });
+    await consumeAgentStream(
+      streamOf([
+        updateWith('model_request', calls('c1')),
+        updateWith('tools', calls('c1')),
+        updateWith('model_request', calls('c1', 'c2')),
+        // 没有 id 的调用不去重（宁可重复也不误吞）
+        updateWith('model_request', calls(undefined)),
+        updateWith('tools', calls(undefined)),
+      ]),
+      sink,
+      opts(),
+    );
+    const starts = persisted().filter((e) => e.type === 'tool_start');
+    expect(
+      starts.map((e) => toolStartIds(e.payload).map((id) => id ?? '(no id)')),
+    ).toEqual([['c1'], ['c2'], ['(no id)'], ['(no id)']]);
+  });
+
+  it('不开 subgraphs 的 [mode, data] 二元组同样能消费（设计 agent）', async () => {
+    const { sink, persisted } = recordingSink();
+    await consumeAgentStream(
+      streamOf([
+        ['messages', [new AIMessageChunk({ content: '你好' })]],
+        ['updates', { model_request: { messages: [new AIMessage('你好')] } }],
+      ]),
+      sink,
+      opts(),
+    );
+    expect(persisted()).toEqual([
+      { type: 'message', payload: { text: '你好' } },
+    ]);
+  });
+
+  it('mapEvent：宿主改写非文本事件；返回 null 整条丢弃且不触发文本段收口', async () => {
+    const { sink, log } = recordingSink();
+    await consumeAgentStream(
+      streamOf([
+        updateWith('model_request', toolCallMsg('render_preview')),
+        token('半句'),
+        // 被宿主丢掉的计划更新：不应把「半句」提前收口
+        [
+          [],
+          'updates',
+          { todo: { todos: [{ content: 'a', status: 'pending' }] } },
+        ],
+        toolResult('render_preview', 'png'),
+      ]),
+      sink,
+      opts({
+        mapEvent: (e) => {
+          if (e.type === 'plan_update') return null;
+          if (e.type === 'tool_end') {
+            return { type: 'tool_end', payload: { content: '[预览图]' } };
+          }
+          return e;
+        },
+      }),
+    );
+    expect(log.map((l) => [l.op, l.event.type])).toEqual([
+      ['emit', 'tool_start'],
+      ['persist', 'tool_start'],
+      ['emit', 'token'],
+      ['emit', 'message'],
+      ['persist', 'message'],
+      ['emit', 'tool_end'],
+      ['persist', 'tool_end'],
+    ]);
+    expect(log.at(-1)?.event.payload).toEqual({ content: '[预览图]' });
   });
 
   it('不认识的流元组形状直接报错（不静默吞掉）', async () => {

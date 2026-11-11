@@ -30,6 +30,7 @@ export * from './modes/tool-registry';
 export * from './run/agent-state';
 export * from './run/consume-stream';
 export * from './run/history';
+export * from './run/thinking-tap';
 export * from './run/turn-prompts';
 export * from './skills/skill-files';
 export * from './skills/skill-parser';

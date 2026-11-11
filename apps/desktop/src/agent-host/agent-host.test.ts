@@ -157,12 +157,24 @@ describe('ProcessTracker（崩溃后清理孤儿命令）', () => {
     expect(alive('sleep 87')).toBe(false);
   });
 
+  it('含中文与多行（heredoc）的命令崩溃后同样能被清理（ps 会转义它们，按标记核对）', async () => {
+    const db = openDatabase(join(dir, 'spark.db'));
+    const sb = new LocalWorkspaceSandbox(dir, { tracker: new ProcessTracker(db) });
+    void new GuardedSandbox(sb, dir, dir).execute("cat <<'EOF'\n你好\nEOF\nsleep 88 && echo 结束");
+    await new Promise((r) => setTimeout(r, 300));
+    expect(alive('sleep 88')).toBe(true);
+    const reaped = new ProcessTracker(openDatabase(join(dir, 'spark.db'))).reapOrphans();
+    expect(reaped).toBe(1);
+    await new Promise((r) => setTimeout(r, 200));
+    expect(alive('sleep 88')).toBe(false);
+  });
+
   it('pid 已被不相干的进程复用（命令行对不上）时不误杀', async () => {
     const db = openDatabase(join(dir, 'spark.db'));
     const other = spawn('/bin/bash', ['-c', 'sleep 86'], { detached: true, stdio: 'ignore' });
     await new Promise((r) => setTimeout(r, 200));
     const tracker = new ProcessTracker(db);
-    tracker.add(other.pid ?? -1, '/bin/bash -c 别的命令');
+    tracker.add(other.pid ?? -1, '#spark-proc:not-this-process');
     expect(tracker.reapOrphans()).toBe(0);
     expect(alive('sleep 86')).toBe(true);
     process.kill(-(other.pid ?? 0), 'SIGKILL');

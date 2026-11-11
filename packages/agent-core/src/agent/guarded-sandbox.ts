@@ -30,7 +30,8 @@
  *   真正的隔离边界是沙箱本身（Daytona / E2B 用户级沙箱）；本守卫的目标是：
  *     1) 文件工具层面的硬限制（agent 调 write_file/read_file 无法出域）；
  *     2) execute 工作目录锚定在 visibleRoot（相对路径与文件工具一致）；
- *     3) 真实路径不进入模型上下文。
+ *     3) 工具返回的路径（ls/glob/grep 路径、回显、报错、execute 输出）不出现真实工作区路径；
+ *        文件正文例外，原样返回（理由见上「出站」）。
  *
  * isSandboxProtocol duck-typing 检测：execute 是 function、id 是非空 string。
  * GuardedSandbox 满足两者（委托 inner.execute，id getter 委托 inner.id）。
@@ -84,8 +85,17 @@ export class GuardedSandbox {
     private readonly opts: { skillsInWorkspace?: boolean } = {},
   ) {}
 
-  /** agent 眼中的技能库目录（deepagents skills 中间件扫描、SKILL.md 引用改写都用它）。 */
+  /**
+   * agent 眼中的技能库目录（deepagents skills 中间件扫描、SKILL.md 引用改写都用它）。
+   * 技能库不在工作区（skillsInWorkspace: false）时直接抛错：mountSkills 等据它写技能、`rm -rf skills`，
+   * 拿到工作区路径就会动到用户项目里的同名目录。
+   */
   get skillsDir(): string {
+    if (this.opts.skillsInWorkspace === false) {
+      throw new Error(
+        'GuardedSandbox：技能库不在工作区里（skillsInWorkspace: false），没有工作区内的 skillsDir',
+      );
+    }
     return `${this.visibleRoot}/skills`;
   }
 

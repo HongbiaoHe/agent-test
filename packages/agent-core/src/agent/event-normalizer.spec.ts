@@ -174,11 +174,23 @@ describe('normalize', () => {
     });
   });
 
-  it('updates + AIMessage(文本) → message', () => {
+  it('updates + AIMessage(文本) → message，带上源消息 id（没有 id 为空串）', () => {
     const ev = normalize([], 'updates', {
       model_request: { messages: [aiMsg('最终回答')] },
     });
-    expect(ev).toEqual({ type: 'message', payload: { text: '最终回答' } });
+    expect(ev).toEqual({
+      type: 'message',
+      payload: { text: '最终回答', sourceId: '' },
+    });
+    const withId = normalize([], 'updates', {
+      model_request: {
+        messages: [new AIMessageChunk({ id: 'm1', content: '回答' })],
+      },
+    });
+    expect(withId).toEqual({
+      type: 'message',
+      payload: { text: '回答', sourceId: 'm1' },
+    });
   });
 
   it('空中间件钩子 → null', () => {

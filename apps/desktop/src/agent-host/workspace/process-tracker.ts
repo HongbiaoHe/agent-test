@@ -1,9 +1,10 @@
 /**
  * 正在执行的命令登记表：agent-host 崩溃 / 被强杀时没机会 stop()，而每条命令都在独立进程组里（detached），
- * 不清理就会成为孤儿一直跑下去。这里把每条命令的进程组 id 与完整命令行记进 SQLite，结束时删掉；
+ * 不清理就会成为孤儿一直跑下去。这里把每条命令的进程组 id 与它命令行里的唯一标记记进 SQLite，结束时删掉；
  * agent-host 启动时 reapOrphans() 清理上次残留的。
  *
- * 防误杀：pid 可能已被系统复用给别的程序，所以只有 `ps` 查到的当前命令行与登记的**完全一致**时才杀。
+ * 防误杀：pid 可能已被系统复用给别的程序，所以只有 `ps` 查到的当前命令行**含有**登记的标记时才杀。
+ * 标记是纯 ASCII 的随机串（见 LocalWorkspaceSandbox.execute）：ps 会转义中文与换行，不能逐字比对整条命令行。
  */
 import { execFileSync } from 'node:child_process';
 import { z } from 'zod';
@@ -14,10 +15,11 @@ const row = z.object({ pgid: z.number(), command: z.string() });
 export class ProcessTracker {
   constructor(private readonly db: Db) {}
 
-  add(pgid: number, commandLine: string): void {
+  /** marker：该命令行里独有的纯 ASCII 标记（存在 command 列） */
+  add(pgid: number, marker: string): void {
     this.db
       .prepare('INSERT OR REPLACE INTO running_process (pgid, command, started_at) VALUES (?, ?, ?)')
-      .run(pgid, commandLine, Date.now());
+      .run(pgid, marker, Date.now());
   }
 
   remove(pgid: number): void {
@@ -32,7 +34,7 @@ export class ProcessTracker {
       .map((r) => row.parse(r));
     let killed = 0;
     for (const r of rows) {
-      if (currentCommand(r.pgid) === r.command) {
+      if (currentCommand(r.pgid)?.includes(r.command)) {
         try {
           process.kill(-r.pgid, 'SIGKILL');
           killed++;

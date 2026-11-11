@@ -367,6 +367,8 @@ describe('GuardedSandbox — 技能库只读保护', () => {
       'b',
       undefined,
     );
+    // 没有工作区内的技能库：读 skillsDir 直接报错，别让 mountSkills 等往用户项目里写 / rm -rf
+    expect(() => guard.skillsDir).toThrow('skillsInWorkspace: false');
   });
 
   it('非技能路径 → 正常委托 inner', async () => {

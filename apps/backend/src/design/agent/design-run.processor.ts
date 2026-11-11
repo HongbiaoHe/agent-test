@@ -1,3 +1,11 @@
+import type { RawEvent } from '@agent-test/agent-core/agent/event-normalizer';
+import { ReasoningCollector } from '@agent-test/agent-core/agent/reasoning-parts';
+import {
+  consumeAgentStream,
+  type TurnSink,
+} from '@agent-test/agent-core/run/consume-stream';
+import { roleOf } from '@agent-test/agent-core/run/history';
+import { createThinkingTap } from '@agent-test/agent-core/run/thinking-tap';
 import { Processor, WorkerHost } from '@nestjs/bullmq';
 import { Inject, Logger } from '@nestjs/common';
 import {
@@ -6,18 +14,8 @@ import {
   HumanMessage,
   type MessageContent,
 } from '@langchain/core/messages';
-import { BaseCallbackHandler } from '@langchain/core/callbacks/base';
 import type { Job } from 'bullmq';
 import { AbortRegistry } from '../../agent/abort-registry';
-import {
-  extractThinkingBlocks,
-  normalize,
-  type RawEvent,
-} from '../../agent/event-normalizer';
-import {
-  type ReasoningPart,
-  ReasoningCollector,
-} from '../../agent/reasoning-parts';
 import { StreamService } from '../../events/stream.service';
 import { PrismaService } from '../../prisma/prisma.service';
 import { DesignAssetsService } from '../design-assets.service';
@@ -26,6 +24,7 @@ import { DesignGenerationService } from '../design-generation.service';
 import { DesignService } from '../design.service';
 import { DesignRenderService } from '../render/design-render.service';
 import { buildDesignAgent } from './design.agent.factory';
+import { designEvent } from './design-events';
 import { createDesignTools, summarizeDocument } from './design.tools';
 import {
   DESIGN_ABORTS,
@@ -97,36 +96,12 @@ export class DesignRunProcessor extends WorkerHost {
         tools,
         seedream: this.decompose.enabled(),
       });
-      // 思考按源消息归集（同 canvas.processor）：推流时给增量 / 整块，收口时每段落一行，
-      // 历史里也能看到完整思考。重放的历史消息只有正文、不带思考块，不需要 priorIds。
+      // 思考归集器与实时回调共用（见 agent-core run/thinking-tap）：Gemini 思考边生成边推，
+      // updates 里的整段认成同一块不再重复。重放的历史只有正文、不带思考块，不需要 priorIds。
       const reasoning = new ReasoningCollector();
-      const pushReasoning = async (part: ReasoningPart | null) => {
-        if (part) await publish({ type: 'reasoning', payload: part });
-      };
-      /**
-       * 思考实时推流：Gemini 流式时思考是一段段到的（实测首段约 3.5s，正文要 7s+），但 langgraph 的
-       * messages 流会把 chunk 的 content 压成字符串、思考块丢了，updates 又要等这一步跑完才整段给。
-       * 所以挂一个回调，直接从模型吐出的每个 chunk 里取思考片段推给前端；按消息 id 归集，
-       * 之后 updates 里的整段会被 ReasoningCollector 认成同一块而丢弃，不会重复。
-       */
-      const thinkingTap = BaseCallbackHandler.fromMethods({
-        handleLLMNewToken: async (
-          _token,
-          _idx,
-          runId,
-          _parent,
-          _tags,
-          fields,
-        ) => {
-          const chunk = fields?.chunk;
-          if (!chunk || !('message' in chunk)) return;
-          const text = thinkingText(chunk.message.content);
-          if (!text) return;
-          await pushReasoning(
-            reasoning.appendDelta(chunk.message.id ?? `run-${runId}`, text),
-          );
-        },
-      });
+      const thinkingTap = createThinkingTap(reasoning, (part) =>
+        publish({ type: 'reasoning', payload: part }),
+      );
       const stream = await agent.stream(
         { messages },
         {
@@ -134,87 +109,26 @@ export class DesignRunProcessor extends WorkerHost {
           streamMode: ['updates', 'messages'],
           recursionLimit: 400,
           callbacks: [thinkingTap],
+          // buildAgent 的 context schema 要求 userId
+          context: { userId: doc.userId },
         },
       );
 
-      let buf = '';
-      let lastFlushed = '';
-      const seenToolCalls = new Set<string>();
-      /** 思考之后的第一个其它事件 / 本轮结束：把这段思考收口落库（seq 排在它后面的事件之前） */
-      const flushReasoning = async () => {
-        for (const part of reasoning.drain()) {
-          await persist('assistant', { type: 'reasoning', payload: part });
-        }
+      // 文本段收口、回显去重、思考落库、停止时收口残余文本都在 core 的 consumeAgentStream；
+      // 这里只给落点与设计专属的事件改写。设计会话不记 token 明细（sink 不实现 recordUsage）。
+      const sink: TurnSink = {
+        emit: publish,
+        // 计划只推流不落库（设计面板不从历史重建计划）
+        persist: (evt) =>
+          evt.type === 'plan_update'
+            ? undefined
+            : persist(roleOf(evt.type), evt),
       };
-      const flush = async (override?: string) => {
-        const text = override ?? buf;
-        buf = '';
-        if (!text || text === lastFlushed) return;
-        lastFlushed = text;
-        const evt: RawEvent = {
-          type: 'message',
-          payload: { role: 'assistant', text },
-        };
-        await publish(evt);
-        await persist('assistant', evt);
-      };
-
-      for await (const chunk of stream) {
-        const [mode, data] = chunk as [string, unknown];
-        // Gemini 的思考正文只在 updates 里（messages 流会把思考块压掉），整段一次给出
-        if (mode === 'updates') {
-          for (const part of extractThinkingBlocks(data)) {
-            await pushReasoning(reasoning.takeBlock(part.id, part.text));
-          }
-        }
-        const raw = normalize([], mode, data);
-        if (!raw) continue;
-        if (raw.type === 'reasoning') {
-          const p = readReasoning(raw.payload);
-          await pushReasoning(reasoning.appendDelta(p.sourceId, p.text));
-          continue;
-        }
-        await flushReasoning();
-        if (raw.type === 'token') {
-          buf += readText(raw.payload);
-          await publish(raw);
-          continue;
-        }
-        if (raw.type === 'message') {
-          await flush(buf || readText(raw.payload));
-          continue;
-        }
-        if (raw.type === 'tool_start') {
-          // updates 流会把同一条带 tool_calls 的 AIMessage 跨节点回显多次：按调用 id 去重
-          const calls = toolCalls(raw.payload).filter(
-            (c) => !seenToolCalls.has(c.id),
-          );
-          if (calls.length === 0) continue;
-          calls.forEach((c) => seenToolCalls.add(c.id));
-          await flush();
-          lastFlushed = '';
-          const evt: RawEvent = {
-            type: 'tool_start',
-            payload: { tool_calls: calls },
-          };
-          await publish(evt);
-          await persist('assistant', evt);
-          continue;
-        }
-        if (raw.type === 'tool_end') {
-          // render_preview 的结果里有整张 base64 图：推流与落库前换成占位，只给模型看
-          const evt: RawEvent = {
-            type: 'tool_end',
-            payload: stripImages(raw.payload),
-          };
-          await publish(evt);
-          await persist('tool', evt);
-          continue;
-        }
-        if (raw.type === 'plan_update') await publish(raw);
-      }
-      await flushReasoning();
-      await flush();
+      await consumeAgentStream(stream, sink, {
+        reasoning,
+        signal,
+        mapEvent: designEvent,
+      });
       await this.finish(docId, 'done', persist);
     } catch (e) {
       if (signal.aborted) {
@@ -344,80 +258,6 @@ function readText(payload: unknown): string {
     return typeof payload.text === 'string' ? payload.text : '';
   }
   return '';
-}
-
-/** chunk 里的思考片段：content 数组中 `{ type: 'thinking', thinking }` 块（Gemini includeThoughts） */
-function thinkingText(content: unknown): string {
-  if (!Array.isArray(content)) return '';
-  const blocks: unknown[] = content;
-  let out = '';
-  for (const block of blocks) {
-    if (
-      block &&
-      typeof block === 'object' &&
-      'type' in block &&
-      block.type === 'thinking' &&
-      'thinking' in block &&
-      typeof block.thinking === 'string'
-    ) {
-      out += block.thinking;
-    }
-  }
-  return out;
-}
-
-/** normalize 给的思考增量：{ text, sourceId } */
-function readReasoning(payload: unknown): ReasoningPart {
-  const sourceId =
-    payload &&
-    typeof payload === 'object' &&
-    'sourceId' in payload &&
-    typeof payload.sourceId === 'string'
-      ? payload.sourceId
-      : '';
-  return { sourceId, text: readText(payload) };
-}
-
-function toolCalls(
-  payload: unknown,
-): { id: string; name: string; args: unknown }[] {
-  if (!payload || typeof payload !== 'object' || !('tool_calls' in payload))
-    return [];
-  const calls = payload.tool_calls;
-  if (!Array.isArray(calls)) return [];
-  return calls.flatMap((c: unknown) =>
-    c && typeof c === 'object' && 'name' in c && typeof c.name === 'string'
-      ? [
-          {
-            id: 'id' in c && typeof c.id === 'string' ? c.id : c.name,
-            name: c.name,
-            args: 'args' in c ? c.args : {},
-          },
-        ]
-      : [],
-  );
-}
-
-/** tool_end.content 若是内容块数组，把图片块换成文字占位。 */
-function stripImages(payload: unknown): unknown {
-  if (!payload || typeof payload !== 'object' || !('content' in payload))
-    return payload;
-  const content = payload.content;
-  if (!Array.isArray(content)) return payload;
-  return {
-    ...payload,
-    content: content
-      .map((b: unknown) =>
-        b &&
-        typeof b === 'object' &&
-        'type' in b &&
-        b.type === 'text' &&
-        'text' in b
-          ? String(b.text)
-          : '[预览图]',
-      )
-      .join('\n'),
-  };
 }
 
 /** 事件载荷都是 JSON 可表示的普通对象；往返一次即得 Prisma 认的 InputJsonValue。 */

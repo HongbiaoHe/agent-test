@@ -56,10 +56,16 @@ describe('readInterrupt', () => {
     ).toEqual({ value: 'x', toolName: undefined });
   });
 
-  it('没有中断 / 没有 tasks / 形状不对 → null', () => {
+  it('没有中断 / 没有 tasks → null', () => {
     expect(readInterrupt({ tasks: [] })).toBeNull();
     expect(readInterrupt({ tasks: [{}] })).toBeNull();
     expect(readInterrupt({})).toBeNull();
-    expect(readInterrupt(null)).toBeNull();
+  });
+
+  it('快照形状认不出 → 抛错（不当成「没有中断」，否则停在审批上的会话会被静默标成 done）', () => {
+    expect(() => readInterrupt(null)).toThrow(
+      '无法从 checkpoint 快照读取审批中断',
+    );
+    expect(() => readInterrupt({ tasks: 'not-an-array' })).toThrow();
   });
 });
