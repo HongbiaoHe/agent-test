@@ -1,5 +1,11 @@
+import {
+  AIMessage,
+  type BaseMessage,
+  ToolMessage,
+} from '@langchain/core/messages';
 import { z } from 'zod';
 import { parseCommand } from '../commands/parse-command';
+import { SKILL_READ_LIMIT } from '../modes/prompt-fragments';
 import { absolutizeRefPaths } from '../skills/skill-files';
 
 /**
@@ -33,11 +39,54 @@ export function buildActivePlan(lastPlanContent: unknown): string {
   );
 }
 
+/** read_file 不传 limit 时 deepagents 的默认行数（deepagents 1.10.2 read_file schema `.default(100)`） */
+const READ_FILE_DEFAULT_LIMIT = 100;
+
+const readFileArgs = z.object({
+  file_path: z.string(),
+  offset: z.coerce.number().optional(),
+  limit: z.coerce.number().optional(),
+});
+
 /**
- * 之前轮次已用 `/技能名` 激活过某技能时，把它的 SKILL.md 全文注入系统提示，并要求不要再 read_file 读它。
+ * 重放的上下文里是否已有这份 SKILL.md 的**完整**读取：read_file 调用与它的结果都在（工具调用对按 id 重放），
+ * 从第 0 行开始，且 limit 覆盖全文（没传 limit 按默认 100 行算——更长的文件那次只读到一部分）。
+ */
+function fullyReadInContext(
+  context: readonly BaseMessage[],
+  name: string,
+  lineCount: number,
+): boolean {
+  const results = new Set(
+    context.filter((m) => ToolMessage.isInstance(m)).map((m) => m.tool_call_id),
+  );
+  return context.some(
+    (m) =>
+      AIMessage.isInstance(m) &&
+      (m.tool_calls ?? []).some((c) => {
+        if (c.name !== 'read_file' || !c.id || !results.has(c.id)) return false;
+        const args = readFileArgs.safeParse(c.args);
+        if (
+          !args.success ||
+          !args.data.file_path.endsWith(`/${name}/SKILL.md`)
+        ) {
+          return false;
+        }
+        return (
+          (args.data.offset ?? 0) === 0 &&
+          (args.data.limit ?? READ_FILE_DEFAULT_LIMIT) >= lineCount
+        );
+      }),
+  );
+}
+
+/**
+ * 之前轮次已用 `/技能名` 激活过某技能、而那次读到的 SKILL.md 已不在本轮上下文里时，把全文注入系统提示，
+ * 并要求不要再 read_file 读它。
  *
- * 为什么：上一轮 read_file 读到的 SKILL.md 不会回到上下文（历史只重放文本消息与工具结果，且 deepagents
- * 跑完一轮不保留对话消息），不注入的话每个后续轮次都会重复 read_file 同一个 SKILL.md。
+ * 工具调用对现在会跨轮重放（见 history.ts），上一轮完整读过的 SKILL.md 本来就在上下文里，再注入就是重复
+ * （每轮多出整份技能文件的 token）。只在这几种情况注入：那次读取已被压缩进摘要（不再重放）、只读了一部分
+ * （没传够 limit 被截断）、或根本没读。context 传本轮喂给模型的消息（压缩后的）。
  * 本轮才首次发起的 /command 不注入，交给平台片段的「先 read_file SKILL.md」规则完成首次加载。
  *
  * skillMd：按技能名取 SKILL.md；不在当前模式技能集内的返回 null（模式外的 /技能名 当普通文本）。
@@ -47,6 +96,7 @@ export async function buildSkillPrompt(
   userTexts: readonly string[],
   skillMd: (name: string) => string | null | Promise<string | null>,
   skillsDir: string,
+  context: readonly BaseMessage[] = [],
 ): Promise<string> {
   if (userTexts.length === 0) return '';
   const currentIndex = userTexts.length - 1;
@@ -59,12 +109,15 @@ export async function buildSkillPrompt(
   }
   // 没有激活任何技能，或激活就发生在本轮（首次加载，交给 read_file）→ 不注入
   if (!active || active.index === currentIndex) return '';
+  if (fullyReadInContext(context, active.name, active.md.split('\n').length)) {
+    return '';
+  }
   const content = absolutizeRefPaths(active.name, active.md, skillsDir);
   return (
     `\n\n## 已加载技能：${active.name}（SKILL.md 已提供，请勿重复读取）\n` +
     `本会话在之前的轮次已通过 \`/${active.name}\` 激活该技能，其 SKILL.md 全文见下。` +
     `请直接据此继续，**不要再 read_file 读取 \`${skillsDir}/${active.name}/SKILL.md\`**；` +
-    `仅当需要其引用的 references/ 子技能等子文件时，才按需 read_file 那些子文件。\n\n` +
+    `仅当需要其引用的 references/ 子技能等子文件时，才按需 read_file 那些子文件（传 \`limit=${SKILL_READ_LIMIT}\`）。\n\n` +
     `<skill name="${active.name}">\n${content}\n</skill>`
   );
 }

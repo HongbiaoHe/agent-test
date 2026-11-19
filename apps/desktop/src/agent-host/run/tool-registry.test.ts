@@ -90,6 +90,8 @@ describe('desktop 工具注册表', () => {
         skillNames: [],
         defaultModel: null,
         defaultThinkingLevel: null,
+        description: null,
+        subagentModeIds: [],
       },
       registry: reg,
       env,

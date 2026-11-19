@@ -7,13 +7,13 @@ import { existsSync, readFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { expect, test } from '@playwright/test';
-import { apiKey, closeSettings, launch, newChat, openSettings, screens, tempDirs, waitTurn } from './helpers';
+import { apiKey, closeSettings, launch, newChat, openSettings, saveGoogleKey, screens, tempDirs, waitTurn } from './helpers';
 
 const { userData, workspace } = tempDirs('basic');
 
 test.skip(!apiKey, '需要 SPARK_E2E_GOOGLE_API_KEY');
 
-test('填 Key → 对话 → 写文件与命令逐个审批 → token 报表与文件面板 → 结果落库；重启后会话还在', async () => {
+test('添加 API 连接 → 对话 → 写文件与命令逐个审批 → token 报表与文件面板 → 结果落库；重启后会话还在', async () => {
   let { app, page } = await launch({ userData, workspace }, { skipLogin: false });
 
   // 首次启动：登录页（邮箱 + 验证码），可以先跳过
@@ -23,13 +23,13 @@ test('填 Key → 对话 → 写文件与命令逐个审批 → token 报表与�
   // 没登录：侧栏用户区显示「未登录 · 登录」
   await expect(page.getByTestId('sidebar-user')).toHaveText('未登录 · 登录');
 
-  // 没有 Key：引导去设置弹窗的「模型」分类
+  // 没有可用模型：引导去设置弹窗的「模型」分类 → 添加 Gemini 连接、启用模型、设为默认（见 helpers.saveGoogleKey）
   await expect(page.getByRole('heading', { name: 'Spark' })).toBeVisible();
-  await page.getByRole('button', { name: '先填写模型 Key' }).click();
+  await page.getByRole('button', { name: '先添加一个 API 连接' }).click();
   await expect(page.getByRole('dialog').getByRole('heading', { name: '模型', exact: true })).toBeVisible();
-  await page.getByLabel('Google Gemini API Key').fill(apiKey);
-  await page.getByRole('button', { name: '保存' }).first().click();
-  await expect(page.getByText('已配置').first()).toBeVisible({ timeout: 20_000 });
+  await saveGoogleKey(page);
+  await openSettings(page, '模型');
+  await expect(page.getByTestId('llm-connection-card').filter({ hasText: 'Google Gemini' })).toContainText('Key 已配置');
   await page.screenshot({ path: join(screens, '1-settings.png') });
   await openSettings(page, '工作区');
   await expect(page.getByTestId('workspace-dir')).toHaveText(workspace);

@@ -112,6 +112,19 @@ describe('normalize', () => {
     });
   });
 
+  it('OpenAI（Responses API）的思考摘要块 → reasoning，带源消息 id', () => {
+    const ev = normalize(['model_request:x'], 'messages', [
+      new AIMessageChunk({
+        id: 'resp_1',
+        content: [{ type: 'reasoning', reasoning: '先想想', index: 0 }],
+      }),
+    ]);
+    expect(ev).toEqual({
+      type: 'reasoning',
+      payload: { text: '先想想', sourceId: 'resp_1' },
+    });
+  });
+
   it('Gemini 的 text 块仍走 token，不被误判成思考', () => {
     const ev = normalize(['model_request:x'], 'messages', [
       new AIMessageChunk({ content: [{ type: 'text', text: '答案是 28' }] }),
@@ -240,6 +253,19 @@ describe('extractThinkingBlocks', () => {
       additional_kwargs: { reasoning_content: 'deepseek 的思考' },
     });
     expect(extractThinkingBlocks(update(ds))).toEqual([]);
+  });
+
+  it('OpenAI 的思考摘要块也抽（模型没走流式时靠这里；走了流式由归集器按同一 id 挡掉）', () => {
+    const oai = new AIMessageChunk({
+      id: 'resp_1',
+      content: [
+        { type: 'reasoning', reasoning: '先想想要调哪个工具。', index: 0 },
+        { type: 'text', text: '答案' },
+      ],
+    });
+    expect(extractThinkingBlocks(update(oai))).toEqual([
+      { id: 'resp_1', text: '先想想要调哪个工具。' },
+    ]);
   });
 
   it('纯文本消息 / 空更新 → 空数组', () => {

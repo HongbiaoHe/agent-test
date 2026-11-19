@@ -1,3 +1,5 @@
+import { SKILL_READ_LIMIT } from '../modes/prompt-fragments';
+
 /**
  * 「引用文件必读」硬规则（杠杆3，纯逻辑，刻意不依赖 langchain/deepagents，便于在 jest 里单测）。
  * SKILL.md 只是入口索引——它正文引用到的 references/*.md、子技能链接、模板/词库等资产，凡产出
@@ -12,7 +14,7 @@
 export const SKILL_READ_POLICY =
   `重要 · 引用文件必读（progressive disclosure 硬规则）：当前会话可能已激活某个技能。SKILL.md 只是入口索引——` +
   `它正文中引用到的文件（\`references/*.md\`、子技能(sub-skill)的 markdown 链接、模板/词库/示例等资产），` +
-  `凡产出任何依赖其内容的结果之前，必须先用 \`read_file\` 读取对应文件并按其指示执行；尤其被标注为` +
+  `凡产出任何依赖其内容的结果之前，必须先用 \`read_file\` 读取对应文件（传 \`limit=${SKILL_READ_LIMIT}\`，默认只读前 100 行会截断长文件）并按其指示执行；尤其被标注为` +
   `「阶段前置/强制/必须先 read_file」的引用，未成功读取前禁止产出对应阶段的内容。` +
   `不要凭 SKILL.md 里的摘要或先验臆造这些被引用文件的内容。遵循按需加载：只读当前这一步真正需要的引用文件，` +
   `但绝不跳过被要求前置读取的文件。`;

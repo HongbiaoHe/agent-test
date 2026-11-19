@@ -13,9 +13,9 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Command } from '@langchain/langgraph';
-import { buildAgent } from '@agent-test/agent-core/agent/agent.factory';
+import { buildAgent, type ModelResolver } from '@agent-test/agent-core/agent/agent.factory';
 import type { RawEvent } from '@agent-test/agent-core/agent/event-normalizer';
-import { resolveModelName } from '@agent-test/agent-core/agent/models';
+import { parseModelRef } from '@agent-test/agent-core/providers/model-ref';
 import { asThinkingLevel } from '@agent-test/agent-core/agent/thinking-level';
 import { parseCommand } from '@agent-test/agent-core/commands/parse-command';
 import type { RuntimeEnvironment } from '@agent-test/agent-core/modes/capabilities';
@@ -23,10 +23,11 @@ import {
   activePlanProvider,
   type DynamicContextProvider,
 } from '@agent-test/agent-core/modes/dynamic-context';
-import { instantiateTools, resolveMode } from '@agent-test/agent-core/modes/resolve-mode';
+import { instantiateTools, mountableSkills, resolveMode } from '@agent-test/agent-core/modes/resolve-mode';
 import { priorMessageIds, readInterrupt } from '@agent-test/agent-core/run/agent-state';
-import { consumeAgentStream } from '@agent-test/agent-core/run/consume-stream';
-import { historyFromRows, type HistoryMessage, roleOf } from '@agent-test/agent-core/run/history';
+import { compactHistory } from '@agent-test/agent-core/run/compaction';
+import { AGENT_STREAM_MODES, consumeAgentStream } from '@agent-test/agent-core/run/consume-stream';
+import { historyFromRows, type ReplayHistory, roleOf } from '@agent-test/agent-core/run/history';
 import { buildActivePlan, buildSkillPrompt } from '@agent-test/agent-core/run/turn-prompts';
 import type { HitlDecision } from '../../shared/rpc';
 import type { NodeSqliteSaver } from '../db/checkpointer';
@@ -34,6 +35,7 @@ import type { ConversationRepo } from '../db/conversations';
 import type { McpStore } from '../mcp/mcp-store';
 import { hostI18n } from '../i18n';
 import type { BackgroundService } from '../background/background-service';
+import type { LlmStore } from '../llm/llm-store';
 import type { ModeStore } from '../modes/mode-store';
 import { parseSkillSource, skillsAddArgs } from '../skills/github-install';
 import type { WebApi } from '../web-media/web-api';
@@ -57,7 +59,6 @@ export const LOCAL_USER_ID = 'local';
 export interface RunConfig {
   /** 新会话默认工作区（会话自己的目录在 conversation.workspaceDir） */
   workspaceDir: string;
-  defaultModel: string;
   /** 各会话运行目录的父目录（`<userData>/runtime`）：技能同步与附件副本放这里 */
   runtimeRoot: string;
 }
@@ -74,6 +75,10 @@ export interface RunDeps {
   /** 命令登记表（崩溃后清理孤儿进程）；测试里可不传 */
   processes?: ProcessTracker;
   config: () => RunConfig;
+  /** 当前账号的 API 连接与模型（会话的模型引用在这里解析，见 llm/llm-store.ts） */
+  llm: LlmStore;
+  /** 按「连接 id/模型 id」构建模型（Key 来自 main 下发的内存表，见 llm/model-resolver.ts） */
+  resolveModel: ModelResolver;
   /** 推给所有已连接的 renderer */
   emit: (conversationId: string, event: RawEvent) => void;
   listChanged: () => void;
@@ -226,7 +231,6 @@ export class RunService {
     decisions?: HitlDecision[],
   ): Promise<void> {
     const { repo, emit } = this.deps;
-    const cfg = this.deps.config();
     const abort = new AbortController();
     // execute 以 void 方式后台调用：会话在开跑前被删掉就直接放弃，不能抛成未处理的 rejection
     const conv = repo.get(conversationId);
@@ -249,6 +253,26 @@ export class RunService {
         permission: conv.permission,
       });
       const config = { configurable: { thread_id: conversationId, userId: LOCAL_USER_ID } };
+
+      // ── 模型：会话所选的引用解析不了（连接已删 / 模型已停用）→ 账号默认模型 → 第一个启用的模型；
+      // 换了就把会话改过去并在对话里提示一句。一个可用模型都没有：报错，界面引导去添加连接 ──
+      const modelRef = this.deps.llm.effectiveRef(conv.model);
+      if (!modelRef) throw new Error(hostI18n.t('errors.models.noneAvailable'));
+      if (conv.model && modelRef !== conv.model) {
+        repo.update(conversationId, { model: modelRef });
+        const notice: RawEvent = {
+          type: 'message',
+          payload: {
+            text: hostI18n.t('errors.models.fallback', {
+              from: parseModelRef(conv.model)?.modelId ?? conv.model,
+              to: parseModelRef(modelRef)?.modelId ?? modelRef,
+            }),
+          },
+        };
+        emit(conversationId, notice);
+        persist(notice);
+        this.deps.listChanged();
+      }
 
       // ── 按模式装配（core resolveMode 纯函数）：模式被删 → null = 通用模式 ──
       const mode = conv.modeId ? this.deps.modes.get(conv.modeId) : null;
@@ -275,11 +299,17 @@ export class RunService {
           DESKTOP_ATTACHMENTS_SECTION +
           (webApi ? DESKTOP_MEDIA_ATTACHMENTS_NOTE : ''),
         // 后台任务说明是后台工具的 promptSection，随勾选与环境走（见 tool-registry.ts）
+        // 模式勾的子 agent（其它模式）；通用模式没有
+        subagentModes: this.deps.modes.subagentModes(mode),
       });
       const skillNames = assembly.skills.map((s) => s.name);
 
       try {
-        await this.deps.skills.syncToRuntime(runtimeDir, skillNames);
+        // 主 agent 与子 agent 勾的技能一起同步（共用一个技能库目录）
+        await this.deps.skills.syncToRuntime(
+          runtimeDir,
+          mountableSkills(assembly).map((s) => s.name),
+        );
       } catch (e) {
         emit(conversationId, {
           type: 'message',
@@ -293,21 +323,37 @@ export class RunService {
       if (kind === 'resume') {
         input = new Command({ resume: { decisions } });
       } else {
-        const messages = await this.loadHistory(conversationId);
-        const userTexts = messages.filter((m) => m.role === 'user').map((m) => m.content);
+        // 对话记忆只认 message 表：每轮开跑前清掉上一轮的 thread，checkpoint 只服务本轮内的审批续跑。
+        // SqliteSaver 跑完一轮会完整保留 messages，不清的话重放的历史会再叠一份（见 core run/history.ts）
+        await this.deps.checkpointer.deleteThread(conversationId);
+        const history = await this.loadHistory(conversationId);
+        // 按 token 预算压缩历史（参照 deepagents summarization 中间件）：超了就把早前部分摘要，
+        // 摘要落成 context_summary 行，之后的轮次直接复用；摘要用本轮同一个模型
+        const compacted = await compactHistory({
+          history,
+          model: (await this.deps.resolveModel(modelRef, null)).model,
+          signal: abort.signal,
+          onError: (e) => this.deps.log?.(`历史摘要失败，本轮只重放近期历史 conversation=${conversationId}: ${String(e)}`),
+        });
+        if (compacted.newSummary) {
+          repo.appendMessage(conversationId, roleOf('context_summary'), 'context_summary', compacted.newSummary);
+        }
+        const userTexts = history.userTexts;
         const last = userTexts[userTexts.length - 1] ?? '';
         const cmd = parseCommand(last);
         runName = cmd ? `技能:${cmd.name} · ${cmd.args}`.slice(0, 60) : `Agent · ${last.slice(0, 60)}`;
-        input = { messages };
+        input = { messages: compacted.messages };
         // /技能名 不在当前模式技能集内：当普通文本（决策 15），不注入其 SKILL.md
         systemPromptExtra = await buildSkillPrompt(
           userTexts,
           (name) => (skillNames.includes(name) ? this.deps.skills.skillMd(name) : Promise.resolve(null)),
           skillsDir,
+          // 上下文里已有那次完整的 read_file 结果（工具调用对会重放）就不再重复注入全文
+          compacted.messages,
         );
       }
       const activePlan = buildActivePlan(repo.lastOfType(conversationId, 'plan_update')?.content);
-      const { tools, interruptOn } = instantiateTools(
+      const { tools, interruptOn, subagents } = instantiateTools(
         assembly,
         {
           conversationId,
@@ -331,10 +377,12 @@ export class RunService {
         interruptOnOverride: permissionInterrupts(conv.permission),
         backend,
         skillsDir,
-        model: conv.model ?? cfg.defaultModel,
+        model: modelRef,
+        resolveModel: this.deps.resolveModel,
         thinkingLevel: asThinkingLevel(conv.thinkingLevel),
         checkpointer: this.deps.checkpointer,
         dynamicContext: [activePlanProvider, mcpAppContextProvider],
+        subagents,
       });
 
       const stream = await agent.stream(input, {
@@ -344,7 +392,8 @@ export class RunService {
         tags: ['spark-desktop', kind],
         metadata: { conversationId, kind },
         context: { activePlan, userId: LOCAL_USER_ID },
-        streamMode: ['updates', 'messages'],
+        // tasks：把子 agent 的 namespace 对应到发起它的 task 调用（见 core consume-stream）
+        streamMode: [...AGENT_STREAM_MODES],
         subgraphs: true,
       });
 
@@ -371,7 +420,8 @@ export class RunService {
             this.deps.log?.('priorMessageIds 读取 checkpoint 失败，本轮不排除历史思考'),
           ),
           seenUsageIds: repo.usageMessageIds(conversationId),
-          fallbackModel: resolveModelName(conv.model ?? cfg.defaultModel),
+          // provider 没回模型名时记账用的名字：引用里的模型 id（不带连接 id）
+          fallbackModel: parseModelRef(modelRef)?.modelId ?? modelRef,
           signal: abort.signal,
         },
       );
@@ -427,8 +477,8 @@ export class RunService {
     repo.appendMessage(conversationId, 'assistant', 'result', evt.payload);
   }
 
-  /** 从 message 表重放完整对话历史（窗口与 tool_end 的处理见 core historyFromRows） */
-  private loadHistory(conversationId: string): Promise<HistoryMessage[]> {
+  /** 从 message 表取重放历史（工具调用配对、子 agent 事件、摘要切点的处理见 core historyFromRows） */
+  private loadHistory(conversationId: string): Promise<ReplayHistory> {
     return historyFromRows(this.deps.repo.messages(conversationId), userTextForModel);
   }
 }

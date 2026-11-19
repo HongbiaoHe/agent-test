@@ -33,8 +33,9 @@ function psSnapshot(pattern: string): string {
 
 /** 每个用例自给自足：Playwright 在用例失败后会换 worker、重新加载本文件，dirs 就变成新的空目录 */
 async function ensureReady(page: Page): Promise<void> {
-  const keys = await page.evaluate(() => window.desktop.getKeyStatus());
-  if (!keys.google) await saveGoogleKey(page);
+  // 已经配过 Key 的连接就不用再走一遍（saveGoogleKey 本身也是幂等的）
+  const keys = await page.evaluate(() => window.desktop.getConnectionKeys());
+  if (!Object.values(keys).some(Boolean)) await saveGoogleKey(page);
 }
 
 test.skip(!apiKey, '需要 SPARK_E2E_GOOGLE_API_KEY');

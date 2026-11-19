@@ -3,11 +3,13 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { GENERAL_MODE_PROMPT } from '@agent-test/agent-core/modes/mode.schema';
 import { emptyProject } from '@agent-test/video-schema';
-import { afterEach, beforeEach, describe, expect, it } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { z } from 'zod';
 import type { BackgroundService } from './background/background-service';
 import { ConversationRepo } from './db/conversations';
 import { openDatabase } from './db/database';
 import { McpStore } from './mcp/mcp-store';
+import { LlmStore } from './llm/llm-store';
 import { ModeStore } from './modes/mode-store';
 import { createHandlers, type Services } from './rpc-server';
 import type { RunService } from './run/run-service';
@@ -29,6 +31,9 @@ function setup() {
   const db = openDatabase(join(dir, 'spark.db'));
   const skills = new SkillStore(db, join(dir, 'lib'));
   let modesChanged = 0;
+  let llmChanged = 0;
+  const keys: Record<string, string> = {};
+  const llm = new LlmStore(db, (id) => keys[id] ?? null);
   const repo = new ConversationRepo(db, () => dir);
   const services: Services = {
     repo,
@@ -39,12 +44,12 @@ function setup() {
     mcp: new McpStore(db, 'http://127.0.0.1:1/cb', () => Promise.resolve()),
     modes: new ModeStore(db),
     registry: buildDesktopRegistry({ webApi: null, skills, skillsChanged: () => undefined, background: () => null }),
-    config: () => ({
-      workspaceDir: dir,
-      defaultModel: DEFAULT_MODEL,
-      runtimeRoot: join(dir, 'runtime'),
-      keys: { google: true, deepseek: false },
-    }),
+    config: () => ({ workspaceDir: dir, runtimeRoot: join(dir, 'runtime') }),
+    llm,
+    keyOf: (id) => keys[id] ?? null,
+    llmChanged: () => {
+      llmChanged++;
+    },
     listChanged: () => undefined,
     mcpChanged: () => undefined,
     skillsChanged: () => undefined,
@@ -58,7 +63,13 @@ function setup() {
       binaries: () => ({ ffmpeg: 'ffmpeg', ffprobe: 'ffprobe' }),
     }),
   };
-  return { s: services, h: createHandlers(services), modesChangedCount: () => modesChanged };
+  return {
+    s: services,
+    h: createHandlers(services),
+    keys,
+    modesChangedCount: () => modesChanged,
+    llmChangedCount: () => llmChanged,
+  };
 }
 
 describe('通用模式 RPC', () => {
@@ -126,6 +137,8 @@ describe('通用模式 RPC', () => {
       skillNames: [],
       defaultModel: null,
       defaultThinkingLevel: null,
+      description: null,
+      subagentModeIds: [],
     });
     expect(mode.systemPrompt.startsWith('MODE\n\n## 回复语言\nFRAG-RPC 技能目录：<runtime>/skills')).toBe(true);
 
@@ -161,6 +174,8 @@ describe('通用模式 RPC', () => {
       skillNames: [],
       defaultModel: null,
       defaultThinkingLevel: null,
+      description: null,
+      subagentModeIds: [],
     };
     const mode = await h['modes.preview'](modeInput);
     expect(mode.systemPrompt.startsWith('MODE\n\nCUSTOM-RPC 技能目录：<runtime>/skills')).toBe(true);
@@ -185,8 +200,12 @@ describe('通用模式 RPC', () => {
 
   it('新建会话：没带模式时用通用设置的默认模型 / 思考档位回填；模式优先；带了 model 以带的为准', async () => {
     const { s, h } = setup();
+    // 账号默认模型：一个启用的连接模型
+    const conn = s.llm.createConnection({ name: 'G', protocol: 'gemini', baseUrl: 'https://g.test', presetId: 'gemini' });
+    const ref = s.llm.addManualModel(conn.id, 'gemini-3.8-flash').ref;
+    s.llm.setDefaultModel(ref);
     const plain = await h['conversations.create']({});
-    expect(plain.model).toBe(DEFAULT_MODEL);
+    expect(plain.model).toBe(ref);
     expect(plain.thinkingLevel).toBeNull();
 
     s.modes.updateGeneral({ systemPrompt: null, defaultModel: 'deepseek:deepseek-chat', defaultThinkingLevel: 'high' });
@@ -206,10 +225,138 @@ describe('通用模式 RPC', () => {
       skillNames: [],
       defaultModel: null,
       defaultThinkingLevel: null,
+      description: null,
+      subagentModeIds: [],
     });
     // 模式没设默认模型：落到全局默认，不借用通用模式的设置
     const withMode = await h['conversations.create']({ modeId: mode.id });
-    expect(withMode).toMatchObject({ model: DEFAULT_MODEL, thinkingLevel: null, modeId: mode.id });
+    expect(withMode).toMatchObject({ model: ref, thinkingLevel: null, modeId: mode.id });
+  });
+});
+
+describe('API 连接与模型 RPC（llm.*）', () => {
+  const fetchMock = vi.spyOn(globalThis, 'fetch');
+  afterEach(() => fetchMock.mockReset());
+  const json = (body: unknown, status = 200) => Promise.resolve(new Response(JSON.stringify(body), { status }));
+
+  it('建连接 → 拉模型（Key 来自内存表）→ 搜索后勾选启用 → 出现在模型下拉 → 设默认；每步广播 llm-changed', async () => {
+    const { h, keys, llmChangedCount } = setup();
+    expect((await h['host.status']({})).hasModels).toBe(false);
+    const conn = await h['llm.connections.create']({
+      name: 'DeepSeek',
+      protocol: 'openai-compatible',
+      baseUrl: 'https://api.deepseek.com',
+      presetId: 'deepseek',
+    });
+    expect(conn).toMatchObject({ keyRequired: true, keyConfigured: false, modelCount: 0 });
+    keys[conn.id] = 'sk-live';
+    expect((await h['llm.connections.list']({}))[0].keyConfigured).toBe(true);
+
+    fetchMock.mockImplementation(() => json({ data: [{ id: 'deepseek-flash' }, { id: 'deepseek-v4-pro' }] }));
+    const models = await h['llm.models.refresh']({ connectionId: conn.id });
+    expect(models.map((m) => [m.modelId, m.enabled, m.listState])).toEqual([
+      ['deepseek-flash', false, 'listed'],
+      ['deepseek-v4-pro', false, 'listed'],
+    ]);
+    expect(models[0].capabilities.thinkingStyle).toBe('thinking-type');
+    const [url, init] = fetchMock.mock.calls[0];
+    expect(url instanceof Request ? url.url : url.toString()).toBe('https://api.deepseek.com/models');
+    expect(init?.headers).toEqual({ Authorization: 'Bearer sk-live' });
+
+    await h['llm.models.setEnabled']({ connectionId: conn.id, modelIds: ['deepseek-flash'], enabled: true });
+    const options = await h['models.list']({});
+    expect(options.map((o) => [o.ref, o.connectionName])).toEqual([[`${conn.id}/deepseek-flash`, 'DeepSeek']]);
+    const status = await h['llm.defaultModel.set']({ ref: `${conn.id}/deepseek-flash` });
+    expect(status).toMatchObject({ defaultModel: `${conn.id}/deepseek-flash`, hasModels: true });
+    // 没启用的模型不能设为默认（经 dispatch 调用时是 rejected promise，这里直接调处理函数是同步抛错）
+    expect(() => h['llm.defaultModel.set']({ ref: `${conn.id}/deepseek-v4-pro` })).toThrow();
+    expect(llmChangedCount()).toBeGreaterThanOrEqual(4);
+  });
+
+  it('刷新：新出现的标 new、没拉到的标 missing（不删、不改启用）；手填的不参与下架', async () => {
+    const { h } = setup();
+    const conn = await h['llm.connections.create']({ name: 'X', protocol: 'openai', baseUrl: 'https://x.test/v1', presetId: 'openai' });
+    fetchMock.mockImplementation(() => json({ data: [{ id: 'a' }, { id: 'b' }] }));
+    await h['llm.models.refresh']({ connectionId: conn.id });
+    await h['llm.models.setEnabled']({ connectionId: conn.id, modelIds: ['a', 'b'], enabled: true });
+    await h['llm.models.add']({ connectionId: conn.id, modelId: 'manual-1' });
+    fetchMock.mockImplementation(() => json({ data: [{ id: 'b' }, { id: 'c' }] }));
+    const after = await h['llm.models.refresh']({ connectionId: conn.id });
+    expect(after.map((m) => [m.modelId, m.enabled, m.listState, m.source])).toEqual([
+      ['a', true, 'missing', 'listed'],
+      ['b', true, 'listed', 'listed'],
+      ['c', false, 'new', 'listed'],
+      ['manual-1', true, 'listed', 'manual'],
+    ]);
+  });
+
+  it('测连接：鉴权失败返回原始错误；删连接：模型一起删、默认模型清掉', async () => {
+    const { h } = setup();
+    const conn = await h['llm.connections.create']({ name: 'X', protocol: 'openai', baseUrl: 'https://x.test/v1', presetId: 'openai' });
+    fetchMock.mockImplementation(() => json({ error: { message: 'Incorrect API key' } }, 401));
+    const t = await h['llm.connections.test']({ id: conn.id });
+    expect(t.ok).toBe(false);
+    expect(t.message).toContain('Incorrect API key');
+    await h['llm.models.add']({ connectionId: conn.id, modelId: 'gpt-4o' });
+    await h['llm.defaultModel.set']({ ref: `${conn.id}/gpt-4o` });
+    await h['llm.connections.delete']({ id: conn.id });
+    expect(await h['models.list']({})).toEqual([]);
+    expect(await h['host.status']({})).toMatchObject({ defaultModel: null, hasModels: false });
+  });
+
+  it('改能力：档位按写法收窄、auto 总在；之后刷新不再覆盖', async () => {
+    const { h } = setup();
+    const conn = await h['llm.connections.create']({ name: 'X', protocol: 'openai-compatible', baseUrl: 'https://x.test/v1', presetId: 'custom' });
+    await h['llm.models.add']({ connectionId: conn.id, modelId: 'qwen3' });
+    const m = await h['llm.models.updateCapabilities']({
+      connectionId: conn.id,
+      modelId: 'qwen3',
+      capabilities: { thinkingStyle: 'enable-thinking', thinkingLevels: ['on', 'off', 'high'], contextWindow: 131072 },
+    });
+    expect(m.capabilities).toEqual({ thinkingStyle: 'enable-thinking', thinkingLevels: ['auto', 'on', 'off'], contextWindow: 131072 });
+    expect(m.capabilitiesEdited).toBe(true);
+    fetchMock.mockImplementation(() => json({ data: [{ id: 'qwen3', context_length: 8000 }] }));
+    const after = await h['llm.models.refresh']({ connectionId: conn.id });
+    expect(after[0].capabilities.contextWindow).toBe(131072);
+  });
+
+  it('测 OpenAI 推理模型：要思考摘要被拒（组织未验证）→ 去掉重测通过，自动关掉摘要；刷新列表后仍关着', async () => {
+    const { h, keys } = setup();
+    const conn = await h['llm.connections.create']({ name: 'OpenAI', protocol: 'openai', baseUrl: 'https://oai.test/v1', presetId: 'openai' });
+    keys[conn.id] = 'sk-test';
+    await h['llm.models.add']({ connectionId: conn.id, modelId: 'gpt-5.6' });
+    const bodies: unknown[] = [];
+    fetchMock.mockImplementation((_url, init) => {
+      const body: unknown = JSON.parse(typeof init?.body === 'string' ? init.body : '{}');
+      bodies.push(body);
+      const wantsSummary = z.object({ reasoning: z.object({ summary: z.string() }) }).safeParse(body).success;
+      if (wantsSummary) {
+        return json({ error: { message: 'Your organization must be verified to generate reasoning summaries.' } }, 400);
+      }
+      // OpenAI SDK 按 content-type 决定是否解析 JSON
+      const ok = {
+        id: 'resp_1',
+        object: 'response',
+        status: 'completed',
+        model: 'gpt-5.6',
+        output: [
+          { type: 'function_call', id: 'fc_1', call_id: 'call_1', name: 'ping', arguments: '{"value":"ok"}', status: 'completed' },
+        ],
+        usage: { input_tokens: 1, output_tokens: 1, total_tokens: 2 },
+      };
+      return Promise.resolve(new Response(JSON.stringify(ok), { headers: { 'content-type': 'application/json' } }));
+    });
+    const m = await h['llm.models.test']({ connectionId: conn.id, modelId: 'gpt-5.6' });
+    expect(bodies).toHaveLength(2);
+    expect(bodies[1]).not.toHaveProperty('reasoning');
+    expect(m.test).toMatchObject({ status: 'ok' });
+    expect(m.test).not.toHaveProperty('reasoningSummaryUnsupported');
+    expect(m.capabilities).toMatchObject({ thinkingStyle: 'openai-effort', reasoningSummary: false });
+    expect(m.capabilitiesEdited).toBe(false);
+
+    fetchMock.mockImplementation(() => json({ data: [{ id: 'gpt-5.6' }] }));
+    const after = await h['llm.models.refresh']({ connectionId: conn.id });
+    expect(after[0].capabilities.reasoningSummary).toBe(false);
   });
 });
 

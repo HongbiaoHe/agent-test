@@ -2,6 +2,7 @@ import {
   isAIMessage,
   isBaseMessage,
   isToolMessage,
+  type ToolMessage,
 } from '@langchain/core/messages';
 import { ConversationEvent } from './types';
 
@@ -18,6 +19,8 @@ export type RawEvent = Pick<ConversationEvent, 'type' | 'payload'>;
  *  - updates  + {node:{todos}}       → plan_update
  *  - updates  + AIMessage(tool_calls)→ tool_start
  *  - updates  + AIMessage(文本)      → message
+ *  - updates  + ToolMessage          → tool_end（Command 返回的结果只在这里，如 task）
+ * namespace 不在这里解释：子 agent 归属由 consumeAgentStream 按 namespace 判定。
  *
  * data 来自 LangGraph 流，运行时是真实的 LangChain 消息实例，故用官方类型守卫
  * （isBaseMessage/isAIMessage/isToolMessage）与 BaseMessage.text getter 强类型解析，
@@ -37,21 +40,7 @@ function normalizeMessage(data: unknown): RawEvent | null {
   // messages 模式产出 [message, metadata] 元组，取首元素为消息本体。
   const msg = Array.isArray(data) ? (data as unknown[])[0] : data;
   if (!isBaseMessage(msg)) return null;
-  if (isToolMessage(msg)) {
-    return {
-      type: 'tool_end',
-      // toolCallId：前端据此与对应的 tool_start 配对（同名工具并发 / 审批续跑重发时按名字配不准）
-      payload: {
-        name: msg.name,
-        content: msg.content,
-        status: msg.status,
-        toolCallId: msg.tool_call_id,
-        // MCP 工具的 App 卡片数据 / 需重新授权提示（见 mcp-agent-tools）：随 tool_end 落库，刷新可重建卡片。
-        // 只透出这两个约定字段，其它工具的 artifact 不进事件（可能很大且前端用不到）。
-        ...mcpArtifactFields(msg.artifact),
-      },
-    };
-  }
+  if (isToolMessage(msg)) return toolEnd(msg);
   if (isAIMessage(msg)) {
     // 思考与正文不在同一个 chunk 里（实测：deepseek 推理阶段 content 为空、正文阶段不再带
     // reasoning_content；Gemini 的 thinking 块与 text 块也是分开的 chunk）。
@@ -67,6 +56,22 @@ function normalizeMessage(data: unknown): RawEvent | null {
     return msg.text ? { type: 'token', payload: { text: msg.text } } : null;
   }
   return null;
+}
+
+function toolEnd(msg: ToolMessage): RawEvent {
+  return {
+    type: 'tool_end',
+    // toolCallId：前端据此与对应的 tool_start 配对（同名工具并发 / 审批续跑重发时按名字配不准）
+    payload: {
+      name: msg.name,
+      content: msg.content,
+      status: msg.status,
+      toolCallId: msg.tool_call_id,
+      // MCP 工具的 App 卡片数据 / 需重新授权提示（见 mcp-agent-tools）：随 tool_end 落库，刷新可重建卡片。
+      // 只透出这两个约定字段，其它工具的 artifact 不进事件（可能很大且前端用不到）。
+      ...mcpArtifactFields(msg.artifact),
+    },
+  };
 }
 
 function mcpArtifactFields(artifact: unknown): Record<string, unknown> {
@@ -91,9 +96,10 @@ function isThinkingBlock(block: unknown): block is { thinking: string } {
 
 /**
  * 取一块思考增量。`reasoning` 在 @langchain/core 1.1.48 里还不是一等字段
- * （message.d.ts 只在示例里提到 reasoning content block），两家落点完全不同，都要吃：
+ * （message.d.ts 只在示例里提到 reasoning content block），各家落点完全不同，都要吃：
  *
  * - DeepSeek：`additional_kwargs.reasoning_content`（实测 deepseek-reasoner / v4-flash / v4-pro）
+ * - OpenAI（Responses API）：`content` 数组里的 `{ type: 'reasoning', reasoning: '...' }` 摘要块
  * - Gemini：`content` 数组里的 `{ type: 'thinking', thinking: '...' }` 块（实测 gemini-3.5-flash
  *   开启 thinkingConfig.includeThoughts 后，流式与非流式都给）。注意**不能**用 `msg.text` 取 ——
  *   那个 getter 只拼 text 块，思考块会被它无声丢掉。
@@ -106,7 +112,36 @@ function reasoningText(msg: {
 }): string {
   const deepseek = msg.additional_kwargs?.reasoning_content;
   if (typeof deepseek === 'string' && deepseek) return deepseek;
-  return thinkingText(msg.content);
+  return thinkingText(msg.content) || openaiReasoningText(msg.content);
+}
+
+/** OpenAI Responses API 的思考摘要块：`{ type: 'reasoning', reasoning: '...' }`（@langchain/openai 的转换结果） */
+function isOpenAIReasoningBlock(
+  block: unknown,
+): block is { type: 'reasoning'; reasoning: string } {
+  return (
+    !!block &&
+    typeof block === 'object' &&
+    'type' in block &&
+    block.type === 'reasoning' &&
+    'reasoning' in block &&
+    typeof block.reasoning === 'string'
+  );
+}
+
+/**
+ * 消息 content 里 OpenAI 思考摘要块的正文拼接。与 Gemini 的 thinkingText 分开：OpenAI 的块在 messages
+ * 流里原样保留（流式逐段给），Gemini 的块在那里会被压掉、要靠 thinking-tap 实时取——混在一个函数里，
+ * thinking-tap 会把 OpenAI 的增量再累加一遍。
+ */
+export function openaiReasoningText(content: unknown): string {
+  if (!Array.isArray(content)) return '';
+  const blocks: unknown[] = content;
+  let out = '';
+  for (const block of blocks) {
+    if (isOpenAIReasoningBlock(block)) out += block.reasoning;
+  }
+  return out;
 }
 
 /** 消息 content 里 Gemini 思考块（`{ type: 'thinking', thinking }`）的正文拼接；不是数组或没有思考块返回空串 */
@@ -127,7 +162,7 @@ export interface ThinkingPart {
 }
 
 /**
- * 从 updates 节点更新里抽取 **Gemini 的思考正文**，连同它归属的 AIMessage id 一起给出。
+ * 从 updates 节点更新里抽取 **Gemini / OpenAI 内容块里的思考正文**，连同它归属的 AIMessage id 一起给出。
  *
  * 为什么非得走 updates：langgraph 的 `messages` 流会把 AIMessageChunk 的 content 压成 string，
  * thinking 块在到达 normalize 之前就没了（实测一整轮 canvas run，全部 chunk 都是
@@ -151,7 +186,9 @@ export function extractThinkingBlocks(data: unknown): ThinkingPart[] {
     if (!Array.isArray(msgs)) continue;
     for (const m of msgs) {
       if (!isBaseMessage(m) || !isAIMessage(m)) continue;
-      const text = thinkingText(m.content);
+      // OpenAI 的摘要多数时候已由 messages 流按同一消息 id 逐段推过，这里整块给出会被归集器按 id 挡掉；
+      // 模型没走流式时才靠这里补上
+      const text = thinkingText(m.content) || openaiReasoningText(m.content);
       if (!text) continue;
       out.push({ id: m.id ?? '', text });
     }
@@ -177,6 +214,9 @@ function normalizeUpdate(data: unknown): RawEvent | null {
 
     if (Array.isArray(node.messages) && node.messages.length) {
       const last = node.messages[node.messages.length - 1];
+      // 工具结果：普通工具在 messages 流里已经给过一次（消费方按 toolCallId 去重）；以 Command 返回结果的
+      // 工具（如子 agent 的 task）只出现在 updates 里，不从这里取就永远没有 tool_end
+      if (isBaseMessage(last) && isToolMessage(last)) return toolEnd(last);
       if (isBaseMessage(last) && isAIMessage(last)) {
         if (last.tool_calls && last.tool_calls.length) {
           return {

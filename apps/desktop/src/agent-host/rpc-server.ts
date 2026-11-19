@@ -3,16 +3,16 @@
  */
 import { stat } from 'node:fs/promises';
 import { z } from 'zod';
-import { ALLOWED_MODELS } from '@agent-test/agent-core/agent/models';
-import { thinkingLevelsFor } from '@agent-test/agent-core/agent/thinking-level';
+import { listModels } from '@agent-test/agent-core/providers/list-models';
+import { testConnection, testModel } from '@agent-test/agent-core/providers/test-model';
 import { GENERAL_MODE_PROMPT } from '@agent-test/agent-core/modes/mode.schema';
 import { PROMPT_FRAGMENT_IDS } from '@agent-test/agent-core/modes/prompt-fragments';
 import { resolveMode } from '@agent-test/agent-core/modes/resolve-mode';
 import type { GeneralModeSettings } from '@agent-test/agent-core/modes/mode.schema';
 import {
   type GeneralModeView,
+  type HostStatus,
   type ModeCatalog,
-  type ModelOption,
   rpcSchemas,
   type RpcMethod,
   type RpcParsedParams,
@@ -23,6 +23,8 @@ import type { ConversationRepo } from './db/conversations';
 import type { BackgroundService } from './background/background-service';
 import { hostI18n } from './i18n';
 import { McpError, type McpStore } from './mcp/mcp-store';
+import type { LlmStore } from './llm/llm-store';
+import { type KeyOf, providerConnection } from './llm/model-resolver';
 import type { ModeStore } from './modes/mode-store';
 import type { RunConfig, RunService } from './run/run-service';
 import { type DesktopRegistry, desktopCapabilities } from './run/tool-registry';
@@ -39,7 +41,11 @@ export interface Services {
   mcp: McpStore;
   modes: ModeStore;
   registry: DesktopRegistry;
-  config: () => RunConfig & { keys: { google: boolean; deepseek: boolean } };
+  config: () => RunConfig;
+  /** 当前账号的 API 连接与模型；Key 由 main 下发、只在内存里（keyOf） */
+  llm: LlmStore;
+  keyOf: KeyOf;
+  llmChanged: () => void;
   listChanged: () => void;
   mcpChanged: () => void;
   skillsChanged: () => void;
@@ -91,17 +97,25 @@ function requireWeb(s: Services): WebApi {
   return s.webApi;
 }
 
-/** 展示名与 apps/frontend/src/app/agent/_lib/models.ts 保持一致的口径：provider + 型号 */
-function modelOptions(): ModelOption[] {
-  return ALLOWED_MODELS.map((id) => {
-    const [provider, name] = id.split(':');
-    return {
-      id,
-      label: name,
-      provider: provider === 'deepseek' ? 'deepseek' : 'google',
-      thinkingLevels: thinkingLevelsFor(id),
-    };
-  });
+function hostStatus(s: Services): HostStatus {
+  return {
+    workspaceDir: s.config().workspaceDir,
+    defaultModel: s.llm.defaultModel(),
+    hasModels: s.llm.enabledModels().length > 0,
+  };
+}
+
+/** 某个连接带解密 Key 的参数（拉列表 / 测试用） */
+function connectionParams(s: Services, id: string) {
+  const c = s.llm.getConnection(id);
+  if (!c) throw new Error(hostI18n.t('errors.models.connectionNotFound', { id }));
+  return providerConnection(c, s.keyOf);
+}
+
+/** 改了连接 / 模型：通知界面刷新，并把指向已不可用模型的默认模型清掉（llm-store 内部已处理） */
+function changed<T>(s: Services, value: T): T {
+  s.llmChanged();
+  return value;
 }
 
 /** 会话工作区必须是已存在的目录（由文件夹选择器选出），路径约束同 GuardedSandbox */
@@ -119,15 +133,42 @@ type Handlers = {
 
 export function createHandlers(s: Services): Handlers {
   return {
-    'host.status': () => {
-      const c = s.config();
-      return {
-        workspaceDir: c.workspaceDir,
-        keys: c.keys,
-        defaultModel: c.defaultModel,
-      };
+    'host.status': () => hostStatus(s),
+    'models.list': () => s.llm.enabledModels(),
+    'llm.connections.list': () => s.llm.listConnections(),
+    'llm.connections.create': (p) => changed(s, s.llm.createConnection(p)),
+    'llm.connections.update': ({ id, ...patch }) => changed(s, s.llm.updateConnection(id, patch)),
+    'llm.connections.delete': ({ id }) => {
+      s.llm.deleteConnection(id);
+      return changed(s, { ok: true as const });
     },
-    'models.list': () => modelOptions(),
+    'llm.connections.test': ({ id }) => testConnection(connectionParams(s, id)),
+    'llm.models.list': ({ connectionId }) => s.llm.listModels(connectionId),
+    'llm.models.refresh': async ({ connectionId }) => {
+      const listed = await listModels(connectionParams(s, connectionId), AbortSignal.timeout(60_000));
+      return changed(s, s.llm.mergeListed(connectionId, listed));
+    },
+    'llm.models.add': ({ connectionId, modelId }) => changed(s, s.llm.addManualModel(connectionId, modelId)),
+    'llm.models.setEnabled': ({ connectionId, modelIds, enabled }) => {
+      s.llm.setEnabled(connectionId, modelIds, enabled);
+      return changed(s, { ok: true as const });
+    },
+    'llm.models.remove': ({ connectionId, modelId }) => {
+      s.llm.removeModel(connectionId, modelId);
+      return changed(s, { ok: true as const });
+    },
+    'llm.models.updateCapabilities': ({ connectionId, modelId, capabilities }) =>
+      changed(s, s.llm.updateCapabilities(connectionId, modelId, capabilities)),
+    'llm.models.test': async ({ connectionId, modelId }) => {
+      const model = s.llm.listModels(connectionId).find((m) => m.modelId === modelId);
+      if (!model) throw new Error(hostI18n.t('errors.models.modelNotFound', { id: modelId }));
+      const result = await testModel(connectionParams(s, connectionId), modelId, model.capabilities);
+      return changed(s, s.llm.saveTest(connectionId, modelId, result));
+    },
+    'llm.defaultModel.set': ({ ref }) => {
+      s.llm.setDefaultModel(ref);
+      return changed(s, hostStatus(s));
+    },
     'conversations.list': () => s.repo.list(),
     'conversations.create': async (p) => {
       const dir = p.workspaceDir ? await assertWorkspaceDir(p.workspaceDir) : undefined;
@@ -136,7 +177,7 @@ export function createHandlers(s: Services): Handlers {
       const mode = p.modeId ? s.modes.get(p.modeId) : null;
       const defaults = mode ?? s.modes.getGeneral();
       let c = s.repo.create(
-        p.model ?? defaults.defaultModel ?? s.config().defaultModel,
+        p.model ?? defaults.defaultModel ?? s.llm.effectiveRef(null),
         { dir, permission: p.permission },
         mode?.id ?? null,
       );
@@ -184,11 +225,13 @@ export function createHandlers(s: Services): Handlers {
     },
     'modes.catalog': () => modeCatalog(s),
     'modes.preview': async (p) => {
+      const mode = { ...p, id: 'preview' };
       const { systemPrompt, unavailable } = resolveMode({
-        mode: { ...p, id: 'preview' },
+        mode,
         fragmentOverrides: s.modes.fragmentOverrides(),
         customFragments: s.modes.customFragments(),
         ...(await previewEnv(s)),
+        subagentModes: s.modes.subagentModes(mode),
       });
       return { systemPrompt, unavailable };
     },

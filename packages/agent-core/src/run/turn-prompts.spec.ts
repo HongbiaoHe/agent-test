@@ -1,3 +1,4 @@
+import { AIMessage, HumanMessage, ToolMessage } from '@langchain/core/messages';
 import { buildActivePlan, buildSkillPrompt } from './turn-prompts';
 
 describe('buildActivePlan', () => {
@@ -60,5 +61,91 @@ describe('buildSkillPrompt', () => {
 
   it('没有用户消息 → 空串', async () => {
     expect(await buildSkillPrompt([], lookup, '/s')).toBe('');
+  });
+
+  it('子文件也要求带 limit 读取（默认 100 行会截断）', async () => {
+    const text = await buildSkillPrompt(['/docx a', '继续'], lookup, '/s');
+    expect(text).toContain('limit=1000');
+  });
+
+  describe('重放的上下文里已有完整读取 → 不重复注入', () => {
+    const readCall = (args: Record<string, unknown>, withResult = true) => [
+      new HumanMessage('/docx 写周报'),
+      new AIMessage({
+        content: '',
+        tool_calls: [{ id: 'r1', name: 'read_file', args, type: 'tool_call' }],
+      }),
+      ...(withResult
+        ? [
+            new ToolMessage({
+              tool_call_id: 'r1',
+              name: 'read_file',
+              content: '1\t# Docx',
+            }),
+          ]
+        : []),
+      new HumanMessage('再改短一点'),
+    ];
+    const build = (context: ReturnType<typeof readCall>) =>
+      buildSkillPrompt(
+        ['/docx 写周报', '再改短一点'],
+        lookup,
+        '/workspace/skills',
+        context,
+      );
+
+    it('读全了（limit 覆盖全文）→ 不注入', async () => {
+      expect(
+        await build(
+          readCall({
+            file_path: '/workspace/skills/docx/SKILL.md',
+            limit: 1000,
+          }),
+        ),
+      ).toBe('');
+      // 短文件不传 limit 也算读全（默认 100 行够用）
+      expect(
+        await build(readCall({ file_path: '/workspace/skills/docx/SKILL.md' })),
+      ).toBe('');
+    });
+
+    it('只读了一部分（从中间读 / limit 不够）、只有调用没有结果、读的是别的文件 → 照常注入', async () => {
+      const long = {
+        ...md,
+        docx: Array.from({ length: 300 }, (_, i) => `line ${i}`).join('\n'),
+      };
+      const longText = await buildSkillPrompt(
+        ['/docx 写周报', '再改短一点'],
+        (n) => long[n] ?? null,
+        '/workspace/skills',
+        readCall({ file_path: '/workspace/skills/docx/SKILL.md' }),
+      );
+      expect(longText).toContain('## 已加载技能：docx');
+      expect(
+        await build(
+          readCall({
+            file_path: '/workspace/skills/docx/SKILL.md',
+            offset: 50,
+            limit: 1000,
+          }),
+        ),
+      ).toContain('已加载技能');
+      expect(
+        await build(
+          readCall(
+            { file_path: '/workspace/skills/docx/SKILL.md', limit: 1000 },
+            false,
+          ),
+        ),
+      ).toContain('已加载技能');
+      expect(
+        await build(
+          readCall({
+            file_path: '/workspace/skills/pdf/SKILL.md',
+            limit: 1000,
+          }),
+        ),
+      ).toContain('已加载技能');
+    });
   });
 });

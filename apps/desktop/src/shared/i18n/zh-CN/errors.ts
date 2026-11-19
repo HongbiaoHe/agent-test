@@ -33,8 +33,18 @@ export const errors = {
     interrupted: '运行中断：应用在运行中退出或 agent 进程崩溃，请重新发送。',
     busyModeSwitch: '会话正在运行或等待审批，结束后再切换模式',
   },
+  models: {
+    noneAvailable: '没有可用的模型。请在「设置 → 模型」添加 API 连接并启用至少一个模型。',
+    connectionNotFound: 'API 连接不存在：{{id}}',
+    modelNotFound: '模型不存在：{{id}}',
+    emptyModelId: '模型 id 不能为空',
+    defaultMustBeEnabled: '默认模型必须是已启用的模型',
+    fallback: '本会话所选的模型（{{from}}）已不可用，本轮改用 {{to}}。',
+  },
   modes: {
     notFound: '模式不存在：{{id}}',
+    subagentSelf: '不能把模式自己勾作子 agent',
+    subagentNotFound: '子 agent 模式不存在：{{id}}',
     unknownPlaceholder: '提示词里有未知的占位符：{{ids}}（只能引用 platform.* 片段和已有的 custom.* 片段）',
     fragmentNotFound: '片段不存在：{{id}}',
     fragmentInvalidVariable: '片段里只能使用 {{variable}}，不支持：{{vars}}',

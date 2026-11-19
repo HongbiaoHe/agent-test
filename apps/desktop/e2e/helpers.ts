@@ -1,7 +1,7 @@
 import { mkdirSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { _electron as electron, type ElectronApplication, expect, type Page } from '@playwright/test';
+import { _electron as electron, type ElectronApplication, expect, type Locator, type Page } from '@playwright/test';
 
 export const apiKey = process.env.SPARK_E2E_GOOGLE_API_KEY ?? '';
 export const screens = join(__dirname, '..', 'test-results', 'screens');
@@ -76,12 +76,96 @@ export async function stubOpenDialog(app: ElectronApplication, paths: string[]):
   }, paths);
 }
 
+/** e2e 用的 Gemini 模型（saveGoogleKey 启用它并设为账号默认模型） */
+export const E2E_MODEL = 'gemini-3.8-flash';
+
+/** 连接详情侧拉（设置 → 模型里点开一个连接 / 新建连接后自动打开） */
+export function connectionSheet(page: Page): Locator {
+  return page.getByTestId('llm-connection-sheet');
+}
+
+/**
+ * 设置 → 模型 → 添加连接：选预设（填好协议 / Base URL / 名称）、可选填 Key、保存。
+ * 保存后会自动拉取一次模型列表（真实网络，最多 60 秒），结束后弹窗关闭、自动打开该连接的详情侧拉。
+ */
+export async function addConnection(
+  page: Page,
+  opts: { preset: string; apiKey?: string; baseUrl?: string },
+): Promise<Locator> {
+  await openSettings(page, '模型');
+  await page.getByRole('button', { name: '添加连接' }).click();
+  const dialog = page.getByRole('dialog', { name: '添加 API 连接' });
+  await dialog.getByRole('combobox', { name: '服务商' }).click();
+  await page.getByRole('option', { name: opts.preset, exact: true }).click();
+  if (opts.baseUrl) await dialog.getByLabel('Base URL').fill(opts.baseUrl);
+  if (opts.apiKey) await dialog.getByLabel(/^API Key/).fill(opts.apiKey);
+  await dialog.getByRole('button', { name: '保存并拉取模型' }).click();
+  await expect(dialog).toBeHidden({ timeout: 90_000 });
+  const sheet = connectionSheet(page);
+  await expect(sheet).toBeVisible();
+  return sheet;
+}
+
+/** 在连接详情里搜索模型并勾选启用（已启用就不动） */
+export async function enableModel(sheet: Locator, modelId: string): Promise<void> {
+  await sheet.getByRole('textbox', { name: '搜索模型' }).fill(modelId);
+  const checkbox = sheet.getByRole('checkbox', { name: `启用 ${modelId}`, exact: true });
+  await expect(checkbox).toBeVisible({ timeout: 20_000 });
+  if (!(await checkbox.isChecked())) await checkbox.click();
+  await expect(checkbox).toBeChecked();
+}
+
+/** 关掉连接详情侧拉（设置弹窗还开着） */
+export async function closeConnectionSheet(page: Page): Promise<void> {
+  await page.keyboard.press('Escape');
+  await expect(connectionSheet(page)).toBeHidden();
+  await expect(page.getByRole('navigation', { name: '设置分类' })).toBeVisible();
+}
+
+/** 设置 → 模型：把账号默认模型设成某个已启用的模型 */
+export async function setDefaultModel(page: Page, modelId: string): Promise<void> {
+  await openSettings(page, '模型');
+  const combo = page.getByRole('dialog').getByRole('combobox', { name: '默认模型' });
+  await combo.click();
+  await page.getByRole('option', { name: modelId, exact: true }).click();
+  await expect(combo).toContainText(modelId);
+}
+
+/**
+ * 配好真实模型：添加 Google Gemini 连接（SPARK_E2E_GOOGLE_API_KEY）→ 等自动拉取模型列表 → 启用 E2E_MODEL →
+ * 设为默认模型 → 关设置。幂等：已有 Gemini 连接时只确保该模型已启用且是默认模型。
+ */
 export async function saveGoogleKey(page: Page): Promise<void> {
   await openSettings(page, '模型');
-  await page.getByLabel('Google Gemini API Key').fill(apiKey);
-  await page.getByRole('button', { name: '保存' }).first().click();
-  await expect(page.getByText('已配置').first()).toBeVisible({ timeout: 20_000 });
+  const cards = page.getByTestId('llm-connection-card');
+  // 等列表加载完（有连接 / 空状态），免得把「还在加载」当成没有连接、重复添加
+  await expect(cards.first().or(page.getByText('还没有 API 连接'))).toBeVisible({ timeout: 20_000 });
+  const gemini = cards.filter({ hasText: 'Google Gemini' });
+  let sheet: Locator;
+  if ((await gemini.count()) > 0) {
+    await gemini.first().click();
+    sheet = connectionSheet(page);
+    await expect(sheet).toBeVisible();
+  } else {
+    sheet = await addConnection(page, { preset: 'Google Gemini', apiKey });
+  }
+  await enableModel(sheet, E2E_MODEL);
+  await closeConnectionSheet(page);
+  await setDefaultModel(page, E2E_MODEL);
   await closeSettings(page);
+}
+
+/**
+ * 不联网也能用的模型：添加 Ollama 连接（本地、不要 Key；本机没装 Ollama，自动拉取会失败并内联报错），
+ * 再手动添加一个模型 id（手动添加默认启用）。结束时设置弹窗停在「模型」、侧拉已关。
+ */
+export async function addLocalModel(page: Page, modelId: string): Promise<void> {
+  const sheet = await addConnection(page, { preset: 'Ollama' });
+  await expect(sheet.getByTestId('refresh-error')).toBeVisible();
+  await sheet.getByRole('textbox', { name: '手动添加模型' }).fill(modelId);
+  await sheet.getByRole('button', { name: '添加', exact: true }).click();
+  await expect(sheet.getByRole('checkbox', { name: `启用 ${modelId}`, exact: true })).toBeChecked();
+  await closeConnectionSheet(page);
 }
 
 /** 发一条消息并等这一轮跑完（发送按钮重新出现）；途中的审批一律批准（approve=false 时遇到审批即返回） */

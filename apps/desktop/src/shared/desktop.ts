@@ -8,7 +8,10 @@ import type { LanguagePreference, Locale } from './i18n/locales';
 export interface DesktopSettings {
   /** 新会话默认使用的工作区（默认 ~/Spark）；每个会话可另选目录与权限 */
   workspaceDir: string;
-  /** 新会话默认模型（provider:model） */
+  /**
+   * 旧版的设备级默认模型（`provider:model`）。只在账号第一次迁移旧配置时读一次；
+   * 现在默认模型按账号存在 agent-host（见 llm/llm-store.ts）。
+   */
   defaultModel: string;
   /** Web 后端地址（登录 Web 账号后，生图 / 生视频 / 配音经它调 aigc）；默认 http://localhost:3101 */
   webApiUrl: string;
@@ -32,9 +35,15 @@ export interface WebAccountStatus {
   expiresAt: string | null;
 }
 
-export const PROVIDER_KEYS = ['google', 'deepseek'] as const;
-export type ProviderKey = (typeof PROVIDER_KEYS)[number];
-export type KeyStatus = Record<ProviderKey, boolean>;
+/** 旧版的设备级 Key（只为迁移保留；新配置是按账号的 API 连接） */
+export const LEGACY_PROVIDER_KEYS = ['google', 'deepseek'] as const;
+export type LegacyProviderKey = (typeof LEGACY_PROVIDER_KEYS)[number];
+
+/** 旧版 Key 迁进账号时生成的连接（预设 gemini / deepseek），main 经 config 告诉 agent-host 去建 */
+export interface LegacyConnection {
+  id: string;
+  presetId: 'gemini' | 'deepseek';
+}
 
 /** renderer 经 preload 拿到的原生能力（实现见 src/preload/index.ts） */
 export interface DesktopApi {
@@ -42,9 +51,13 @@ export interface DesktopApi {
   /** 实际界面语言（设置为「跟随系统」时按系统首选语言解析） */
   getLocale(): Promise<Locale>;
   updateSettings(patch: Partial<DesktopSettings>): Promise<DesktopSettings>;
-  getKeyStatus(): Promise<KeyStatus>;
-  /** 写入 / 清除（null）某提供方的 Key；会重启 agent-host 让新 Key 生效 */
-  setKey(provider: ProviderKey, value: string | null): Promise<KeyStatus>;
+  /** 当前账号哪些 API 连接配了 Key（连接 id → 是否已配置）；Key 本身不出 main */
+  getConnectionKeys(): Promise<Record<string, boolean>>;
+  /**
+   * 写入 / 清除（null）某个 API 连接的 Key（系统钥匙串加密，按账号存）。resolve 时 agent-host 已拿到新 Key，
+   * 可以直接拉模型列表 / 测试。
+   */
+  setConnectionKey(connectionId: string, value: string | null): Promise<Record<string, boolean>>;
   pickFolder(): Promise<string | null>;
   pickFiles(): Promise<string[]>;
   /** 拖进窗口的文件 → 本地绝对路径（contextIsolation 下 File 不再带 path） */
@@ -65,7 +78,16 @@ export interface DesktopApi {
 
 /** main → agent-host（utilityProcess.postMessage） */
 export type HostControlMessage =
-  | { type: 'config'; settings: DesktopSettings; keys: KeyStatus; locale: Locale }
+  | {
+      type: 'config';
+      /** 递增序号：agent-host 处理完回 config-applied（带同一序号），main 据此确认新 Key 已生效 */
+      seq: number;
+      settings: DesktopSettings;
+      /** 本账号各 API 连接解密后的 Key（只在 agent-host 内存里） */
+      modelKeys: Record<string, string>;
+      legacyConnections: LegacyConnection[];
+      locale: Locale;
+    }
   | { type: 'port' };
 
 /** renderer 收到 agent-host 端口时，preload 转发的 window message 标记 */

@@ -42,7 +42,7 @@ import { useModelPreference } from "../_hooks/use-model-preference";
 import { useThinkingPreference } from "../_hooks/use-thinking-preference";
 import { useTheme } from "../_hooks/use-theme";
 import { MODEL_OPTIONS } from "../_lib/models";
-import type { PreviewSpec, ThreadItem } from "../_lib/thread";
+import { findToolItem, type PreviewSpec } from "../_lib/thread";
 
 /**
  * 会话外壳：会话由 URL（/agent 或 /agent/[id]）驱动，conversationId 作为入参。
@@ -228,12 +228,8 @@ export function AgentShell({ conversationId }: { conversationId: string | null }
 
   const panelOpen = manualPanel ?? isDesktop;
 
-  const selectedTool = activeDetailId
-    ? thread.items.find(
-        (it): it is Extract<ThreadItem, { kind: "tool" }> =>
-          it.kind === "tool" && it.id === activeDetailId,
-      )
-    : undefined;
+  // 含子 agent 嵌套 thread 里的工具 chip
+  const selectedTool = activeDetailId ? findToolItem(thread.items, activeDetailId) : undefined;
 
   const activeConv = conversations.find((c) => c.id === conversationId);
   // 重命名的标题优先；空会话（idle，goal 尚未回填）与新会话页统一显示 "New conversation"

@@ -27,7 +27,7 @@ import {
   listModes,
   MODES_QUERY_KEY,
 } from '@/lib/api';
-import { modelDisplayName } from '../../chat/lib/models';
+import { modelIdOfRef } from '../../llm/model-options';
 
 /**
  * 模式列表：最上方固定「通用」卡片（只能编辑，不能删除），下面是用户模式：名称 + 工具 / 连接器 / 技能计数 +
@@ -72,7 +72,7 @@ function GeneralModeCard({ onEdit }: { onEdit: (general: GeneralModeView) => voi
             {g.isCustom && <Badge variant="outline">{t('settings.modes.list.generalCustom')}</Badge>}
             {g.defaultModel && (
               <Badge variant="outline">
-                {t('settings.modes.list.defaultModel', { model: modelDisplayName(g.defaultModel) })}
+                {t('settings.modes.list.defaultModel', { model: modelIdOfRef(g.defaultModel) })}
               </Badge>
             )}
           </div>
@@ -152,7 +152,7 @@ function UserModes({ onEdit }: { onEdit: (mode: AgentMode) => void }) {
                 <Badge variant="secondary">{t('settings.modes.list.skills', { count: m.skillNames.length })}</Badge>
                 {m.defaultModel && (
                   <Badge variant="outline">
-                    {t('settings.modes.list.defaultModel', { model: modelDisplayName(m.defaultModel) })}
+                    {t('settings.modes.list.defaultModel', { model: modelIdOfRef(m.defaultModel) })}
                   </Badge>
                 )}
               </div>

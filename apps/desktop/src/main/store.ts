@@ -6,17 +6,16 @@
  * 模型 Key 显示未配置、Web 账号视为未登录、MCP 密钥重新生成。不能抛错——agent-host 启动时要读这些，
  * 一抛错 agent-host 就起不来，界面上「新建对话」会一直等，没有任何提示。
  */
-import { randomBytes } from 'node:crypto';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { randomBytes, randomUUID } from 'node:crypto';
+import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { safeStorage } from 'electron';
 import { z } from 'zod';
 import {
   type DesktopSettings,
-  type KeyStatus,
-  PROVIDER_KEYS,
-  type ProviderKey,
+  type LegacyConnection,
+  type LegacyProviderKey,
   THEME_PREFERENCES,
   type WebAccountStatus,
 } from '../shared/desktop';
@@ -62,6 +61,25 @@ function jwtPayload(token: string): { sub: string; exp: number } | null {
 }
 type Secrets = z.infer<typeof secretsSchema>;
 
+/**
+ * 账号自己的 API 连接 Key（`<账号目录>/model-keys.json`）：连接 id → 系统钥匙串加密后的 Key。
+ * legacyConnections：旧版设备级 Key 迁进本账号时生成的连接；有这个字段（哪怕是空数组）= 本账号迁移过了。
+ */
+const MODEL_KEYS_FILE = 'model-keys.json';
+const profileKeysSchema = z.object({
+  keys: z.record(z.string(), z.string()).default({}),
+  legacyConnections: z
+    .array(z.object({ id: z.string(), presetId: z.enum(['gemini', 'deepseek']) }))
+    .optional(),
+});
+type ProfileKeys = z.infer<typeof profileKeysSchema>;
+
+/** 旧版设备级 Key → 迁移后连接的预设 */
+const LEGACY_PRESET: Record<LegacyProviderKey, LegacyConnection['presetId']> = {
+  google: 'gemini',
+  deepseek: 'deepseek',
+};
+
 export class DesktopStore {
   private readonly settingsFile: string;
   private readonly secretsFile: string;
@@ -93,29 +111,85 @@ export class DesktopStore {
     return next;
   }
 
-  /** 能解开才算已配置：解不开的旧密文要让用户重新填写 */
-  keyStatus(): KeyStatus {
-    const s = this.secrets();
-    return { google: !!this.decrypt(s.google), deepseek: !!this.decrypt(s.deepseek) };
+  // ── API 连接的 Key（按账号）────────────────────────────────────────────────
+
+  /** 哪些连接配了 Key：能解开才算（解不开的旧密文要让用户重新填写） */
+  connectionKeyStatus(): Record<string, boolean> {
+    return Object.fromEntries(Object.keys(this.modelKeys()).map((id) => [id, true]));
   }
 
-  setKey(provider: ProviderKey, value: string | null): KeyStatus {
-    const s = this.secrets();
+  setConnectionKey(connectionId: string, value: string | null): Record<string, boolean> {
+    const pk = this.profileKeys();
     const trimmed = value?.trim();
-    s[provider] = trimmed ? this.encrypt(trimmed) : undefined;
-    writeJson(this.secretsFile, s);
-    return this.keyStatus();
+    if (trimmed) pk.keys[connectionId] = this.encrypt(trimmed);
+    else delete pk.keys[connectionId];
+    this.writeProfileKeys(pk);
+    return this.connectionKeyStatus();
   }
 
-  /** 解密后的 Key（只交给 agent-host 的 env，不发给 renderer） */
-  keys(): Partial<Record<ProviderKey, string>> {
-    const s = this.secrets();
-    const out: Partial<Record<ProviderKey, string>> = {};
-    for (const p of PROVIDER_KEYS) {
-      const plain = this.decrypt(s[p]);
-      if (plain) out[p] = plain;
+  /** 解密后的 Key（连接 id → Key），只经 config 交给 agent-host 的内存，不发给 renderer */
+  modelKeys(): Record<string, string> {
+    const out: Record<string, string> = {};
+    for (const [id, cipher] of Object.entries(this.profileKeys().keys)) {
+      const plain = this.decrypt(cipher);
+      if (plain) out[id] = plain;
     }
     return out;
+  }
+
+  /**
+   * 旧版设备级 Gemini / DeepSeek Key 迁进当前账号（每个账号只一次）：为每个还解得开的旧 Key 生成连接 id，
+   * 把 Key 复制进账号自己的加密文件；返回这些连接，agent-host 据此建连接、改写旧模型名（见
+   * agent-host/llm/legacy-migration.ts）。已迁过的账号原样返回当时的列表（agent-host 侧幂等）。
+   * 本机已知的账号（访客 + users/ 下的每个目录）都迁完后，删掉设备级的旧 Key。
+   */
+  migrateLegacyKeys(): LegacyConnection[] {
+    const pk = this.profileKeys();
+    if (pk.legacyConnections) return pk.legacyConnections;
+    const s = this.secrets();
+    const created: LegacyConnection[] = [];
+    for (const provider of ['google', 'deepseek'] as const) {
+      const plain = this.decrypt(s[provider]);
+      if (!plain) continue;
+      const id = randomUUID();
+      pk.keys[id] = this.encrypt(plain);
+      created.push({ id, presetId: LEGACY_PRESET[provider] });
+    }
+    pk.legacyConnections = created;
+    this.writeProfileKeys(pk);
+    this.dropLegacyKeysIfAllMigrated();
+    return created;
+  }
+
+  private dropLegacyKeysIfAllMigrated(): void {
+    const s = this.secrets();
+    if (!s.google && !s.deepseek) return;
+    const usersDir = join(this.userData, 'users');
+    const profiles = [
+      this.userData,
+      ...(existsSync(usersDir)
+        ? readdirSync(usersDir, { withFileTypes: true })
+            .filter((d) => d.isDirectory())
+            .map((d) => join(usersDir, d.name))
+        : []),
+    ];
+    const allMigrated = profiles.every((dir) => {
+      const parsed = profileKeysSchema.safeParse(readJson(join(dir, MODEL_KEYS_FILE)));
+      return parsed.success && parsed.data.legacyConnections !== undefined;
+    });
+    if (!allMigrated) return;
+    s.google = undefined;
+    s.deepseek = undefined;
+    writeJson(this.secretsFile, s);
+  }
+
+  private profileKeys(): ProfileKeys {
+    const parsed = profileKeysSchema.safeParse(readJson(join(this.profileDir(), MODEL_KEYS_FILE)));
+    return parsed.success ? parsed.data : { keys: {} };
+  }
+
+  private writeProfileKeys(pk: ProfileKeys): void {
+    writeJson(join(this.profileDir(), MODEL_KEYS_FILE), pk);
   }
 
   // ── Web 账号 ────────────────────────────────────────────────────────────
@@ -138,7 +212,8 @@ export class DesktopStore {
   /**
    * 当前账号的数据目录：会话、技能、连接器都在这里（每个用户一份，互相看不到）。
    * 已登录 = `<userData>/users/<Web 用户 id>`；未登录 = 访客空间，就是 userData 本身
-   * （登录功能上线前的数据原地成为访客数据，不用迁移）。模型 Key、外观、默认工作区是设备级，不在这里。
+   * （登录功能上线前的数据原地成为访客数据，不用迁移）。API 连接的 Key 也按账号存在这里（model-keys.json）；
+   * 外观、默认工作区是设备级，不在这里。
    */
   profileDir(): string {
     const s = this.secrets();

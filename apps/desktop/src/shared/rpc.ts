@@ -19,10 +19,13 @@ import {
 } from '@agent-test/agent-core/modes/prompt-fragments';
 import type { Unavailable } from '@agent-test/agent-core/modes/resolve-mode';
 import type { ToolCatalogEntry } from '@agent-test/agent-core/modes/tool-registry';
+import { THINKING_LEVELS } from '@agent-test/agent-core/agent/thinking-level';
+import { PROVIDER_PROTOCOLS, THINKING_STYLES } from '@agent-test/agent-core/providers/types';
 import { z } from 'zod';
 import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
 import type { VideoProject } from '@agent-test/video-schema';
 import type { ConnectResult, McpAppResource, McpPreset, McpServer } from './mcp';
+import type { ConnectionTestResult, LlmConnectionView, LlmModelView, ModelOption } from './llm';
 import { WORKSPACE_PERMISSIONS, type WorkspacePermission } from './workspace';
 
 export type { TokenReport };
@@ -143,12 +146,15 @@ export interface ConversationDetail {
   totalTokens: number;
 }
 
-export interface ModelOption {
-  id: string;
-  label: string;
-  provider: 'google' | 'deepseek';
-  thinkingLevels: string[];
-}
+export type {
+  ConnectionTestResult,
+  LlmConnectionView,
+  LlmModelView,
+  ModelCapabilities,
+  ModelOption,
+  ModelTestResult,
+  ProviderProtocol,
+} from './llm';
 
 /** 技能来源分类：内置（随应用发布）/ GitHub 安装 / 本地自建或文件夹导入 */
 export type SkillKind = 'builtin' | 'github' | 'custom';
@@ -206,8 +212,10 @@ export type FilePreview =
 export interface HostStatus {
   /** 新会话默认使用的工作区 */
   workspaceDir: string;
-  keys: { google: boolean; deepseek: boolean };
-  defaultModel: string;
+  /** 当前账号的默认模型（「连接 id/模型 id」）；没设过为 null */
+  defaultModel: string | null;
+  /** 至少有一个已启用的模型：没有时界面引导用户先添加 API 连接，发送按钮置灰 */
+  hasModels: boolean;
 }
 
 const id = z.string().min(1);
@@ -266,7 +274,49 @@ export type VideoExportStatus = 'running' | 'done' | 'failed' | 'cancelled';
 
 export const rpcSchemas = {
   'host.status': z.object({}),
+  /** 模型下拉：当前账号所有已启用的模型（按连接分组展示） */
   'models.list': z.object({}),
+  'llm.connections.list': z.object({}),
+  'llm.connections.create': z.object({
+    name: z.string().trim().min(1).max(100),
+    protocol: z.enum(PROVIDER_PROTOCOLS),
+    baseUrl: z.url().max(500),
+    presetId: z.string().min(1).nullable(),
+  }),
+  /** 名称与 Base URL 可改；协议不能改 */
+  'llm.connections.update': z.object({
+    id,
+    name: z.string().trim().min(1).max(100).optional(),
+    baseUrl: z.url().max(500).optional(),
+  }),
+  'llm.connections.delete': z.object({ id }),
+  /** 测连接：请求一次模型列表接口（不消耗 token） */
+  'llm.connections.test': z.object({ id }),
+  'llm.models.list': z.object({ connectionId: id }),
+  /** 刷新：拉取模型列表并合并（新出现的标 new，没拉到的标 missing，不自动改启用状态） */
+  'llm.models.refresh': z.object({ connectionId: id }),
+  /** 手填模型 id（服务没有 /models 或列表不全）；默认启用 */
+  'llm.models.add': z.object({ connectionId: id, modelId: z.string().trim().min(1).max(200) }),
+  'llm.models.setEnabled': z.object({
+    connectionId: id,
+    modelIds: z.array(z.string().min(1)).min(1).max(2000),
+    enabled: z.boolean(),
+  }),
+  'llm.models.remove': z.object({ connectionId: id, modelId: z.string().min(1) }),
+  'llm.models.updateCapabilities': z.object({
+    connectionId: id,
+    modelId: z.string().min(1),
+    capabilities: z.object({
+      thinkingStyle: z.enum(THINKING_STYLES),
+      thinkingLevels: z.array(z.enum(THINKING_LEVELS)).min(1),
+      contextWindow: z.number().int().positive().nullable(),
+      reasoningSummary: z.boolean().optional(),
+    }),
+  }),
+  /** 测模型：带一个假工具发一次最小请求（会消耗少量 token） */
+  'llm.models.test': z.object({ connectionId: id, modelId: z.string().min(1) }),
+  /** 账号默认模型；null = 清除（新会话按第一个启用的模型） */
+  'llm.defaultModel.set': z.object({ ref: z.string().min(1).nullable() }),
   'conversations.list': z.object({}),
   'conversations.create': z.object({
     model: z.string().optional(),
@@ -424,6 +474,19 @@ export type RpcParsedParams<M extends RpcMethod> = z.output<
 export interface RpcResults {
   'host.status': HostStatus;
   'models.list': ModelOption[];
+  'llm.connections.list': LlmConnectionView[];
+  'llm.connections.create': LlmConnectionView;
+  'llm.connections.update': LlmConnectionView;
+  'llm.connections.delete': { ok: true };
+  'llm.connections.test': ConnectionTestResult;
+  'llm.models.list': LlmModelView[];
+  'llm.models.refresh': LlmModelView[];
+  'llm.models.add': LlmModelView;
+  'llm.models.setEnabled': { ok: true };
+  'llm.models.remove': { ok: true };
+  'llm.models.updateCapabilities': LlmModelView;
+  'llm.models.test': LlmModelView;
+  'llm.defaultModel.set': HostStatus;
   'conversations.list': ConversationSummary[];
   'conversations.create': ConversationSummary;
   'conversations.get': ConversationDetail;
@@ -515,6 +578,8 @@ export type HostEvent =
   | { kind: 'event'; type: 'skills-changed' }
   /** 模式增删改、通用模式 / 平台片段改写（设置页列表、会话内选择器据此刷新） */
   | { kind: 'event'; type: 'modes-changed' }
+  /** API 连接 / 模型 / 默认模型变了（设置页、模型下拉据此刷新） */
+  | { kind: 'event'; type: 'llm-changed' }
   /** 编辑器正在打开的工程文件被外部（agent / 用户手改）修改了 */
   | { kind: 'event'; type: 'video-file-changed'; conversationId: string; path: string; mtimeMs: number }
   /** 导出进度：progress 0～1；done 时带 outputPath（工作区相对），failed 时带 error */

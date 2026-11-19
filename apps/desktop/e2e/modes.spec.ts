@@ -14,6 +14,7 @@ import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, type Locator, type Page, test } from '@playwright/test';
 import {
+  addLocalModel,
   apiKey,
   closeSettings,
   launch,
@@ -131,6 +132,8 @@ async function deleteFragment(page: Page, id: string): Promise<void> {
 test('设置 → 模式：通用卡片、自定义与恢复默认；新建（占位符插入 / 勾选 / 预览）、未知占位符被拒、改名', async () => {
   const dirs = tempDirs('modes-settings');
   const { app, page } = await launch(dirs);
+  // 默认模型下拉只列已启用的模型：先加一个不联网的本地模型（Ollama 连接 + 手动添加 id）
+  await addLocalModel(page, 'llama3:8b');
 
   // a) 通用卡片在最上面，标「默认」，只有编辑没有删除
   await openSettings(page, '模式');
@@ -155,11 +158,11 @@ test('设置 → 模式：通用卡片、自定义与恢复默认；新建（占
   await expect(editor.getByRole('button', { name: '恢复默认' })).toBeDisabled();
   await editor.getByLabel('系统提示').fill(`${defaultPrompt}\n\n通用 e2e 自定义`);
   await editor.getByRole('combobox', { name: '默认模型' }).click();
-  await page.getByRole('option', { name: 'gemini-3.6-flash', exact: true }).click();
+  await page.getByRole('option', { name: 'llama3:8b', exact: true }).click();
   await editor.getByRole('button', { name: '保存' }).click();
   await expect(editor).toBeHidden();
   await expect(general.getByText('已自定义')).toBeVisible();
-  await expect(general.getByText('默认 gemini-3.6-flash')).toBeVisible();
+  await expect(general.getByText('默认 llama3:8b')).toBeVisible();
   await page.screenshot({ path: join(screens, 'modes-1-general-custom.png') });
 
   // 恢复默认 → 提示词回到默认、「已自定义」消失（默认模型保留）
@@ -171,7 +174,7 @@ test('设置 → 模式：通用卡片、自定义与恢复默认；新建（占
   await editor.getByRole('button', { name: '保存' }).click();
   await expect(editor).toBeHidden();
   await expect(general.getByText('已自定义')).toHaveCount(0);
-  await expect(general.getByText('默认 gemini-3.6-flash')).toBeVisible();
+  await expect(general.getByText('默认 llama3:8b')).toBeVisible();
 
   // c) 新建模式：光标停在第一行末尾，连点两个占位符 → 按顺序插在光标处，各自前面补了换行
   await page.getByRole('button', { name: '新建模式' }).click();

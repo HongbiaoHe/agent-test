@@ -3,7 +3,10 @@ import type { chat as source } from '../zh-CN/chat';
 
 export const chat = {
   view: {
-    noKey: '目前的模型還沒有填寫 Key，請先到設定裡填寫',
+    noModels: '還沒有可用的模型，請先在設定裡新增 API 連線',
+    noModelsTitle: '先新增一個 API 連線',
+    noModelsDescription: '還沒有可用的模型：在設定裡新增 API 連線並啟用模型後就能送出訊息。',
+    openModelSettings: '開啟模型設定',
   },
   thread: {
     tokens: '{{total}} tokens',
@@ -57,6 +60,10 @@ export const chat = {
     thinkingNow: '思考中…',
     thought: '思考',
     thoughtFor: '思考用時',
+    subagent: '子 agent',
+    subagentStarting: '子 agent 啟動中…',
+    subagentEmpty: '子 agent 沒有留下過程記錄',
+    taskDetail: '查看任務參數與結果',
   },
   thinkingIndicator: {
     status: 'Agent 正在思考…',
@@ -175,16 +182,17 @@ export const chat = {
     button: '模式：{{label}}',
     list: '模式',
   },
-  modelHint: {
-    gemini38Flash: '快速 · 預設',
-    gemini4Argon: '最強 · 旗艦',
-    gemini36Flash: '上一代 Flash',
-    gemini35FlashLite: '最快 · 成本最低',
-    gemini31FlashLite: '低成本 · 接近頂尖',
-    gemini31ProPreview: '上一代 Pro · 預覽版',
-    gemini3FlashPreview: 'Gemini 3 Flash · 預覽版',
-    deepseekFlash: 'DeepSeek V4.1 Flash · 快速',
-    deepseekV4Pro: 'DeepSeek V4 Pro · 旗艦',
+  modelSwitcher: {
+    button: '模型：{{model}}',
+    list: '模型',
+    search: '搜尋模型…',
+    none: '未選擇模型',
+    empty: '還沒有已啟用的模型',
+    noMatch: '沒有符合的模型',
+    unavailable: '無法使用',
+    unavailableHint: '這個模型已停用或所屬連線已刪除，下一輪會改用預設模型。',
+    noTools: '測試顯示不支援工具呼叫',
+    missing: '已下架',
   },
   toolbar: {
     menu: '對話選單',

@@ -24,7 +24,9 @@ function asCapability(v: string): Capability | null {
 /** 「预览提示词」结果：最终系统提示（<pre>）+ 本环境不可用的工具 / 连接器 / 技能清单 */
 export function PromptPreviewDialog({ preview, onClose }: { preview: ModePreview | null; onClose: () => void }) {
   const { t } = useTranslation();
-  const reasonOf = (reason: string): string => {
+  const reasonOf = (kind: ModePreview['unavailable'][number]['kind'], reason: string): string => {
+    // 子 agent 引用的模式不存在：与连接器的 not_found 文案不同
+    if (kind === 'subagent' && reason === 'not_found') return t('settings.modes.preview.reason.subagent_not_found');
     if (reason.startsWith(MISSING_PREFIX)) {
       const cap = asCapability(reason.slice(MISSING_PREFIX.length));
       return t('settings.modes.preview.reason.missing_capability', {
@@ -55,7 +57,7 @@ export function PromptPreviewDialog({ preview, onClose }: { preview: ModePreview
                     <li key={`${u.kind}:${u.name}`} className="flex items-center gap-2 text-sm">
                       <Badge variant="outline">{t(`settings.modes.preview.kind.${u.kind}`)}</Badge>
                       <code className="font-mono">{u.name}</code>
-                      <span className="text-muted-foreground">{reasonOf(u.reason)}</span>
+                      <span className="text-muted-foreground">{reasonOf(u.kind, u.reason)}</span>
                     </li>
                   ))}
                 </ul>

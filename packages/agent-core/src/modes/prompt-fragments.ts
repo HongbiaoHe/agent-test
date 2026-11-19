@@ -59,17 +59,24 @@ export const FragmentTextSchema = z.string().min(1).max(20_000);
 /** 自建片段的显示名 */
 export const FragmentTitleSchema = z.string().trim().min(1).max(100);
 
-/** core 默认正文（原 CORE_SYSTEM_PROMPT 的四段，逐字保留；技能库路径改写成变量） */
+/**
+ * 读技能文件时显式要求的行数上限：deepagents 的 read_file 不传 limit 默认只读 100 行
+ * （deepagents 1.10.2 dist read_file schema `.default(100)`），长 SKILL.md 后半段会被静默截掉；
+ * 官方技能提示用的就是这个值（DEFAULT_SKILL_READ_LINE_LIMIT = 1000）。
+ */
+export const SKILL_READ_LIMIT = 1000;
+
+/** core 默认正文（原 CORE_SYSTEM_PROMPT 的四段；技能库路径改写成变量，读技能文件带上 limit） */
 export const PROMPT_FRAGMENT_DEFAULTS: Record<PromptFragmentId, string> = {
   'platform.language': `## 回复语言
 始终以用户当前消息的语言回复（默认简体中文）。代码、命令、文件路径与技术标识符保留原文。`,
 
   'platform.slash_command': `## 斜杠命令（/command）
-用户**本轮**消息以 \`/<技能名>\`（如 \`/tvc-director ...\`）开头 = 显式指定使用该技能：先用 \`read_file\` 加载 \`{{skills_dir}}/<技能名>/SKILL.md\` 并遵循它，把命令后的文字当作该技能的输入；命令后无内容时按技能说明执行。
+用户**本轮**消息以 \`/<技能名>\`（如 \`/tvc-director ...\`）开头 = 显式指定使用该技能：先用 \`read_file\` 加载 \`{{skills_dir}}/<技能名>/SKILL.md\`（传 \`limit=${SKILL_READ_LIMIT}\`：默认只读前 100 行，长技能会被截断）并遵循它，把命令后的文字当作该技能的输入；命令后无内容时按技能说明执行。
 历史对话里出现过、其后已有助手回复的 \`/\` 命令，表示上一轮已处理完毕——不要重新加载或重新执行，除非用户本轮重新发起。`,
 
   'platform.skill_loading': `## 技能资源按需加载（progressive disclosure）
-SKILL.md 只是技能的入口索引，读完它不等于加载完毕。动手前先判断当前这一步还需要哪些技能内部资源，再用 \`read_file\` 把它们读进来：
+SKILL.md 只是技能的入口索引，读完它不等于加载完毕。动手前先判断当前这一步还需要哪些技能内部资源，再用 \`read_file\` 把它们读进来（技能文件一律传 \`limit=${SKILL_READ_LIMIT}\`，默认只读前 100 行）：
 - reference 文档（\`./references/*.md\` 等引用）：凡被标注「阶段前置 / 强制 / 必须先 read_file」的，必须在产出对应内容之前读取；
 - 子技能（markdown 链接路由，如 \`[xxx](./sub-skill.md)\`）：命中该路由时才读对应文件；
 - 模板 / 词库 / 示例等资产（\`./assets/*\`）：当前步骤真正用到再读。

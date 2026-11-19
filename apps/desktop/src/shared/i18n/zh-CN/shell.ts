@@ -3,7 +3,7 @@ export const shell = {
   home: {
     tagline: '在你自己的电脑上运行的 agent：读写工作区文件、执行命令、使用技能与连接器。',
     newChat: '新对话',
-    needKey: '先填写模型 Key',
+    needKey: '先添加一个 API 连接',
   },
   sidebar: {
     newChat: '新建',

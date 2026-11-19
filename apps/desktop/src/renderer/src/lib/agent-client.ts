@@ -26,6 +26,7 @@ const eventSchema = z.discriminatedUnion('type', [
   z.object({ kind: z.literal('event'), type: z.literal('mcp-changed') }),
   z.object({ kind: z.literal('event'), type: z.literal('skills-changed') }),
   z.object({ kind: z.literal('event'), type: z.literal('modes-changed') }),
+  z.object({ kind: z.literal('event'), type: z.literal('llm-changed') }),
   z.object({
     kind: z.literal('event'),
     type: z.literal('video-file-changed'),

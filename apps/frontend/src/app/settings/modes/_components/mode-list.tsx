@@ -111,6 +111,11 @@ export function ModeList({ onEdit }: { onEdit: (mode: AgentMode) => void }) {
                   {count(mode.mcpServerIds.length, "connector")}
                 </Badge>
                 <Badge variant="outline">{count(mode.skillNames.length, "skill")}</Badge>
+                {subagentCount(mode, modes) > 0 && (
+                  <Badge variant="outline">
+                    {count(subagentCount(mode, modes), "sub-agent")}
+                  </Badge>
+                )}
               </>
             }
             onEdit={() => onEdit(mode)}
@@ -148,6 +153,11 @@ export function ModeList({ onEdit }: { onEdit: (mode: AgentMode) => void }) {
       </AlertDialog>
     </div>
   );
+}
+
+/** 子 agent 数：只算仍存在的模式（已删的 id 不计） */
+function subagentCount(mode: AgentMode, modes: AgentMode[]): number {
+  return mode.subagentModeIds.filter((id) => modes.some((m) => m.id === id)).length;
 }
 
 export function count(n: number, noun: string): string {

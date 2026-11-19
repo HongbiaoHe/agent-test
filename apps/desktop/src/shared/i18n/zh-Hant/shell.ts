@@ -5,7 +5,7 @@ export const shell = {
   home: {
     tagline: '在你自己的電腦上執行的 agent：讀寫工作區檔案、執行指令、使用技能與連接器。',
     newChat: '新對話',
-    needKey: '請先填寫模型 Key',
+    needKey: '先新增一個 API 連線',
   },
   sidebar: {
     newChat: '新增',

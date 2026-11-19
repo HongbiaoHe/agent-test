@@ -1,8 +1,10 @@
 /**
  * agent-host 入口（Electron utilityProcess）：持有 SQLite、checkpointer、RunService、技能库、MCP。
  *
- * - main 经 parentPort 发 `config`（设置 + Key 状态）与 `port`（转交给 renderer 的 MessagePort）；
- * - 模型 Key / MCP 加密密钥 / 代理 / userData 目录都经 env 在 fork 时注入，改 Key 时 main 会重启本进程；
+ * - main 经 parentPort 发 `config`（设置 + 本账号各 API 连接的 Key）与 `port`（转交给 renderer 的 MessagePort）；
+ *   Key 只在本进程内存里（main 用系统钥匙串加密保存），改 Key 时 main 重发 config、不用重启；每条 config
+ *   处理完回一条 config-applied（main 据此确认新 Key 已生效，再让界面去拉模型列表）；
+ * - MCP 加密密钥 / 代理 / userData 目录经 env 在 fork 时注入；
  * - 启动时把上次没跑完（status=running）的会话标成失败并追加「运行中断」消息（崩溃 / 强退的收尾）。
  */
 import { mkdirSync } from 'node:fs';
@@ -15,6 +17,9 @@ import { type HostEvent, isMethod, type RpcResponse } from '../shared/rpc';
 import { NodeSqliteSaver } from './db/checkpointer';
 import { ConversationRepo } from './db/conversations';
 import { openDatabase } from './db/database';
+import { LEGACY_PRESETS, migrateLegacyModels } from './llm/legacy-migration';
+import { LlmStore } from './llm/llm-store';
+import { createModelResolver } from './llm/model-resolver';
 import { McpStore } from './mcp/mcp-store';
 import { ModeStore } from './modes/mode-store';
 import { createOAuthCallbackServer, OAUTH_REDIRECT_URI } from './mcp/oauth-callback';
@@ -67,6 +72,7 @@ const listChanged = () => broadcast({ kind: 'event', type: 'conversations-change
 const mcpChanged = () => broadcast({ kind: 'event', type: 'mcp-changed' });
 const skillsChanged = () => broadcast({ kind: 'event', type: 'skills-changed' });
 const modesChanged = () => broadcast({ kind: 'event', type: 'modes-changed' });
+const llmChanged = () => broadcast({ kind: 'event', type: 'llm-changed' });
 
 const settingsSchema = z.object({
   workspaceDir: z.string(),
@@ -79,8 +85,12 @@ const settingsSchema = z.object({
 const controlSchema = z.discriminatedUnion('type', [
   z.object({
     type: z.literal('config'),
+    seq: z.number(),
     settings: settingsSchema,
-    keys: z.object({ google: z.boolean(), deepseek: z.boolean() }),
+    /** 本账号各 API 连接解密后的 Key（连接 id → Key） */
+    modelKeys: z.record(z.string(), z.string()),
+    /** 旧版设备级 Key 迁进本账号时生成的连接（见 llm/legacy-migration.ts） */
+    legacyConnections: z.array(z.object({ id: z.string(), presetId: z.enum(LEGACY_PRESETS) })),
     locale: z.enum(LOCALES),
   }),
   z.object({ type: z.literal('port') }),
@@ -90,14 +100,11 @@ let current: Extract<HostControlMessage, { type: 'config' }> | null = null;
 const runtimeRoot = join(profileDir, 'runtime');
 function config() {
   if (!current) throw new Error('agent-host 尚未收到配置');
-  const { settings, keys } = current;
-  return {
-    workspaceDir: settings.workspaceDir,
-    defaultModel: settings.defaultModel,
-    runtimeRoot,
-    keys,
-  };
+  return { workspaceDir: current.settings.workspaceDir, runtimeRoot };
 }
+const keyOf = (connectionId: string): string | null => current?.modelKeys[connectionId] ?? null;
+const llm = new LlmStore(db, keyOf);
+const resolveModel = createModelResolver(llm, keyOf);
 
 // 回调服务懒启动：McpStore 第一次遇到需要授权时才调 ensureCallbackServer（届时下面的 const 早已初始化）
 const mcp: McpStore = new McpStore(db, OAUTH_REDIRECT_URI, () => ensureCallbackServer());
@@ -136,6 +143,8 @@ const runs = new RunService({
   registry,
   processes,
   config,
+  llm,
+  resolveModel,
   skillsChanged,
   emit: (conversationId, event) =>
     broadcast({
@@ -191,6 +200,9 @@ const handlers = createHandlers({
   modes,
   registry,
   config,
+  llm,
+  keyOf,
+  llmChanged,
   listChanged,
   mcpChanged,
   skillsChanged,
@@ -234,6 +246,23 @@ process.parentPort.on('message', (e) => {
   if (msg.data.type === 'config') {
     current = msg.data;
     setHostLocale(msg.data.locale);
+    try {
+      // 旧版的设备级 Gemini / DeepSeek Key 与模型名：本账号第一次打开时迁成连接（只跑一次）
+      if (
+        migrateLegacyModels(db, llm, {
+          connections: msg.data.legacyConnections,
+          legacyDefaultModel: msg.data.settings.defaultModel,
+        })
+      ) {
+        log('旧版模型配置已迁成 API 连接');
+        listChanged();
+        modesChanged();
+      }
+    } catch (e) {
+      log(`迁移旧版模型配置失败：${String(e)}`);
+    }
+    llmChanged();
+    process.parentPort.postMessage({ type: 'config-applied', seq: msg.data.seq });
     return;
   }
   const port = e.ports[0];

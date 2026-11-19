@@ -32,8 +32,18 @@ export const errors = {
     interrupted: 'Run interrupted: the app quit or the agent process crashed while running. Please send again.',
     busyModeSwitch: 'This chat is running or waiting for approval. Switch modes once it finishes',
   },
+  models: {
+    noneAvailable: 'No model available. Add an API connection in Settings → Models and enable at least one model.',
+    connectionNotFound: 'API connection not found: {{id}}',
+    modelNotFound: 'Model not found: {{id}}',
+    emptyModelId: 'Model id must not be empty',
+    defaultMustBeEnabled: 'The default model must be an enabled model',
+    fallback: 'The model this chat used ({{from}}) is no longer available, so this turn uses {{to}}.',
+  },
   modes: {
     notFound: 'Mode not found: {{id}}',
+    subagentSelf: "A mode can't use itself as a sub-agent",
+    subagentNotFound: 'Sub-agent mode not found: {{id}}',
     unknownPlaceholder:
       'The prompt contains unknown placeholders: {{ids}} (only platform.* fragments and existing custom.* fragments can be referenced)',
     fragmentNotFound: 'Fragment not found: {{id}}',

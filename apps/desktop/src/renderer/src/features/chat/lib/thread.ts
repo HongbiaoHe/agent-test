@@ -84,6 +84,11 @@ export type ThreadItem =
       startedAt?: number;
       /** tool_end 时间；没有 tool_end、被 result 收尾的工具没有 */
       endedAt?: number;
+      /**
+       * task 工具（委派子 agent）的嵌套子线程：带 payload.subagent.callId === 本 chip callId 的事件
+       * 用同一个 reduce 折进这里（流式正文 / 思考 / 工具 chip 与配对都照常），不碰主线程。
+       */
+      sub?: ThreadState;
     }
   | { kind: "plan"; id: string; todos: Todo[] }
   | { kind: "error"; id: string; text: string }
@@ -142,6 +147,10 @@ export interface ThreadState {
   lastAt: number | null;
   /** 进行中这一轮的开始时间（用户消息时间）；轮结束清空 */
   turnStartedAt: number | null;
+  /** item id 前缀：主线程为空；子线程是「父 chip id + .」，保证嵌套 item id 全局唯一（详情面板按 id 找） */
+  idPrefix: string;
+  /** 先于对应 task chip 到达的子 agent 事件：chip 出现（tool_start）后补折进去；有上限，对不上的终将被挤掉 */
+  pendingSub: NormalizedEvent[];
 }
 
 /**
@@ -286,7 +295,84 @@ const EMPTY: ThreadState = {
   nextId: 0,
   lastAt: null,
   turnStartedAt: null,
+  idPrefix: "",
+  pendingSub: [],
 };
+
+/** 子 agent 事件里折进嵌套子线程的类型；其余类型（如 control_request）即使带 subagent 也仍归主线程 */
+const SUBAGENT_EVENT_TYPES = new Set(["token", "message", "reasoning", "tool_start", "tool_end"]);
+/** 等 chip 的子 agent 事件缓冲上限（回退形态的 callId 永远对不上 chip，不能无限攒） */
+const PENDING_SUB_MAX = 500;
+
+type ToolThreadItem = Extract<ThreadItem, { kind: "tool" }>;
+
+/** payload.subagent = { callId, name }：子 agent 内部产生的事件；callId 是主 agent 发起它的 task 调用 id */
+function subagentCallId(ev: NormalizedEvent): string | null {
+  const s = ev.payload?.subagent;
+  if (!s || typeof s !== "object" || !("callId" in s) || typeof s.callId !== "string") return null;
+  return s.callId;
+}
+
+function findChip(items: ThreadItem[], callId: string): number {
+  return items.findIndex((it) => it.kind === "tool" && it.callId === callId);
+}
+
+/** 把一个子 agent 事件折进对应 task chip 的子线程；chip 还没出现就先缓冲。主线程其它状态一概不动。 */
+function reduceSubagent(state: ThreadState, ev: NormalizedEvent, callId: string): ThreadState {
+  const idx = findChip(state.items, callId);
+  const chip = idx >= 0 ? state.items[idx] : undefined;
+  if (chip?.kind !== "tool") {
+    return { ...state, pendingSub: [...state.pendingSub, ev].slice(-PENDING_SUB_MAX) };
+  }
+  // 去掉 subagent 标记再递归：子线程里它就是普通事件（只展开一层，不会再嵌套）
+  const { subagent: _subagent, ...payload } = ev.payload;
+  const base: ThreadState = chip.sub ?? {
+    ...EMPTY,
+    status: "running",
+    idPrefix: `${chip.id}.`,
+    // 子 agent 的第一段思考从 task 调用开始算
+    lastAt: chip.startedAt ?? null,
+  };
+  const items = state.items.slice();
+  items[idx] = { ...chip, sub: reduce(base, { ...ev, payload }) };
+  return { ...state, items };
+}
+
+/** 新 chip 出现后，把在等它的缓冲事件按原顺序补折进去 */
+function drainPendingSub(state: ThreadState): ThreadState {
+  if (state.pendingSub.length === 0) return state;
+  const ready = state.pendingSub.filter((e) => {
+    const callId = subagentCallId(e);
+    return callId != null && findChip(state.items, callId) >= 0;
+  });
+  if (ready.length === 0) return state;
+  let next: ThreadState = { ...state, pendingSub: state.pendingSub.filter((e) => !ready.includes(e)) };
+  for (const e of ready) next = reduceSubagent(next, e, subagentCallId(e) ?? "");
+  return next;
+}
+
+/**
+ * 子线程收尾（子 agent 结束 / 本轮 result、error / 历史终态）：还在流的正文与思考收口、工具 chip 标记完成。
+ */
+function sealThread(state: ThreadState, at?: number): ThreadState {
+  const sealed = sealReasoning(state, at);
+  return {
+    ...sealed,
+    items: sealed.items.map((it) =>
+      it.kind === "assistant" && it.streaming
+        ? { ...it, streaming: false }
+        : it.kind === "tool"
+          ? settleTool(it, at)
+          : it,
+    ),
+  };
+}
+
+/** 工具 chip 收尾：标记完成，有子线程的一并收尾 */
+function settleTool(it: ToolThreadItem, at?: number): ToolThreadItem {
+  if (it.done && !it.sub) return it;
+  return { ...it, done: true, ...(it.sub ? { sub: sealThread(it.sub, at) } : {}) };
+}
 
 /**
  * 把仍在流的思考块收口（后端在思考之后的第一个事件处同样收口落库，两边语义一致）。
@@ -312,7 +398,17 @@ function sealReasoning(state: ThreadState, at?: number): ThreadState {
  * 算进去会让思考起点变成「正文流完」）；与后端只在边界事件落库的口径一致，live 与刷新同值。
  */
 export function reduce(input: ThreadState, ev: NormalizedEvent): ThreadState {
-  const next = reduceEvent(input, ev);
+  // 跨轮历史压缩的摘要行（role=system）：只供模型历史重放，界面不渲染、也不算边界事件
+  if (ev.type === "context_summary") return input;
+  // 子 agent 内部事件：只进对应 task chip 的子线程，不碰主线程的 items / 流式气泡 / 计划 / 轮状态 / lastAt
+  const subCallId = subagentCallId(ev);
+  if (subCallId != null) {
+    if (SUBAGENT_EVENT_TYPES.has(ev.type)) return reduceSubagent(input, ev, subCallId);
+    // 子 agent 的计划不推送；万一来了也不能顶掉主计划
+    if (ev.type === "plan_update") return input;
+  }
+  const reduced = reduceEvent(input, ev);
+  const next = ev.type === "tool_start" ? drainPendingSub(reduced) : reduced;
   if (ev.at == null || ev.type === "token" || ev.type === "reasoning") return next;
   return { ...next, lastAt: ev.at };
 }
@@ -323,7 +419,7 @@ function reduceEvent(input: ThreadState, ev: NormalizedEvent): ThreadState {
   const items = state.items.slice();
   const last = items[items.length - 1];
   let nextId = state.nextId;
-  const id = () => `i${nextId++}`;
+  const id = () => `${state.idPrefix}i${nextId++}`;
 
   switch (ev.type) {
     case "reasoning": {
@@ -452,6 +548,8 @@ function reduceEvent(input: ThreadState, ev: NormalizedEvent): ThreadState {
             result: stringifyContent(ev.payload?.content),
             done: true,
             endedAt: ev.at,
+            // task 结束 = 子 agent 已交回最终结果，其子线程里不会再有进行中的东西
+            ...(it.sub ? { sub: sealThread(it.sub, ev.at) } : {}),
           };
           break;
         }
@@ -528,9 +626,7 @@ function reduceEvent(input: ThreadState, ev: NormalizedEvent): ThreadState {
     }
     case "result": {
       // 运行结束：收尾仍挂着的工具 chip（有些工具不发 tool_end，或实时事件丢失）
-      const settled = items.map((it) =>
-        it.kind === "tool" && !it.done ? { ...it, done: true } : it,
-      );
+      const settled = items.map((it) => (it.kind === "tool" ? settleTool(it, ev.at) : it));
       const status = ev.payload?.status === "stopped" ? "stopped" : "done";
       pushTurn(settled, state.turnStartedAt, ev.at, status, id);
       return {
@@ -544,6 +640,11 @@ function reduceEvent(input: ThreadState, ev: NormalizedEvent): ThreadState {
     }
     case "error": {
       const text = String(ev.payload?.message ?? "");
+      // 主线程 chip 维持原样（由历史终态收尾）；子线程里还在流的东西随本轮失败一并收口
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (it.kind === "tool" && it.sub) items[i] = { ...it, sub: sealThread(it.sub, ev.at) };
+      }
       items.push({ kind: "error", id: id(), text });
       pushTurn(items, state.turnStartedAt, ev.at, "failed", id);
       return {
@@ -592,8 +693,14 @@ export function buildBaseState(conv: Conversation): ThreadState {
   for (const m of conv.messages) {
     state = reduce(state, messageToEvent(m));
   }
-  // 落库的思考都是收口后的完整块（后端在思考结束时才落一行），历史里不存在「还在流」的思考
+  // 落库的思考都是收口后的完整块（后端在思考结束时才落一行），历史里不存在「还在流」的思考（子线程里同样）
   state = sealReasoning(state);
+  state = {
+    ...state,
+    items: state.items.map((it) =>
+      it.kind === "tool" && it.sub ? { ...it, sub: sealReasoning(it.sub) } : it,
+    ),
+  };
   // 审批/提问面板以服务端会话状态为准：决策只经 socket 提交、不落 messages 表，历史里 control_request
   // 之后要等到本轮 result 才会被清掉——答完后 agent 续跑期间刷新，会把已答过的问题再弹一次
   // （倒计时到点还会自动重提，后端 CAS 会拒，但面板本身就不该出现）。
@@ -609,9 +716,7 @@ export function buildBaseState(conv: Conversation): ThreadState {
   ) {
     state = {
       ...state,
-      items: state.items.map((it) =>
-        it.kind === "tool" && !it.done ? { ...it, done: true } : it,
-      ),
+      items: state.items.map((it) => (it.kind === "tool" ? settleTool(it) : it)),
     };
   }
   return state;
@@ -626,6 +731,17 @@ export function foldLive(
 }
 
 export const emptyState = EMPTY;
+
+/** 按 item id 找工具 chip（含 task 子线程里的嵌套 chip）：详情面板用 */
+export function findToolItem(items: ThreadItem[], id: string): ToolThreadItem | undefined {
+  for (const it of items) {
+    if (it.kind !== "tool") continue;
+    if (it.id === id) return it;
+    const nested = it.sub ? findToolItem(it.sub.items, id) : undefined;
+    if (nested) return nested;
+  }
+  return undefined;
+}
 
 /**
  * 从 generate_image / generate_video 的工具返回（LangChain 序列化的 JSON 字符串）里取 generationId 列表。

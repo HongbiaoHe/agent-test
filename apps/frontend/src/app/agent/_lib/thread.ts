@@ -78,6 +78,11 @@ export type ThreadItem =
       startedAt?: number;
       /** tool_end 时间；没有 tool_end、被 result 收尾的工具没有 */
       endedAt?: number;
+      /**
+       * task 工具派出的子 agent 的嵌套对话：带 payload.subagent.callId === callId 的事件
+       * 经同一个 reducer 折进这里（只一层，子 thread 里的工具不再有 children）。
+       */
+      children?: ThreadState;
     }
   | { kind: "plan"; id: string; todos: Todo[] }
   | { kind: "error"; id: string; text: string }
@@ -141,6 +146,13 @@ export interface ThreadState {
   lastAt: number | null;
   /** 进行中这一轮的开始时间（用户消息时间）；轮结束清空 */
   turnStartedAt: number | null;
+  /** item id 前缀：顶层为空；子 agent 的嵌套 thread 用「父 chip id.」，保证全树 id 唯一（详情面板按 id 查） */
+  idPrefix: string;
+  /**
+   * 子 agent 事件到达时还找不到对应 task chip（乱序，或回退的 `tools:<id>` 命名空间永远配不上）：
+   * 按 callId 暂存，等 chip 出现再折进去；配不上的就一直留在这里不渲染，绝不混进主 thread。
+   */
+  orphans: Record<string, NormalizedEvent[]>;
 }
 
 /**
@@ -270,6 +282,8 @@ const EMPTY: ThreadState = {
   nextId: 0,
   lastAt: null,
   turnStartedAt: null,
+  idPrefix: "",
+  orphans: {},
 };
 
 /**
@@ -296,9 +310,98 @@ function sealReasoning(state: ThreadState, at?: number): ThreadState {
  * 算进去会让思考起点变成「正文流完」）；与后端只在边界事件落库的口径一致，live 与刷新同值。
  */
 export function reduce(input: ThreadState, ev: NormalizedEvent): ThreadState {
-  const next = reduceEvent(input, ev);
+  // 子 agent 内部的事件：只进对应 task chip 的嵌套 thread，不碰主 thread 的条目 / 流式气泡 / 计时
+  const sub = parseSubagentCallId(ev.payload?.subagent);
+  if (sub) return routeSubagent(input, ev, sub);
+  let next = reduceEvent(input, ev);
+  if (ev.type === "tool_start") next = adoptOrphans(next);
   if (ev.at == null || ev.type === "token" || ev.type === "reasoning") return next;
   return { ...next, lastAt: ev.at };
+}
+
+/** payload.subagent = { callId, name }：取 callId（缺失 / 空串视为主 agent 事件）。 */
+function parseSubagentCallId(v: unknown): string | null {
+  if (!v || typeof v !== "object" || !("callId" in v)) return null;
+  return typeof v.callId === "string" && v.callId ? v.callId : null;
+}
+
+/** 某个 task chip 的空嵌套 thread：id 挂在父 chip 下；首段思考的起点取 chip 开始时间。 */
+function childState(chip: { id: string; startedAt?: number }): ThreadState {
+  return { ...EMPTY, status: "running", idPrefix: `${chip.id}.`, lastAt: chip.startedAt ?? null };
+}
+
+function routeSubagent(state: ThreadState, ev: NormalizedEvent, callId: string): ThreadState {
+  // 去掉 subagent 标记再交给同一个 reducer 折进嵌套 thread
+  const payload = { ...ev.payload };
+  delete payload.subagent;
+  const inner: NormalizedEvent = { ...ev, payload };
+  const idx = state.items.findIndex((it) => it.kind === "tool" && it.callId === callId);
+  const chip = state.items[idx];
+  if (chip?.kind !== "tool") {
+    return {
+      ...state,
+      orphans: { ...state.orphans, [callId]: [...(state.orphans[callId] ?? []), inner] },
+    };
+  }
+  const items = state.items.slice();
+  items[idx] = { ...chip, children: reduce(chip.children ?? childState(chip), inner) };
+  return { ...state, items };
+}
+
+/** tool_start 新出现的 chip 若有先到的子 agent 事件，补折进它的嵌套 thread。 */
+function adoptOrphans(state: ThreadState): ThreadState {
+  if (Object.keys(state.orphans).length === 0) return state;
+  const orphans = { ...state.orphans };
+  let adopted = false;
+  const items = state.items.map((it) => {
+    if (it.kind !== "tool" || !it.callId || !Object.hasOwn(orphans, it.callId)) return it;
+    const pending = orphans[it.callId];
+    delete orphans[it.callId];
+    adopted = true;
+    return { ...it, children: pending.reduce(reduce, it.children ?? childState(it)) };
+  });
+  return adopted ? { ...state, items, orphans } : state;
+}
+
+/**
+ * 子 agent 结束（task 的 tool_end）或整轮结束：嵌套 thread 里仍在流的思考 / 气泡收口、
+ * 仍挂着的工具标记完成，与顶层 result 的收尾一致。
+ */
+function sealChildren(s: ThreadState, at?: number): ThreadState {
+  const sealed = sealReasoning(s, at);
+  return {
+    ...sealed,
+    status: "done",
+    items: sealed.items.map((it) =>
+      it.kind === "tool" && !it.done
+        ? { ...it, done: true }
+        : it.kind === "assistant" && it.streaming
+          ? { ...it, streaming: false }
+          : it,
+    ),
+  };
+}
+
+/** 收尾顶层仍挂着的工具 chip，连同它们（以及已完成 chip）下的嵌套 thread。 */
+function settleTools(items: ThreadItem[], at?: number): ThreadItem[] {
+  return items.map((it) => {
+    if (it.kind !== "tool" || (it.done && !it.children)) return it;
+    return { ...it, done: true, children: it.children && sealChildren(it.children, at) };
+  });
+}
+
+/** 按 id 在整棵 thread（含子 agent 的嵌套 thread）里找工具 chip：详情面板用。 */
+export function findToolItem(
+  items: ThreadItem[],
+  id: string,
+): Extract<ThreadItem, { kind: "tool" }> | undefined {
+  for (const it of items) {
+    if (it.kind !== "tool") continue;
+    if (it.id === id) return it;
+    const hit = it.children && findToolItem(it.children.items, id);
+    if (hit) return hit;
+  }
+  return undefined;
 }
 
 function reduceEvent(input: ThreadState, ev: NormalizedEvent): ThreadState {
@@ -307,7 +410,7 @@ function reduceEvent(input: ThreadState, ev: NormalizedEvent): ThreadState {
   const items = state.items.slice();
   const last = items[items.length - 1];
   let nextId = state.nextId;
-  const id = () => `i${nextId++}`;
+  const id = () => `${state.idPrefix}i${nextId++}`;
 
   switch (ev.type) {
     case "reasoning": {
@@ -436,6 +539,8 @@ function reduceEvent(input: ThreadState, ev: NormalizedEvent): ThreadState {
             result: stringifyContent(ev.payload?.content),
             done: true,
             endedAt: ev.at,
+            // task 结束 = 子 agent 跑完：收口它的嵌套 thread
+            children: it.children && sealChildren(it.children, ev.at),
           };
           break;
         }
@@ -507,10 +612,8 @@ function reduceEvent(input: ThreadState, ev: NormalizedEvent): ThreadState {
       return { ...state, status: "running", approval: null };
     }
     case "result": {
-      // 运行结束：收尾仍挂着的工具 chip（有些工具不发 tool_end，或实时事件丢失）
-      const settled = items.map((it) =>
-        it.kind === "tool" && !it.done ? { ...it, done: true } : it,
-      );
+      // 运行结束：收尾仍挂着的工具 chip（有些工具不发 tool_end，或实时事件丢失）及子 agent 的嵌套 thread
+      const settled = settleTools(items, ev.at);
       const status = ev.payload?.status === "stopped" ? "stopped" : "done";
       pushTurn(settled, state.turnStartedAt, ev.at, status, id);
       return {
@@ -524,6 +627,13 @@ function reduceEvent(input: ThreadState, ev: NormalizedEvent): ThreadState {
     }
     case "error": {
       const text = String(ev.payload?.message ?? "");
+      // 子 agent 的嵌套 thread 一并收口（顶层 chip 的 done 状态保持原有行为不动）
+      for (let i = 0; i < items.length; i++) {
+        const it = items[i];
+        if (it.kind === "tool" && it.children) {
+          items[i] = { ...it, children: sealChildren(it.children, ev.at) };
+        }
+      }
       items.push({ kind: "error", id: id(), text });
       pushTurn(items, state.turnStartedAt, ev.at, "failed", id);
       return {
@@ -572,7 +682,14 @@ export function buildBaseState(conv: Conversation): ThreadState {
     state = reduce(state, messageToEvent(m));
   }
   // 落库的思考都是收口后的完整块（后端在思考结束时才落一行），历史里不存在「还在流」的思考
+  // （子 agent 嵌套 thread 里的同理）
   state = sealReasoning(state);
+  state = {
+    ...state,
+    items: state.items.map((it) =>
+      it.kind === "tool" && it.children ? { ...it, children: sealReasoning(it.children) } : it,
+    ),
+  };
   // 审批/提问面板以服务端会话状态为准：决策只经 socket 提交、不落 messages 表，历史里 control_request
   // 之后要等到本轮 result 才会被清掉——答完后 agent 续跑期间刷新，会把已答过的问题再弹一次
   // （倒计时到点还会自动重提，后端 CAS 会拒，但面板本身就不该出现）。
@@ -586,12 +703,7 @@ export function buildBaseState(conv: Conversation): ThreadState {
     conv.status === "failed" ||
     conv.status === "stopped"
   ) {
-    state = {
-      ...state,
-      items: state.items.map((it) =>
-        it.kind === "tool" && !it.done ? { ...it, done: true } : it,
-      ),
-    };
+    state = { ...state, items: settleTools(state.items) };
   }
   return state;
 }

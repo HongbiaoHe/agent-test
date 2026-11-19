@@ -21,12 +21,18 @@ import type { DesktopStore } from './store';
 
 const PASS_THROUGH_ENV = ['PATH', 'HOME', 'LANG', 'LC_ALL', 'TMPDIR', 'USER', 'SHELL', 'NO_PROXY', 'no_proxy'];
 const RESTART_DELAY_MS = 1000;
+/** 等 agent-host 确认 config 的上限：超时也放行（最坏是界面随后的请求用的还是旧 Key，报错可重试） */
+const CONFIG_ACK_TIMEOUT_MS = 3000;
+/** 本机服务（Ollama / LM Studio）不走代理：从 Finder 启动没有 NO_PROXY，localhost 也会被发给代理 */
+const LOCAL_NO_PROXY = ['localhost', '127.0.0.1', '::1'];
 
 export class AgentHostManager {
   private child: UtilityProcess | null = null;
   private ready = false;
   private stopping = false;
   private readonly renderers = new Set<WebContents>();
+  private configSeq = 0;
+  private readonly configAcks = new Map<number, () => void>();
 
   constructor(
     private readonly store: DesktopStore,
@@ -47,9 +53,15 @@ export class AgentHostManager {
     const ready = new Promise<void>((resolve) => {
       // 握手：agent-host 注册好 parentPort 监听后发 ready，之后再发配置与端口（模块加载要几百毫秒，早发会丢）
       child.on('message', (data: unknown) => {
-        if (this.child !== child || !isReady(data)) return;
+        if (this.child !== child) return;
+        const ack = configAck(data);
+        if (ack !== null) {
+          this.configAcks.get(ack)?.();
+          return;
+        }
+        if (!isReady(data)) return;
         this.ready = true;
-        this.sendConfig();
+        void this.sendConfig();
         for (const wc of this.renderers) this.connect(wc);
         resolve();
       });
@@ -86,14 +98,32 @@ export class AgentHostManager {
     });
   }
 
-  sendConfig(): void {
+  /**
+   * 下发配置（设置、本账号各连接的 Key、旧 Key 迁移出的连接、界面语言）。resolve 于 agent-host 回执
+   * config-applied（或超时）；未就绪时直接 resolve，ready 握手后会补发。
+   */
+  sendConfig(): Promise<void> {
+    const child = this.child;
+    if (!this.ready || !child) return Promise.resolve();
+    const seq = ++this.configSeq;
     const msg: HostControlMessage = {
       type: 'config',
+      seq,
       settings: this.store.getSettings(),
-      keys: this.store.keyStatus(),
+      legacyConnections: this.store.migrateLegacyKeys(),
+      modelKeys: this.store.modelKeys(),
       locale: appLocale(this.store),
     };
-    if (this.ready) this.child?.postMessage(msg);
+    return new Promise((resolve) => {
+      const done = () => {
+        clearTimeout(timer);
+        this.configAcks.delete(seq);
+        resolve();
+      };
+      const timer = setTimeout(done, CONFIG_ACK_TIMEOUT_MS);
+      this.configAcks.set(seq, done);
+      child.postMessage(msg);
+    });
   }
 
   /** 给某个 renderer 建一条直连 agent-host 的 MessagePort（renderer 主动请求 + host 重启后重发） */
@@ -144,16 +174,29 @@ export class AgentHostManager {
       env.SPARK_WEB_API_URL = this.store.getSettings().webApiUrl;
       env.SPARK_WEB_TOKEN = webToken;
     }
-    const keys = this.store.keys();
-    if (keys.google) env.GOOGLE_API_KEY = keys.google;
-    if (keys.deepseek) env.DEEPSEEK_API_KEY = keys.deepseek;
+    // 模型 Key 不再经 env：按账号存、经 config 消息下发（改 Key 不用重启）
     const proxy = await resolveProxy();
     if (proxy) {
       env.HTTPS_PROXY = proxy;
       env.HTTP_PROXY = proxy;
     }
+    const noProxy = new Set([...(env.NO_PROXY ?? env.no_proxy ?? '').split(','), ...LOCAL_NO_PROXY].filter(Boolean));
+    env.NO_PROXY = [...noProxy].join(',');
+    env.no_proxy = env.NO_PROXY;
     return env;
   }
+}
+
+/** agent-host 处理完 config 的回执：返回序号；不是回执返回 null */
+function configAck(data: unknown): number | null {
+  return typeof data === 'object' &&
+    data !== null &&
+    'type' in data &&
+    data.type === 'config-applied' &&
+    'seq' in data &&
+    typeof data.seq === 'number'
+    ? data.seq
+    : null;
 }
 
 function isReady(data: unknown): boolean {
