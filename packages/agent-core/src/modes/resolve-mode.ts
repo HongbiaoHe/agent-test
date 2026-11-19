@@ -43,9 +43,20 @@ export type UnavailableReason =
   | 'not_installed';
 
 export interface Unavailable {
-  kind: 'tool' | 'mcp_server' | 'skill';
+  kind: 'tool' | 'mcp_server' | 'skill' | 'subagent';
   name: string;
   reason: UnavailableReason;
+}
+
+/** 一个子 agent 的装配结果（由被勾选的模式展开，只一层：它自己的 subagents 恒为空） */
+export interface SubagentAssembly<H> {
+  /** task 工具里的 subagent_type（模式名，重名时加序号） */
+  name: string;
+  /** 给主 agent 看的委派说明 */
+  description: string;
+  /** 子 agent 用的模型（模式的默认模型）；null = 跟主 agent 同一个 */
+  model: string | null;
+  assembly: ModeAssembly<H>;
 }
 
 export interface ResolveModeInput<H> {
@@ -63,6 +74,11 @@ export interface ResolveModeInput<H> {
   mcpServers: readonly RuntimeServer[];
   /** ③ 环境段，由宿主按 env 提供；各段自带前导空行 */
   envPromptBlock?: string;
+  /**
+   * mode.subagentModeIds 指向的模式（宿主按 id 查好传进来；查不到的 id 记 unavailable）。
+   * 通用模式没有子 agent。
+   */
+  subagentModes?: readonly AgentMode[];
 }
 
 export interface ModeAssembly<H> {
@@ -71,6 +87,47 @@ export interface ModeAssembly<H> {
   mcpServers: RuntimeServer[];
   skills: SkillFiles[];
   unavailable: Unavailable[];
+  subagents: SubagentAssembly<H>[];
+}
+
+/** deepagents 内置的通用子 agent 名，自定义子 agent 不能占用 */
+const RESERVED_SUBAGENT_NAMES = new Set(['general-purpose']);
+const DESCRIPTION_FALLBACK_CHARS = 200;
+
+function subagentDescription(mode: AgentMode): string {
+  const own = mode.description?.trim();
+  if (own) return own;
+  const intro = mode.systemPrompt
+    .replace(/\{\{[^}]*\}\}/g, '')
+    .replace(/\s+/g, ' ')
+    .trim()
+    .slice(0, DESCRIPTION_FALLBACK_CHARS);
+  return `${mode.name}：${intro}`;
+}
+
+function uniqueSubagentName(base: string, taken: Set<string>): string {
+  const name = base.trim() || 'subagent';
+  let candidate = name;
+  for (
+    let i = 2;
+    taken.has(candidate) || RESERVED_SUBAGENT_NAMES.has(candidate);
+    i++
+  ) {
+    candidate = `${name}-${i}`;
+  }
+  taken.add(candidate);
+  return candidate;
+}
+
+/** 本轮要挂载的全部技能：主 agent + 各子 agent 勾选的（按名去重；子 agent 与主 agent 共用一个技能库目录） */
+export function mountableSkills<H>(assembly: ModeAssembly<H>): SkillFiles[] {
+  const out = [...assembly.skills];
+  for (const sub of assembly.subagents) {
+    for (const s of sub.assembly.skills) {
+      if (!out.some((x) => x.name === s.name)) out.push(s);
+    }
+  }
+  return out;
 }
 
 function missingCapability(
@@ -168,20 +225,64 @@ export function resolveMode<H>(input: ResolveModeInput<H>): ModeAssembly<H> {
       droppedTools.map((u) => `\`${u.name}\``).join('、');
   }
 
-  return { systemPrompt, toolDescriptors, mcpServers, skills, unavailable };
+  // 5) 子 agent：只展开一层（子 agent 自己勾的子 agent 不生效，也就不会成环）
+  const subagents: SubagentAssembly<H>[] = [];
+  if (mode) {
+    const taken = new Set<string>();
+    for (const id of mode.subagentModeIds) {
+      const sub = input.subagentModes?.find((m) => m.id === id);
+      if (!sub || sub.id === mode.id) {
+        unavailable.push({ kind: 'subagent', name: id, reason: 'not_found' });
+        continue;
+      }
+      subagents.push({
+        name: uniqueSubagentName(sub.name, taken),
+        description: subagentDescription(sub),
+        model: sub.defaultModel,
+        assembly: resolveMode({
+          ...input,
+          mode: { ...sub, subagentModeIds: [] },
+          subagentModes: [],
+        }),
+      });
+    }
+  }
+
+  return {
+    systemPrompt,
+    toolDescriptors,
+    mcpServers,
+    skills,
+    unavailable,
+    subagents,
+  };
+}
+
+/** buildAgent 用的子 agent 规格（工具已实例化） */
+export interface SubagentSpec {
+  name: string;
+  description: string;
+  systemPrompt: string;
+  tools: StructuredToolInterface[];
+  /** 子 agent 自己工具的审批表（宿主的运行期覆盖由 buildAgent 合并进来） */
+  interruptOn: Record<string, ToolInterruptOn>;
+  /** null = 与主 agent 同一个模型 */
+  model: string | null;
+  /** 勾了技能：挂上与主 agent 同一个技能库目录 */
+  skills: boolean;
 }
 
 export interface InstantiatedTools {
   tools: StructuredToolInterface[];
   interruptOn: Record<string, ToolInterruptOn>;
+  subagents: SubagentSpec[];
 }
 
-/** 按装配结果建工具实例：描述符 create(ctx) + MCP 工具（调用时才短连）；需审批的合并进 interruptOn。 */
-export function instantiateTools<H>(
+function toolsOf<H>(
   assembly: ModeAssembly<H>,
   ctx: ToolCreateContext<H>,
   mcpCall: McpCaller,
-): InstantiatedTools {
+): Omit<InstantiatedTools, 'subagents'> {
   const tools: StructuredToolInterface[] = [];
   const interruptOn: Record<string, ToolInterruptOn> = {};
   for (const d of assembly.toolDescriptors) {
@@ -192,4 +293,26 @@ export function instantiateTools<H>(
   tools.push(...mcp.tools);
   Object.assign(interruptOn, mcp.interruptOn);
   return { tools, interruptOn };
+}
+
+/**
+ * 按装配结果建工具实例：描述符 create(ctx) + MCP 工具（调用时才短连）；需审批的合并进 interruptOn。
+ * 子 agent 的工具按各自的装配结果另建一份（同一 ctx：shareFactory 的工厂在一轮内只跑一次）。
+ */
+export function instantiateTools<H>(
+  assembly: ModeAssembly<H>,
+  ctx: ToolCreateContext<H>,
+  mcpCall: McpCaller,
+): InstantiatedTools {
+  return {
+    ...toolsOf(assembly, ctx, mcpCall),
+    subagents: assembly.subagents.map((sub) => ({
+      name: sub.name,
+      description: sub.description,
+      systemPrompt: sub.assembly.systemPrompt,
+      model: sub.model,
+      skills: sub.assembly.skills.length > 0,
+      ...toolsOf(sub.assembly, ctx, mcpCall),
+    })),
+  };
 }

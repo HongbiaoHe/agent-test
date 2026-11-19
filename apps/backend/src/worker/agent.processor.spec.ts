@@ -5,7 +5,11 @@ import {
 } from '@langchain/core/messages';
 // 偏好服务会引入沙箱提供方 SDK（深 ESM 链，jest 加载失败）；偏好已整体 mock，不需要真实提供方
 jest.mock('../agent/sandbox-providers', () => ({}));
-import { AIMessage } from '@langchain/core/messages';
+import {
+  AIMessage,
+  type BaseMessage,
+  HumanMessage,
+} from '@langchain/core/messages';
 import type { DynamicContextProvider } from '@agent-test/agent-core/modes/dynamic-context';
 import { activePlanProvider } from '@agent-test/agent-core/modes/dynamic-context';
 import {
@@ -16,7 +20,7 @@ import {
 import { ToolRegistry } from '@agent-test/agent-core/modes/tool-registry';
 import { mountSkills } from '@agent-test/agent-core/skills/skills-mount';
 import type { Job, Queue } from 'bullmq';
-import { buildAgent } from '../agent/agent.factory';
+import { buildAgent, resolveChatModel } from '../agent/agent.factory';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
 import { PrismaService } from '../prisma/prisma.service';
@@ -48,12 +52,21 @@ const backgroundMock = {
 const modesMock = {
   fragmentOverrides: jest.fn().mockResolvedValue({}),
   customFragments: jest.fn().mockResolvedValue({}),
+  subagentModes: jest.fn().mockResolvedValue([]),
 } as unknown as ModesService;
+// 每轮开跑前清 thread（对话记忆只认 message 表）
+const checkpointerMock = {
+  deleteThread: jest.fn().mockResolvedValue(undefined),
+};
 // 注册表只是透传给 resolveMode（已 mock），空表即可；真实注册表另有 tool-registry.provider.spec
 const registry = new ToolRegistry<BackendHost>();
 
 // 避免加载 deepagents / google-genai 等重依赖，并能捕获传给 agent 的 input
-jest.mock('../agent/agent.factory', () => ({ buildAgent: jest.fn() }));
+jest.mock('../agent/agent.factory', () => ({
+  buildAgent: jest.fn(),
+  // 历史压缩的摘要模型：这些用例的历史都在预算内，不会真的调用
+  resolveChatModel: jest.fn().mockResolvedValue({ profile: {} }),
+}));
 
 // 沙箱模块级函数 jest.mock 拦截，否则会真的调 Daytona SDK。
 jest.mock('../agent/sandbox', () => ({
@@ -65,6 +78,8 @@ jest.mock('../agent/sandbox', () => ({
 jest.mock('@agent-test/agent-core/modes/resolve-mode', () => ({
   resolveMode: jest.fn(),
   instantiateTools: jest.fn(),
+  // 主 + 子 agent 技能并集：用例里没有子 agent，等于主 agent 的技能
+  mountableSkills: jest.fn((a: { skills: unknown[] }) => a.skills),
 }));
 jest.mock('@agent-test/agent-core/skills/skills-mount', () => ({
   mountSkills: jest.fn(),
@@ -79,6 +94,7 @@ const makeAssembly = (
   mcpServers: [],
   skills: [],
   unavailable: [],
+  subagents: [],
   ...extra,
 });
 
@@ -86,7 +102,7 @@ beforeEach(() => {
   (resolveMode as jest.Mock).mockReset().mockReturnValue(makeAssembly());
   (instantiateTools as jest.Mock)
     .mockReset()
-    .mockReturnValue({ tools: [], interruptOn: {} });
+    .mockReturnValue({ tools: [], interruptOn: {}, subagents: [] });
   (mountSkills as jest.Mock)
     .mockReset()
     .mockResolvedValue({ backend: {}, skillsDir: '/skills' });
@@ -167,7 +183,7 @@ describe('AgentProcessor 多轮重放', () => {
     const queue = { add: jest.fn().mockResolvedValue({}) } as unknown as Queue;
 
     // 捕获传给 agent.stream 的 input，断言其中的 messages 未被改写
-    let captured: { messages: { role: string; content: string }[] } | undefined;
+    let captured: { messages: BaseMessage[] } | undefined;
     const fakeAgent = {
       stream: jest.fn(async (input: typeof captured) => {
         captured = input;
@@ -181,7 +197,7 @@ describe('AgentProcessor 多轮重放', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -197,14 +213,16 @@ describe('AgentProcessor 多轮重放', () => {
 
     const sent = captured!.messages;
     const userContents = sent
-      .filter((m) => m.role === 'user')
-      .map((m) => m.content);
+      .filter((m) => HumanMessage.isInstance(m))
+      .map((m) => m.text);
 
     // 原始 /command 文本原样保留
     expect(userContents).toContain('/tvc-director 帮我做一条30秒手表广告');
     // 没有任何用户消息被改写成「请使用…技能…先用 read_file 读取 SKILL.md」祈使
-    expect(sent.every((m) => !m.content.includes('read_file'))).toBe(true);
-    expect(sent.every((m) => !m.content.includes('请使用「'))).toBe(true);
+    expect(sent.every((m) => !m.text.includes('read_file'))).toBe(true);
+    expect(sent.every((m) => !m.text.includes('请使用「'))).toBe(true);
+    // 每轮开跑前清掉上一轮的 thread：对话记忆只认 message 表
+    expect(checkpointerMock.deleteThread).toHaveBeenCalledWith('c1');
 
     // input 不含 files 键（技能现在写入沙箱盘，不再注入 state.files）
     expect(
@@ -287,7 +305,7 @@ describe('AgentProcessor 多轮重放', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -402,7 +420,7 @@ describe('AgentProcessor 多轮重放', () => {
         publish: jest.fn().mockResolvedValue(undefined),
       } as unknown as StreamService,
       skills,
-      {},
+      checkpointerMock,
       { add: jest.fn().mockResolvedValue({}) } as unknown as Queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -483,7 +501,7 @@ describe('AgentProcessor 多轮重放', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -562,7 +580,7 @@ describe('AgentProcessor 多轮重放', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -665,7 +683,7 @@ describe('AgentProcessor 多轮重放', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -745,7 +763,7 @@ describe('AgentProcessor 多轮重放', () => {
         prisma,
         streamSvc,
         skills,
-        {},
+        checkpointerMock,
         queue,
         makeMediaService(),
         new AbortRegistry(),
@@ -826,7 +844,7 @@ describe('AgentProcessor 多轮重放', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -900,7 +918,7 @@ describe('AgentProcessor 多轮重放', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -981,7 +999,7 @@ describe('AgentProcessor 多轮重放', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -1066,7 +1084,7 @@ describe('AgentProcessor 多轮重放', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -1142,7 +1160,7 @@ describe('AgentProcessor 多轮重放', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -1205,7 +1223,7 @@ describe('AgentProcessor 多轮重放', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -1272,6 +1290,17 @@ describe('AgentProcessor 多轮重放', () => {
     const produced = {
       tools: [{ name: 'send_email' }, { name: 'generate_image' }],
       interruptOn: { send_email: true },
+      subagents: [
+        {
+          name: '写手',
+          description: 'd',
+          systemPrompt: 'w',
+          tools: [],
+          interruptOn: {},
+          model: null,
+          skills: false,
+        },
+      ],
     };
     (instantiateTools as jest.Mock).mockReturnValue(produced);
 
@@ -1279,10 +1308,17 @@ describe('AgentProcessor 多轮重放', () => {
       tools?: unknown[];
       interruptOn?: Record<string, unknown>;
       interruptOnOverride?: unknown;
+      subagents?: unknown[];
     };
     let capturedOpts: Captured | undefined;
+    let streamModes: unknown;
     const fakeAgent = {
-      stream: jest.fn(async () => (async function* () {})()),
+      stream: jest.fn(
+        async (_input: unknown, cfg: { streamMode?: unknown }) => {
+          streamModes = cfg.streamMode;
+          return (async function* () {})();
+        },
+      ),
       getState: jest.fn(async () => ({ tasks: [] })),
     };
     (buildAgent as jest.Mock).mockImplementation((opts: Captured) => {
@@ -1294,7 +1330,7 @@ describe('AgentProcessor 多轮重放', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -1321,6 +1357,101 @@ describe('AgentProcessor 多轮重放', () => {
     expect(capturedOpts?.tools).toBe(produced.tools);
     expect(capturedOpts?.interruptOn).toEqual({ send_email: true });
     expect(capturedOpts?.interruptOnOverride).toBeUndefined();
+    // 模式勾的子 agent 原样交给 buildAgent；流开 tasks 模式，子 agent 事件才能对到 task 调用
+    expect(capturedOpts?.subagents).toBe(produced.subagents);
+    expect(streamModes).toEqual(['updates', 'messages', 'tasks']);
+  });
+
+  it('历史超出 token 预算：早前部分交给摘要模型，摘要落成 context_summary 行，喂给模型的是「摘要 + 近期」', async () => {
+    const big = '字'.repeat(700_000);
+    const history = [
+      {
+        role: 'user',
+        type: 'message',
+        seq: 0,
+        content: { text: `早前 ${big}` },
+      },
+      {
+        role: 'assistant',
+        type: 'message',
+        seq: 1,
+        content: { text: '早前回答' },
+      },
+      {
+        role: 'user',
+        type: 'message',
+        seq: 2,
+        content: { text: '现在的问题' },
+      },
+    ];
+    const created: { type: string; role: string; content: unknown }[] = [];
+    const prisma = {
+      generalModeSetting: { findUnique: jest.fn().mockResolvedValue(null) },
+      conversation: {
+        update: jest.fn().mockResolvedValue(makeConv()),
+        updateMany: jest.fn().mockResolvedValue({ count: 1 }),
+        findUniqueOrThrow: jest.fn().mockResolvedValue(makeConv()),
+      },
+      message: {
+        findMany: jest.fn().mockResolvedValue(history),
+        findFirst: jest.fn().mockResolvedValue(null),
+        count: jest.fn().mockResolvedValue(history.length),
+        create: jest.fn(
+          (arg: { data: { type: string; role: string; content: unknown } }) => {
+            created.push(arg.data);
+            return Promise.resolve({});
+          },
+        ),
+      },
+    } as unknown as PrismaService;
+    const summarizer = {
+      profile: {},
+      invoke: jest.fn().mockResolvedValue(new AIMessage('早前在讨论 X')),
+    };
+    (resolveChatModel as jest.Mock).mockResolvedValueOnce(summarizer);
+    let sent: BaseMessage[] = [];
+    (buildAgent as jest.Mock).mockReturnValue({
+      stream: jest.fn(async (input: { messages: BaseMessage[] }) => {
+        sent = input.messages;
+        return (async function* () {})();
+      }),
+      getState: jest.fn(async () => ({ tasks: [] })),
+    });
+    const proc = new AgentProcessor(
+      prisma,
+      {
+        publish: jest.fn().mockResolvedValue(undefined),
+      } as unknown as StreamService,
+      {
+        effectiveSkillsFor: jest.fn().mockResolvedValue([]),
+        getFor: jest.fn(),
+      } as unknown as SkillsService,
+      checkpointerMock,
+      { add: jest.fn().mockResolvedValue({}) } as unknown as Queue,
+      makeMediaService(),
+      new AbortRegistry(),
+      sandboxSettingsMock,
+      mcpMock,
+      backgroundMock,
+      registry,
+      modesMock,
+    );
+    await proc.process({ data: { conversationId: 'cs1', kind: 'run' } } as Job<{
+      conversationId: string;
+      kind: 'run';
+    }>);
+
+    expect(summarizer.invoke).toHaveBeenCalledTimes(1);
+    expect(created.find((c) => c.type === 'context_summary')).toEqual({
+      conversationId: 'cs1',
+      role: 'system',
+      type: 'context_summary',
+      content: { text: '早前在讨论 X', uptoSeq: 1 },
+      seq: 3,
+    });
+    expect(sent).toHaveLength(1);
+    expect(sent[0].text).toContain('早前在讨论 X');
+    expect(sent[0].text).toContain('现在的问题');
   });
 
   /** 跑一轮，返回 buildAgent 收到的 dynamicContext 各 provider 在空 runtime 下产出的文本。 */
@@ -1367,7 +1498,7 @@ describe('AgentProcessor 多轮重放', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       media,
       new AbortRegistry(),
@@ -1511,7 +1642,7 @@ describe('AgentProcessor 流式聚合落库', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -1635,7 +1766,7 @@ describe('AgentProcessor 思考深度与思考过程', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -1797,7 +1928,7 @@ describe('AgentProcessor 模式装配', () => {
         publish: jest.fn().mockResolvedValue(undefined),
       } as unknown as StreamService,
       skills,
-      {},
+      checkpointerMock,
       { add: jest.fn().mockResolvedValue({}) } as unknown as Queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -1841,6 +1972,8 @@ describe('AgentProcessor 模式装配', () => {
       skillNames: ['tvc-director'],
       defaultModel: null,
       defaultThinkingLevel: null,
+      description: null,
+      subagentModeIds: [],
     });
   });
 
@@ -2019,7 +2152,7 @@ describe('AgentProcessor 主动停止', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       reg,
@@ -2072,7 +2205,7 @@ describe('AgentProcessor 主动停止', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       reg,
@@ -2106,7 +2239,7 @@ describe('AgentProcessor 主动停止', () => {
       prisma,
       streamSvc,
       skills,
-      {},
+      checkpointerMock,
       queue,
       makeMediaService(),
       reg,
@@ -2149,7 +2282,7 @@ describe('AgentProcessor 超时按 toolName 分叉', () => {
       deps.prisma,
       deps.streamSvc,
       deps.skills,
-      {},
+      checkpointerMock,
       deps.queue,
       makeMediaService(),
       new AbortRegistry(),
@@ -2300,7 +2433,7 @@ describe('AgentProcessor token 会计', () => {
         effectiveSkillsFor: jest.fn().mockResolvedValue([]),
         getFor: jest.fn(),
       } as unknown as SkillsService,
-      {},
+      checkpointerMock,
       { add: jest.fn() } as unknown as Queue,
       makeMediaService(),
       new AbortRegistry(),

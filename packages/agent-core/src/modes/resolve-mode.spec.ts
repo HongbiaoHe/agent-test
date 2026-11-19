@@ -3,7 +3,7 @@ import { z } from 'zod';
 import type { RuntimeServer } from '../mcp/mcp-types';
 import type { Capability, RuntimeEnvironment } from './capabilities';
 import type { AgentMode } from './mode.schema';
-import { instantiateTools, resolveMode } from './resolve-mode';
+import { instantiateTools, mountableSkills, resolveMode } from './resolve-mode';
 import { ToolRegistry } from './tool-registry';
 
 const mk = (name: string) =>
@@ -117,6 +117,8 @@ describe('resolveMode', () => {
       skillNames: ['tvc', 'nope'],
       defaultModel: null,
       defaultThinkingLevel: null,
+      description: null,
+      subagentModeIds: [],
     };
     const a = resolveMode({
       mode,
@@ -201,6 +203,8 @@ describe('resolveMode', () => {
       skillNames: [],
       defaultModel: null,
       defaultThinkingLevel: null,
+      description: null,
+      subagentModeIds: [],
     };
     const noBg = resolveMode({
       mode,
@@ -252,6 +256,8 @@ describe('resolveMode', () => {
       skillNames: [],
       defaultModel: null,
       defaultThinkingLevel: null,
+      description: null,
+      subagentModeIds: [],
     };
     const withMode = resolveMode({
       mode,
@@ -292,6 +298,8 @@ describe('resolveMode', () => {
       skillNames: [],
       defaultModel: null,
       defaultThinkingLevel: null,
+      description: null,
+      subagentModeIds: [],
     };
     const withMode = resolveMode({
       mode,
@@ -317,6 +325,8 @@ describe('resolveMode', () => {
       skillNames: [],
       defaultModel: null,
       defaultThinkingLevel: null,
+      description: null,
+      subagentModeIds: [],
     };
     const a = resolveMode({
       mode,
@@ -349,6 +359,8 @@ describe('resolveMode', () => {
       skillNames: [],
       defaultModel: null,
       defaultThinkingLevel: null,
+      description: null,
+      subagentModeIds: [],
     };
     expect(() =>
       resolveMode({
@@ -395,5 +407,103 @@ describe('instantiateTools', () => {
       mail: { allowedDecisions: ['approve'] },
       s1__do: true,
     });
+  });
+});
+
+describe('resolveMode — 子 agent（模式引用模式）', () => {
+  const base = (id: string, extra: Partial<AgentMode> = {}): AgentMode => ({
+    id,
+    name: id,
+    systemPrompt: `${id} 的提示词 {{platform.language}}`,
+    toolNames: [],
+    mcpServerIds: [],
+    skillNames: [],
+    defaultModel: null,
+    defaultThinkingLevel: null,
+    description: null,
+    subagentModeIds: [],
+    ...extra,
+  });
+
+  it('被勾的模式各自装配成子 agent（自己的工具 / 技能 / 模型）；缺失与自引用记 unavailable；只展开一层', () => {
+    const writer = base('写手', {
+      toolNames: ['gen'],
+      skillNames: ['doc'],
+      defaultModel: 'deepseek:deepseek-flash',
+      description: '写长文',
+      subagentModeIds: ['评审'],
+    });
+    const critic = base('评审');
+    const main = base('主', {
+      subagentModeIds: ['写手', '评审', 'ghost', '主'],
+    });
+    const a = resolveMode({
+      mode: main,
+      registry: registryOf(),
+      env,
+      installedSkills: skills,
+      mcpServers: servers,
+      subagentModes: [writer, critic, main],
+    });
+    expect(a.subagents.map((s) => s.name)).toEqual(['写手', '评审']);
+    expect(a.unavailable).toEqual([
+      { kind: 'subagent', name: 'ghost', reason: 'not_found' },
+      { kind: 'subagent', name: '主', reason: 'not_found' },
+    ]);
+    const [w, c] = a.subagents;
+    expect(w.description).toBe('写长文');
+    expect(w.model).toBe('deepseek:deepseek-flash');
+    expect(w.assembly.toolDescriptors.map((d) => d.name)).toEqual(['gen']);
+    expect(w.assembly.skills.map((s) => s.name)).toEqual(['doc']);
+    expect(w.assembly.systemPrompt.startsWith('写手 的提示词')).toBe(true);
+    expect(w.assembly.subagents).toEqual([]);
+    // 没填用途说明：模式名 + 提示词开头（占位符去掉）
+    expect(c.description).toBe('评审：评审 的提示词');
+  });
+
+  it('子 agent 名重名或占用 general-purpose 时加序号', () => {
+    const a = resolveMode({
+      mode: base('主', { subagentModeIds: ['x', 'y', 'z'] }),
+      registry: registryOf(),
+      env,
+      installedSkills: [],
+      mcpServers: [],
+      subagentModes: [
+        base('x', { name: '同名' }),
+        base('y', { name: '同名' }),
+        base('z', { name: 'general-purpose' }),
+      ],
+    });
+    expect(a.subagents.map((s) => s.name)).toEqual([
+      '同名',
+      '同名-2',
+      'general-purpose-2',
+    ]);
+  });
+
+  it('instantiateTools 给子 agent 另建工具与审批表；mountableSkills 取主 + 子的并集', () => {
+    const a = resolveMode({
+      mode: base('主', { skillNames: ['tvc'], subagentModeIds: ['s'] }),
+      registry: registryOf(),
+      env,
+      installedSkills: skills,
+      mcpServers: servers,
+      subagentModes: [
+        base('s', { toolNames: ['mail'], skillNames: ['doc', 'tvc'] }),
+      ],
+    });
+    const out = instantiateTools(
+      a,
+      { conversationId: 'c', userId: 'u', env, host: { tag: 'h' } },
+      () => Promise.reject(new Error('unused')),
+    );
+    expect(out.tools.map((t) => t.name)).toEqual([]);
+    expect(out.subagents).toHaveLength(1);
+    expect(out.subagents[0].tools.map((t) => t.name)).toEqual(['mail']);
+    expect(out.subagents[0].interruptOn).toEqual({
+      mail: { allowedDecisions: ['approve'] },
+    });
+    expect(out.subagents[0].skills).toBe(true);
+    expect(mountableSkills(a).map((s) => s.name)).toEqual(['tvc', 'doc']);
   });
 });

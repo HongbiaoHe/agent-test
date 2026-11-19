@@ -2,7 +2,7 @@
  * 应用外壳：登录页（未登录且没选「先跳过」时）或 侧栏 + 主区（对话 / 首页）+ 设置弹窗（分类管理）。
  * 没有路由库：视图只有这几种，用 state 切换。
  */
-import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { useMutation, useQueryClient } from '@tanstack/react-query';
 import { KeyRound, Plus } from 'lucide-react';
 import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -11,6 +11,7 @@ import { Button } from '@/components/ui/button';
 import { agent } from '@/lib/agent-client';
 import { MODE_CATALOG_KEY, MODES_QUERY_KEY } from '@/lib/api';
 import { ChatView } from './features/chat/chat-view';
+import { LLM_QUERY_KEY, useHostStatus } from './features/llm/api';
 import { readModePreference } from './features/modes/mode-preference';
 import { LoginView } from './features/auth/login-view';
 import { useWebAccount } from './features/auth/use-web-account';
@@ -25,13 +26,13 @@ import { FileViewerProvider } from './features/viewer/file-viewer';
 import { VideoEditorOpenerContext, VideoEditorView } from './features/video-editor';
 
 function Home({
-  hasAnyKey,
+  hasModels,
   onNavigate,
-  onFillKey,
+  onAddConnection,
 }: {
-  hasAnyKey: boolean;
+  hasModels: boolean;
   onNavigate: (v: View) => void;
-  onFillKey: () => void;
+  onAddConnection: () => void;
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
@@ -52,13 +53,13 @@ function Home({
         <p className="max-w-sm text-sm text-muted-foreground">
           {t('shell.home.tagline')}
         </p>
-        {hasAnyKey ? (
+        {hasModels ? (
           <Button onClick={() => create.mutate()} disabled={create.isPending}>
             <Plus data-icon="inline-start" />
             {t('shell.home.newChat')}
           </Button>
         ) : (
-          <Button onClick={onFillKey}>
+          <Button onClick={onAddConnection}>
             <KeyRound data-icon="inline-start" />
             {t('shell.home.needKey')}
           </Button>
@@ -107,6 +108,8 @@ export function App() {
         }
         if (e.type === 'mcp-changed') void qc.invalidateQueries({ queryKey: ['mcp-servers'] });
         if (e.type === 'modes-changed') void qc.invalidateQueries({ queryKey: MODES_QUERY_KEY });
+        // API 连接 / 模型 / 默认模型变了：设置页、模型下拉、「有没有可用模型」一起刷新
+        if (e.type === 'llm-changed') void qc.invalidateQueries({ queryKey: LLM_QUERY_KEY });
         // 模式编辑器的目录（可勾选的工具 / 连接器 / 技能）跟着技能、连接器、模式一起刷新
         if (e.type === 'skills-changed' || e.type === 'mcp-changed' || e.type === 'modes-changed') {
           void qc.invalidateQueries({ queryKey: MODE_CATALOG_KEY });
@@ -125,16 +128,9 @@ export function App() {
     window.addEventListener('keydown', onKey);
     return () => window.removeEventListener('keydown', onKey);
   }, []);
-  const keys = useQuery({ queryKey: ['keys'], queryFn: () => window.desktop.getKeyStatus() });
-  const conv = useQuery({
-    queryKey: ['conversation-model', view.kind === 'chat' ? view.id : ''],
-    queryFn: () => (view.kind === 'chat' ? agent.call('conversations.get', { id: view.id }) : null),
-    enabled: view.kind === 'chat',
-  });
-  const model = conv.data?.conversation.model ?? settings.data?.defaultModel ?? '';
-  const provider = model.startsWith('deepseek:') ? 'deepseek' : 'google';
-  const hasKey = !!keys.data?.[provider];
-  const hasAnyKey = !!keys.data && (keys.data.google || keys.data.deepseek);
+  // 账号下有没有已启用的模型：没有时首页 / 对话里引导去添加 API 连接（还没查到时先按有，免得闪一下引导）
+  const hostStatus = useHostStatus();
+  const hasModels = hostStatus.data?.hasModels ?? true;
 
   const openSettings = (s: SettingsSection = 'account') => {
     setSection(s);
@@ -213,7 +209,8 @@ export function App() {
               <ChatView
                 key={view.id}
                 id={view.id}
-                hasKey={hasKey}
+                hasModels={hasModels}
+                onOpenModelSettings={() => openSettings('models')}
                 headerInset={layout.collapsed ? COLLAPSED_HEADER_INSET : undefined}
                 onDeleted={() => navigate({ kind: 'home' })}
               />
@@ -229,7 +226,7 @@ export function App() {
             />
           )}
           {view.kind === 'home' && (
-            <Home hasAnyKey={hasAnyKey} onNavigate={navigate} onFillKey={() => openSettings('models')} />
+            <Home hasModels={hasModels} onNavigate={navigate} onAddConnection={() => openSettings('models')} />
           )}
         </main>
         {/* 开关必须排在侧栏、主区之后：Chromium 按文档顺序合成窗口拖动区（app-region），

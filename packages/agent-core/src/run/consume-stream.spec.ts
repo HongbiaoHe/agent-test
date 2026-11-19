@@ -456,3 +456,148 @@ describe('consumeAgentStream — 停止与失败', () => {
     expect(persisted()).toEqual([]);
   });
 });
+
+describe('consumeAgentStream — 子 agent', () => {
+  const sub = (task: string, inner: string) => [`tools:${task}`, inner];
+  const taskStart = (task: string, callId: string, type: string) => [
+    [],
+    'tasks',
+    {
+      id: task,
+      name: 'tools',
+      input: {
+        lg_tool_call: {
+          id: callId,
+          name: 'task',
+          args: { subagent_type: type },
+        },
+      },
+    },
+  ];
+  const subToken = (task: string, content: string) => [
+    sub(task, 'model_request:x'),
+    'messages',
+    [new AIMessageChunk({ content })],
+  ];
+  const subUpdate = (task: string, msg: unknown) => [
+    [`tools:${task}`],
+    'updates',
+    { model_request: { messages: [msg] } },
+  ];
+  const taskResult = (callId: string, content: string) => [
+    [],
+    'updates',
+    {
+      tools: {
+        messages: [
+          new ToolMessage({ name: 'task', content, tool_call_id: callId }),
+        ],
+      },
+    },
+  ];
+
+  it('并行子 agent 的正文各自累积、带 subagent 归属落库；task 结果（只在 updates 里）作为主 agent 的 tool_end', async () => {
+    const { sink, persisted } = recordingSink();
+    await consumeAgentStream(
+      streamOf([
+        updateWith(
+          'model_request',
+          new AIMessageChunk({
+            content: '',
+            tool_calls: [
+              { name: 'task', args: {}, id: 'cA', type: 'tool_call' },
+              { name: 'task', args: {}, id: 'cB', type: 'tool_call' },
+            ],
+          }),
+        ),
+        taskStart('tA', 'cA', 'writer'),
+        taskStart('tB', 'cB', 'critic'),
+        subToken('tA', '甲1'),
+        subToken('tB', '乙1'),
+        subToken('tA', '甲2'),
+        subUpdate('tA', new AIMessage({ id: 'ma', content: '甲1甲2' })),
+        subUpdate('tB', new AIMessage({ id: 'mb', content: '乙1' })),
+        taskResult('cA', '甲的结果'),
+        taskResult('cB', '乙的结果'),
+        token('汇总'),
+      ]),
+      sink,
+      opts(),
+    );
+    expect(persisted()).toEqual([
+      expect.objectContaining({ type: 'tool_start' }),
+      {
+        type: 'message',
+        payload: { text: '甲1甲2', subagent: { callId: 'cA', name: 'writer' } },
+      },
+      {
+        type: 'message',
+        payload: { text: '乙1', subagent: { callId: 'cB', name: 'critic' } },
+      },
+      expect.objectContaining({
+        type: 'tool_end',
+        payload: expect.objectContaining({
+          toolCallId: 'cA',
+          content: '甲的结果',
+        }),
+      }),
+      expect.objectContaining({
+        type: 'tool_end',
+        payload: expect.objectContaining({ toolCallId: 'cB' }),
+      }),
+      { type: 'message', payload: { text: '汇总' } },
+    ]);
+    const mainEnds = persisted().filter((e) => e.type === 'tool_end');
+    expect(mainEnds.every((e) => !('subagent' in (e.payload as object)))).toBe(
+      true,
+    );
+  });
+
+  it('普通工具结果（namespace 只有 tools:<id> 一段）归主 agent；messages 与 updates 各出现一次只认第一次', async () => {
+    const { sink, persisted } = recordingSink();
+    const result = new ToolMessage({
+      name: 'search',
+      content: 'r',
+      tool_call_id: 'call-0',
+    });
+    await consumeAgentStream(
+      streamOf([
+        updateWith('model_request', toolCallMsg('search')),
+        [['tools:t9'], 'messages', [result]],
+        [[], 'updates', { tools: { messages: [result] } }],
+      ]),
+      sink,
+      opts(),
+    );
+    const ends = persisted().filter((e) => e.type === 'tool_end');
+    expect(ends).toHaveLength(1);
+    expect('subagent' in (ends[0].payload as object)).toBe(false);
+  });
+
+  it('子 agent 的 todo 计划不推不落；映射不到 task 时以 namespace 段作归属', async () => {
+    const { sink, persisted, emitted } = recordingSink();
+    await consumeAgentStream(
+      streamOf([
+        [
+          ['tools:tZ'],
+          'updates',
+          {
+            todoListMiddleware: {
+              todos: [{ content: 'x', status: 'pending' }],
+            },
+          },
+        ],
+        subToken('tZ', '无映射'),
+      ]),
+      sink,
+      opts(),
+    );
+    expect(emitted().some((e) => e.type === 'plan_update')).toBe(false);
+    expect(persisted()).toEqual([
+      {
+        type: 'message',
+        payload: { text: '无映射', subagent: { callId: 'tools:tZ', name: '' } },
+      },
+    ]);
+  });
+});

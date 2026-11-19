@@ -37,6 +37,7 @@ import {
   type ModePreview,
   createMode,
   getModeCatalog,
+  listModes,
   previewGeneralMode,
   previewMode,
   updateGeneralMode,
@@ -70,10 +71,17 @@ const EMPTY_INPUT: AgentModeInput = {
   skillNames: [],
   defaultModel: null,
   defaultThinkingLevel: null,
+  description: null,
+  subagentModeIds: [],
 };
 
 /** Select 不接受 null 值：用哨兵表示「跟随会话」。 */
 const FOLLOW = "__follow__";
+
+/** 子 agent 最多勾几个（与后端校验一致） */
+const MAX_SUBAGENTS = 10;
+/** 用途说明最长字数（与后端校验一致） */
+const MAX_DESCRIPTION = 500;
 
 /**
  * 模式编辑器：名称 + 完整 system prompt（可插入平台占位符）+ 工具 / 连接器 / 技能勾选
@@ -165,6 +173,8 @@ function EditorForm({
         skillNames: m.skillNames,
         defaultModel: m.defaultModel,
         defaultThinkingLevel: m.defaultThinkingLevel,
+        description: m.description,
+        subagentModeIds: m.subagentModeIds,
       };
     }
     return target.initial ?? EMPTY_INPUT;
@@ -180,8 +190,24 @@ function EditorForm({
 
   const patch = (p: Partial<AgentModeInput>) => setForm((f) => ({ ...f, ...p }));
 
+  // 可勾作子 agent 的模式：用户的其它模式（编辑时排除自己），与列表共用缓存
+  const selfId = target.mode === "edit" ? target.item.id : null;
+  const modesQuery = useQuery({ queryKey: MODES_QUERY_KEY, queryFn: listModes });
+  const otherModes = (modesQuery.data ?? [])
+    .filter((m) => m.id !== selfId)
+    .sort((a, b) => a.name.localeCompare(b.name));
+  // 已被删掉的 id 不显示、不计数、不提交（后端会拒「包含不存在的模式」）；列表没到之前原样保留
+  const subagentIds = modesQuery.data
+    ? form.subagentModeIds.filter((id) => otherModes.some((m) => m.id === id))
+    : form.subagentModeIds;
+
   const canSave = form.name.trim() !== "" && form.systemPrompt.trim() !== "";
-  const payload = (): AgentModeInput => ({ ...form, name: form.name.trim() });
+  const payload = (): AgentModeInput => ({
+    ...form,
+    name: form.name.trim(),
+    description: form.description?.trim() || null,
+    subagentModeIds: subagentIds,
+  });
   /** 通用模式：提示词与默认完全相同就存 null（跟随平台默认，以后默认更新也能跟上）。 */
   const generalPrompt = (g: GeneralModeSettings): string | null =>
     form.systemPrompt === g.defaultPrompt ? null : form.systemPrompt;
@@ -294,6 +320,28 @@ function EditorForm({
             maxLength={64}
           />
         </div>
+
+        {!general && (
+          <div className="space-y-1.5">
+            <label htmlFor="mode-description" className="text-sm font-medium">
+              Description <span className="font-normal text-muted-foreground">(optional)</span>
+            </label>
+            <Textarea
+              id="mode-description"
+              rows={2}
+              placeholder="Generates and edits product images from a brief"
+              value={form.description ?? ""}
+              onChange={(e) => patch({ description: e.target.value })}
+              disabled={pending}
+              maxLength={MAX_DESCRIPTION}
+            />
+            <p className="text-xs text-muted-foreground">
+              What this mode is for. When another mode uses it as a sub-agent,
+              the main agent reads this to decide when to delegate. Left empty,
+              the mode name and the start of its prompt are used.
+            </p>
+          </div>
+        )}
 
         <div className="space-y-1.5">
           <label htmlFor="mode-prompt" className="text-sm font-medium">
@@ -453,6 +501,43 @@ function EditorForm({
                 ))
               )}
             </Section>
+
+            <Section
+              title="Sub-agents"
+              hint={`${subagentIds.length} of ${otherModes.length} selected · max ${MAX_SUBAGENTS}`}
+              note={
+                <p className="text-xs text-muted-foreground">
+                  The main agent delegates to these through its task tool and can
+                  run several at once. Each sub-agent uses its own mode&apos;s
+                  prompt, tools, skills, connectors and default model. Only one
+                  level is expanded: a sub-agent&apos;s own sub-agents are ignored.
+                </p>
+              }
+            >
+              {modesQuery.isLoading ? (
+                <EmptyRow>Loading modes…</EmptyRow>
+              ) : otherModes.length === 0 ? (
+                <EmptyRow>Create another mode to use it as a sub-agent.</EmptyRow>
+              ) : (
+                otherModes.map((m) => {
+                  const checked = subagentIds.includes(m.id);
+                  return (
+                    <OptionRow
+                      key={m.id}
+                      checked={checked}
+                      disabled={pending || (!checked && subagentIds.length >= MAX_SUBAGENTS)}
+                      onCheckedChange={(on) =>
+                        patch({ subagentModeIds: toggle(subagentIds, m.id, on) })
+                      }
+                      title={m.name}
+                      description={
+                        m.description?.trim() || m.systemPrompt.trim().split("\n")[0]
+                      }
+                    />
+                  );
+                })
+              )}
+            </Section>
           </>
         )}
 
@@ -564,11 +649,14 @@ function EditorForm({
 function Section({
   title,
   hint,
+  note,
   toolbar,
   children,
 }: {
   title: string;
   hint: string;
+  /** 标题下的说明文字 */
+  note?: React.ReactNode;
   toolbar?: React.ReactNode;
   children: React.ReactNode;
 }) {
@@ -578,6 +666,7 @@ function Section({
         <span className="text-sm font-medium">{title}</span>
         <span className="text-xs text-muted-foreground">{hint}</span>
       </div>
+      {note}
       {toolbar}
       <ul className="max-h-64 divide-y overflow-y-auto rounded-lg border">{children}</ul>
     </section>

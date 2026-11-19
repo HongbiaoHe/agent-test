@@ -5,7 +5,7 @@
 import { join } from 'node:path';
 import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, shell } from 'electron';
 import { z } from 'zod';
-import { PROVIDER_KEYS, THEME_PREFERENCES } from '../shared/desktop';
+import { THEME_PREFERENCES } from '../shared/desktop';
 import { LANGUAGE_PREFERENCES } from '../shared/i18n/locales';
 import { AgentHostManager } from './agent-host';
 import { appLocale, mainI18n, syncMainLocale } from './i18n';
@@ -43,16 +43,17 @@ function registerIpc(): void {
     const next = store.updateSettings(settingsPatch.parse(patch));
     nativeTheme.themeSource = next.theme;
     syncMainLocale(store);
-    host.sendConfig();
+    void host.sendConfig();
     return next;
   });
-  ipcMain.handle('desktop:getKeyStatus', () => store.keyStatus());
-  ipcMain.handle('desktop:setKey', async (_e, provider: unknown, value: unknown) => {
-    const status = store.setKey(
-      z.enum(PROVIDER_KEYS).parse(provider),
-      z.string().nullable().parse(value),
+  ipcMain.handle('desktop:getConnectionKeys', () => store.connectionKeyStatus());
+  ipcMain.handle('desktop:setConnectionKey', async (_e, connectionId: unknown, value: unknown) => {
+    const status = store.setConnectionKey(
+      z.string().min(1).max(100).parse(connectionId),
+      z.string().max(10_000).nullable().parse(value),
     );
-    await host.restart(); // Key 经 env 注入，重启 agent-host 才生效
+    // Key 经 config 下发到 agent-host 内存；等它确认处理完再返回，界面随后拉模型列表就能用上新 Key
+    await host.sendConfig();
     return status;
   });
   ipcMain.handle('desktop:pickFolder', async (e) => {

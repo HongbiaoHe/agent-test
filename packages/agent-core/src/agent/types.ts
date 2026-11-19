@@ -18,6 +18,7 @@ export type ConversationEventType =
   | 'design_patch' // 设计稿 op 增量（design 模块专用，不落 messages 表）：{ ops, revision, source, clientId }
   | 'design_focus' // 设计 agent 正在处理哪些图层（驱动前端的「智能体光标」，不落库）
   | 'design_status' // 设计 agent 运行状态变更（idle/running/done/failed/stopped，不落库）
+  | 'context_summary' // 跨轮历史压缩的摘要（落 messages 表，role=system；只供历史重放，不推流、前端不渲染）
   | 'error';
 
 export interface ConversationEvent {

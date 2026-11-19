@@ -14,7 +14,7 @@ test('跟随英文系统 → 切到繁体中文 → 重启后保持', async () =
   try {
     await expect(page.locator('html')).toHaveAttribute('lang', 'en');
     await page.getByRole('button', { name: 'Skip for now and use without signing in' }).click();
-    await expect(page.getByRole('button', { name: 'Add a model key first' })).toBeVisible();
+    await expect(page.getByRole('button', { name: 'Add an API connection first' })).toBeVisible();
     await expect(page.getByRole('button', { name: 'New chat' })).toBeVisible();
 
     await page.getByRole('button', { name: 'Settings', exact: true }).click();
@@ -46,7 +46,7 @@ test('跟随英文系统 → 切到繁体中文 → 重启后保持', async () =
   ({ app, page } = await launch(dirs, { skipLogin: false, env: { SPARK_SYSTEM_LANGUAGE: 'en-US' } }));
   try {
     await expect(page.locator('html')).toHaveAttribute('lang', 'zh-Hant');
-    await expect(page.getByRole('button', { name: '請先填寫模型 Key' })).toBeVisible();
+    await expect(page.getByRole('button', { name: '先新增一個 API 連線' })).toBeVisible();
     await page.screenshot({ path: `${screens}/i18n-zh-hant-home.png` });
   } finally {
     await app.close();

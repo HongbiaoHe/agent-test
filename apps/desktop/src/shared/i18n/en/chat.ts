@@ -3,7 +3,10 @@ import type { chat as source } from '../zh-CN/chat';
 
 export const chat = {
   view: {
-    noKey: 'The current model has no key yet. Add one in Settings first.',
+    noModels: 'No models available yet. Add an API connection in Settings first.',
+    noModelsTitle: 'Add an API connection first',
+    noModelsDescription: 'No models are available yet. Add an API connection in Settings and enable a model to start chatting.',
+    openModelSettings: 'Open model settings',
   },
   thread: {
     tokens: '{{total}} tokens',
@@ -60,6 +63,10 @@ export const chat = {
     thinkingNow: 'Thinking…',
     thought: 'Thought',
     thoughtFor: 'Thought for',
+    subagent: 'Sub-agent',
+    subagentStarting: 'Starting sub-agent…',
+    subagentEmpty: 'The sub-agent left no activity',
+    taskDetail: 'View task input and result',
   },
   thinkingIndicator: {
     status: 'Agent is thinking…',
@@ -179,16 +186,17 @@ export const chat = {
     button: 'Mode: {{label}}',
     list: 'Mode',
   },
-  modelHint: {
-    gemini38Flash: 'Fast · default',
-    gemini4Argon: 'Most powerful · flagship',
-    gemini36Flash: 'Previous-gen Flash',
-    gemini35FlashLite: 'Fastest · lowest cost',
-    gemini31FlashLite: 'Low cost · near-frontier',
-    gemini31ProPreview: 'Previous-gen Pro · preview',
-    gemini3FlashPreview: 'Gemini 3 Flash · preview',
-    deepseekFlash: 'DeepSeek V4.1 Flash · fast',
-    deepseekV4Pro: 'DeepSeek V4 Pro · flagship',
+  modelSwitcher: {
+    button: 'Model: {{model}}',
+    list: 'Models',
+    search: 'Search models…',
+    none: 'No model selected',
+    empty: 'No enabled models yet',
+    noMatch: 'No matching models',
+    unavailable: 'Unavailable',
+    unavailableHint: 'This model was disabled or its connection deleted; the next turn uses the default model.',
+    noTools: 'Tests show no tool-call support',
+    missing: 'Delisted',
   },
   toolbar: {
     menu: 'Chat menu',

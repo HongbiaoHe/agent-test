@@ -16,6 +16,7 @@ const KIND_LABEL: Record<ModePreview["unavailable"][number]["kind"], string> = {
   tool: "Tool",
   mcp_server: "Connector",
   skill: "Skill",
+  subagent: "Sub-agent",
 };
 
 /** 最终提示词预览：后端按固定顺序拼好的 system prompt 原文 + 本环境不可用的勾选项清单。 */
@@ -52,7 +53,12 @@ export function PromptPreviewDialog({
                   >
                     <Badge variant="outline">{KIND_LABEL[u.kind]}</Badge>
                     <span className="font-mono text-foreground">{u.name}</span>
-                    <span>— {u.reason}</span>
+                    <span>
+                      —{" "}
+                      {u.kind === "subagent" && u.reason === "not_found"
+                        ? "this mode no longer exists"
+                        : u.reason}
+                    </span>
                   </li>
                 ))}
               </ul>

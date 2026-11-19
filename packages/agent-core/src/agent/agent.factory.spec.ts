@@ -28,6 +28,14 @@ type Call = {
   middleware: { name: string }[];
   model: unknown;
   backend: unknown;
+  subagents: {
+    name: string;
+    tools: { name: string }[];
+    model: unknown;
+    middleware: { name: string }[];
+    interruptOn?: Record<string, unknown>;
+    skills?: string[];
+  }[];
 };
 const lastCall = () => createDeepAgent.mock.calls.at(-1)![0] as Call;
 
@@ -85,6 +93,7 @@ describe('buildAgent', () => {
       'dynamicContextMiddleware',
       'skillReadPolicyMiddleware',
       'portableContentMiddleware',
+      'invalidToolCallMiddleware',
       'toolInputRecoveryMiddleware',
     ]);
   });
@@ -100,6 +109,7 @@ describe('buildAgent', () => {
     expect(lastCall().middleware.map((m) => m.name)).toEqual([
       'dynamicContextMiddleware',
       'skillReadPolicyMiddleware',
+      'invalidToolCallMiddleware',
       'toolInputRecoveryMiddleware',
     ]);
   });
@@ -124,6 +134,7 @@ describe('buildAgent', () => {
       'toolCallLimit',
       'designPreviewInjection',
       'dynamicContextMiddleware',
+      'invalidToolCallMiddleware',
       'toolInputRecoveryMiddleware',
     ]);
     // 裸 gemini 名按 google-genai 装配，思考档位 auto（与原设计 agent 一致）
@@ -156,6 +167,113 @@ describe('buildAgent', () => {
     expect(initChatModel).not.toHaveBeenCalled();
     expect(lastCall().model).toBe(instance);
     expect(lastCall().middleware.map((m) => m.name)).toContain(
+      'portableContentMiddleware',
+    );
+  });
+
+  it('子 agent：同模型复用主实例、异模型另建；审批 = 自己的 + 宿主覆盖；勾了技能才挂技能库；都有入参自愈', async () => {
+    await buildAgent({
+      systemPrompt: '',
+      tools: [],
+      backend,
+      skillsDir: '/workspace/skills',
+      model: 'google-genai:gemini-3.8-flash',
+      interruptOnOverride: { write_file: true },
+      subagents: [
+        {
+          name: '写手',
+          description: 'd',
+          systemPrompt: 'w',
+          tools: [mk('gen')],
+          interruptOn: { mail: { allowedDecisions: ['approve', 'bogus'] } },
+          model: null,
+          skills: true,
+        },
+        {
+          name: '评审',
+          description: 'd',
+          systemPrompt: 'c',
+          tools: [],
+          interruptOn: {},
+          model: 'deepseek:deepseek-flash',
+          skills: false,
+        },
+      ],
+    });
+    const [w, c] = lastCall().subagents;
+    expect(w.model).toBe(lastCall().model);
+    expect(w.tools.map((t) => t.name)).toEqual(['gen']);
+    expect(w.interruptOn).toEqual({
+      mail: { allowedDecisions: ['approve'] },
+      write_file: true,
+    });
+    expect(w.skills).toEqual(['/workspace/skills/']);
+    expect(w.middleware.map((m) => m.name)).toEqual([
+      'invalidToolCallMiddleware',
+      'toolInputRecoveryMiddleware',
+    ]);
+    expect(initChatModel).toHaveBeenCalledWith('deepseek:deepseek-flash', {});
+    expect(c.skills).toBeUndefined();
+    expect(c.interruptOn).toEqual({ write_file: true });
+    expect(c.middleware.map((m) => m.name)).toEqual([
+      'portableContentMiddleware',
+      'invalidToolCallMiddleware',
+      'toolInputRecoveryMiddleware',
+    ]);
+  });
+
+  it('宿主给了 resolveModel（desktop 的连接解析）：主 agent 与异模型子 agent 都经它解析，不调 initChatModel；净化按解析结果决定', async () => {
+    const instances: Record<string, { kind: string }> = {};
+    const resolveModel = jest.fn((ref: string | null | undefined) => {
+      const model = { kind: `m:${ref}` };
+      instances[String(ref)] = model;
+      return Promise.resolve({
+        model: model as never,
+        keepsNativeBlocks: ref === 'c-gem/gemini',
+      });
+    });
+    await buildAgent({
+      systemPrompt: '',
+      tools: [],
+      backend,
+      model: 'c-gem/gemini',
+      resolveModel,
+      subagents: [
+        {
+          name: 's1',
+          description: 'd',
+          systemPrompt: 'p',
+          tools: [],
+          interruptOn: {},
+          model: 'c-gem/gemini',
+          skills: false,
+        },
+        {
+          name: 's2',
+          description: 'd',
+          systemPrompt: 'p',
+          tools: [],
+          interruptOn: {},
+          model: 'c-oai/gpt-4o',
+          skills: false,
+        },
+      ],
+    });
+    expect(initChatModel).not.toHaveBeenCalled();
+    expect(resolveModel.mock.calls.map((c) => c[0])).toEqual([
+      'c-gem/gemini',
+      'c-oai/gpt-4o',
+    ]);
+    const c = lastCall();
+    expect(c.model).toBe(instances['c-gem/gemini']);
+    // Gemini 原样收原生块：主 agent 不挂净化
+    expect(c.middleware.map((m) => m.name)).not.toContain(
+      'portableContentMiddleware',
+    );
+    const [s1, s2] = c.subagents;
+    expect(s1.model).toBe(instances['c-gem/gemini']);
+    expect(s2.model).toBe(instances['c-oai/gpt-4o']);
+    expect(s2.middleware.map((m) => m.name)).toContain(
       'portableContentMiddleware',
     );
   });

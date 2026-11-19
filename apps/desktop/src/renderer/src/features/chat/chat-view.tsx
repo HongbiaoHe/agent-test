@@ -4,9 +4,12 @@
  * 改动经 conversations.update 落到 agent-host，下一轮运行生效。
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
+import { KeyRound } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
+import { Alert, AlertAction, AlertDescription, AlertTitle } from '@/components/ui/alert';
+import { Button } from '@/components/ui/button';
 import { agent } from '@/lib/agent-client';
 import { asThinkingLevel, type ThinkingLevel } from '@/lib/thinking-level';
 import type { HitlDecision } from '../../../../shared/rpc';
@@ -17,19 +20,22 @@ import { ConversationTitleMenu, ConversationToolbarIcons } from './components/co
 import { PreviewAutoOpen } from './components/preview-card';
 import { DetailPanel } from './components/detail-panel';
 import { conversationKey, useConversation } from './hooks/use-conversation';
-import { DEFAULT_MODEL } from './lib/models';
-import type { ThreadItem } from './lib/thread';
+import { findToolItem } from './lib/thread';
 import { FileViewerProvider } from '../viewer/file-viewer';
 import { writeModePreference } from '../modes/mode-preference';
+import { useHostStatus, useModelOptions } from '../llm/api';
 
 export function ChatView({
   id,
-  hasKey,
+  hasModels,
+  onOpenModelSettings,
   headerInset,
   onDeleted,
 }: {
   id: string;
-  hasKey: boolean;
+  /** 账号下至少有一个已启用的模型（host.status.hasModels）；没有时引导去添加 API 连接，不能发送 */
+  hasModels: boolean;
+  onOpenModelSettings: () => void;
   /** 侧栏收起时顶栏左侧的让位 */
   headerInset?: string;
   /** 在顶栏菜单里删除了本会话 */
@@ -48,8 +54,6 @@ export function ChatView({
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: conversationKey(id) });
     void qc.invalidateQueries({ queryKey: ['conversations'] });
-    // 外壳按会话模型判断「有没有 Key」（app.tsx 的 conversation-model 查询）
-    void qc.invalidateQueries({ queryKey: ['conversation-model', id] });
   };
   const update = useMutation({
     mutationFn: (patch: {
@@ -70,8 +74,8 @@ export function ChatView({
   if (stopRequested && !thread.busy) setStopRequested(false);
 
   function handleSend(text: string, attachments: string[]) {
-    if (!hasKey) {
-      toast.error(t('chat.view.noKey'));
+    if (!hasModels) {
+      toast.error(t('chat.view.noModels'));
       return;
     }
     thread.pushUserMessage(
@@ -96,13 +100,17 @@ export function ChatView({
     if (dir) update.mutate({ workspaceDir: dir });
   }
 
-  const selectedTool = activeDetailId
-    ? thread.items.find(
-        (it): it is Extract<ThreadItem, { kind: 'tool' }> => it.kind === 'tool' && it.id === activeDetailId,
-      )
-    : undefined;
-  const model = conv?.model ?? DEFAULT_MODEL;
-  const thinkingLevel: ThinkingLevel = asThinkingLevel(conv?.thinkingLevel) ?? 'auto';
+  // 含 task 子线程里的嵌套 chip
+  const selectedTool = activeDetailId ? findToolItem(thread.items, activeDetailId) : undefined;
+  const options = useModelOptions();
+  const status = useHostStatus();
+  // 会话没存模型（建会话时还没有任何可用模型）：显示账号默认模型，下一轮 host 也按它跑
+  const model = conv?.model ?? status.data?.defaultModel ?? '';
+  // 思考档位来自所选模型的能力；模型不可用时只剩「自动」（host 回落到默认模型）
+  const thinkingLevels = options.data?.find((m) => m.ref === model)?.capabilities.thinkingLevels ?? ['auto'];
+  const savedLevel = asThinkingLevel(conv?.thinkingLevel) ?? 'auto';
+  // 换模型后旧档位可能不再可选：显示实际生效的「自动」（同 host 的 effectiveLevel）
+  const thinkingLevel: ThinkingLevel = thinkingLevels.includes(savedLevel) ? savedLevel : 'auto';
   const untitled = t('shell.conversation.untitled');
   const title = conv ? conv.title ?? (conv.goal || untitled) : untitled;
 
@@ -155,6 +163,22 @@ export function ChatView({
           onModelChange={(m) => update.mutate({ model: m })}
           thinkingLevel={thinkingLevel}
           onThinkingLevelChange={(level) => update.mutate({ thinkingLevel: level === 'auto' ? null : level })}
+          thinkingLevels={thinkingLevels}
+          sendDisabled={!hasModels}
+          composerNotice={
+            hasModels ? undefined : (
+              <Alert className="mb-2 has-data-[slot=alert-action]:pr-36" data-testid="no-models-notice">
+                <KeyRound />
+                <AlertTitle>{t('chat.view.noModelsTitle')}</AlertTitle>
+                <AlertDescription>{t('chat.view.noModelsDescription')}</AlertDescription>
+                <AlertAction>
+                  <Button size="sm" onClick={onOpenModelSettings}>
+                    {t('chat.view.openModelSettings')}
+                  </Button>
+                </AlertAction>
+              </Alert>
+            )
+          }
           tokens={thread.tokens}
           workspaceDir={conv?.workspaceDir ?? null}
           permission={conv?.permission ?? 'ask'}

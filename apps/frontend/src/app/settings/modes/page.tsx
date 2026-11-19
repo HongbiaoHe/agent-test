@@ -33,6 +33,8 @@ export default function ModesSettingsPage() {
         skillNames: c.skills.map((s) => s.name),
         defaultModel: null,
         defaultThinkingLevel: null,
+        description: null,
+        subagentModeIds: [],
       },
     });
   }

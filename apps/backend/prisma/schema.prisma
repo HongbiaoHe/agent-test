@@ -454,6 +454,10 @@ model AgentMode {
   /// 新建会话时回填的默认模型 / 思考档位（仅创建时生效）
   defaultModel         String?
   defaultThinkingLevel String?
+  /// 被别的模式当作子 agent 时给主 agent 看的用途说明；NULL = 用模式名 + 提示词开头
+  description          String?  @db.VarChar(500)
+  /// string[]：勾作子 agent 的其它模式 id（只展开一层，见 agent-core resolveMode）
+  subagentModeIds      Json
   createdAt            DateTime @default(now())
   updatedAt            DateTime @updatedAt
 

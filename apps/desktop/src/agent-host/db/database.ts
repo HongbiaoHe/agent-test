@@ -175,6 +175,42 @@ const MIGRATIONS: readonly string[] = [
     updated_at INTEGER NOT NULL
   );
   `,
+  // v11：模式引用模式作子 agent（对应 backend AgentMode.description / subagentModeIds）
+  `
+  ALTER TABLE agent_mode ADD COLUMN description TEXT;
+  ALTER TABLE agent_mode ADD COLUMN subagent_mode_ids TEXT NOT NULL DEFAULT '[]';
+  `,
+  // v12：用户自己配置的 API 连接与模型（按账号隔离；Key 不在这里，由 main 加密保存）+ 账号级设置（默认模型等）
+  `
+  CREATE TABLE llm_connection (
+    id TEXT PRIMARY KEY,
+    name TEXT NOT NULL,
+    protocol TEXT NOT NULL,
+    base_url TEXT NOT NULL,
+    preset_id TEXT,
+    last_listed_at INTEGER,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE TABLE llm_model (
+    connection_id TEXT NOT NULL REFERENCES llm_connection(id) ON DELETE CASCADE,
+    model_id TEXT NOT NULL,
+    display_name TEXT,
+    enabled INTEGER NOT NULL DEFAULT 0,
+    source TEXT NOT NULL,
+    list_state TEXT NOT NULL,
+    capabilities TEXT NOT NULL,
+    capabilities_edited INTEGER NOT NULL DEFAULT 0,
+    test TEXT,
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL,
+    PRIMARY KEY (connection_id, model_id)
+  );
+  CREATE TABLE profile_setting (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL
+  );
+  `,
 ];
 
 export type Db = DatabaseSync;

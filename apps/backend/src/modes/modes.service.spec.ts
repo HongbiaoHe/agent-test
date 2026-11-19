@@ -65,6 +65,8 @@ const row = (extra: Record<string, unknown> = {}) => ({
   skillNames: [],
   defaultModel: null,
   defaultThinkingLevel: null,
+  description: null,
+  subagentModeIds: [],
   createdAt: now,
   updatedAt: now,
   ...extra,
@@ -82,6 +84,7 @@ function makeService() {
         Promise.resolve(row(arg.data)),
       ),
       delete: jest.fn().mockResolvedValue(row()),
+      count: jest.fn().mockResolvedValue(0),
     },
     conversation: { updateMany: jest.fn().mockResolvedValue({ count: 2 }) },
     generalModeSetting: {
@@ -171,6 +174,8 @@ describe('ModesService CRUD', () => {
         skillNames: [],
         defaultModel: null,
         defaultThinkingLevel: null,
+        description: null,
+        subagentModeIds: [],
       },
     });
     expect(view).not.toHaveProperty('userId');
@@ -229,8 +234,62 @@ describe('ModesService CRUD', () => {
     });
   });
 
+  it('子 agent：只能勾本人的其它模式——勾自己 / 勾不存在的 → MODE_INVALID，不写库；合法的照常落库', async () => {
+    const { service, prisma } = makeService();
+    await expect(
+      service.update('u1', 'm1', {
+        name: 'a',
+        systemPrompt: 'x',
+        subagentModeIds: ['m1'],
+      }),
+    ).rejects.toMatchObject({ errCode: ErrorCodes.MODE_INVALID.code });
+    prisma.agentMode.count.mockResolvedValue(1);
+    await expect(
+      service.create('u1', {
+        name: 'a',
+        systemPrompt: 'x',
+        subagentModeIds: ['m2', 'ghost'],
+      }),
+    ).rejects.toMatchObject({ errCode: ErrorCodes.MODE_INVALID.code });
+    expect(prisma.agentMode.count).toHaveBeenCalledWith({
+      where: { userId: 'u1', id: { in: ['m2', 'ghost'] } },
+    });
+    expect(prisma.agentMode.update).not.toHaveBeenCalled();
+    expect(prisma.agentMode.create).not.toHaveBeenCalled();
+
+    prisma.agentMode.count.mockResolvedValue(1);
+    await service.create('u1', {
+      name: 'a',
+      systemPrompt: 'x',
+      description: '写长文',
+      subagentModeIds: ['m2'],
+    });
+    expect(prisma.agentMode.create).toHaveBeenCalledWith({
+      data: expect.objectContaining({
+        description: '写长文',
+        subagentModeIds: ['m2'],
+      }),
+    });
+  });
+
+  it('remove：引用它作子 agent 的模式把它去掉（同一事务）', async () => {
+    const { service, prisma } = makeService();
+    prisma.agentMode.findMany.mockResolvedValue([
+      row({ id: 'm9', subagentModeIds: ['m1', 'm3'] }),
+    ]);
+    await service.remove('u1', 'm1');
+    expect(prisma.agentMode.findMany).toHaveBeenCalledWith({
+      where: { userId: 'u1', subagentModeIds: { array_contains: 'm1' } },
+    });
+    expect(prisma.agentMode.update).toHaveBeenCalledWith({
+      where: { id: 'm9' },
+      data: { subagentModeIds: ['m3'] },
+    });
+  });
+
   it('remove：事务里先把引用它的会话 modeId 置空，再删行', async () => {
     const { service, prisma } = makeService();
+    prisma.agentMode.findMany.mockResolvedValue([]);
     expect(await service.remove('u1', 'm1')).toEqual({ id: 'm1' });
     expect(prisma.$transaction).toHaveBeenCalledTimes(1);
     expect(prisma.conversation.updateMany).toHaveBeenCalledWith({

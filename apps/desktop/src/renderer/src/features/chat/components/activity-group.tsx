@@ -1,9 +1,10 @@
 "use client";
 
-import { Brain, ChevronDown, ChevronRight, ListChecks, Loader, Wrench } from "lucide-react";
-import { useLayoutEffect, useRef, useState } from "react";
+import { Bot, Brain, ChevronDown, ChevronRight, ListChecks, Loader, PanelRight, Wrench } from "lucide-react";
+import { type ReactNode, useLayoutEffect, useRef, useState } from "react";
 import { useTranslation } from "react-i18next";
 
+import { Button } from "@/components/ui/button";
 import { cn } from "@/lib/utils";
 
 import type { ThreadItem } from "../lib/thread";
@@ -13,6 +14,8 @@ import { TOOL_ICON, type ToolItem, toolLabel, toolSummary } from "./tool-chip";
 
 export type ReasoningItem = Extract<ThreadItem, { kind: "reasoning" }>;
 export type ActivityItem = ToolItem | ReasoningItem;
+/** 渲染 task chip 展开后的子线程（由 ThreadRows 注入，避免活动组与行渲染互相引用） */
+export type RenderSub = (items: ThreadItem[], live: boolean) => ReactNode;
 
 /** 距底部小于这个值（px）视为「在看最新」，继续跟随；用户往上翻超过它就停止跟随。 */
 const FOLLOW_SLACK = 16;
@@ -31,12 +34,14 @@ export function ActivityGroup({
   live,
   activeDetailId,
   onOpenDetail,
+  renderSub,
 }: {
   items: ActivityItem[];
   /** 列表末尾且本轮还在跑：组头按「进行中」显示 */
   live: boolean;
   activeDetailId: string | null;
   onOpenDetail: (id: string) => void;
+  renderSub: RenderSub;
 }) {
   const { t } = useTranslation();
   const [manual, setManual] = useState<boolean | null>(null);
@@ -44,7 +49,7 @@ export function ActivityGroup({
   if (items.length === 1) {
     return (
       <ol>
-        <ActivityRow item={items[0]} activeDetailId={activeDetailId} onOpenDetail={onOpenDetail} />
+        <ActivityRow item={items[0]} activeDetailId={activeDetailId} onOpenDetail={onOpenDetail} renderSub={renderSub} />
       </ol>
     );
   }
@@ -107,7 +112,13 @@ export function ActivityGroup({
       {open && (
         <ol className="space-y-2.5 pt-2.5">
           {items.map((it) => (
-            <ActivityRow key={it.id} item={it} activeDetailId={activeDetailId} onOpenDetail={onOpenDetail} />
+            <ActivityRow
+              key={it.id}
+              item={it}
+              activeDetailId={activeDetailId}
+              onOpenDetail={onOpenDetail}
+              renderSub={renderSub}
+            />
           ))}
         </ol>
       )}
@@ -119,15 +130,107 @@ function ActivityRow({
   item,
   activeDetailId,
   onOpenDetail,
+  renderSub,
 }: {
   item: ActivityItem;
   activeDetailId: string | null;
   onOpenDetail: (id: string) => void;
+  renderSub: RenderSub;
 }) {
-  return item.kind === "tool" ? (
-    <ToolRow item={item} active={activeDetailId === item.id} onOpenDetail={onOpenDetail} />
-  ) : (
-    <ThoughtRow item={item} />
+  if (item.kind === "reasoning") return <ThoughtRow item={item} />;
+  if (item.name === "task") {
+    return (
+      <TaskRow item={item} active={activeDetailId === item.id} onOpenDetail={onOpenDetail} renderSub={renderSub} />
+    );
+  }
+  return <ToolRow item={item} active={activeDetailId === item.id} onOpenDetail={onOpenDetail} />;
+}
+
+/** task 调用参数 `{ description, subagent_type }` 里给人看的两段 */
+function taskArgs(args: unknown): { name: string; description: string } {
+  if (!args || typeof args !== "object") return { name: "", description: "" };
+  const name = "subagent_type" in args && typeof args.subagent_type === "string" ? args.subagent_type : "";
+  const description = "description" in args && typeof args.description === "string" ? args.description : "";
+  return { name, description: description.replace(/\s+/g, " ").trim() };
+}
+
+/**
+ * 委派子 agent 的 task 调用：一行「子 agent 名 + 任务说明 + 耗时」，点开看子 agent 的嵌套过程（思考 / 工具 / 正文，
+ * 复用主线程的行渲染）；右侧按钮打开详情面板看参数与最终结果。
+ * 进行中默认展开、结束后自动收起；手动点过以手动状态为准（同思考行）。
+ */
+function TaskRow({
+  item,
+  active,
+  onOpenDetail,
+  renderSub,
+}: {
+  item: ToolItem;
+  active: boolean;
+  onOpenDetail: (id: string) => void;
+  renderSub: RenderSub;
+}) {
+  const { t } = useTranslation();
+  const [manual, setManual] = useState<boolean | null>(null);
+  const open = manual ?? !item.done;
+  const { name, description } = taskArgs(item.args);
+  const subItems = item.sub?.items.filter((it) => it.kind !== "plan") ?? [];
+  return (
+    <li className="space-y-2.5">
+      <div className="flex min-w-0 items-center gap-1">
+        <button
+          type="button"
+          onClick={() => setManual(!open)}
+          aria-expanded={open}
+          className={cn(
+            "flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md text-left text-xs transition-colors hover:text-foreground",
+            active ? "text-foreground" : "text-muted-foreground",
+          )}
+        >
+          {item.done ? <Bot className="size-3.5 shrink-0" /> : <Loader className="size-3.5 shrink-0 animate-spin" />}
+          <span className={cn("shrink-0 font-medium", !item.done && "text-foreground")}>
+            {name || t("chat.activity.subagent")}
+          </span>
+          {description && (
+            <span className="min-w-0 truncate" title={description}>
+              {description}
+            </span>
+          )}
+          <span className="ml-auto shrink-0 pl-2 text-[11px] text-muted-foreground/70">
+            {item.startedAt != null &&
+              (item.done ? (
+                item.endedAt != null && <Elapsed startedAt={item.startedAt} endedAt={item.endedAt} />
+              ) : (
+                <Elapsed startedAt={item.startedAt} />
+              ))}
+          </span>
+          <ChevronRight
+            className={cn("size-3 shrink-0 transition-transform motion-reduce:transition-none", open && "rotate-90")}
+          />
+        </button>
+        <Button
+          variant="ghost"
+          size="icon-xs"
+          className="text-muted-foreground"
+          aria-label={t("chat.activity.taskDetail")}
+          title={t("chat.activity.taskDetail")}
+          onClick={() => onOpenDetail(item.id)}
+        >
+          <PanelRight />
+        </Button>
+      </div>
+      {open && (
+        <div className="ml-1.5 space-y-4 border-l-2 pl-4 text-sm" data-testid="subagent-thread">
+          {subItems.length > 0 ? (
+            renderSub(subItems, !item.done)
+          ) : (
+            <p className="text-xs text-muted-foreground">
+              {item.done ? t("chat.activity.subagentEmpty") : t("chat.activity.subagentStarting")}
+            </p>
+          )}
+        </div>
+      )}
+    </li>
   );
 }
 

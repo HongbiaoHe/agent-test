@@ -27,6 +27,7 @@ import {
   GENERAL_MODE_KEY,
   type GeneralModeView,
   getModeCatalog,
+  listModes,
   MODE_CATALOG_KEY,
   type ModeCatalog,
   type ModePreview,
@@ -37,14 +38,17 @@ import {
   updateMode,
 } from '@/lib/api';
 import { cn } from '@/lib/utils';
-import { asThinkingLevel, thinkingLevelsFor } from '@/lib/thinking-level';
-import { MODEL_OPTIONS, modelDisplayName } from '../../chat/lib/models';
+import { asThinkingLevel, thinkingOptions as thinkingOptionsOf } from '@/lib/thinking-level';
+import { useModelOptions } from '../../llm/api';
+import { ModelSelect } from '../../llm/components/model-select';
 import { PromptPreviewDialog } from './prompt-preview-dialog';
 
 /** 「跟随会话」在 Select 里的值（base-ui Select 的值是字符串） */
 const FOLLOW = '';
 const NAME_MAX = 100;
 const PROMPT_MAX = 100_000;
+const DESCRIPTION_MAX = 500;
+const SUBAGENTS_MAX = 10;
 
 /**
  * 打开方式：新建（可预填，如「从通用复制」）/ 编辑已有模式 / 编辑通用模式
@@ -121,6 +125,12 @@ function EditorForm({
   const [skillNames, setSkillNames] = useState<string[]>(initial.skillNames ?? []);
   const [defaultModel, setDefaultModel] = useState<string | null>(initial.defaultModel ?? null);
   const [defaultThinkingLevel, setDefaultThinkingLevel] = useState<string | null>(initial.defaultThinkingLevel ?? null);
+  const [description, setDescription] = useState(initial.description ?? '');
+  const [subagentModeIds, setSubagentModeIds] = useState<string[]>(initial.subagentModeIds ?? []);
+  // 子 agent 候选：用户的其它模式（不含正在编辑的这个；宿主也会拒绝自引用）
+  const modes = useQuery({ queryKey: MODES_QUERY_KEY, queryFn: listModes, enabled: general === null });
+  const selfId = target.kind === 'edit' ? target.mode.id : null;
+  const subagentOptions = (modes.data ?? []).filter((m) => m.id !== selfId);
   const [skillSearch, setSkillSearch] = useState('');
   const [preview, setPreview] = useState<ModePreview | null>(null);
   const promptRef = useRef<HTMLTextAreaElement>(null);
@@ -130,6 +140,9 @@ function EditorForm({
    */
   const caretRef = useRef<{ start: number; end: number } | null>(null);
 
+  /** 勾过但已被删除的模式不再提交（列表还没拉到时原样提交，由宿主校验） */
+  const liveSubagentIds = (): string[] =>
+    modes.data ? subagentModeIds.filter((id) => subagentOptions.some((m) => m.id === id)) : subagentModeIds;
   const input = (): AgentModeInput => ({
     name: name.trim(),
     systemPrompt,
@@ -138,10 +151,17 @@ function EditorForm({
     skillNames,
     defaultModel,
     defaultThinkingLevel: defaultModel ? defaultThinkingLevel : null,
+    description: description.trim() || null,
+    subagentModeIds: liveSubagentIds(),
   });
   /** 通用模式：与默认提示词完全相同就存 null（= 跟随 core 默认，以后默认更新也能跟上） */
   const generalPrompt = (): string | null => (general && systemPrompt === general.defaultPrompt ? null : systemPrompt);
-  const canSave = name.trim() !== '' && name.trim().length <= NAME_MAX && systemPrompt.trim() !== '' && systemPrompt.length <= PROMPT_MAX;
+  const canSave =
+    name.trim() !== '' &&
+    name.trim().length <= NAME_MAX &&
+    systemPrompt.trim() !== '' &&
+    systemPrompt.length <= PROMPT_MAX &&
+    description.trim().length <= DESCRIPTION_MAX;
 
   const saveMut = useMutation({
     mutationFn: (): Promise<unknown> => {
@@ -200,7 +220,10 @@ function EditorForm({
   const missingOf = (requires: readonly Capability[] | undefined) => (requires ?? []).filter((c) => !capabilities.has(c));
   const q = skillSearch.trim().toLowerCase();
   const skills = catalog.skills.filter((s) => !q || s.name.toLowerCase().includes(q) || s.description.toLowerCase().includes(q));
-  const thinkingOptions = defaultModel ? thinkingLevelsFor(defaultModel) : [];
+  // 默认模型的思考档位来自它的能力；模型不在已启用列表里（停用 / 连接已删）时没有可选档位
+  const modelOptions = useModelOptions();
+  const defaultModelLevels = modelOptions.data?.find((m) => m.ref === defaultModel)?.capabilities.thinkingLevels ?? [];
+  const thinkingOptions = defaultModel ? thinkingOptionsOf(defaultModelLevels) : [];
   const busy = saveMut.isPending || previewMut.isPending;
 
   return (
@@ -233,6 +256,25 @@ function EditorForm({
             disabled={busy}
           />
         </div>
+
+        {!general && (
+          <div className="space-y-1.5">
+            <label htmlFor="mode-description" className="text-sm font-medium">
+              {t('settings.modes.editor.descriptionLabel')}
+            </label>
+            <Textarea
+              id="mode-description"
+              rows={2}
+              value={description}
+              maxLength={DESCRIPTION_MAX}
+              placeholder={t('settings.modes.editor.descriptionPlaceholder')}
+              onChange={(e) => setDescription(e.target.value)}
+              disabled={busy}
+              className="min-h-14 text-sm"
+            />
+            <p className="text-xs text-muted-foreground">{t('settings.modes.editor.descriptionHint')}</p>
+          </div>
+        )}
 
         <div className="space-y-1.5">
           <label htmlFor="mode-prompt" className="text-sm font-medium">
@@ -390,36 +432,64 @@ function EditorForm({
                 </>
               )}
             </fieldset>
+
+            <fieldset className="space-y-2">
+              <legend className="text-sm font-medium">{t('settings.modes.editor.subagentsLabel')}</legend>
+              <p className="text-xs text-muted-foreground">
+                {t('settings.modes.editor.subagentsHint')} {t('settings.modes.editor.subagentsMax', { count: SUBAGENTS_MAX })}
+              </p>
+              {modes.isLoading ? (
+                <Skeleton className="h-12 w-full rounded-lg" />
+              ) : subagentOptions.length === 0 ? (
+                <p className="text-xs text-muted-foreground">{t('settings.modes.editor.noSubagents')}</p>
+              ) : (
+                <div className="grid gap-1.5 sm:grid-cols-2">
+                  {subagentOptions.map((m) => {
+                    const checked = subagentModeIds.includes(m.id);
+                    const full = !checked && liveSubagentIds().length >= SUBAGENTS_MAX;
+                    return (
+                      <label
+                        key={m.id}
+                        className={cn(
+                          'flex cursor-pointer items-start gap-2 rounded-lg border px-3 py-2 hover:bg-accent/40',
+                          full && 'cursor-not-allowed opacity-50',
+                        )}
+                      >
+                        <Checkbox
+                          className="mt-0.5"
+                          checked={checked}
+                          onCheckedChange={(on) => setSubagentModeIds((cur) => toggle(cur, m.id, on === true))}
+                          disabled={busy || full}
+                        />
+                        <span className="min-w-0 flex-1">
+                          <span className="block truncate text-sm font-medium">{m.name}</span>
+                          {m.description && (
+                            <span className="line-clamp-2 block text-xs text-muted-foreground">{m.description}</span>
+                          )}
+                        </span>
+                      </label>
+                    );
+                  })}
+                </div>
+              )}
+            </fieldset>
           </>
         )}
 
         <div className="grid gap-4 sm:grid-cols-2">
           <div className="space-y-1.5">
             <span className="text-sm font-medium">{t('settings.modes.editor.defaultModel')}</span>
-            <Select
-              items={{
-                [FOLLOW]: t('settings.modes.editor.followConversation'),
-                ...Object.fromEntries(MODEL_OPTIONS.map((m) => [m.value, modelDisplayName(m.value)])),
-              }}
-              value={defaultModel ?? FOLLOW}
-              onValueChange={(v) => {
-                if (typeof v !== 'string') return;
-                setDefaultModel(v || null);
+            <ModelSelect
+              value={defaultModel}
+              options={modelOptions.data ?? []}
+              noneLabel={t('settings.modes.editor.followConversation')}
+              ariaLabel={t('settings.modes.editor.defaultModel')}
+              className="w-full"
+              onChange={(ref) => {
+                setDefaultModel(ref);
                 setDefaultThinkingLevel(null);
               }}
-            >
-              <SelectTrigger aria-label={t('settings.modes.editor.defaultModel')} className="w-full">
-                <SelectValue />
-              </SelectTrigger>
-              <SelectContent>
-                <SelectItem value={FOLLOW}>{t('settings.modes.editor.followConversation')}</SelectItem>
-                {MODEL_OPTIONS.map((m) => (
-                  <SelectItem key={m.value} value={m.value}>
-                    {modelDisplayName(m.value)}
-                  </SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
+            />
           </div>
           <div className="space-y-1.5">
             <span className="text-sm font-medium">{t('settings.modes.editor.defaultThinking')}</span>

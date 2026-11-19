@@ -5,7 +5,7 @@ export const shell = {
   home: {
     tagline: 'An agent that runs on your own computer: reads and writes workspace files, runs commands, and uses skills and connectors.',
     newChat: 'New chat',
-    needKey: 'Add a model key first',
+    needKey: 'Add an API connection first',
   },
   sidebar: {
     newChat: 'New',

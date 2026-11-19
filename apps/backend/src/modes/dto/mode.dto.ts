@@ -42,6 +42,18 @@ export class ModeInputDto {
   @IsOptional()
   @IsIn(THINKING_LEVELS)
   defaultThinkingLevel?: string | null;
+
+  /** 被别的模式当作子 agent 时的用途说明；null / 缺省 = 用模式名 + 提示词开头 */
+  @IsOptional()
+  @ValidateIf((o: ModeInputDto) => o.description !== null)
+  @IsString()
+  description?: string | null;
+
+  /** 勾作子 agent 的其它模式 id（须是本人的、不能是自己） */
+  @IsOptional()
+  @IsArray()
+  @IsString({ each: true })
+  subagentModeIds?: string[];
 }
 
 /**

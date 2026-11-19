@@ -7,6 +7,7 @@ import { activePlanProvider } from '@agent-test/agent-core/modes/dynamic-context
 import type { DynamicContextProvider } from '@agent-test/agent-core/modes/dynamic-context';
 import {
   instantiateTools,
+  mountableSkills,
   resolveMode,
 } from '@agent-test/agent-core/modes/resolve-mode';
 import type { ToolRegistry } from '@agent-test/agent-core/modes/tool-registry';
@@ -14,10 +15,15 @@ import {
   priorMessageIds,
   readInterrupt,
 } from '@agent-test/agent-core/run/agent-state';
-import { consumeAgentStream } from '@agent-test/agent-core/run/consume-stream';
+import { compactHistory } from '@agent-test/agent-core/run/compaction';
+import {
+  AGENT_STREAM_MODES,
+  consumeAgentStream,
+} from '@agent-test/agent-core/run/consume-stream';
 import {
   historyFromRows,
-  type HistoryMessage,
+  REPLAY_ROW_TYPES,
+  type ReplayHistory,
   roleOf,
 } from '@agent-test/agent-core/run/history';
 import {
@@ -26,7 +32,7 @@ import {
 } from '@agent-test/agent-core/run/turn-prompts';
 import { mountSkills } from '@agent-test/agent-core/skills/skills-mount';
 import { AbortRegistry, AGENT_ABORTS } from '../agent/abort-registry';
-import { buildAgent } from '../agent/agent.factory';
+import { buildAgent, resolveChatModel } from '../agent/agent.factory';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
 import { getUserSandbox } from '../agent/sandbox';
 import {
@@ -72,6 +78,14 @@ const SANDBOX_HEARTBEAT_MS = 30_000;
 /** ask_user 的服务端兜底超时：前端 60s 倒计时是主路径，这里只兜「页面已关」，须给足思考时间 */
 const ASK_USER_TIMEOUT_MS = Number(process.env.ASK_USER_TIMEOUT_MS ?? 600000);
 
+/**
+ * checkpointer 的最小可用面：buildAgent 只要实例本身，这里另外要在每轮开跑前删 thread
+ * （RedisSaver 实现了 deleteThread，同 canvas.service 的注入方式）。
+ */
+interface ThreadDeletableCheckpointer {
+  deleteThread(threadId: string): Promise<void>;
+}
+
 /** 一轮运行的 token 会计状态（见 prepareUsage）。 */
 interface UsageContext {
   turnMessageId: string;
@@ -88,7 +102,8 @@ export class AgentProcessor extends WorkerHost {
     private readonly prisma: PrismaService,
     private readonly stream: StreamService,
     private readonly skills: SkillsService,
-    @Inject(CHECKPOINTER) private readonly checkpointer: unknown,
+    @Inject(CHECKPOINTER)
+    private readonly checkpointer: ThreadDeletableCheckpointer,
     @InjectQueue('agent-run') private readonly queue: Queue,
     private readonly media: MediaService,
     @Inject(AGENT_ABORTS) private readonly aborts: AbortRegistry,
@@ -202,8 +217,9 @@ export class AgentProcessor extends WorkerHost {
       ]);
       const env = backendEnvironment(sandbox);
       const mcpServers = await this.mcp.runtimeServers(conv.userId);
+      const mode = modeRow ? toAgentMode(modeRow) : null;
       const assembly = resolveMode({
-        mode: modeRow ? toAgentMode(modeRow) : null,
+        mode,
         generalPrompt: generalSetting?.systemPrompt ?? null,
         fragmentOverrides,
         customFragments,
@@ -212,7 +228,11 @@ export class AgentProcessor extends WorkerHost {
         installedSkills: defs,
         mcpServers,
         envPromptBlock: backendEnvPromptBlock(env.workspace),
+        // 模式勾的子 agent（其它模式）；通用模式没有
+        subagentModes: await this.modes.subagentModes(conv.userId, mode),
       });
+      // 主 agent 与子 agent 勾的技能一起挂（共用一个技能库目录）
+      const skillsToMount = mountableSkills(assembly);
 
       // ③.5 挂载技能（只挂模式勾选的）：有沙箱写进沙箱盘（deepagents skills 中间件随后扫 skillsDir），
       // 上传失败只告警不中断（沙箱仍可执行命令，仅本轮无技能）；无沙箱灌进内存只读 store。
@@ -223,7 +243,7 @@ export class AgentProcessor extends WorkerHost {
             await mountSkills({
               strategy: 'sandbox',
               sandbox,
-              skills: assembly.skills,
+              skills: skillsToMount,
             })
           ).backend;
         } catch (e) {
@@ -237,7 +257,7 @@ export class AgentProcessor extends WorkerHost {
           await mountSkills({
             strategy: 'memory',
             skillsDir: env.skillsDir,
-            skills: assembly.skills,
+            skills: skillsToMount,
           })
         ).backend;
       }
@@ -251,29 +271,52 @@ export class AgentProcessor extends WorkerHost {
       if (kind === 'resume') {
         input = new Command({ resume: { decisions } });
       } else {
-        const messages = await this.loadHistory(conversationId);
+        // 对话记忆只认 message 表：每轮开跑前清掉上一轮的 thread，checkpoint 只服务本轮内的审批续跑
+        // （不清的话，换成会保留 messages 的 saver 就会把重放的历史再叠一份，见 core run/history.ts）。
+        // 等审批时发了新消息：那次中断随 thread 一起作废（会话已被置为 running，超时 job 的 CAS 会落空）。
+        await this.checkpointer.deleteThread(conversationId);
+        const history = await this.loadHistory(conversationId);
+        // 按 token 预算压缩历史（参照 deepagents summarization 中间件）：超了就把早前部分摘要，
+        // 摘要落成 context_summary 行，之后的轮次直接复用；摘要用本轮同一个模型
+        const compacted = await compactHistory({
+          history,
+          model: await resolveChatModel(conv.model),
+          signal,
+          onError: (e) =>
+            this.logger.warn(
+              `历史摘要失败，本轮只重放近期历史 conversation=${conversationId}: ${String(e)}`,
+            ),
+        });
+        if (compacted.newSummary) {
+          await this.persist(
+            conversationId,
+            { type: 'context_summary', payload: compacted.newSummary },
+            await this.prisma.message.count({ where: { conversationId } }),
+          );
+        }
         // 历史按原样重放，不改写任何用户消息：/command 该触发哪个技能由 system prompt 约束
-        // （见 prompt-fragments 的 platform.slash_command）。技能文件已在上方 mountSkills 挂好，
-        // 不再注入 state.files。这里只取末条 user 消息做 LangSmith runName。
+        // （见 prompt-fragments 的 platform.slash_command）。这里只取末条 user 消息做 LangSmith runName。
         let lastLabel = '';
-        for (const m of messages) {
-          if (m.role !== 'user') continue;
-          lastLabel = `Agent · ${m.content.slice(0, 60)}`;
-          const cmd = parseCommand(m.content);
+        for (const text of history.userTexts) {
+          lastLabel = `Agent · ${text.slice(0, 60)}`;
+          const cmd = parseCommand(text);
           if (!cmd) continue;
           const def = await this.skills.getFor(conv.userId, cmd.name);
           if (!def) continue;
           lastLabel = `技能:${def.name} · ${cmd.args}`.slice(0, 60);
         }
         runName = lastLabel || runName;
-        input = { messages };
-        // 只认当前模式勾选的技能：模式外的 /技能名 当普通文本（不注入全文）
+        input = { messages: compacted.messages };
+        // 只认当前模式勾选的技能：模式外的 /技能名 当普通文本（不注入全文）。
+        // userTexts 含已被摘要的轮次：早前 /command 激活的技能照样续上
         skillPromptExtra = await buildSkillPrompt(
-          messages.filter((m) => m.role === 'user').map((m) => m.content),
+          history.userTexts,
           (name) =>
             assembly.skills.find((s) => s.name === name)?.files['SKILL.md'] ??
             null,
           env.skillsDir,
+          // 上下文里已有那次完整的 read_file 结果（工具调用对会重放）就不再重复注入全文
+          compacted.messages,
         );
       }
 
@@ -289,7 +332,7 @@ export class AgentProcessor extends WorkerHost {
 
       // ④ 建工具实例：描述符闭包里拿到 conversationId/userId（不经模型传递，无注入风险）、
       // 本轮沙箱与 MCP server 清单；需审批的（send_email、MCP ask）并进 interruptOn。
-      const { tools, interruptOn } = instantiateTools(
+      const { tools, interruptOn, subagents } = instantiateTools(
         assembly,
         {
           conversationId,
@@ -332,6 +375,7 @@ export class AgentProcessor extends WorkerHost {
         model: conv.model ?? undefined,
         thinkingLevel: asThinkingLevel(conv.thinkingLevel),
         dynamicContext,
+        subagents,
       });
 
       // ④ stream config：userId 进 configurable（thread 作用域）与 context（中间件用）
@@ -343,7 +387,8 @@ export class AgentProcessor extends WorkerHost {
         tags: ['spark', kind ?? 'run'],
         metadata: { conversationId, kind: kind ?? 'run' },
         context: { activePlan, userId: conv.userId },
-        streamMode: ['updates', 'messages'],
+        // tasks：把子 agent 的 namespace 对应到发起它的 task 调用（见 core consume-stream）
+        streamMode: [...AGENT_STREAM_MODES],
         subgraphs: true,
       });
 
@@ -549,16 +594,12 @@ export class AgentProcessor extends WorkerHost {
   }
 
   /**
-   * 从 DB 重放该会话的完整对话历史（按 seq；窗口与 tool_end 的处理见 core historyFromRows）。
+   * 从 DB 取该会话的重放历史（按 seq；工具调用配对、子 agent 事件、摘要切点的处理见 core historyFromRows）。
    * 用户消息带附件时，末尾拼一段「[附件]」清单（见 userMessageText）。
    */
-  private async loadHistory(conversationId: string): Promise<HistoryMessage[]> {
+  private async loadHistory(conversationId: string): Promise<ReplayHistory> {
     const rows = await this.prisma.message.findMany({
-      where: {
-        conversationId,
-        type: { in: ['message', 'tool_end'] },
-        role: { in: ['user', 'assistant', 'tool'] },
-      },
+      where: { conversationId, type: { in: [...REPLAY_ROW_TYPES] } },
       orderBy: { seq: 'asc' },
       select: { role: true, content: true, type: true, seq: true },
     });

@@ -1,7 +1,11 @@
 import type { BaseChatModel } from '@langchain/core/language_models/chat_models';
 import type { StructuredToolInterface } from '@langchain/core/tools';
 import { initChatModel } from 'langchain/chat_models/universal';
-import { type AnyBackendProtocol, createDeepAgent } from 'deepagents';
+import {
+  type AnyBackendProtocol,
+  createDeepAgent,
+  type SubAgent,
+} from 'deepagents';
 import {
   type AgentMiddleware,
   createMiddleware,
@@ -13,12 +17,14 @@ import {
   createDynamicContextMiddleware,
   type DynamicContextProvider,
 } from '../modes/dynamic-context';
+import type { SubagentSpec } from '../modes/resolve-mode';
 import type { ToolInterruptOn } from '../modes/tool-registry';
 import { injectSkillReadPolicy } from './plan-injection';
 import { keepsNativeBlocks, stripNonPortableBlocks } from './portable-content';
 import { type ThinkingLevel, thinkingModelParams } from './thinking-level';
 import { resolveModelName } from './models';
 import { askUserTool } from './tools/ask-user.tool';
+import { recoverInvalidToolCalls } from './invalid-tool-calls';
 import { recoverToolInputError } from './tool-input-recovery';
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -48,6 +54,13 @@ const skillReadPolicyMiddleware = createMiddleware({
   wrapModelCall: injectSkillReadPolicy as never,
 });
 
+/** 模型给出的工具参数不是合法 JSON（invalid_tool_calls）→ 修复或让模型重给，不让本轮静默结束（见 invalid-tool-calls.ts） */
+const invalidToolCallMiddleware = createMiddleware({
+  name: 'invalidToolCallMiddleware',
+  wrapModelCall: (request, handler) =>
+    recoverInvalidToolCalls(request, async (r) => handler(r)),
+});
+
 /** 工具入参校验不过 → 把问题回给模型改参重试，而不是整轮失败（见 tool-input-recovery.ts） */
 const toolInputRecoveryMiddleware = createMiddleware({
   name: 'toolInputRecoveryMiddleware',
@@ -67,14 +80,69 @@ const toolInputRecoveryMiddleware = createMiddleware({
  * API key 由各 provider 包从 env 自取（GOOGLE_API_KEY / DEEPSEEK_API_KEY）。
  * 思考深度档位在这里映射成模型参数；该模型不支持的档位静默回落 auto（见 thinkingModelParams）。
  */
-function resolveChatModel(
-  model?: string,
+export function resolveChatModel(
+  model?: string | null,
   thinkingLevel?: ThinkingLevel | null,
-) {
+): Promise<BaseChatModel> {
   const name = resolveModelName(model);
   const thinking = thinkingModelParams(name, thinkingLevel);
   if (name.includes(':')) return initChatModel(name, thinking);
   return initChatModel(name, { modelProvider: 'google-genai', ...thinking });
+}
+
+/** 解析好的模型：实例 + 能否原样收下历史里的 provider 原生内容块（只有 Gemini 能，见 portable-content.ts） */
+export interface ResolvedModel {
+  model: BaseChatModel;
+  keepsNativeBlocks: boolean;
+}
+
+/**
+ * 按引用解析模型。缺省按 `provider:model` 名字解析（web：env 里的 Key + 白名单）；desktop 传自己的解析器，
+ * 引用是「连接 id/模型 id」，Key 与 Base URL 来自用户配置的连接（见 providers/）。
+ */
+export type ModelResolver = (
+  ref: string | null | undefined,
+  thinkingLevel?: ThinkingLevel | null,
+) => Promise<ResolvedModel>;
+
+const resolveByName: ModelResolver = async (ref, thinkingLevel) => ({
+  model: await resolveChatModel(ref, thinkingLevel),
+  keepsNativeBlocks: keepsNativeBlocks(resolveModelName(ref)),
+});
+
+/**
+ * 内容块净化（与画布同一套，见 portable-content.ts）：非 Gemini 模型收不下 checkpoint 里的
+ * provider 原生块与工具结果里的 image 块，会整轮 4xx 且每轮重放。只改发给模型的那一份。
+ */
+function portableContentMiddleware(keepsNative: boolean) {
+  if (keepsNative) return null;
+  return createMiddleware({
+    name: 'portableContentMiddleware',
+    wrapModelCall: (request, handler) =>
+      handler({
+        ...request,
+        messages: stripNonPortableBlocks(request.messages),
+      }),
+  });
+}
+
+const HITL_DECISIONS = ['approve', 'edit', 'reject'] as const;
+type HitlDecision = (typeof HITL_DECISIONS)[number];
+const isHitlDecision = (d: string): d is HitlDecision =>
+  (HITL_DECISIONS as readonly string[]).includes(d);
+
+/** 审批表收窄成 HITL 中间件认的决策集（子 agent 的 interruptOn 类型比主 agent 严格） */
+function hitlTable(
+  table: Record<string, boolean | { allowedDecisions: string[] }>,
+): Record<string, boolean | { allowedDecisions: HitlDecision[] }> {
+  return Object.fromEntries(
+    Object.entries(table).map(([name, v]) => [
+      name,
+      typeof v === 'boolean'
+        ? v
+        : { allowedDecisions: v.allowedDecisions.filter(isHitlDecision) },
+    ]),
+  );
 }
 
 // ─────────────────────────────────────────────────────────────────────────────
@@ -124,6 +192,11 @@ export interface BuildAgentOptions {
   model?: string;
   /** 口子：已构造好的模型实例（explicit cache 之类的包装留给宿主做）；给了就忽略 model / thinkingLevel */
   modelInstance?: BaseChatModel;
+  /**
+   * 口子：按引用解析模型（主 agent 的 model 与子 agent 的模型都经它）；缺省按 `provider:model` 名字解析。
+   * desktop 传连接解析器（引用为「连接 id/模型 id」）。
+   */
+  resolveModel?: ModelResolver;
   /** 思考深度档位；缺省 / null = auto */
   thinkingLevel?: ThinkingLevel | null;
   /** RedisSaver / SqliteSaver；配 interruptOn 审批时必须传 */
@@ -132,6 +205,12 @@ export interface BuildAgentOptions {
   dynamicContext?: readonly DynamicContextProvider[];
   /** 口子：失控守护 */
   guardrails?: AgentGuardrails;
+  /**
+   * instantiateTools 产出的子 agent（模式勾选的其它模式）。主 agent 经 task 工具委派；deepagents 内置的
+   * general-purpose 子 agent 照常存在。子 agent 的审批 = 自己工具的审批表 + interruptOnOverride
+   * （desktop 的权限档位对子 agent 的写 / 执行同样生效）。
+   */
+  subagents?: readonly SubagentSpec[];
 }
 
 /**
@@ -155,28 +234,16 @@ export interface BuiltAgent {
  *
  * 中间件顺序即 recency（数组靠后 = 更内层 = systemMessage.concat 更晚 = 离模型更近）：
  *   守护（guardrails）→ 宿主中间件 → 动态上下文（计划等）→ 技能必读规则（离模型最近，有技能才挂）
- *   → 内容块净化（作用于最终发出的消息）→ 工具入参自愈
+ *   → 内容块净化（作用于最终发出的消息）→ 坏工具调用自愈（紧贴模型）→ 工具入参自愈
  */
 export async function buildAgent(opts: BuildAgentOptions): Promise<BuiltAgent> {
-  const model =
-    opts.modelInstance ??
-    (await resolveChatModel(opts.model, opts.thinkingLevel));
-
-  // 内容块净化（与画布同一套，见 portable-content.ts）：非 Gemini 模型收不下 checkpoint 里的
-  // provider 原生块与工具结果里的 image 块，会整轮 4xx 且每轮重放。只改发给模型的那一份。
-  const nativeOk = opts.modelInstance
-    ? false
-    : keepsNativeBlocks(resolveModelName(opts.model));
-  const contentSanitizer = nativeOk
-    ? null
-    : createMiddleware({
-        name: 'portableContentMiddleware',
-        wrapModelCall: (request, handler) =>
-          handler({
-            ...request,
-            messages: stripNonPortableBlocks(request.messages),
-          }),
-      });
+  const resolve = opts.resolveModel ?? resolveByName;
+  // 宿主给的实例认不出 provider：保守地一律净化
+  const main: ResolvedModel = opts.modelInstance
+    ? { model: opts.modelInstance, keepsNativeBlocks: false }
+    : await resolve(opts.model, opts.thinkingLevel);
+  const model = main.model;
+  const contentSanitizer = portableContentMiddleware(main.keepsNativeBlocks);
 
   const guardrails = [
     ...(opts.guardrails?.modelCallLimit
@@ -203,6 +270,8 @@ export async function buildAgent(opts: BuildAgentOptions): Promise<BuiltAgent> {
     createDynamicContextMiddleware(opts.dynamicContext ?? []),
     ...(opts.skillsDir ? [skillReadPolicyMiddleware] : []),
     ...(contentSanitizer ? [contentSanitizer] : []),
+    // 紧贴模型：坏工具调用在响应写进 state 之前修好，HITL 审批与路由看到的已是修好的调用
+    invalidToolCallMiddleware,
     // 最内层：先于 deepagents 的中间件接住工具入参校验错误
     toolInputRecoveryMiddleware,
   ];
@@ -212,6 +281,41 @@ export async function buildAgent(opts: BuildAgentOptions): Promise<BuiltAgent> {
   const hostInterruptOn = { ...opts.interruptOn, ...opts.interruptOnOverride };
   // 一项审批都没有就不挂 HITL 中间件（它在没有 checkpointer 时也无从中断）
   const needsHitl = askUser || Object.keys(hostInterruptOn).length > 0;
+  const skillSources = opts.skillsDir
+    ? [`${opts.skillsDir.replace(/\/+$/, '')}/`]
+    : undefined;
+
+  const subagents: SubAgent[] = [];
+  for (const spec of opts.subagents ?? []) {
+    // 与主 agent 同一个模型就复用实例（带着本会话的思考档位）
+    const sameModel =
+      spec.model === null ||
+      (!opts.modelInstance &&
+        resolveModelName(spec.model) === resolveModelName(opts.model));
+    const sub = sameModel ? main : await resolve(spec.model, null);
+    const subInterruptOn = hitlTable({
+      ...spec.interruptOn,
+      ...opts.interruptOnOverride,
+    });
+    const sanitizer = portableContentMiddleware(sub.keepsNativeBlocks);
+    subagents.push({
+      name: spec.name,
+      description: spec.description,
+      systemPrompt: spec.systemPrompt,
+      tools: [...spec.tools] as never[],
+      model: sub.model,
+      middleware: [
+        ...(sanitizer ? [sanitizer] : []),
+        invalidToolCallMiddleware,
+        toolInputRecoveryMiddleware,
+      ],
+      // 没有自己的审批项就不传：deepagents 让子 agent 继承主 agent 的审批表（含宿主覆盖）
+      ...(Object.keys(subInterruptOn).length > 0 && {
+        interruptOn: subInterruptOn,
+      }),
+      ...(spec.skills && skillSources && { skills: skillSources }),
+    });
+  }
 
   return createDeepAgent({
     model,
@@ -220,9 +324,8 @@ export async function buildAgent(opts: BuildAgentOptions): Promise<BuiltAgent> {
       ? [askUserTool, ...opts.tools]
       : [...opts.tools]) as never[],
     backend: opts.backend,
-    skills: opts.skillsDir
-      ? [`${opts.skillsDir.replace(/\/+$/, '')}/`]
-      : undefined,
+    skills: skillSources,
+    subagents,
     contextSchema,
     middleware,
     // ask_user 只允许两种决策：approve=采纳建议答案；edit=前端把用户答案写进 args.answers 后执行。

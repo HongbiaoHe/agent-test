@@ -16,7 +16,6 @@ import { ThinkingSwitcher } from "@/components/agent/thinking-switcher";
 import { TokenUsageDialog } from "@/components/agent/token-usage-dialog";
 import { ATTACHMENTS_MAX } from "@/components/attachments/attachments";
 import { ComposerAttachments } from "@/components/attachments/composer-attachments";
-import { McpAppCard, McpReconnectCard } from "@/components/mcp";
 import { Badge } from "@/components/ui/badge";
 import { JumpToLatest } from "@/components/chat/jump-to-latest";
 import { useChatScroll } from "@/components/chat/use-chat-scroll";
@@ -30,26 +29,17 @@ import type { ThinkingLevel } from "@/lib/thinking-level";
 import { cn } from "@/lib/utils";
 
 import type { WorkspacePermission } from "../../../../../shared/workspace";
-import { modelDisplayName } from "../lib/models";
+import { usageModelLabel } from "../../llm/model-options";
 import type { Approval, ThreadItem } from "../lib/thread";
-import { isSameDay } from "../lib/time";
 import { ApprovalPanel } from "./approval-panel";
-import { AskUserAnswers } from "./ask-user-answers";
-import { BackgroundTaskCard, TaskNotificationRow } from "./background-task-card";
 import { isAskUserApproval, QuestionPanel } from "./question-panel";
-import { ChatMessage } from "./chat-message";
-import { DayDivider } from "./day-divider";
-import { MediaGroup } from "./media-card";
 import { ModelSwitcher } from "./model-switcher";
 import { ModeSwitcher } from "./mode-switcher";
 import { PermissionSwitcher } from "./permission-switcher";
-import { PreviewCard } from "./preview-card";
-import { VideoProjectCard } from "@/features/video-editor";
 import { WorkspaceFilesButton } from "./workspace-panel";
 import { TaskPlanPanel } from "./task-plan-panel";
 import { ThinkingIndicator } from "./thinking-indicator";
-import { type ActivityItem, ActivityGroup } from "./activity-group";
-import { TurnFooter } from "./turn-footer";
+import { ThreadRows } from "./thread-rows";
 
 /** `/` 补全面板分组顺序（Built-in 在前，与设置页一致） */
 const CMD_KIND_ORDER: SkillKind[] = ["builtin", "github", "custom"];
@@ -75,6 +65,9 @@ export function ChatThread({
   onModelChange,
   thinkingLevel,
   onThinkingLevelChange,
+  thinkingLevels,
+  sendDisabled = false,
+  composerNotice,
   headerInset,
   headerTitle,
   headerTools,
@@ -113,6 +106,12 @@ export function ChatThread({
   /** 思考深度（对当前模型生效的档位） */
   thinkingLevel: ThinkingLevel;
   onThinkingLevelChange: (level: ThinkingLevel) => void;
+  /** 当前模型可选的思考档位（来自模型能力） */
+  thinkingLevels: readonly ThinkingLevel[];
+  /** 不能发送（如还没有可用模型）：发送按钮置灰 */
+  sendDisabled?: boolean;
+  /** 输入框上方的提示（如引导去添加 API 连接） */
+  composerNotice?: ReactNode;
   /** 侧栏收起时顶栏左侧让出红绿灯与侧栏开关的位置（padding 类名） */
   headerInset?: string;
   /** 顶栏标题位（桌面端：标题 + 会话菜单）；缺省渲染纯文本标题 */
@@ -148,7 +147,7 @@ export function ChatThread({
         .filter(Boolean),
     );
   const [dragging, setDragging] = useState(false);
-  const canSend = !busy && (draft.trim().length > 0 || attachments.length > 0);
+  const canSend = !busy && !sendDisabled && (draft.trim().length > 0 || attachments.length > 0);
   // 滚动编排：发送后把这条消息顶到视口顶部，回复在其下方生长而视图不动；
   // 底部留白只缩不涨；跟随底部默认关，只由「回到最新」按钮开启。
   const { contentRef, spacerRef, atLatest, armAnchor, jumpToLatest } =
@@ -253,32 +252,6 @@ export function ChatThread({
   );
   const streamItems = items.filter((it) => it.kind !== "plan");
 
-  // 把相邻的思考与工具调用收成一个活动组，交给 ActivityGroup 渲染（单项不加组头）；
-  // 其余消息照常一条一条交给 ChatMessage。
-  // 用户消息与上一条用户消息不在同一天时，前面插一条日期分隔线；第一条用户消息前也插，
-  // 但标 first —— 是今天就不显示（全是今天的会话不出分隔线）。
-  type Row =
-    | { row: "msg"; item: ThreadItem }
-    | { row: "activity"; id: string; items: ActivityItem[] }
-    | { row: "day"; id: string; at: number; first: boolean };
-  const rows: Row[] = [];
-  let prevUserAt: number | null = null;
-  for (const it of streamItems) {
-    if (it.kind === "user" && it.at != null) {
-      if (prevUserAt == null || !isSameDay(prevUserAt, it.at)) {
-        rows.push({ row: "day", id: `day-${it.id}`, at: it.at, first: prevUserAt == null });
-      }
-      prevUserAt = it.at;
-    }
-    const last = rows[rows.length - 1];
-    if (it.kind === "tool" || it.kind === "reasoning") {
-      if (last?.row === "activity") last.items.push(it);
-      else rows.push({ row: "activity", id: it.id, items: [it] });
-    } else {
-      rows.push({ row: "msg", item: it });
-    }
-  }
-
   // 思考指示器仅在「忙、非审批、且末项不是正在流式的气泡/调用中的工具卡」时可见——
   // 填补发送→首 token/工具前、工具完成→下段文本前、两段之间的空档；有实时内容时自动让位。
   // 整轮 busy 期间都挂载（见下方渲染），仅切显隐，使秒数跨空档连续。
@@ -334,7 +307,7 @@ export function ChatThread({
             onOpenChange={setUsageOpen}
             queryKey={["conversation-token-usage", conversationId]}
             queryFn={() => getConversationTokenUsage(conversationId)}
-            modelLabel={modelDisplayName}
+            modelLabel={usageModelLabel}
           />
         )}
       </header>
@@ -379,64 +352,17 @@ export function ChatThread({
               </div>
             ) : (
               <>
-                {rows.map((r, i) =>
-                  r.row === "day" ? (
-                    <DayDivider key={r.id} at={r.at} hideIfToday={r.first} />
-                  ) : r.row === "activity" ? (
-                    <ActivityGroup
-                      key={r.id}
-                      items={r.items}
-                      // 末尾那组且本轮还在跑：组头显示「Working」
-                      live={busy && i === rows.length - 1}
-                      activeDetailId={activeDetailId}
-                      onOpenDetail={onOpenDetail}
-                    />
-                  ) : r.item.kind === "media" ? (
-                    // 媒体卡片与助手内容同列左对齐，conversationId 必有（卡片只在已有会话里出现）
-                    <div key={r.item.id}>
-                      <MediaGroup
-                        conversationId={conversationId as string}
-                        generationIds={r.item.generationIds}
-                        mediaType={r.item.mediaType}
-                      />
-                    </div>
-                  ) : r.item.kind === "preview" ? (
-                    <PreviewCard key={r.item.id} spec={r.item.spec} />
-                  ) : r.item.kind === "video_project" ? (
-                    <VideoProjectCard
-                      key={r.item.id}
-                      conversationId={conversationId as string}
-                      info={r.item.info}
-                    />
-                  ) : r.item.kind === "bg_task" ? (
-                    <BackgroundTaskCard
-                      key={r.item.id}
-                      conversationId={conversationId as string}
-                      taskId={r.item.taskId}
-                    />
-                  ) : r.item.kind === "notification" ? (
-                    <TaskNotificationRow key={r.item.id} notification={r.item.notification} />
-                  ) : r.item.kind === "mcp_app" ? (
-                    <McpAppCard
-                      key={r.item.id}
-                      app={r.item.app}
-                      conversationId={conversationId ?? undefined}
-                      toolCallId={r.item.callId}
-                      onFillPrompt={(text) => {
-                        setDraft(text);
-                        inputRef.current?.focus({ preventScroll: true });
-                      }}
-                    />
-                  ) : r.item.kind === "mcp_auth" ? (
-                    <McpReconnectCard key={r.item.id} auth={r.item.auth} />
-                  ) : r.item.kind === "qa" ? (
-                    <AskUserAnswers key={r.item.id} answers={r.item.answers} />
-                  ) : r.item.kind === "turn" ? (
-                    <TurnFooter key={r.item.id} item={r.item} />
-                  ) : (
-                    <ChatMessage key={r.item.id} item={r.item} />
-                  ),
-                )}
+                <ThreadRows
+                  items={streamItems}
+                  live={busy}
+                  conversationId={conversationId}
+                  activeDetailId={activeDetailId}
+                  onOpenDetail={onOpenDetail}
+                  onFillPrompt={(text) => {
+                    setDraft(text);
+                    inputRef.current?.focus({ preventScroll: true });
+                  }}
+                />
                 {busy && (
                   <ThinkingIndicator visible={thinkingVisible} startedAt={turnStartedAt} />
                 )}
@@ -454,6 +380,8 @@ export function ChatThread({
       {!isNewChat && (
       <div className="shrink-0 px-5 pb-4">
         <div className="relative mx-auto max-w-3xl">
+          {composerNotice}
+
           {/* 任务计划：固定在输入框上方，可折叠/展开 */}
           {plan && <TaskPlanPanel todos={plan.todos} />}
 
@@ -588,7 +516,7 @@ export function ChatThread({
                   disabled={busy}
                 />
                 <ThinkingSwitcher
-                  model={model}
+                  levels={thinkingLevels}
                   value={thinkingLevel}
                   onChange={onThinkingLevelChange}
                   disabled={busy}

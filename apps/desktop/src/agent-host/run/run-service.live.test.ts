@@ -18,6 +18,8 @@ import { ModeStore } from '../modes/mode-store';
 import { installEnvProxy } from '../proxy';
 import { SkillStore } from '../skills/skill-store';
 import { BackgroundService } from '../background/background-service';
+import { LlmStore } from '../llm/llm-store';
+import { createModelResolver } from '../llm/model-resolver';
 import { RunService } from './run-service';
 import { buildDesktopRegistry } from './tool-registry';
 
@@ -34,6 +36,13 @@ describe.runIf(live)('RunService（真实模型）', () => {
     installEnvProxy();
     dir = await mkdtemp(join(tmpdir(), 'spark-live-'));
     const db = openDatabase(join(dir, 'spark.db'));
+    // 用真实 Gemini Key 建一个连接、启用 gemini-3.8-flash 并设为默认模型
+    const keyOf = () => process.env.GOOGLE_API_KEY ?? null;
+    const llm = new LlmStore(db, keyOf);
+    const conn = llm.createConnection({ name: 'Gemini', protocol: 'gemini', baseUrl: 'https://generativelanguage.googleapis.com', presetId: 'gemini' });
+    llm.addManualModel(conn.id, 'gemini-3.8-flash');
+    llm.setDefaultModel(`${conn.id}/gemini-3.8-flash`);
+    let bg: BackgroundService | null = null;
     repo = new ConversationRepo(db, () => join(dir, 'ws'));
     skills = new SkillStore(db, join(dir, 'skills-lib'), join(process.cwd(), 'resources', 'skills'));
     runs = new RunService({
@@ -42,17 +51,16 @@ describe.runIf(live)('RunService（真实模型）', () => {
       skills,
       mcp: new McpStore(db, 'http://127.0.0.1:1/cb', () => Promise.resolve()),
       modes: new ModeStore(db),
-      registry: buildDesktopRegistry({ webApi: null, skills, skillsChanged: () => undefined, background: () => null }),
-      config: () => ({
-        workspaceDir: join(dir, 'ws'),
-        defaultModel: 'google-genai:gemini-3.8-flash',
-        runtimeRoot: join(dir, 'runtime'),
-      }),
+      // 与 agent-host 入口同样经 getter 延迟取后台任务服务（RunService 之后才装配）
+      registry: buildDesktopRegistry({ webApi: null, skills, skillsChanged: () => undefined, background: () => bg }),
+      config: () => ({ workspaceDir: join(dir, 'ws'), runtimeRoot: join(dir, 'runtime') }),
+      llm,
+      resolveModel: createModelResolver(llm, keyOf),
       emit: (conversationId, event) => events.push({ conversationId, event }),
       listChanged: () => undefined,
       log: (m) => console.log(m),
     });
-    const bg = new BackgroundService({
+    bg = new BackgroundService({
       db,
       repo,
       callTool: () => Promise.reject(new Error('no mcp in live test')),

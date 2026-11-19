@@ -51,6 +51,7 @@ import {
   toCustomFragmentView,
   toFragmentView,
   toGeneralModeView,
+  toAgentMode,
   toModeView,
 } from './mode-view';
 import type {
@@ -102,6 +103,7 @@ export class ModesService {
 
   async create(userId: string, input: ModeInputDto): Promise<AgentModeView> {
     const data = this.validate(input, await this.customFragmentIds(userId));
+    await this.assertSubagentModes(userId, null, data.subagentModeIds);
     const row = await this.prisma.agentMode.create({
       data: { userId, ...data },
     });
@@ -115,18 +117,69 @@ export class ModesService {
   ): Promise<AgentModeView> {
     await this.findOwned(userId, id);
     const data = this.validate(input, await this.customFragmentIds(userId));
+    await this.assertSubagentModes(userId, id, data.subagentModeIds);
     const row = await this.prisma.agentMode.update({ where: { id }, data });
     return toModeView(row);
   }
 
-  /** 删模式：引用它的会话 modeId 置空（回通用模式），同一事务里再删行。 */
+  /**
+   * mode 勾作子 agent 的模式（resolveMode 的 subagentModes；worker 装配与预览共用）。
+   * 已被删掉的 id 查不到，resolveMode 会把它记进 unavailable。
+   */
+  async subagentModes(
+    userId: string,
+    mode: AgentMode | null,
+  ): Promise<AgentMode[]> {
+    if (!mode || mode.subagentModeIds.length === 0) return [];
+    const rows = await this.prisma.agentMode.findMany({
+      where: { userId, id: { in: mode.subagentModeIds } },
+    });
+    return rows.map(toAgentMode);
+  }
+
+  /** 子 agent 只能勾本人的其它模式（不能勾自己：只展开一层，勾自己没有意义） */
+  private async assertSubagentModes(
+    userId: string,
+    selfId: string | null,
+    ids: readonly string[],
+  ): Promise<void> {
+    if (ids.length === 0) return;
+    if (selfId && ids.includes(selfId)) {
+      throw new BusinessException({
+        ...ErrorCodes.MODE_INVALID,
+        message: 'subagentModeIds: 不能把模式自己勾作子 agent',
+      });
+    }
+    const owned = await this.prisma.agentMode.count({
+      where: { userId, id: { in: [...ids] } },
+    });
+    if (owned !== new Set(ids).size) {
+      throw new BusinessException({
+        ...ErrorCodes.MODE_INVALID,
+        message: 'subagentModeIds: 包含不存在的模式',
+      });
+    }
+  }
+
+  /** 删模式：引用它的会话 modeId 置空（回通用模式）、别的模式把它从子 agent 里去掉，同一事务里再删行。 */
   async remove(userId: string, id: string): Promise<{ id: string }> {
     await this.findOwned(userId, id);
+    const referrers = (
+      await this.prisma.agentMode.findMany({
+        where: { userId, subagentModeIds: { array_contains: id } },
+      })
+    ).map(toAgentMode);
     await this.prisma.$transaction([
       this.prisma.conversation.updateMany({
         where: { userId, modeId: id },
         data: { modeId: null },
       }),
+      ...referrers.map((m) =>
+        this.prisma.agentMode.update({
+          where: { id: m.id },
+          data: { subagentModeIds: m.subagentModeIds.filter((x) => x !== id) },
+        }),
+      ),
       this.prisma.agentMode.delete({ where: { id } }),
     ]);
     return { id };
@@ -438,6 +491,7 @@ export class ModesService {
       installedSkills,
       mcpServers,
       envPromptBlock: backendEnvPromptBlock(env.workspace),
+      subagentModes: await this.subagentModes(userId, mode),
     });
     return {
       systemPrompt: assembly.systemPrompt,

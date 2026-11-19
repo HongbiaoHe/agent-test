@@ -56,6 +56,8 @@ const modeRow = z.object({
   skill_names: jsonStringList,
   default_model: z.string().nullable(),
   default_thinking_level: z.string().nullable(),
+  description: z.string().nullable(),
+  subagent_mode_ids: jsonStringList,
   created_at: z.number(),
   updated_at: z.number(),
 });
@@ -94,6 +96,8 @@ function toMode(r: z.infer<typeof modeRow>): AgentMode {
     skillNames: r.skill_names,
     defaultModel: r.default_model,
     defaultThinkingLevel: r.default_thinking_level,
+    description: r.description,
+    subagentModeIds: r.subagent_mode_ids,
   });
 }
 
@@ -121,14 +125,14 @@ export class ModeStore {
   }
 
   create(raw: AgentModeInput): AgentMode {
-    const input = this.validate(raw);
+    const input = this.validate(raw, null);
     const now = Date.now();
     const id = randomUUID();
     this.db
       .prepare(
         `INSERT INTO agent_mode (id, name, system_prompt, tool_names, mcp_server_ids, skill_names,
-           default_model, default_thinking_level, created_at, updated_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+           default_model, default_thinking_level, description, subagent_mode_ids, created_at, updated_at)
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
       )
       .run(
         id,
@@ -139,6 +143,8 @@ export class ModeStore {
         JSON.stringify(input.skillNames),
         input.defaultModel,
         input.defaultThinkingLevel,
+        input.description,
+        JSON.stringify(input.subagentModeIds),
         now,
         now,
       );
@@ -147,11 +153,12 @@ export class ModeStore {
 
   update(id: string, raw: AgentModeInput): AgentMode {
     this.require(id);
-    const input = this.validate(raw);
+    const input = this.validate(raw, id);
     this.db
       .prepare(
         `UPDATE agent_mode SET name = ?, system_prompt = ?, tool_names = ?, mcp_server_ids = ?, skill_names = ?,
-           default_model = ?, default_thinking_level = ?, updated_at = ? WHERE id = ?`,
+           default_model = ?, default_thinking_level = ?, description = ?, subagent_mode_ids = ?, updated_at = ?
+         WHERE id = ?`,
       )
       .run(
         input.name,
@@ -161,17 +168,34 @@ export class ModeStore {
         JSON.stringify(input.skillNames),
         input.defaultModel,
         input.defaultThinkingLevel,
+        input.description,
+        JSON.stringify(input.subagentModeIds),
         Date.now(),
         id,
       );
     return this.require(id);
   }
 
-  /** 删除并把引用它的会话退回通用模式；返回受影响的会话数 */
+  /** mode 勾作子 agent 的模式（resolveMode 的 subagentModes）；已被删的 id 查不到，由 resolveMode 记 unavailable */
+  subagentModes(mode: AgentMode | null): AgentMode[] {
+    if (!mode) return [];
+    return mode.subagentModeIds.flatMap((id) => {
+      const m = this.get(id);
+      return m ? [m] : [];
+    });
+  }
+
+  /** 删除并把引用它的会话退回通用模式、别的模式把它从子 agent 里去掉；返回受影响的会话数 */
   remove(id: string): number {
     this.require(id);
+    const referrers = this.list().filter((m) => m.subagentModeIds.includes(id));
     return transaction(this.db, () => {
       const res = this.db.prepare('UPDATE conversation SET mode_id = NULL WHERE mode_id = ?').run(id);
+      for (const m of referrers) {
+        this.db
+          .prepare('UPDATE agent_mode SET subagent_mode_ids = ? WHERE id = ?')
+          .run(JSON.stringify(m.subagentModeIds.filter((x) => x !== id)), m.id);
+      }
       this.db.prepare('DELETE FROM agent_mode WHERE id = ?').run(id);
       return Number(res.changes);
     });
@@ -327,9 +351,14 @@ export class ModeStore {
     }
   }
 
-  private validate(raw: AgentModeInput): AgentModeInput {
+  /** selfId：更新时的模式 id（子 agent 不能勾自己）；新建为 null */
+  private validate(raw: AgentModeInput, selfId: string | null): AgentModeInput {
     const input = AgentModeInputSchema.parse(raw);
     this.assertKnownPlaceholders(input.systemPrompt);
+    for (const sub of input.subagentModeIds) {
+      if (sub === selfId) throw new Error(hostI18n.t('errors.modes.subagentSelf'));
+      if (!this.get(sub)) throw new Error(hostI18n.t('errors.modes.subagentNotFound', { id: sub }));
+    }
     return input;
   }
 }

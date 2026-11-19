@@ -23,6 +23,16 @@ export const AgentModeInputSchema = z.object({
   /** 新建会话时回填的默认模型 / 思考档位；只在创建时生效，之后以会话自己的值为准 */
   defaultModel: z.string().nullable().default(null),
   defaultThinkingLevel: z.string().nullable().default(null),
+  /**
+   * 用途说明：本模式被别的模式当作子 agent 时，主 agent 据此决定何时委派（进 task 工具的说明）。
+   * 留空则用模式名 + 提示词开头代替。
+   */
+  description: trimmed.pipe(z.string().max(500)).nullable().default(null),
+  /**
+   * 子 agent：勾选的其它模式 id。每个被勾的模式（提示词 / 工具 / 技能 / MCP / 默认模型）装配成一个
+   * deepagents 子 agent，主 agent 经 task 工具委派（可并行）。只展开一层：子 agent 自己勾的子 agent 不生效。
+   */
+  subagentModeIds: z.array(z.string().min(1)).max(10).default([]),
 });
 export type AgentModeInput = z.output<typeof AgentModeInputSchema>;
 

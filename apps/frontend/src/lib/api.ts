@@ -1394,6 +1394,10 @@ export interface AgentMode {
   /** 新建会话时回填的默认模型；null = 跟随会话 */
   defaultModel: string | null;
   defaultThinkingLevel: string | null;
+  /** 用途说明（被别的模式勾作子 agent 时给主 agent 看，决定何时委派）；null = 后端用模式名 + 提示词开头 */
+  description: string | null;
+  /** 勾作子 agent 的其它模式 id（主 agent 经 task 工具委派；只展开一层） */
+  subagentModeIds: string[];
   createdAt: string;
   updatedAt: string;
 }
@@ -1424,7 +1428,12 @@ export interface ModeCatalog {
 /** POST /modes/preview：拼装后的最终提示词 + 本环境不可用的勾选项。 */
 export interface ModePreview {
   systemPrompt: string;
-  unavailable: { kind: "tool" | "mcp_server" | "skill"; name: string; reason: string }[];
+  /** kind=subagent 时 name 是查不到的模式 id */
+  unavailable: {
+    kind: "tool" | "mcp_server" | "skill" | "subagent";
+    name: string;
+    reason: string;
+  }[];
 }
 
 export function listModes(): Promise<AgentMode[]> {

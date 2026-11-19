@@ -23,9 +23,28 @@ const input = {
   skillNames: ['tvc-director'],
   defaultModel: 'google-genai:gemini-3.8-flash',
   defaultThinkingLevel: null,
+  description: null,
+  subagentModeIds: [] as string[],
 };
 
 describe('ModeStore', () => {
+  it('子 agent：用途说明与勾选的模式 id 往返；勾自己 / 勾不存在的拒绝；删模式时从别的模式里去掉', () => {
+    const store = new ModeStore(openDatabase(join(dir, 'spark.db')));
+    const writer = store.create({ ...input, name: '写手', description: ' 写长文 ' });
+    expect(writer.description).toBe('写长文');
+    const critic = store.create({ ...input, name: '评审' });
+    const lead = store.create({ ...input, name: '主编', subagentModeIds: [writer.id, critic.id] });
+    expect(lead.subagentModeIds).toEqual([writer.id, critic.id]);
+    expect(store.subagentModes(lead).map((m) => m.name)).toEqual(['写手', '评审']);
+    expect(store.subagentModes(null)).toEqual([]);
+
+    expect(() => store.update(lead.id, { ...input, subagentModeIds: [lead.id] })).toThrow('不能把模式自己勾作子 agent');
+    expect(() => store.create({ ...input, subagentModeIds: ['ghost'] })).toThrow('子 agent 模式不存在');
+
+    store.remove(writer.id);
+    expect(store.get(lead.id)?.subagentModeIds).toEqual([critic.id]);
+  });
+
   it('create → list → update → remove；JSON 列往返、名字 trim、按名排序', () => {
     const store = new ModeStore(openDatabase(join(dir, 'spark.db')));
     const a = store.create(input);

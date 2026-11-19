@@ -16,7 +16,27 @@ describe('AgentModeInputSchema', () => {
       skillNames: [],
       defaultModel: null,
       defaultThinkingLevel: null,
+      description: null,
+      subagentModeIds: [],
     });
+  });
+
+  it('子 agent：用途说明去空白、最多勾 10 个模式', () => {
+    const v = AgentModeInputSchema.parse({
+      name: 'x',
+      systemPrompt: 'x',
+      description: ' 写长文 ',
+      subagentModeIds: ['a'],
+    });
+    expect(v.description).toBe('写长文');
+    expect(v.subagentModeIds).toEqual(['a']);
+    expect(() =>
+      AgentModeInputSchema.parse({
+        name: 'x',
+        systemPrompt: 'x',
+        subagentModeIds: Array.from({ length: 11 }, (_, i) => `m${i}`),
+      }),
+    ).toThrow();
   });
 
   it('name 空 / systemPrompt 空 / 超长都拒绝', () => {
