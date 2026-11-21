@@ -85,7 +85,7 @@ function useObjectUrl(blob: Blob | undefined): string | null {
  * 会话媒体列表（卡片状态的唯一数据源）。单卡与批量组共用同一 query key，
  * use-conversation 收到 media_update 时就地改状态 + invalidate 的也是它。
  */
-function useConversationMedia(conversationId: string) {
+export function useConversationMedia(conversationId: string) {
   return useQuery({
     queryKey: ["conversation-media", conversationId],
     queryFn: () => listConversationMedia(conversationId),

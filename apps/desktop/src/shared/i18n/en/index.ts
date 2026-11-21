@@ -7,5 +7,6 @@ import { settings } from './settings';
 import { extensions } from './extensions';
 import { errors } from './errors';
 import { video } from './video';
+import { canvas } from './canvas';
 
-export const en = { common, shell, chat, agent, viewer, settings, extensions, errors, video };
+export const en = { common, shell, chat, agent, viewer, settings, extensions, errors, video, canvas };

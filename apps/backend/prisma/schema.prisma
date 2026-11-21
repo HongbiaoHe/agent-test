@@ -229,6 +229,12 @@ model CanvasSession {
   // 否则消息一涨裁剪点就平移，整段前缀跟着变、prompt cache 全废（见 processor.loadHistory）。
   historyBaseSeq Int @default(0)
 
+  // desktop 本机 agent 的运行锁（见 @agent-test/canvas-schema 的 lock.ts）：持锁期间与服务端 agent
+  // 运行时同样只读、服务端 agent 不能开跑。有时限，持锁方定时续期；过期即失效（desktop 崩溃也会自动放开）
+  runLockHolder    String?   @db.VarChar(64)
+  runLockLabel     String?   @db.VarChar(200)
+  runLockExpiresAt DateTime?
+
   runs     CanvasRun[]
   messages CanvasMessage[]
   nodes    CanvasNode[]

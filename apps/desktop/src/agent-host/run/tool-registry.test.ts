@@ -25,6 +25,20 @@ function registry(webApi: null = null) {
 const MEDIA = ['list_media_models', 'generate_image', 'generate_video', 'generate_audio', 'clone_voice'];
 const BACKGROUND = ['watch_until', 'run_in_background', 'schedule_wakeup', 'cancel_background_task'];
 const VIDEO = ['create_video_project', 'check_video_project'];
+const CANVAS = [
+  'add_node',
+  'add_nodes',
+  'update_node',
+  'update_nodes',
+  'connect_nodes',
+  'delete_node',
+  'clear_canvas',
+  'set_node_model',
+  'generate_media_node',
+  'merge_video_node',
+  'set_clip_order',
+];
+const CANVAS_BINDING = ['list_canvases', 'open_canvas', 'create_canvas'];
 
 describe('desktop 工具注册表', () => {
   it('登记全部描述符（含没登录时的媒体工具）；目录可序列化、requires 齐全', () => {
@@ -33,6 +47,8 @@ describe('desktop 工具注册表', () => {
       'save_skill',
       ...MEDIA,
       'sync_media_to_sandbox',
+      ...CANVAS,
+      ...CANVAS_BINDING,
       ...BACKGROUND,
       'preview_page',
       ...VIDEO,
@@ -46,6 +62,11 @@ describe('desktop 工具注册表', () => {
     expect(byName.preview_page).toEqual(['workspace']);
     expect(byName.create_video_project).toEqual(['workspace_write']);
     expect(byName.check_video_project).toEqual(['workspace']);
+    // 画布在 Web 账号下：看要 canvas，改要 canvas_write（只读档位没有）
+    for (const name of CANVAS) expect(byName[name]).toEqual(['canvas', 'canvas_write']);
+    expect(byName.list_canvases).toEqual(['canvas']);
+    expect(byName.open_canvas).toEqual(['canvas']);
+    expect(byName.create_canvas).toEqual(['canvas', 'canvas_write']);
     expect(reg.get('create_video_project')?.promptSection).toBe(VIDEO_PROJECT_PROMPT);
     expect(reg.get('check_video_project')?.promptSection).toBe(VIDEO_PROJECT_PROMPT);
     expect(reg.get('save_skill')?.interruptOn).toBe(true);
@@ -68,7 +89,9 @@ describe('desktop 工具注册表', () => {
     // 通用模式自动带上剪辑工具（不依赖 Web 登录）；工程格式说明段只拼一次
     expect(a.toolDescriptors.map((t) => t.name)).toEqual(['save_skill', 'preview_page', ...VIDEO]);
     expect(a.systemPrompt.split(VIDEO_PROJECT_PROMPT)).toHaveLength(2);
-    expect(a.unavailable.map((u) => u.name).sort()).toEqual([...MEDIA, 'sync_media_to_sandbox', ...BACKGROUND].sort());
+    expect(a.unavailable.map((u) => u.name).sort()).toEqual(
+      [...MEDIA, 'sync_media_to_sandbox', ...CANVAS, ...CANVAS_BINDING, ...BACKGROUND].sort(),
+    );
     expect(a.unavailable.every((u) => u.reason.startsWith('missing_capability:'))).toBe(true);
     expect(a.systemPrompt).not.toContain(MEDIA_GENERATION_PROMPT);
     expect(a.systemPrompt).toContain('本环境不可用的工具');

@@ -66,7 +66,9 @@ test('会话与技能按账号隔离，访客数据留在访客空间', async ()
   await page.getByTestId('sidebar-user').click();
   await signIn(page);
   await expect(conversations(page)).not.toContainText('guest-ok');
-  await newChat(page); // 模型 Key 是设备级：不用重填就能发消息
+  // API 连接按账号隔离（访客配的连接在访客空间）：登录后的账号要自己添加连接才能发消息
+  await saveGoogleKey(page);
+  await newChat(page);
   await sendAndWait(page, '只回复：user-ok');
   await expect(conversations(page)).toContainText('user-ok');
   await openSettings(page, '技能');

@@ -24,6 +24,14 @@ import { PROVIDER_PROTOCOLS, THINKING_STYLES } from '@agent-test/agent-core/prov
 import { z } from 'zod';
 import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
 import type { VideoProject } from '@agent-test/video-schema';
+import type {
+  AigcCatalog,
+  ApplyOpResult,
+  CanvasListItem,
+  CanvasOpInput,
+  CanvasSnapshot,
+} from '@agent-test/canvas-schema';
+import { CANVAS_INLINE_UPLOAD_MAX_BYTES, type CanvasStreamEvent } from './canvas';
 import type { ConnectResult, McpAppResource, McpPreset, McpServer } from './mcp';
 import type { ConnectionTestResult, LlmConnectionView, LlmModelView, ModelOption } from './llm';
 import { WORKSPACE_PERMISSIONS, type WorkspacePermission } from './workspace';
@@ -56,6 +64,8 @@ export interface ConversationSummary {
   pinnedAt: number | null;
   /** 会话所选 agent 模式；null = 通用模式（全部工具 / 连接器 / 技能） */
   modeId: string | null;
+  /** 对话绑定的当前画布（Web 账号下的画布 id）；null = 没有。agent 的画布工具操作它 */
+  canvasId: string | null;
 }
 
 /** 设置页「模式」编辑器的目录：可勾选的工具 / 连接器 / 技能、片段占位符、通用提示词（生效的，含用户覆盖）、本环境能力 */
@@ -220,6 +230,11 @@ export interface HostStatus {
 
 const id = z.string().min(1);
 
+/** 画布结构编辑 op：形状由 Web 后端校验（canvas.op-schema），这里只确认是个带 op 字段的对象 */
+const canvasOpInput = z.custom<CanvasOpInput>(
+  (v) => typeof v === 'object' && v !== null && 'op' in v && typeof v.op === 'string',
+);
+
 export const hitlDecisionSchema = z.discriminatedUnion('type', [
   z.object({ type: z.literal('approve') }),
   z.object({ type: z.literal('reject'), message: z.string().optional() }),
@@ -379,6 +394,7 @@ export const rpcSchemas = {
     referenceVersionIds: z.array(z.string()).max(4).optional(),
   }),
   'media.source': z.object({ versionId: id }),
+  'media.asset': z.object({ versionId: id }),
   'web.status': z.object({}),
   'background.cancel': z.object({ taskId: id }),
   'workspace.list': z.object({ conversationId: id, path: z.string().default('') }),
@@ -420,6 +436,44 @@ export const rpcSchemas = {
     wrappedSubtitles: z.record(z.string(), z.string()).optional(),
   }),
   'video.exportCancel': z.object({ jobId: z.string().min(1) }),
+  // 画布（数据在 Web 账号下，agent-host 代为调用 Web 后端的 /canvas 接口；规则由服务端执行）
+  'canvas.list': z.object({ cursor: z.string().min(1).optional() }),
+  'canvas.create': z.object({ title: z.string().max(100).optional() }),
+  'canvas.snapshot': z.object({ id }),
+  'canvas.rename': z.object({ id, title: z.string().min(1).max(100) }),
+  /** 用户结构编辑；op 的形状由 Web 后端校验（canvas.op-schema），这里只确认是个 op 对象 */
+  'canvas.applyOp': z.object({ id, op: canvasOpInput, baseRevision: z.number().int().min(0) }),
+  'canvas.move': z.object({ id, nodeId: id, x: z.number(), y: z.number() }),
+  'canvas.generate': z.object({ id, nodeId: id }),
+  'canvas.merge': z.object({ id, nodeId: id }),
+  'canvas.pauseMedia': z.object({ id, nodeId: id.optional() }),
+  'canvas.resumeMedia': z.object({ id, nodeId: id.optional() }),
+  'canvas.setFocus': z.object({ id, nodeIds: z.array(id).max(500) }),
+  /**
+   * 上传节点的文件：优先给本机路径（host 从磁盘流式转发到 Web 后端，不经 MessagePort 搬字节）；
+   * 拿不到路径的（如剪贴板里的图）才传字节，限 CANVAS_INLINE_UPLOAD_MAX_BYTES
+   */
+  'canvas.uploadNodeFile': z.object({
+    id,
+    nodeId: id,
+    source: z.discriminatedUnion('kind', [
+      z.object({ kind: z.literal('path'), path: z.string().min(1) }),
+      z.object({
+        kind: z.literal('bytes'),
+        bytes: z.instanceof(Uint8Array).refine((b) => b.byteLength <= CANVAS_INLINE_UPLOAD_MAX_BYTES),
+      }),
+    ]),
+    contentType: z.string().min(1).max(200),
+    filename: z.string().min(1).max(255),
+  }),
+  'canvas.aigcModels': z.object({ type: z.enum(['image', 'video']) }),
+  /** 画布视图打开 / 关闭：开始 / 停止转发这块画布的实时事件（canvas 事件） */
+  'canvas.watch': z.object({ id }),
+  'canvas.unwatch': z.object({ id }),
+  /** 从画布列表打开时右侧对话栏显示哪个对话：最近一个绑定着它的本地对话；没有为 null */
+  'canvas.latestConversation': z.object({ id }),
+  /** 把对话的当前画布切到这一块（用户在对话里点开画布卡片 / 在画布视图里发第一条消息） */
+  'conversations.setCanvas': z.object({ conversationId: id, canvasId: id.nullable() }),
   'skills.list': z.object({}),
   'skills.get': z.object({ name: id }),
   'skills.install': z.object({ folder: z.string().min(1) }),
@@ -512,6 +566,11 @@ export interface RpcResults {
   'media.list': unknown;
   'media.regenerate': unknown;
   'media.source': { url: string | null };
+  /**
+   * 没有 CDN 地址的版本（拼接成片、测试模式占位图等）：agent-host 带令牌取回的本地资产。
+   * 字节用 base64：RPC 结果回包前会过一遍 JSON（agent-host/index.ts），Uint8Array 过不去
+   */
+  'media.asset': { base64: string; contentType: string };
   'web.status': { enabled: boolean; apiUrl: string | null };
   'background.cancel': BackgroundTaskView;
   'workspace.list': { root: string; entries: DirEntry[] };
@@ -519,6 +578,23 @@ export interface RpcResults {
   'run.start': { ok: true };
   'run.resume': { ok: true };
   'run.stop': { ok: true };
+  'canvas.list': { items: CanvasListItem[]; nextCursor: string | null };
+  'canvas.create': { sessionId: string };
+  'canvas.snapshot': CanvasSnapshot;
+  'canvas.rename': { ok: true };
+  'canvas.applyOp': ApplyOpResult;
+  'canvas.move': { ok: true };
+  'canvas.generate': { generationId: string };
+  'canvas.merge': { generationId: string };
+  'canvas.pauseMedia': { paused: number; skipped: number };
+  'canvas.resumeMedia': { ok: true };
+  'canvas.setFocus': { focusNodeIds: string[] };
+  'canvas.uploadNodeFile': { generationId: string; versionId: string };
+  'canvas.aigcModels': AigcCatalog;
+  'canvas.watch': { ok: true };
+  'canvas.unwatch': { ok: true };
+  'canvas.latestConversation': ConversationSummary | null;
+  'conversations.setCanvas': ConversationSummary;
   'video.list': VideoProjectSummary[];
   'video.read': VideoProjectFile;
   'video.close': { ok: true };
@@ -580,6 +656,8 @@ export type HostEvent =
   | { kind: 'event'; type: 'modes-changed' }
   /** API 连接 / 模型 / 默认模型变了（设置页、模型下拉据此刷新） */
   | { kind: 'event'; type: 'llm-changed' }
+  /** 打开着的画布的实时事件（Web 后端画布事件流经 agent-host 转发，见 shared/canvas.ts） */
+  | { kind: 'event'; type: 'canvas'; canvasId: string; event: CanvasStreamEvent }
   /** 编辑器正在打开的工程文件被外部（agent / 用户手改）修改了 */
   | { kind: 'event'; type: 'video-file-changed'; conversationId: string; path: string; mtimeMs: number }
   /** 导出进度：progress 0～1；done 时带 outputPath（工作区相对），failed 时带 error */

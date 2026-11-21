@@ -35,6 +35,7 @@ const conversationRow = z.object({
   updated_at: z.number(),
   pinned_at: z.number().nullable(),
   mode_id: z.string().nullable(),
+  canvas_id: z.string().nullable(),
 });
 
 const usageRow = z.object({
@@ -75,6 +76,7 @@ function toSummary(
     updatedAt: r.updated_at,
     pinnedAt: r.pinned_at,
     modeId: r.mode_id,
+    canvasId: r.canvas_id,
   };
 }
 
@@ -187,6 +189,29 @@ export class ConversationRepo {
     }
     this.db.prepare('UPDATE conversation SET mode_id = ? WHERE id = ?').run(modeId, id);
     return this.require(id);
+  }
+
+  /**
+   * 绑定 / 解绑当前画布（agent 的 create_canvas / open_canvas，或用户在对话里点开画布卡片）。
+   * 画布在 Web 后端，这里只记 id；不动 updated_at（不让侧栏顺序因此跳动）。
+   */
+  setCanvas(id: string, canvasId: string | null): ConversationSummary {
+    this.require(id);
+    this.db
+      .prepare('UPDATE conversation SET canvas_id = ?, canvas_bound_at = ? WHERE id = ?')
+      .run(canvasId, canvasId ? Date.now() : null, id);
+    return this.require(id);
+  }
+
+  /**
+   * 最近绑定这块画布的对话（从画布列表打开时，右侧对话栏显示它）；没有返回 null。
+   * 按绑定时刻排：刚在旧对话里点开画布卡片绑上的，要排在别的更活跃但更早绑定的对话前面
+   */
+  latestForCanvas(canvasId: string): ConversationSummary | null {
+    const row = this.db
+      .prepare('SELECT * FROM conversation WHERE canvas_id = ? ORDER BY canvas_bound_at DESC LIMIT 1')
+      .get(canvasId);
+    return row ? toSummary(conversationRow.parse(row), this.defaultWorkspace()) : null;
   }
 
   /** 改权限档位（下一轮运行生效） */

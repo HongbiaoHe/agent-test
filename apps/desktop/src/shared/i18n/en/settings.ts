@@ -301,6 +301,8 @@ export const settings = {
       media_api: 'Web account (images / video / voice)',
       email: 'Email',
       background: 'Background tasks',
+      canvas: 'Web account (canvas)',
+      canvas_write: 'Can edit canvases',
     },
   },
   skillsAddCommand: 'add <owner/repo> [--skill name] — install open-source skills from GitHub',

@@ -27,6 +27,7 @@
     "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
+    "@agent-test/canvas-schema": "workspace:*",
     "@langchain/anthropic": "1.4.0",
     "@langchain/core": "^1.1.48",
     "@langchain/deepseek": "^1.0.27",

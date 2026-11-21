@@ -13,7 +13,8 @@ import { Test } from '@nestjs/testing';
 import { AbortRegistry } from '../agent/abort-registry';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
 import { CANVAS_ABORTS } from './canvas.abort';
-import { CanvasService, clipOrderTag, reorderBySource } from './canvas.service';
+import { CanvasService, reorderBySource } from './canvas.service';
+import { clipOrderTag } from './canvas.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
@@ -79,6 +80,7 @@ describe('CanvasService', () => {
       findMany: jest.fn(),
       findUnique: jest.fn(),
       update: jest.fn(),
+      updateMany: jest.fn(),
     },
     canvasRun: { aggregate: jest.fn(), deleteMany: jest.fn() },
     canvasTokenUsage: { deleteMany: jest.fn() },
@@ -1224,6 +1226,102 @@ describe('CanvasService', () => {
       await expect(service.pauseMedia('s1', 't1', 'ghost')).rejects.toThrow(
         BusinessException,
       );
+    });
+  });
+
+  describe('desktop 本机 agent 的运行锁', () => {
+    const later = () => new Date(Date.now() + 30_000);
+    const owner = { id: 's1', userId: 'u1', status: 'idle', revision: 3 };
+
+    it('申请：条件 UPDATE 命中即持锁（到期时刻顺延一个 TTL）并推 canvas_lock；服务端 agent 在跑 / 别人持锁 → CANVAS_BUSY', async () => {
+      mockPrisma.canvasSession.findFirst.mockResolvedValue(owner);
+      mockPrisma.canvasSession.updateMany.mockResolvedValueOnce({ count: 1 });
+      const lock = await service.acquireRunLock(
+        's1',
+        't1',
+        'holder-0001',
+        '桌面对话',
+      );
+      expect(lock).toMatchObject({
+        holderId: 'holder-0001',
+        label: '桌面对话',
+      });
+      expect(Date.parse(lock.expiresAt) - Date.now()).toBeGreaterThan(50_000);
+      const where: unknown =
+        mockPrisma.canvasSession.updateMany.mock.calls[0][0];
+      expect(where).toMatchObject({
+        where: {
+          id: 's1',
+          tenantId: 't1',
+          status: { notIn: ['queued', 'running', 'waiting_approval'] },
+        },
+      });
+      expect(mockStream.publish).toHaveBeenCalledWith('s1', {
+        type: 'canvas_lock',
+        payload: { runLock: lock },
+      });
+
+      mockPrisma.canvasSession.updateMany.mockResolvedValueOnce({ count: 0 });
+      await expect(
+        service.acquireRunLock('s1', 't1', 'holder-0002', null),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_BUSY.code });
+    });
+
+    it('持锁期间：用户结构编辑与上传被拒、服务端 agent 不能开跑；锁过期后恢复', async () => {
+      const locked = {
+        runLockHolder: 'holder-0001',
+        runLockLabel: null,
+        runLockExpiresAt: later(),
+      };
+      tx.canvasSession.findUnique.mockResolvedValue({ ...owner, ...locked });
+      const op: UpdateNodeOp = { op: 'update_node', nodeId: 'n1', prompt: 'x' };
+      await expect(service.applyOp('s1', 'user', op, 3)).rejects.toMatchObject({
+        errCode: ErrorCodes.CANVAS_BUSY.code,
+      });
+      mockPrisma.canvasSession.findFirst.mockResolvedValue({
+        ...owner,
+        ...locked,
+      });
+      await expect(
+        service.appendMessage('s1', '继续', 't1', 'u1'),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_BUSY.code });
+      expect(mockQueue.add).not.toHaveBeenCalled();
+
+      // 过期的锁不算数（desktop 崩溃、心跳停了）
+      await expect(
+        service.assertRunLockHolder('s1', 't1', 'holder-0001'),
+      ).resolves.toBeUndefined();
+      mockPrisma.canvasSession.findFirst.mockResolvedValue({
+        ...owner,
+        ...locked,
+        runLockExpiresAt: new Date(Date.now() - 1000),
+      });
+      await expect(
+        service.assertRunLockHolder('s1', 't1', 'holder-0001'),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_BUSY.code });
+    });
+
+    it('释放：只放自己持有的；放掉了才推 canvas_lock', async () => {
+      mockPrisma.canvasSession.findFirst.mockResolvedValue(owner);
+      mockPrisma.canvasSession.updateMany.mockResolvedValueOnce({ count: 1 });
+      await expect(
+        service.releaseRunLock('s1', 't1', 'holder-0001'),
+      ).resolves.toEqual({ released: true });
+      expect(mockPrisma.canvasSession.updateMany).toHaveBeenCalledWith(
+        expect.objectContaining({
+          where: { id: 's1', tenantId: 't1', runLockHolder: 'holder-0001' },
+        }),
+      );
+      expect(mockStream.publish).toHaveBeenCalledWith('s1', {
+        type: 'canvas_lock',
+        payload: { runLock: null },
+      });
+      mockStream.publish.mockClear();
+      mockPrisma.canvasSession.updateMany.mockResolvedValueOnce({ count: 0 });
+      await expect(
+        service.releaseRunLock('s1', 't1', 'someone-else'),
+      ).resolves.toEqual({ released: false });
+      expect(mockStream.publish).not.toHaveBeenCalled();
     });
   });
 

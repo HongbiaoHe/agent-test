@@ -15,7 +15,16 @@ const MISSING_PREFIX = 'missing_capability:';
 
 // renderer 不能从 core 的 CJS dist 取值导出（Vite dev 不做命名导出互操作），能力列表在这里按类型重列；
 // core 新增能力而这里没补时，预览只会退化成显示原始 id
-const CAPABILITY_IDS = ['sandbox', 'workspace', 'workspace_write', 'media_api', 'email', 'background'] as const satisfies readonly Capability[];
+const CAPABILITY_IDS = [
+  'sandbox',
+  'workspace',
+  'workspace_write',
+  'media_api',
+  'email',
+  'background',
+  'canvas',
+  'canvas_write',
+] as const satisfies readonly Capability[];
 
 function asCapability(v: string): Capability | null {
   return CAPABILITY_IDS.find((c) => c === v) ?? null;

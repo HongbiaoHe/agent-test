@@ -1,6 +1,6 @@
 "use client";
 
-import { useEffect, useState, useSyncExternalStore } from "react";
+import { useEffect, useRef, useState, useSyncExternalStore } from "react";
 import { useTranslation } from "react-i18next";
 
 import { cn } from "@/lib/utils";
@@ -56,9 +56,22 @@ export function ThinkingIndicator({
   const [mountedAt] = useState(() => Date.now());
   const [now, setNow] = useState(() => Date.now());
 
+  // 隐藏期间（有实时内容时让位）不必每帧重渲染：整轮都挂载着，流式输出时这里 80ms 一次的空转渲染很可观。
+  // 隐藏时每秒才推进一次 now，重新出现时秒数最多差 1s，下一帧就校正
+  const visibleRef = useRef(visible);
+  useEffect(() => {
+    visibleRef.current = visible;
+  }, [visible]);
+
   useEffect(() => {
     // 80ms 一帧驱动点阵；reduced-motion 降到 1s（只为秒数走字）。setState 在回调里（非 effect 体内同步），不踩 set-state-in-effect。
-    const t = setInterval(() => setNow(Date.now()), reduced ? 1000 : 80);
+    // 返回同一个值时 React 跳过这次渲染
+    const t = setInterval(() => {
+      setNow((prev) => {
+        const n = Date.now();
+        return visibleRef.current || n - prev >= 1000 ? n : prev;
+      });
+    }, reduced ? 1000 : 80);
     return () => clearInterval(t);
   }, [reduced]);
 

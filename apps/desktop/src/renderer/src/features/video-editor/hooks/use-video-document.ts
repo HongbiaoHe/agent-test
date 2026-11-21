@@ -110,6 +110,20 @@ export function useVideoDocument(conversationId: string, path: string) {
     return () => clearTimeout(timer);
   }, [pending, present, state.editVersion, state.mtimeMs, save]);
 
+  // 卸载时还有没写回的改动：立刻写，不等自动保存的计时（剪辑器开在对话侧栏里，可能被 agent 自动打开的
+  // 网页预览 / 画布换掉，或被用户随手关掉——那 1 秒内的改动不能丢）
+  const unsaved = useRef<{ project: VideoProject; version: number; base: number | undefined } | null>(null);
+  useEffect(() => {
+    unsaved.current = pending && present ? { project: present, version: state.editVersion, base: state.mtimeMs ?? undefined } : null;
+  });
+  useEffect(
+    () => () => {
+      const u = unsaved.current;
+      if (u) void save(u.project, u.version, u.base);
+    },
+    [save],
+  );
+
   const edit = useCallback((project: VideoProject | ((present: VideoProject) => VideoProject), key?: string) => {
     dispatch({ type: 'edit', project, key, at: Date.now() });
   }, []);

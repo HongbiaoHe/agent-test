@@ -24,6 +24,7 @@
     "test:e2e:spark-media": "node test/spark-media.e2e.mjs"
   },
   "dependencies": {
+    "@agent-test/canvas-schema": "workspace:*",
     "@agent-test/agent-core": "workspace:*",
     "@agent-test/design-schema": "workspace:*",
     "@daytonaio/sdk": "^0.185.0",

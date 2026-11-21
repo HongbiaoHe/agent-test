@@ -62,6 +62,10 @@ export interface DesktopApi {
   pickFiles(): Promise<string[]>;
   /** 拖进窗口的文件 → 本地绝对路径（contextIsolation 下 File 不再带 path） */
   getPathForFile(file: File): string;
+  /** 窗口当前是否全屏（macOS 全屏时没有红绿灯，左上角不用再为它们留位） */
+  isFullScreen(): Promise<boolean>;
+  /** 进出全屏时通知；返回取消订阅 */
+  onFullScreenChange(listener: (fullscreen: boolean) => void): () => void;
   openExternal(url: string): Promise<void>;
   showInFolder(path: string): Promise<void>;
   /** 工作区网页预览的源（spark-preview://w-<hash>）：工作区根即站点根，页面地址 = 源 + / + 工作区相对路径 */

@@ -34,6 +34,8 @@ export default defineConfig({
         // 直接 SyntaxError、整个界面白屏（生产构建会转换 CJS，所以只在 dev 出现）。renderer 只引它的纯函数文件
         // （providers/presets、types、model-ref、capabilities，modes 的 schema / 片段），让 Vite 编译源码
         '@agent-test/agent-core': resolve(import.meta.dirname, '../../packages/agent-core/src'),
+        // canvas-schema 的 dist 同样是 CommonJS（画布视图与共享的 canvas-ui 都引它的值，如 applyPatch）
+        '@agent-test/canvas-schema': resolve(import.meta.dirname, '../../packages/canvas-schema/src/index.ts'),
       },
     },
     plugins: [react(), tailwindcss()],

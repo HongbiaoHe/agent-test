@@ -10,6 +10,8 @@ import {
   LayoutGrid,
   Type,
 } from "lucide-react";
+import { CANVAS_NODE_IO } from "@agent-test/canvas-schema";
+import { CANVAS_MESSAGES } from "@agent-test/canvas-ui/messages";
 import type { Metadata } from "next";
 import Link from "next/link";
 
@@ -25,7 +27,6 @@ import {
 } from "./_components/thinking-indicator";
 import { AGENT_FACES } from "./_intro/agent-faces";
 import { IntroHero } from "./_intro/intro-hero";
-import { CANVAS_NODE_IO, NODE_TYPE_LABEL } from "./_lib/node-io";
 import { PHASE_UI } from "./_lib/thinking-phase";
 
 export const metadata: Metadata = {
@@ -37,8 +38,8 @@ export const metadata: Metadata = {
 /**
  * 节点契约的展示顺序 + 每类节点的图标与一句说明。
  *
- * 端口本身**不**在这里写：inputs / outputs 直接读 CANVAS_NODE_IO（node-io.ts，
- * 它又镜像后端 canvas.types 的权威定义）。介绍页最容易过期的就是这种清单，
+ * 端口本身**不**在这里写：inputs / outputs 直接读 CANVAS_NODE_IO（@agent-test/canvas-schema，
+ * 后端用的也是同一份）。介绍页最容易过期的就是这种清单，
  * 所以只留「说法」在本文件，「事实」一律从源头取。
  */
 const NODE_NOTES: {
@@ -303,7 +304,7 @@ export default async function CanvasIntroPage() {
                 </span>
                 <div className="min-w-56 flex-1">
                   <div className="font-medium text-foreground">
-                    {NODE_TYPE_LABEL[type]}
+                    {CANVAS_MESSAGES.en.nodeType[type]}
                   </div>
                   <p className="mt-0.5 text-sm text-muted-foreground">{note}</p>
                 </div>

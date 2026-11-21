@@ -5,6 +5,8 @@ import { stat } from 'node:fs/promises';
 import { z } from 'zod';
 import { listModels } from '@agent-test/agent-core/providers/list-models';
 import { testConnection, testModel } from '@agent-test/agent-core/providers/test-model';
+import type { CanvasWatcher } from './canvas/canvas-watcher';
+import { CanvasWeb } from './canvas/canvas-web';
 import { GENERAL_MODE_PROMPT } from '@agent-test/agent-core/modes/mode.schema';
 import { PROMPT_FRAGMENT_IDS } from '@agent-test/agent-core/modes/prompt-fragments';
 import { resolveMode } from '@agent-test/agent-core/modes/resolve-mode';
@@ -53,6 +55,8 @@ export interface Services {
   background: BackgroundService;
   webApi: WebApi | null;
   video: VideoService;
+  /** 画布实时事件转发（登录了 Web 账号才有） */
+  canvasWatcher: CanvasWatcher | null;
 }
 
 /** 设置页目录用的能力集：按新会话默认档位（ask）算，运行期再按会话实际权限重算 */
@@ -95,6 +99,26 @@ async function previewEnv(s: Services) {
 function requireWeb(s: Services): WebApi {
   if (!s.webApi) throw new Error(hostI18n.t('errors.web.notSignedIn'));
   return s.webApi;
+}
+
+/** 画布接口（数据在 Web 账号下）：没登录时报「请先登录」 */
+function canvasWeb(s: Services): CanvasWeb {
+  return new CanvasWeb(requireWeb(s));
+}
+
+/**
+ * fetch 只收普通 ArrayBuffer 背书的字节：结构化克隆来的本来就是，直接套一个视图（不复制）；
+ * 万一挂在共享缓冲上才复制一份
+ */
+function plainBytes(bytes: Uint8Array): Uint8Array<ArrayBuffer> {
+  return bytes.buffer instanceof ArrayBuffer
+    ? new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+    : new Uint8Array(bytes);
+}
+
+function requireWatcher(s: Services): CanvasWatcher {
+  if (!s.canvasWatcher) throw new Error(hostI18n.t('errors.web.notSignedIn'));
+  return s.canvasWatcher;
 }
 
 function hostStatus(s: Services): HostStatus {
@@ -281,7 +305,52 @@ export function createHandlers(s: Services): Handlers {
       z
         .object({ url: z.string().nullable() })
         .parse(await requireWeb(s).get(`/media/versions/${encodeURIComponent(p.versionId)}/source`)),
+    'media.asset': async (p) => {
+      const { bytes, contentType } = await requireWeb(s).download(`/media/versions/${encodeURIComponent(p.versionId)}/asset`);
+      return { base64: Buffer.from(bytes).toString('base64'), contentType };
+    },
     'web.status': () => ({ enabled: !!s.webApi, apiUrl: s.webApi?.baseUrl ?? null }),
+    'canvas.list': (p) => canvasWeb(s).list(p.cursor),
+    'canvas.create': (p) => canvasWeb(s).create(p.title),
+    'canvas.snapshot': (p) => canvasWeb(s).snapshot(p.id),
+    'canvas.rename': async (p) => {
+      await canvasWeb(s).rename(p.id, p.title);
+      return { ok: true as const };
+    },
+    'canvas.applyOp': (p) => canvasWeb(s).applyOp(p.id, p.op, p.baseRevision),
+    'canvas.move': async (p) => {
+      await canvasWeb(s).move(p.id, p.nodeId, p.x, p.y);
+      return { ok: true as const };
+    },
+    'canvas.generate': (p) => canvasWeb(s).generate(p.id, p.nodeId),
+    'canvas.merge': (p) => canvasWeb(s).merge(p.id, p.nodeId),
+    'canvas.pauseMedia': (p) => canvasWeb(s).pauseMedia(p.id, p.nodeId),
+    'canvas.resumeMedia': async (p) => {
+      await canvasWeb(s).resumeMedia(p.id, p.nodeId);
+      return { ok: true as const };
+    },
+    'canvas.setFocus': (p) => canvasWeb(s).setFocus(p.id, p.nodeIds),
+    'canvas.uploadNodeFile': (p) =>
+      canvasWeb(s).uploadNodeFile(p.id, p.nodeId, {
+        source: p.source.kind === 'path' ? p.source : { kind: 'bytes', bytes: plainBytes(p.source.bytes) },
+        contentType: p.contentType,
+        filename: p.filename,
+      }),
+    'canvas.aigcModels': (p) => canvasWeb(s).aigcModels(p.type),
+    'canvas.watch': (p) => {
+      requireWatcher(s).watch(p.id);
+      return { ok: true as const };
+    },
+    'canvas.unwatch': (p) => {
+      s.canvasWatcher?.unwatch(p.id);
+      return { ok: true as const };
+    },
+    'canvas.latestConversation': (p) => s.repo.latestForCanvas(p.id),
+    'conversations.setCanvas': (p) => {
+      const conv = s.repo.setCanvas(p.conversationId, p.canvasId);
+      s.listChanged();
+      return conv;
+    },
     'background.cancel': (p) => s.background.cancel(p.taskId),
     'workspace.list': async (p) => {
       const root = s.repo.require(p.conversationId).workspaceDir;

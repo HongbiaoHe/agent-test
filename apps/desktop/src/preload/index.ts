@@ -14,6 +14,14 @@ const api: DesktopApi = {
   pickFolder: () => ipcRenderer.invoke('desktop:pickFolder'),
   pickFiles: () => ipcRenderer.invoke('desktop:pickFiles'),
   getPathForFile: (file) => webUtils.getPathForFile(file),
+  isFullScreen: () => ipcRenderer.invoke('desktop:isFullScreen'),
+  onFullScreenChange: (listener) => {
+    const handler = (_e: unknown, value: unknown) => listener(value === true);
+    ipcRenderer.on('desktop:fullscreen', handler);
+    return () => {
+      ipcRenderer.removeListener('desktop:fullscreen', handler);
+    };
+  },
   openExternal: (url) => ipcRenderer.invoke('desktop:openExternal', url),
   showInFolder: (path) => ipcRenderer.invoke('desktop:showInFolder', path),
   sitePreviewOrigin: (workspaceDir) => ipcRenderer.invoke('desktop:sitePreviewOrigin', workspaceDir),

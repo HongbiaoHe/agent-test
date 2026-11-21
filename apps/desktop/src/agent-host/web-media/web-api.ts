@@ -51,6 +51,59 @@ export class WebApi {
     return this.request('POST', path, JSON.stringify(body), 'application/json');
   }
 
+  patch(path: string, body: object): Promise<unknown> {
+    return this.request('PATCH', path, JSON.stringify(body), 'application/json');
+  }
+
+  /** 上传内存里的一段二进制（画布卡片上拖入的文件由界面读成字节传过来） */
+  async uploadBytes(path: string, bytes: Uint8Array<ArrayBuffer>, contentType: string): Promise<unknown> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}${path}`, {
+        method: 'POST',
+        headers: {
+          Authorization: `Bearer ${this.token}`,
+          'Content-Type': contentType,
+          'Content-Length': String(bytes.byteLength),
+        },
+        body: bytes,
+        signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+      });
+    } catch (e) {
+      throw new WebApiError(0, null, hostI18n.t('errors.web.uploadFailed', { error: e instanceof Error ? e.message : String(e) }));
+    }
+    return this.parse('POST', path, res);
+  }
+
+  /**
+   * 下载一段需要鉴权的二进制（本地落盘的资产：拼接成片、测试模式占位图等没有 CDN 地址的版本）。
+   * 失败时后端回的是 JSON 信封，交给 parse 统一报错
+   */
+  async download(path: string): Promise<{ bytes: Uint8Array<ArrayBuffer>; contentType: string }> {
+    let res: Response;
+    try {
+      res = await fetch(`${this.baseUrl}${path}`, {
+        headers: { Authorization: `Bearer ${this.token}` },
+        signal: AbortSignal.timeout(UPLOAD_TIMEOUT_MS),
+      });
+    } catch (e) {
+      throw new WebApiError(0, null, hostI18n.t('errors.web.unreachable', { url: this.baseUrl, error: e instanceof Error ? e.message : String(e) }));
+    }
+    if (!res.ok) {
+      await this.parse('GET', path, res);
+      throw new WebApiError(res.status, null, hostI18n.t('errors.web.badResponseDetail', { method: 'GET', path, status: res.status, body: '' }));
+    }
+    return {
+      bytes: new Uint8Array(await res.arrayBuffer()),
+      contentType: res.headers.get('content-type') ?? 'application/octet-stream',
+    };
+  }
+
+  /** socket.io 鉴权用（画布实时事件，见 canvas/canvas-watcher.ts）；只在 agent-host 进程内使用 */
+  get bearer(): string {
+    return `Bearer ${this.token}`;
+  }
+
   /** 上传本地文件：请求体就是文件二进制（同 Web 的附件上传口径），流式发出不整块读进内存 */
   async upload(path: string, file: string, contentType: string): Promise<unknown> {
     const { size } = await stat(file);

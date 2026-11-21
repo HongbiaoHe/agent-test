@@ -25,6 +25,7 @@ import { Skeleton } from "@/components/ui/skeleton";
 import { Textarea } from "@/components/ui/textarea";
 import { getConversationTokenUsage, type SkillKind, listCommands, listModes, MODES_QUERY_KEY } from "@/lib/api";
 import { currentLocale } from "@/lib/i18n";
+import { formatTokensCompact } from "@/lib/format-tokens";
 import type { ThinkingLevel } from "@/lib/thinking-level";
 import { cn } from "@/lib/utils";
 
@@ -71,6 +72,7 @@ export function ChatThread({
   headerInset,
   headerTitle,
   headerTools,
+  headerEnd,
   tokens,
   workspaceDir,
   permission,
@@ -118,6 +120,8 @@ export function ChatThread({
   headerTitle?: ReactNode;
   /** 顶栏右侧、token 徽标之前的工具图标（任务计划 / 网页预览） */
   headerTools?: ReactNode;
+  /** 顶栏最右（桌面端：会话信息侧栏开关） */
+  headerEnd?: ReactNode;
   /** 会话累计 token（顶栏徽标，点开看详情） */
   tokens: number;
   /** 会话工作区（本机目录）与权限档位（桌面端独有） */
@@ -287,10 +291,11 @@ export function ChatThread({
               variant="secondary"
               render={<button type="button" />}
               className="cursor-pointer tabular-nums hover:bg-accent"
-              title={t("chat.thread.tokensTitle")}
+              // 顶栏只给约略值（25.9M / 2594.4万）；精确值在悬停提示与明细弹窗里
+              title={`${tokens.toLocaleString(currentLocale())} tokens · ${t("chat.thread.tokensTitle")}`}
               onClick={() => setUsageOpen(true)}
             >
-              {t("chat.thread.tokens", { total: tokens.toLocaleString(currentLocale()) })}
+              {t("chat.thread.tokens", { total: formatTokensCompact(tokens, currentLocale()) })}
             </Badge>
           )}
           {conversationId && workspaceDir && (
@@ -300,6 +305,7 @@ export function ChatThread({
               permission={permission}
             />
           )}
+          {headerEnd}
         </div>
         {conversationId && (
           <TokenUsageDialog
@@ -467,9 +473,10 @@ export function ChatThread({
               // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
               className="max-h-40 min-h-0 resize-none border-0 bg-transparent px-4 pt-3.5 pb-1.5 text-base shadow-none focus-visible:border-0 focus-visible:ring-0 md:text-sm dark:bg-transparent"
             />
-            {/* 工具条：左侧附件 + 模型切换 + 思考深度，右侧发送 */}
-            <div className="flex items-center justify-between gap-2 px-2.5 pb-2.5">
-              <div className="flex min-w-0 items-center gap-1">
+            {/* 工具条：左侧附件 + 模型切换 + 思考深度，右侧发送。窄的时候（画布视图的右侧对话栏）左侧换行，
+                不压到发送按钮上；宽的时候一行放得下，与原来一样 */}
+            <div className="flex items-end justify-between gap-2 px-2.5 pb-2.5">
+              <div className="flex min-w-0 flex-wrap items-center gap-1">
                 <Button
                   variant="ghost"
                   size="icon-sm"

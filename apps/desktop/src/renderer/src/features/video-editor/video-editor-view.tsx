@@ -1,11 +1,11 @@
 /**
- * 剪辑器视图（占满主区，侧栏保留）：顶栏「返回对话」+ 保存状态 + 撤销重做 + 导出；
+ * 剪辑器（在对话的右侧侧栏里打开，可展开全部；嵌在画布页对话里打开时仍占满主区）：顶栏 + 保存状态 + 撤销重做 + 导出；
  * 左侧预览播放器 / 播放控件 / 工具条 / 时间线，右侧检查器。工程读写与冲突见 hooks/use-video-document.ts。
  */
 import { projectDuration } from '@agent-test/video-schema';
 import { useQuery } from '@tanstack/react-query';
 import { ArrowLeft, Check, Clapperboard, Loader2, Redo2, Undo2 } from 'lucide-react';
-import { useEffect, useState } from 'react';
+import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { EditActions } from './components/edit-actions';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -34,15 +34,34 @@ export function VideoEditorView({
   path,
   headerInset,
   onBack,
+  headerExtra,
 }: {
   conversationId: string;
   path: string;
   /** 侧栏收起时顶栏左侧让出红绿灯与侧栏开关 */
   headerInset?: string;
-  onBack: () => void;
+  /** 「返回对话」；在对话的右侧侧栏里打开时不给（对话就在旁边） */
+  onBack?: () => void;
+  /** 顶栏最右（在侧栏里打开时是展开 / 关闭按钮） */
+  headerExtra?: ReactNode;
 }) {
   const { t } = useTranslation();
   const doc = useVideoDocument(conversationId, path);
+  // 快捷键只在「正在用剪辑器」时生效：剪辑器开在对话侧栏里时，用户在旁边的对话里点了按钮再按退格 / ⌘Z，
+  // 不能删掉时间线片段、撤销剪辑。最近一次点按 / 聚焦落在剪辑器里才算；整页打开时一开始就算
+  const sectionRef = useRef<HTMLElement>(null);
+  const shortcutsActive = useRef(onBack !== undefined);
+  useEffect(() => {
+    const track = (e: Event) => {
+      shortcutsActive.current = e.target instanceof Node && !!sectionRef.current?.contains(e.target);
+    };
+    document.addEventListener('pointerdown', track, true);
+    document.addEventListener('focusin', track, true);
+    return () => {
+      document.removeEventListener('pointerdown', track, true);
+      document.removeEventListener('focusin', track, true);
+    };
+  }, []);
   const conversations = useQuery({ queryKey: ['conversations'], queryFn: () => agent.call('conversations.list', {}) });
   const workspaceDir = conversations.data?.find((c) => c.id === conversationId)?.workspaceDir ?? null;
   const origin = useWorkspaceOrigin(workspaceDir);
@@ -83,7 +102,7 @@ export function VideoEditorView({
   // （焦点在输入框 / 弹窗里时不拦截）
   useEffect(() => {
     const onKey = (e: KeyboardEvent) => {
-      if (isTypingTarget(e.target)) return;
+      if (!shortcutsActive.current || isTypingTarget(e.target)) return;
       const mod = e.metaKey || e.ctrlKey;
       const key = e.key.toLowerCase();
       if (e.key === ' ' && !mod && !e.altKey) {
@@ -116,13 +135,15 @@ export function VideoEditorView({
 
   return (
     <FileViewerProvider conversationId={conversationId} workspaceDir={workspaceDir}>
-      <section className="flex h-full min-w-0 flex-col bg-background" data-testid="video-editor">
+      <section ref={sectionRef} className="flex h-full min-w-0 flex-col bg-background" data-testid="video-editor">
         <header className={cn('app-drag flex h-12 shrink-0 items-center justify-between gap-3 border-b px-4', headerInset)}>
           <div className="flex min-w-0 items-center gap-2">
-            <Button variant="ghost" size="sm" onClick={onBack}>
-              <ArrowLeft />
-              {t('video.editor.back')}
-            </Button>
+            {onBack && (
+              <Button variant="ghost" size="sm" onClick={onBack}>
+                <ArrowLeft />
+                {t('video.editor.back')}
+              </Button>
+            )}
             <h1 className="truncate text-sm font-semibold tracking-tight" title={path}>
               {project?.name ?? path.split('/').pop()}
             </h1>
@@ -154,8 +175,10 @@ export function VideoEditorView({
                 <Clapperboard />
                 {t('video.editor.export')}
               </Button>
+              {headerExtra}
             </div>
           )}
+          {!project && headerExtra}
         </header>
 
         {doc.conflict && <ConflictBanner kind={doc.conflict} onReload={doc.reload} onKeepMine={doc.keepMine} />}

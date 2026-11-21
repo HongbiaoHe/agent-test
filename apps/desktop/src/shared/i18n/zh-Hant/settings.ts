@@ -291,6 +291,8 @@ export const settings = {
       media_api: 'Web 帳號（生圖 / 生影片 / 配音）',
       email: '郵件',
       background: '背景任務',
+      canvas: 'Web 帳號（畫布）',
+      canvas_write: '可以修改畫布',
     },
   },
   skillsAddCommand: 'add <owner/repo> [--skill name] — 從 GitHub 安裝開源技能',

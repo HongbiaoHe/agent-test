@@ -20,6 +20,9 @@ importers:
       '@agent-test/agent-core':
         specifier: workspace:*
         version: link:../../packages/agent-core
+      '@agent-test/canvas-schema':
+        specifier: workspace:*
+        version: link:../../packages/canvas-schema
       '@agent-test/design-schema':
         specifier: workspace:*
         version: link:../../packages/design-schema
@@ -203,7 +206,7 @@ importers:
         version: 7.2.2
       ts-jest:
         specifier: ^29.2.5
-        version: 29.4.11(@babel/core@7.29.7)(@jest/transform@30.4.1)(@jest/types@30.4.1)(babel-jest@30.4.1(@babel/core@7.29.7))(jest-util@30.4.1)(jest@30.4.2(@types/node@24.12.4)(ts-node@10.9.2(@types/node@24.12.4)(typescript@5.9.3)))(typescript@5.9.3)
+        version: 29.4.11(@babel/core@7.29.7)(@jest/transform@30.4.1)(@jest/types@30.4.1)(babel-jest@30.4.1(@babel/core@7.29.7))(jest-util@30.4.1)(jest@30.4.2(@types/node@24.12.4))(typescript@5.9.3)
       ts-loader:
         specifier: ^9.5.2
         version: 9.5.7(typescript@5.9.3)(webpack@5.106.0)
@@ -228,6 +231,15 @@ importers:
       '@agent-test/agent-core':
         specifier: workspace:*
         version: link:../../packages/agent-core
+      '@agent-test/canvas-schema':
+        specifier: workspace:*
+        version: link:../../packages/canvas-schema
+      '@agent-test/canvas-ui':
+        specifier: workspace:*
+        version: link:../../packages/canvas-ui
+      '@agent-test/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       '@agent-test/video-schema':
         specifier: workspace:*
         version: link:../../packages/video-schema
@@ -243,12 +255,18 @@ importers:
       '@modelcontextprotocol/sdk':
         specifier: 1.32.2
         version: 1.32.2(@cfworker/json-schema@4.1.1)(zod@4.4.3)
+      '@xyflow/react':
+        specifier: ^12.11.2
+        version: 12.11.2(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
       deepagents:
         specifier: ^1.10.2
         version: 1.10.2(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(langsmith@0.7.3(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.42.0(ws@8.20.1)(zod@4.4.3))(ws@8.20.1))(openai@6.42.0(ws@8.20.1)(zod@4.4.3))(react-dom@19.2.4(react@19.2.4))(react@19.2.4)(ws@8.20.1)(zod-to-json-schema@3.25.2(zod@4.4.3))
       i18next:
         specifier: ^26.7.1
         version: 26.7.1(typescript@5.9.3)
+      socket.io-client:
+        specifier: ^4.8.3
+        version: 4.8.3
       tar:
         specifier: ^7.5.22
         version: 7.5.22
@@ -373,9 +391,18 @@ importers:
 
   apps/frontend:
     dependencies:
+      '@agent-test/canvas-schema':
+        specifier: workspace:*
+        version: link:../../packages/canvas-schema
+      '@agent-test/canvas-ui':
+        specifier: workspace:*
+        version: link:../../packages/canvas-ui
       '@agent-test/design-schema':
         specifier: workspace:*
         version: link:../../packages/design-schema
+      '@agent-test/ui':
+        specifier: workspace:*
+        version: link:../../packages/ui
       '@base-ui/react':
         specifier: ^1.5.0
         version: 1.5.0(@types/react@19.2.15)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
@@ -509,6 +536,9 @@ importers:
 
   packages/agent-core:
     dependencies:
+      '@agent-test/canvas-schema':
+        specifier: workspace:*
+        version: link:../canvas-schema
       '@langchain/anthropic':
         specifier: 1.4.0
         version: 1.4.0(@langchain/core@1.1.48(@opentelemetry/api@1.9.1)(@opentelemetry/exporter-trace-otlp-proto@0.217.0(@opentelemetry/api@1.9.1))(@opentelemetry/sdk-trace-base@2.7.1(@opentelemetry/api@1.9.1))(openai@6.42.0(ws@8.20.1)(zod@4.4.3))(ws@8.20.1))
@@ -569,7 +599,71 @@ importers:
         version: 3.8.3
       ts-jest:
         specifier: ^29.2.5
-        version: 29.4.11(@babel/core@7.29.7)(@jest/transform@30.4.1)(@jest/types@30.4.1)(babel-jest@30.4.1(@babel/core@7.29.7))(jest-util@30.4.1)(jest@30.4.2(@types/node@24.12.4)(ts-node@10.9.2(@types/node@24.12.4)(typescript@5.9.3)))(typescript@5.9.3)
+        version: 29.4.11(@babel/core@7.29.7)(@jest/transform@30.4.1)(@jest/types@30.4.1)(babel-jest@30.4.1(@babel/core@7.29.7))(jest-util@30.4.1)(jest@30.4.2(@types/node@24.12.4))(typescript@5.9.3)
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      typescript-eslint:
+        specifier: ^8.20.0
+        version: 8.60.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
+
+  packages/canvas-schema:
+    devDependencies:
+      '@types/node':
+        specifier: ^24.0.0
+        version: 24.12.4
+      tsx:
+        specifier: ^4.22.3
+        version: 4.22.3
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+
+  packages/canvas-ui:
+    dependencies:
+      '@agent-test/canvas-schema':
+        specifier: workspace:*
+        version: link:../canvas-schema
+      '@agent-test/ui':
+        specifier: workspace:*
+        version: link:../ui
+      '@xyflow/react':
+        specifier: ^12.11.2
+        version: 12.11.2(@types/react-dom@19.2.3(@types/react@19.2.15))(@types/react@19.2.15)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      lucide-react:
+        specifier: ^1.17.0
+        version: 1.17.0(react@19.2.4)
+      sonner:
+        specifier: ^2.0.7
+        version: 2.0.7(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+    devDependencies:
+      '@eslint/js':
+        specifier: ^9.18.0
+        version: 9.39.4
+      '@tanstack/react-query':
+        specifier: ^5.100.14
+        version: 5.100.14(react@19.2.4)
+      '@types/react':
+        specifier: ^19
+        version: 19.2.15
+      '@types/react-dom':
+        specifier: ^19
+        version: 19.2.3(@types/react@19.2.15)
+      eslint:
+        specifier: ^9.18.0
+        version: 9.39.4(jiti@2.7.0)
+      eslint-plugin-react-hooks:
+        specifier: ^7.1.1
+        version: 7.1.1(eslint@9.39.4(jiti@2.7.0))
+      globals:
+        specifier: ^17.0.0
+        version: 17.6.0
+      react:
+        specifier: 19.2.4
+        version: 19.2.4
+      react-dom:
+        specifier: 19.2.4
+        version: 19.2.4(react@19.2.4)
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
@@ -589,6 +683,55 @@ importers:
       typescript:
         specifier: ^5.7.3
         version: 5.9.3
+
+  packages/ui:
+    dependencies:
+      '@base-ui/react':
+        specifier: ^1.5.0
+        version: 1.5.0(@types/react@19.2.15)(react-dom@19.2.4(react@19.2.4))(react@19.2.4)
+      class-variance-authority:
+        specifier: ^0.7.1
+        version: 0.7.1
+      clsx:
+        specifier: ^2.1.1
+        version: 2.1.1
+      lucide-react:
+        specifier: ^1.17.0
+        version: 1.17.0(react@19.2.4)
+      tailwind-merge:
+        specifier: ^3.6.0
+        version: 3.6.0
+    devDependencies:
+      '@eslint/js':
+        specifier: ^9.18.0
+        version: 9.39.4
+      '@types/react':
+        specifier: ^19
+        version: 19.2.15
+      '@types/react-dom':
+        specifier: ^19
+        version: 19.2.3(@types/react@19.2.15)
+      eslint:
+        specifier: ^9.18.0
+        version: 9.39.4(jiti@2.7.0)
+      eslint-plugin-react-hooks:
+        specifier: ^7.1.1
+        version: 7.1.1(eslint@9.39.4(jiti@2.7.0))
+      globals:
+        specifier: ^17.0.0
+        version: 17.6.0
+      react:
+        specifier: 19.2.4
+        version: 19.2.4
+      react-dom:
+        specifier: 19.2.4
+        version: 19.2.4(react@19.2.4)
+      typescript:
+        specifier: ^5.7.3
+        version: 5.9.3
+      typescript-eslint:
+        specifier: ^8.20.0
+        version: 8.60.0(eslint@9.39.4(jiti@2.7.0))(typescript@5.9.3)
 
   packages/video-schema:
     dependencies:
@@ -18371,7 +18514,7 @@ snapshots:
     dependencies:
       typescript: 5.9.3
 
-  ts-jest@29.4.11(@babel/core@7.29.7)(@jest/transform@30.4.1)(@jest/types@30.4.1)(babel-jest@30.4.1(@babel/core@7.29.7))(jest-util@30.4.1)(jest@30.4.2(@types/node@24.12.4)(ts-node@10.9.2(@types/node@24.12.4)(typescript@5.9.3)))(typescript@5.9.3):
+  ts-jest@29.4.11(@babel/core@7.29.7)(@jest/transform@30.4.1)(@jest/types@30.4.1)(babel-jest@30.4.1(@babel/core@7.29.7))(jest-util@30.4.1)(jest@30.4.2(@types/node@24.12.4))(typescript@5.9.3):
     dependencies:
       bs-logger: 0.2.6
       fast-json-stable-stringify: 2.1.0

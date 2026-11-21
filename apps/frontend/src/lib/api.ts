@@ -1,5 +1,13 @@
 import { signOut } from "next-auth/react";
 
+import type {
+  AigcCatalog,
+  CanvasListItem,
+  CanvasOpInput,
+  CanvasPatch,
+  CanvasSnapshot,
+} from "@agent-test/canvas-schema";
+
 import { safeNextPath } from "@/lib/safe-next";
 
 const API_BASE =
@@ -633,100 +641,23 @@ export async function fetchMediaAssetBlob(versionId: string): Promise<Blob> {
 // ——— 画布工作流 ———
 
 /**
- * 敏感操作审批模式（镜像后端 canvas.types）。
- * review：破坏性/消耗性操作暂停等确认；auto：全自动，不打断。
+ * 画布的领域类型（节点 / 连线 / 快照 / 列表项 / 审批模式 / 运行锁…）以 @agent-test/canvas-schema 为唯一定义
+ * （后端、web、desktop 共用）；这里原样转出，web 其余代码照旧从 @/lib/api 取。
  */
-export type CanvasApprovalMode = "review" | "auto";
-
-export type CanvasNodeType =
-  | "image_upload"
-  | "video_upload"
-  | "audio_upload"
-  | "image_gen"
-  | "video_gen"
-  | "video_concat";
-
-/** 上传节点：每种只收一类文件（镜像后端 canvas.types）。 */
-export type CanvasUploadNodeType = "image_upload" | "video_upload" | "audio_upload";
-
-/**
- * 节点端口上流动的资源类型（镜像后端 canvas.types）。
- * 没有 text——提示词是生成节点自己的 prompt 字段，不是端口上流动的资源。audio 只来自上传。
- */
-export type CanvasIoType = "image" | "video" | "audio";
-
-/**
- * 节点的一份输出（镜像后端 canvas.types）。content 恒为 mediaVersionId——上传节点同样挂一个
- * 上传版本（早年模拟上传只存了 assetPath 的 image_upload 不产出输出）。
- */
-export interface CanvasNodeOutput {
-  type: CanvasIoType;
-  content: string;
-}
-
-export interface CanvasNodeDto {
-  id: string;
-  type: CanvasNodeType;
-  x: number;
-  y: number;
-  version: number;
-  label: string | null;
-  /** 生成节点的提示词（image_gen / video_gen 自己的字段）。 */
-  prompt: string | null;
-  assetPath: string | null;
-  mediaGenerationId: string | null;
-  /**
-   * 生成节点选定的 aigc 渠道 / 模型别名 / 档位参数（image_gen、video_gen 专有）。
-   * 三者都为空 = 用该类型的默认模型（GET /aigc/models 返回的 default）。
-   */
-  mediaChannel: string | null;
-  mediaModel: string | null;
-  mediaParams: Record<string, string> | null;
-  mediaVersionId: string | null;
-  mediaStatus: string | null;
-  /** 最新版本是测试模式（Mock）产出的占位素材 */
-  mediaMock: boolean;
-  /** 可供下游消费的输出（服务端派生）。⚠️ patch 里生成节点的这项恒为空，见 canvas-state 的 upsertNode */
-  outputs: CanvasNodeOutput[];
-}
-
-export interface CanvasEdgeDto {
-  id: string;
-  source: string;
-  target: string;
-}
-
-export interface CanvasSnapshot {
-  id: string;
-  title: string;
-  status: string;
-  model: string | null;
-  /** 思考深度档位（auto|off|on|low|medium|high）；null = 跟随模型默认。 */
-  thinkingLevel: string | null;
-  /** 敏感操作审批模式（后端已归一化，恒有值） */
-  approvalMode: CanvasApprovalMode;
-  /** 测试模式开关：开启时本画布触发的生成走本地占位素材，不调 aigc、不花钱 */
-  mockMedia: boolean;
-  /** 当前环境是否允许测试模式；false 时不显示开关 */
-  mockMediaAvailable: boolean;
-  revision: number;
-  /** 会话累计 token（后端 run 聚合的持久化口径；实时增量由 token_usage 事件覆盖） */
-  totalTokens: number;
-  /** 「加入对话」圈定的节点 id；非空时 agent 只看这些节点，空数组 = 整块画布 */
-  focusNodeIds: string[];
-  nodes: CanvasNodeDto[];
-  edges: CanvasEdgeDto[];
-}
-
-export interface CanvasListItem {
-  id: string;
-  title: string;
-  status: string;
-  updatedAt: string;
-  /** 置顶时刻；null = 未置顶（列表里置顶的排在前面） */
-  pinnedAt: string | null;
-}
-
+export type {
+  CanvasApprovalMode,
+  CanvasEdgeDto,
+  CanvasIoType,
+  CanvasListItem,
+  CanvasNodeDto,
+  CanvasNodeOutput,
+  CanvasNodeType,
+  CanvasOpInput,
+  CanvasPatch,
+  CanvasRunLock,
+  CanvasSnapshot,
+  CanvasUploadNodeType,
+} from "@agent-test/canvas-schema";
 export interface CanvasMessage {
   id: string;
   role: string;
@@ -734,35 +665,6 @@ export interface CanvasMessage {
   content: unknown;
   seq: number;
 }
-
-/** 画布结构变更 op（用户空闲期编辑；agent 侧走工具，不经此）。 */
-export type CanvasOpInput =
-  | {
-      op: "add_node";
-      type: CanvasNodeType;
-      x?: number;
-      y?: number;
-      label?: string;
-      text?: string;
-      prompt?: string;
-      assetPath?: string;
-      /** 上传节点的副本挂同一份上传资产（上传版本不可重新生成，共用不会互相打架） */
-      mediaGenerationId?: string;
-    }
-  | {
-      op: "update_node";
-      nodeId: string;
-      label?: string;
-      text?: string;
-      prompt?: string;
-      /** 生成节点的模型选择（面板上改模型/档位时走这三个字段） */
-      mediaChannel?: string;
-      mediaModel?: string;
-      mediaParams?: Record<string, string>;
-    }
-  | { op: "remove_node"; nodeId: string }
-  | { op: "add_edge"; source: string; target: string }
-  | { op: "remove_edge"; edgeId: string };
 
 export function createCanvas(input: {
   goal?: string;
@@ -1006,86 +908,19 @@ export function stopCanvas(id: string): Promise<{ stopped: boolean }> {
 }
 
 /**
- * 一次原子结构变更（镜像后端 CanvasPatch）：既是 canvas_patch 事件的 payload，
- * 也是 applyCanvasOp 的返回内容——新建节点时要从这里取服务端分配的 id 来接线。
- */
-export type CanvasPatch =
-  | { op: "add_node"; node: CanvasNodeDto; revision: number }
-  | { op: "update_node"; node: CanvasNodeDto; revision: number }
-  | { op: "move_node"; nodeId: string; x: number; y: number }
-  | { op: "remove_node"; nodeId: string; revision: number }
-  | { op: "add_edge"; edge: CanvasEdgeDto; revision: number }
-  | { op: "remove_edge"; edgeId: string; revision: number }
-  | { op: "clear"; revision: number }
-  /** 某节点入边的新顺序（拼接顺序 / 参考素材编号）：edgeIds 是它的全部入边，按新顺序 */
-  | { op: "reorder_inputs"; nodeId: string; edgeIds: string[]; revision: number };
-
-/**
  * 手动触发 video_concat 节点的拼接。素材按入边顺序取（与卡片预览顺序同源），
  * 产出一个 MediaVersion——之后的状态/资产与生成节点走同一条路。
  */
-/**
- * aigc 能力目录（镜像后端 aigc/aigc.types 的 AigcCatalog）。
- * 模型清单与档位取值一律以本接口为准，前端不硬编码——后台随时会加减模型。
- */
-export interface AigcParamOption {
-  label: string;
-  value: string;
-}
-
-export interface AigcModelParam {
-  param_type: string;
-  label?: string;
-  /** required 必传 / optional 可不传 / derived 服务端推导（不是入参，不渲染） */
-  input?: string;
-  /** select 或缺省 = 从 options 里选；range 是连续区间（当前只出现在音频维度） */
-  value_type?: string;
-  options: AigcParamOption[];
-}
-
-/**
- * 档位间的联动规则（aigc 目录原样透出）：`when` 全部命中时，`forbid` 的维度不能传，
- * `allow` 的维度只能取其中的值。`when` 里也会引用 derived 维度（有没有参考图等）。
- */
-export interface AigcConstraint {
-  when: Record<string, string[]>;
-  allow?: Record<string, string[]>;
-  forbid?: string[];
-}
-
-export interface AigcModel {
-  model_alias: string;
-  identifier?: string;
-  display_name?: string;
-  type: string;
-  /** 各类参考素材最多收几个（0 = 不收）；超出的部分提交时被丢掉 */
-  image_input_number: number;
-  video_input_number: number;
-  audio_input_number: number;
-  params: AigcModelParam[];
-  constraints: AigcConstraint[];
-  /** 视频模型的参考图以什么 role 提交（我方按模型名单推出，见后端 videoRefRole） */
-  ref_role?: "reference" | "first_frame" | "last_frame";
-}
-
-export interface AigcChannelModels {
-  channel: string;
-  models: AigcModel[];
-}
-
-/** 一次生成的模型选择：渠道 + 模型别名 + 档位（键是 param_type，值是 options[].value）。 */
-export interface AigcMediaConfig {
-  channel: string;
-  model: string;
-  params: Record<string, string>;
-}
-
-export interface AigcCatalog {
-  type: "image" | "video";
-  channels: AigcChannelModels[];
-  /** 默认模型（目录第一个 + 各必填维度第一个取值）；目录为空时为 null */
-  default: AigcMediaConfig | null;
-}
+/** aigc 能力目录的形状同样以 canvas-schema 为准（权威校验在后端 aigc.types 的 zod schema）。 */
+export type {
+  AigcCatalog,
+  AigcChannelModels,
+  AigcConstraint,
+  AigcMediaConfig,
+  AigcModel,
+  AigcModelParam,
+  AigcParamOption,
+} from "@agent-test/canvas-schema";
 
 /** 可选模型清单（经本服务转发 aigc 的 GET /channels，前端不直连 aigc）。 */
 export function listAigcModels(type: "image" | "video"): Promise<AigcCatalog> {

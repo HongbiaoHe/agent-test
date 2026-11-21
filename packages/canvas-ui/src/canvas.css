@@ -1,0 +1,412 @@
+/*
+ * @agent-test/canvas-ui 的画布样式：节点卡片、端口、连线强调、agent 工作光晕，以及它们消费的画布专用 token。
+ * 由 components/flow-canvas.tsx 直接 import（排在 @xyflow/react/dist/style.css 之前，与搬家前在 web
+ * globals.css 里时的层叠顺序一致），宿主无需另行引入。
+ *
+ * 依赖宿主设计系统提供的语义 token（--foreground / --muted-foreground / --card / --border / --ring /
+ * --primary / --muted / --radius / --font-mono / --warning …，web 见 apps/frontend/src/app/globals.css），
+ * 暗色模式靠 <html> 上的 .dark 类（与 web / desktop 的 @custom-variant dark 同一机制）。
+ * 全部是普通 CSS（不含 Tailwind 指令）；keyframe 必须全局声明，故都放这里。
+ */
+
+:root {
+  /* 画布节点「类型身份色」（业务扩展，非 shadcn；由 .canvas-node 经 --tone 消费）。
+     四类节点=一条流水线，按角色分配色相、统一 chroma/明度求和谐：
+     文本=琥珀金(创意) / 上传=青(输入) / 生图=紫罗兰(生成) / 生视频=玫红(动态)。 */
+  /* 选中的连线（功能语义，设计系统 §1 允许上色的那一类）：画布上其余连线都是中性灰，
+     选中的那条要一眼认出来，所以给一个高饱和的蓝——与四种节点身份色（210/292/12/165）
+     都拉开了色相距离，不会被误读成"某类节点的线"。 */
+  --edge-selected: oklch(0.58 0.21 255);
+  /* 四类节点的身份色（由 .canvas-node 经 --tone 消费；见 components/node-meta.tsx 的 NODE_META） */
+  --node-upload: oklch(0.66 0.11 210);
+  --node-image: oklch(0.62 0.17 292);
+  --node-video: oklch(0.63 0.19 12);
+  --node-concat: oklch(0.6 0.13 165);
+}
+
+.dark {
+  /* 暗色下节点类型色：提亮以在深卡上醒目，chroma 保持一致（见 :root 说明）。 */
+  --edge-selected: oklch(0.74 0.18 255);
+  --node-upload: oklch(0.74 0.1 210);
+  --node-image: oklch(0.72 0.15 292);
+  --node-video: oklch(0.73 0.17 12);
+  --node-concat: oklch(0.72 0.12 165);
+}
+
+/* 高光横扫（节点主视觉骨架、面板附件格共用）。与 web 全局的 media-card-shimmer 同一条曲线，
+   换名独立声明，免得包依赖宿主的 keyframe。 */
+@keyframes canvas-media-shimmer {
+  100% {
+    transform: translateX(200%);
+  }
+}
+.canvas-attachment-shimmer {
+  animation: canvas-media-shimmer 1.6s ease-in-out infinite;
+}
+
+/* 工作光晕的旋转角（与 web 全局的 --glow-angle / glow-border-spin 同义，独立声明理由同上） */
+@property --canvas-glow-angle {
+  syntax: "<angle>";
+  initial-value: 0deg;
+  inherits: false;
+}
+@keyframes canvas-glow-spin {
+  to {
+    --canvas-glow-angle: 360deg;
+  }
+}
+
+/* 画布工作光晕：agent 操控画布时，画布四周缓慢旋转的柔和彩色辉光，表现 AI 正在奋力创作。
+   无边框、无硬边线；透明区与画布同为矩形：用四条边线性渐变的并集做 mask —— 四边发光、
+   向内淡出，中心留一块矩形透明区（形状跟画布一致），随 --canvas-glow-angle 旋转。
+   pointer-events:none 不挡交互。 */
+.canvas-working-overlay {
+  position: absolute;
+  inset: 0;
+  z-index: 5;
+  pointer-events: none;
+  border-radius: inherit;
+  overflow: hidden;
+}
+.canvas-working-overlay::before {
+  content: "";
+  position: absolute;
+  inset: 0;
+  background: conic-gradient(
+    from var(--canvas-glow-angle),
+    oklch(0.72 0.23 20),
+    oklch(0.75 0.2 90),
+    oklch(0.72 0.22 160),
+    oklch(0.7 0.24 235),
+    oklch(0.73 0.24 305),
+    oklch(0.72 0.23 20)
+  );
+  filter: blur(16px); /* 模糊 → 柔和辉光，无硬边框线；收窄以贴合 ~50px 范围 */
+  opacity: 0.42; /* 弱化存在感 */
+  /* 四条边各自从边缘（实）向内 50px（透明）渐变，并集 → 距画布边约 50px 的矩形柔光带、
+     中心矩形透明区（与画布同形） */
+  mask:
+    linear-gradient(to right, #000, transparent 50px),
+    linear-gradient(to left, #000, transparent 50px),
+    linear-gradient(to bottom, #000, transparent 50px),
+    linear-gradient(to top, #000, transparent 50px);
+  mask-composite: add;
+  animation: canvas-glow-spin 3s linear infinite; /* 旋转（加快） */
+}
+@media (prefers-reduced-motion: reduce) {
+  .canvas-working-overlay::before {
+    animation: none;
+  }
+}
+
+/* 画布节点。
+   四类节点共用一套骨架：标题行（在卡外上方）→ 主视觉（有产出才占高）→ 正文 → 状态条。
+   卡面保持中性（设计系统 §7：靠深浅不靠彩色），身份色 --tone 只出现在类型图标上
+   ——连接点已改走中性灰阶（见 .react-flow__handle 的 --handle-ink）。 */
+.canvas-node {
+  position: relative;
+  /* 双层投影：一层贴边的细影勾出卡片轮廓，一层散开的软影把卡片托离点阵底纹。
+     单用 shadow-sm 时，缩小视图后一片卡片会糊成同一层灰。 */
+  box-shadow:
+    0 1px 2px oklch(0 0 0 / 0.05),
+    0 4px 12px -6px oklch(0 0 0 / 0.1);
+  transition:
+    border-color 0.15s ease,
+    box-shadow 0.15s ease,
+    opacity 0.15s ease;
+}
+.canvas-node:hover {
+  border-color: color-mix(in oklch, var(--foreground) 18%, var(--border));
+  box-shadow:
+    0 1px 2px oklch(0 0 0 / 0.06),
+    0 8px 20px -8px oklch(0 0 0 / 0.16);
+}
+/* 选中：中性焦点环（类型色不参与状态表达，避免和「在跑 / 失败」抢注意） */
+.react-flow__node.selected .canvas-node {
+  border-color: var(--ring);
+  box-shadow:
+    0 0 0 1px var(--ring),
+    0 8px 22px -8px oklch(0 0 0 / 0.18);
+}
+
+/* 没起过名的节点，标题位显示类型名：等宽大写小字，与画布索引页的 mono 序号同一套语言
+   （起过名就换常规字体，见 node-inline-field 的 NodeTitleField）。 */
+.canvas-node__type {
+  font-family: var(--font-mono), ui-monospace, monospace;
+  font-size: 9.5px;
+  line-height: 1.4;
+  letter-spacing: 0.09em;
+  text-transform: uppercase;
+  color: var(--muted-foreground);
+}
+
+/* 底部的上游摘要：与正文之间留一条极细的分隔，读起来是注脚而不是正文的一行。 */
+.canvas-node__inputs {
+  display: flex;
+  align-items: center;
+  margin-top: 0.125rem;
+  padding-top: 0.375rem;
+  border-top: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  font-size: 10.5px;
+  line-height: 1.5;
+  color: var(--muted-foreground);
+}
+
+/* 主视觉：满宽置顶、零内边距，只收上方两角——不能给整卡 overflow:hidden，
+   否则半悬在边缘的 handle 会被裁掉。 */
+.canvas-node__hero {
+  position: relative;
+  overflow: hidden;
+  border-radius: calc(var(--radius) - 1px) calc(var(--radius) - 1px) 0 0;
+  background: var(--muted);
+}
+/* 出片后卡面只剩画面（见 canvas-nodes 的 mediaOnly）。
+   四角都要圆（底下没有正文接着了）；半径比卡片小 1px，正好等于卡片描边内侧的半径，
+   画面因此严丝合缝地填满卡面、不会从圆角处探出来。底色也去掉：画面铺满，
+   留着 --muted 只会在素材加载的那一帧闪一块灰。 */
+.canvas-node__hero--full {
+  border-radius: calc(var(--radius) - 1px);
+  background: transparent;
+}
+
+/* 连接点：静止是 10px 的类型色圆点，**鼠标移到节点上就长成一枚 20px 的「+」按钮**。
+   这一枚同时是两种手势：拖出去 = 连线，原地点一下 = 弹出新建菜单（拖拽零位移时
+   react-flow 判定连接无效，正好走到 onConnectEnd → ConnectDropMenu，见 flow-canvas）。
+   点击区始终是 22px 的透明方块——9px 的点在缩小视图下几乎抓不住。 */
+.canvas-node .react-flow__handle {
+  width: 22px;
+  height: 22px;
+  background: transparent;
+  border: 0;
+  border-radius: 999px;
+  /* 抬一层：入口端点在 DOM 里排在主视觉之前，同为定位元素时后者会盖住它
+     （表现为左侧端点被出图/出片的画面吃掉半个）。 */
+  z-index: 5;
+  /* 端点走中性灰阶，不用类型身份色（设计系统 §1：靠深浅不靠彩色，彩色只留给功能语义）。
+     身份色因此只剩类型图标一处，画布上不再有四种颜色的圆点各自抢眼。
+     常态是 --muted-foreground（中灰），随接近度 --h-near 混向 --foreground：
+     指针一靠近，端点就"醒"到满对比。两个 token 在亮暗两套里各有取值，无需分别写。 */
+  --handle-ink: color-mix(
+    in oklch,
+    var(--foreground) calc(var(--h-near, 0) * 100%),
+    var(--muted-foreground)
+  );
+  /* 只用于「离开触发范围后弹回原位」；跟随指针时 JS 把时长压成 0s，要贴着手走 */
+  transition: transform 0.18s ease;
+}
+
+/* 磁吸位移加在**端点自身**上（--h-dx/--h-dy 由 useHandleMagnet 写入，--h-near 是
+   0→1 的接近度）：可点区域必须跟着看得见的那颗一起走，否则「+」贴在指针底下、
+   能按的却还留在卡片边上。
+   基础位移是 react-flow 用来把端点摆到边线上的（左 -50%、右 +50%），必须原样带上，
+   丢了端点就飞了。连线锚点仍在原处——react-flow 用的是测量时存下的端点坐标。 */
+.canvas-node .react-flow__handle-left {
+  transform: translate(
+    calc(-50% + var(--h-dx, 0px)),
+    calc(-50% + var(--h-dy, 0px))
+  );
+}
+.canvas-node .react-flow__handle-right {
+  transform: translate(
+    calc(50% + var(--h-dx, 0px)),
+    calc(-50% + var(--h-dy, 0px))
+  );
+}
+.canvas-node .react-flow__handle::before {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  /* 常态 10px；进入触发范围按接近度长到 20px */
+  width: calc(10px + var(--h-near, 0) * 10px);
+  height: calc(10px + var(--h-near, 0) * 10px);
+  transform: translate(-50%, -50%);
+  border-radius: 999px;
+  background: var(--handle-ink);
+  /* 一圈卡片色描边把点从底下的画面里"抠"出来——端点常常压在主视觉上 */
+  border: 1.5px solid var(--card);
+  transition:
+    width 0.14s ease,
+    height 0.14s ease,
+    background-color 0.14s ease,
+    box-shadow 0.12s ease;
+}
+/* 「+」的两笔：用两条渐变画，避免依赖字体里的加号字形对不齐 */
+.canvas-node .react-flow__handle::after {
+  content: "";
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  width: 9px;
+  height: 9px;
+  transform: translate(-50%, -50%) scale(var(--h-near, 0));
+  background:
+    linear-gradient(var(--card), var(--card)) center / 100% 1.5px no-repeat,
+    linear-gradient(var(--card), var(--card)) center / 1.5px 100% no-repeat;
+  transition: transform 0.14s ease;
+  pointer-events: none;
+}
+/* 卡片 hover 只把点稍微提亮一档：让人看见"这里有端口"，
+   真正长成「+」要等指针走进端点的触发范围（--h-near）。 */
+.canvas-node:hover .react-flow__handle::before {
+  width: calc(13px + var(--h-near, 0) * 7px);
+  height: calc(13px + var(--h-near, 0) * 7px);
+}
+.canvas-node .react-flow__handle:hover::before {
+  box-shadow: 0 0 0 4px color-mix(in oklch, var(--foreground) 16%, transparent);
+}
+/* 跟手位移属于装饰，减少动效时直接不跟 */
+@media (prefers-reduced-motion: reduce) {
+  .canvas-node .react-flow__handle-left,
+  .canvas-node .react-flow__handle-right {
+    --h-dx: 0px;
+    --h-dy: 0px;
+  }
+}
+
+/* 「加入对话」圈中的节点：主色描边 + 一圈很淡的外扩。
+   与「选中」（--ring 中性）刻意不同色——选中是此刻在操作它，圈定是这一轮 agent 只看它们，
+   两者会同时成立。 */
+.canvas-node--focused {
+  border-color: color-mix(in oklch, var(--primary) 55%, transparent);
+  box-shadow:
+    0 0 0 3px color-mix(in oklch, var(--primary) 14%, transparent),
+    0 4px 12px -6px oklch(0 0 0 / 0.1);
+}
+.canvas-node__focus-tag {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  padding: 0.05rem 0.3rem;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--primary) 14%, transparent);
+  color: var(--primary);
+  font-size: 9.5px;
+  line-height: 1.6;
+  letter-spacing: 0.02em;
+  white-space: nowrap;
+}
+
+/* 拖线中的取舍提示（判定见 canvas-nodes.tsx 的 useConnectFit）：
+   接不了的节点整体压暗、并挡掉指针（省得白拖一趟），能接的描一圈自己的端口色。
+   松手之前就能看出这根线该往哪儿落。 */
+.canvas-node--muted {
+  opacity: 0.35;
+}
+/* 能接的只把边框换成自己的端口色，不加光环——同类产品一致的做法是「压暗不兼容」
+   这种减法，全场发光反而吵。 */
+/* 面板附件栏里 hover / 聚焦某枚附件：在画布上把那个上游节点描出来——点之前就知道它在哪 */
+.canvas-node--peek {
+  border-color: color-mix(in oklch, var(--foreground) 45%, var(--border));
+  box-shadow:
+    0 0 0 3px color-mix(in oklch, var(--foreground) 10%, transparent),
+    0 8px 20px -8px oklch(0 0 0 / 0.16);
+}
+.canvas-node--eligible {
+  border-color: color-mix(in oklch, var(--tone) 60%, transparent);
+}
+
+/* 卡片**外**的上方一行：左边常驻类型图标 + 标题（点一下就地改），右边 hover 才浮出操作药丸。
+   把这些挪出卡面，是因为卡片右上角正好压着媒体主视觉——操作条一出来就遮画面。
+   同类画布（Flora / 即梦）都是这么分的：标签与工具在卡外，卡面只留作品本身。 */
+.canvas-node__above {
+  position: absolute;
+  left: 2px;
+  right: 2px;
+  bottom: 100%;
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  /* 高度要放得下操作药丸本身（38px = 内边距 8 + 按钮 28 + 描边 2），否则它会溢出这一行、
+     压在卡片顶边上。类型标签靠 align-items:center 在余下空间里居中，不受影响。 */
+  height: 46px;
+  /* 下内边距 = 与卡片之间的缝。这段缝属于本元素，鼠标从卡片上移时不会脱离 :hover，
+     操作药丸不会在够到它之前先消失。 */
+  padding-bottom: 8px;
+  /* 静止不吃指针事件，免得每张卡上方都压着一条看不见的挡板；hover 起来才接管 */
+  pointer-events: none;
+}
+.canvas-node:hover .canvas-node__above {
+  pointer-events: auto;
+}
+/* 正在改标题时也要接管指针：鼠标移出卡片（hover 断掉）后还得点得回输入框 */
+.canvas-node__above:focus-within {
+  pointer-events: auto;
+}
+
+/* 只管「什么时候露出来」；药丸与按钮的长相交给 CanvasToolbar
+   （与选区工具条同一套，见 components/canvas-toolbar.tsx）。
+   绝对定位**盖在**标题上，不占这一行的宽度：标题因此恒定占满整行（超出省略），
+   不会一悬停就被挤短、跟着重排。药丸自带不透明底，盖住的那截标题不会透出来。 */
+.canvas-node__actions {
+  position: absolute;
+  right: 0;
+  bottom: 8px; /* = 本行的 padding-bottom，使药丸与标题同底对齐 */
+  opacity: 0;
+  transform: translateY(2px);
+  transition:
+    opacity 0.14s ease,
+    transform 0.14s ease;
+}
+.canvas-node:hover .canvas-node__actions,
+.canvas-node__actions:focus-within {
+  opacity: 1;
+  transform: none;
+}
+/* 选中时这块位置让给编辑面板（NodeToolbar 也停在卡片上方），两者不叠 */
+.react-flow__node.selected .canvas-node__actions {
+  display: none;
+}
+/* 正在改标题时把药丸让开：它是不透明的，压着输入框末尾会看不见自己打的字。
+   用 :has(input:focus) 而不是本行的 :focus-within——后者在焦点落在药丸按钮上时同样成立，
+   会把药丸自己藏掉。 */
+.canvas-node__above:has(input:focus) .canvas-node__actions {
+  opacity: 0;
+  pointer-events: none;
+}
+/* 生成中 / 资产在途：主视觉骨架上满幅高光横扫（复用上方 canvas-media-shimmer keyframe）。 */
+.canvas-node__shimmer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+.canvas-node__shimmer::after {
+  content: "";
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 0;
+  width: 55%;
+  transform: translateX(-100%);
+  background: linear-gradient(
+    90deg,
+    transparent,
+    color-mix(in oklch, var(--background) 70%, transparent),
+    transparent
+  );
+  animation: canvas-media-shimmer 1.5s ease-in-out infinite;
+}
+
+/* 连线强调（目标节点在生成 / 两端有节点被选中）：在原贝塞尔路径上叠一条更粗更实的线。
+   **刻意不做流光**——同类产品（ComfyUI / n8n / Figma Weave）无一给连线做流动动效，
+   它抢注意力且是最典型的"AI 装饰"。「在跑」由节点自己表达（骨架 + 状态条），
+   线只负责把"谁接谁"说清楚。 */
+.canvas-edge__active {
+  stroke: color-mix(in oklch, var(--foreground) 55%, transparent);
+  stroke-width: 2;
+  stroke-linecap: round;
+  pointer-events: none;
+}
+
+/* 选中色由组件内联给（见 canvas-edges.tsx 里的说明：写在这里会被 react-flow 自带的
+   .selected 规则压掉）。这里只放宽命中区——连线才 1~2px 宽，照原样很难点中。 */
+.react-flow__edge .react-flow__edge-interaction {
+  stroke-width: 16;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .canvas-node__shimmer::after {
+    animation: none;
+  }
+}

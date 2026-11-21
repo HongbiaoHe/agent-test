@@ -32,12 +32,16 @@ import {
   type CanvasTokenReport,
   type CanvasTokenRun,
   asApprovalMode,
+  buildAgentCanvasContext,
+  CANVAS_LOCK_TTL_MS,
+  type CanvasRunLock,
+  isCanvasBusy,
   canConnectNodeTypes,
   collectGenerationInputs,
   collectVideoSources,
   isCanvasNodeType,
   isUploadNodeType,
-  shortNodeId,
+  resolveNodeIdIn,
   UPLOAD_NODE_ASSET,
 } from './canvas.types';
 import { groupByModel, sumCalls } from '../agent/token-usage';
@@ -53,6 +57,28 @@ interface ThreadDeletableCheckpointer {
 
 /** 画布"忙"状态：此时用户结构编辑被服务端拒绝（运行期只读）。 */
 const BUSY_STATUSES = ['queued', 'running', 'waiting_approval'];
+
+/** 会话行上运行锁相关的列（select 时带上，交给 runLockOf） */
+const LOCK_COLUMNS = {
+  runLockHolder: true,
+  runLockLabel: true,
+  runLockExpiresAt: true,
+} as const;
+
+/** 会话行 → 有效的运行锁；没有或已过期返回 null */
+function runLockOf(s: {
+  runLockHolder: string | null;
+  runLockLabel: string | null;
+  runLockExpiresAt: Date | null;
+}): CanvasRunLock | null {
+  if (!s.runLockHolder || !s.runLockExpiresAt) return null;
+  if (s.runLockExpiresAt.getTime() <= Date.now()) return null;
+  return {
+    holderId: s.runLockHolder,
+    label: s.runLockLabel,
+    expiresAt: s.runLockExpiresAt.toISOString(),
+  };
+}
 
 /** 内部哨兵：revision CAS 落空（并发写），触发重试。 */
 class RevisionRaceError extends Error {}
@@ -384,7 +410,7 @@ export class CanvasService {
     file: UploadFileInput,
   ): Promise<{ generationId: string; versionId: string }> {
     const session = await this.assertOwner(id, tenantId);
-    if (BUSY_STATUSES.includes(session.status)) {
+    if (isCanvasBusy({ status: session.status, runLock: runLockOf(session) })) {
       throw new BusinessException(ErrorCodes.CANVAS_BUSY);
     }
     const node = await this.prisma.canvasNode.findFirst({
@@ -511,80 +537,8 @@ export class CanvasService {
    * 节点尺寸按卡片实际大小取保守值（W×H），留 GAP 间距。
    */
   async agentCanvasContext(sessionId: string): Promise<string> {
-    const snap = await this.buildSnapshot(sessionId);
-    const W = 280;
-    // 卡面 = 满宽画面（w-64 = 256px），高度随画幅：9:16 实测 457px，统一按 220 估会叠在一起。
-    // 画幅取档位里的 aspect_ratio；上传 / 拼接 / 没设画幅的拿不到，按常见画幅里最高的 9:16 保守估。
-    // H 是下限：横版卡比它矮，仍按 220 留位，不压缩原有间距
-    const H = 220;
-    const GAP = 40;
-    const cardH = (aspect: number) => Math.max(H, Math.ceil(256 / aspect) + 2);
-    const heightOf = (n: CanvasNodeDto) =>
-      cardH(parseAspect(n.mediaParams?.aspect_ratio) ?? 9 / 16);
-    const strides =
-      `16:9 ≥ ${cardH(16 / 9) + GAP}px、1:1 ≥ ${cardH(1) + GAP}px、` +
-      `9:16 ≥ ${cardH(9 / 16) + GAP}px（画幅未定按 9:16）`;
-
-    // 用户圈定了节点（「加入对话」）→ 本段只列这些节点。大画布上用户往往只想让 agent 动其中几张卡，
-    // 全量列出既淹没重点、又每次变化都要重付一份长快照。
-    const focus = new Set(snap.focusNodeIds);
-    const listed =
-      focus.size > 0 ? snap.nodes.filter((n) => focus.has(n.id)) : snap.nodes;
-    // 连线取「至少一端被圈中」的：只列两端都在圈内的话，模型看不到这些节点的上游从哪来
-    const listedEdges =
-      focus.size > 0
-        ? snap.edges.filter((e) => focus.has(e.source) || focus.has(e.target))
-        : snap.edges;
-
-    // id 一律用短 id（完整 cuid 的后 6 位）：完整 id 会让本段膨胀近 3 倍，而这段每次画布变化都要
-    // 追加一份进上下文。工具侧用 resolveNodeId 反解，短 id / 完整 id 都吃。
-    const nodeLines = listed.map((n) => {
-      const desc = (n.label ?? n.prompt ?? '').slice(0, 30);
-      const media = n.mediaStatus ? ` <生成:${n.mediaStatus}>` : '';
-      // 只列显式设过的：没设 = 默认模型，不写省 token
-      const model = n.mediaModel ? ` <模型:${n.mediaModel}>` : '';
-      // 拼接节点标出当前顺序（= 成片顺序），agent 触发前能直接核对，不用从连线列表里推
-      const order =
-        n.type === 'video_concat'
-          ? clipOrderTag(snap.nodes, snap.edges, n.id)
-          : '';
-      return `- ${shortNodeId(n.id)} [${n.type}] "${desc}" @(${Math.round(n.x)},${Math.round(n.y)})${media}${model}${order}`;
-    });
-    const edgeLines = listedEdges.map(
-      (e) => `- ${shortNodeId(e.source)} → ${shortNodeId(e.target)}`,
-    );
-
-    // 安全区始终按**全部**节点算：只按圈中的算会让新节点压在圈外的节点上
-    let safe: string;
-    if (snap.nodes.length === 0) {
-      safe = `画布为空。从 (40, 40) 开始布局：向右每列 +${W + GAP}px，向下每行按该行节点画幅：${strides}。`;
-    } else {
-      const rightX =
-        Math.round(Math.max(...snap.nodes.map((n) => n.x + W))) + GAP;
-      const belowY =
-        Math.round(Math.max(...snap.nodes.map((n) => n.y + heightOf(n)))) + GAP;
-      const topY = Math.round(Math.min(...snap.nodes.map((n) => n.y)));
-      const leftX = Math.round(Math.min(...snap.nodes.map((n) => n.x)));
-      safe =
-        `现有节点占据区域：x∈[${leftX}, ${rightX - GAP}]、y∈[${topY}, ${belowY - GAP}]。\n` +
-        `**新增节点必须放到安全区**（否则会与现有节点重叠）：右侧 x ≥ ${rightX}，或下方 y ≥ ${belowY}。\n` +
-        `同批多个新节点之间：横向间隔 ≥ ${W + GAP}px；纵向间隔按上面那个节点的画幅：${strides}。` +
-        `建议：接着现有节点向右新开一列，从 (${rightX}, ${topY}) 起向下依次排列。`;
-    }
-
-    const scope =
-      focus.size > 0
-        ? `\n\n### 关注范围\n用户已圈定 ${listed.length} 个节点加入本次对话，上面只列了这些节点` +
-          `（画布上另有 ${snap.nodes.length - listed.length} 个节点未圈定，未列出）。\n` +
-          `**请只对上面列出的节点动手**；确需改动其它节点时，先说明理由并请用户取消圈定。`
-        : '';
-
-    return (
-      `## 当前画布实时状态（画布一有变化就自动追加最新一份，直接使用，无需调用任何工具查询画布）\n` +
-      `节点（${listed.length}）：\n${nodeLines.join('\n') || '（无）'}\n\n` +
-      `连线（${listedEdges.length}）：\n${edgeLines.join('\n') || '（无）'}\n\n` +
-      `### 放置安全区（避免节点重叠）\n${safe}${scope}`
-    );
+    // 写法与 desktop 本机 agent 共用（@agent-test/canvas-schema），两边模型读到的是同一种格式
+    return buildAgentCanvasContext(await this.buildSnapshot(sessionId));
   }
 
   /**
@@ -618,9 +572,10 @@ export class CanvasService {
       where: { sessionId },
       select: { id: true },
     });
-    if (nodes.some((n) => n.id === id)) return id;
-    const matched = nodes.filter((n) => n.id.endsWith(id));
-    return matched.length === 1 ? matched[0].id : null;
+    return resolveNodeIdIn(
+      nodes.map((n) => n.id),
+      id,
+    );
   }
 
   /** 构建快照：session + 节点 + 边；生成节点按 mediaGenerationId JOIN 最新 MediaVersion。 */
@@ -673,11 +628,102 @@ export class CanvasService {
       focusNodeIds: readFocusIds(session.focusNodeIds).filter((fid) =>
         nodes.some((n) => n.id === fid),
       ),
+      runLock: runLockOf(session),
       nodes: nodes.map((n) =>
         this.toNodeDto(n, latestByGen.get(n.mediaGenerationId ?? '')),
       ),
       edges: edges.map((e) => this.toEdgeDto(e)),
     };
+  }
+
+  // ───────────────────────────────────────────────────────────────────────────
+  // 运行锁（desktop 本机 agent 改画布期间，见 @agent-test/canvas-schema lock.ts）
+  // ───────────────────────────────────────────────────────────────────────────
+
+  /**
+   * 申请 / 续期运行锁：没人持锁、锁已过期、或就是自己持锁时成功（到期时刻顺延一个 TTL）。
+   * 服务端画布 agent 在跑、或别的 desktop 持着未过期的锁 → CANVAS_BUSY。
+   * 一条带条件的 UPDATE 完成判断与写入，并发申请只有一个能成功。
+   */
+  async acquireRunLock(
+    id: string,
+    tenantId: string,
+    holderId: string,
+    label: string | null,
+  ): Promise<CanvasRunLock> {
+    await this.assertOwner(id, tenantId);
+    const now = new Date();
+    const expiresAt = new Date(now.getTime() + CANVAS_LOCK_TTL_MS);
+    const r = await this.prisma.canvasSession.updateMany({
+      where: {
+        id,
+        tenantId,
+        status: { notIn: BUSY_STATUSES },
+        OR: [
+          { runLockHolder: null },
+          { runLockHolder: holderId },
+          { runLockExpiresAt: null },
+          { runLockExpiresAt: { lte: now } },
+        ],
+      },
+      data: {
+        runLockHolder: holderId,
+        runLockLabel: label?.slice(0, 200) ?? null,
+        runLockExpiresAt: expiresAt,
+      },
+    });
+    if (r.count === 0) throw new BusinessException(ErrorCodes.CANVAS_BUSY);
+    const lock: CanvasRunLock = {
+      holderId,
+      label: label?.slice(0, 200) ?? null,
+      expiresAt: expiresAt.toISOString(),
+    };
+    // 续期也推：其它端按 expiresAt 判断锁是否还有效，不推会在第一次到期时误以为锁没了
+    await this.stream.publish(id, {
+      type: 'canvas_lock',
+      payload: { runLock: lock },
+    });
+    return lock;
+  }
+
+  /** 只确认画布属于这个租户（不存在 / 不属于 → CANVAS_NOT_FOUND）；不构建快照，给只需鉴权的接口用 */
+  async assertAccess(id: string, tenantId: string): Promise<void> {
+    await this.assertOwner(id, tenantId);
+  }
+
+  /** 释放运行锁（只放自己持有的；已被别人接手或已过期则什么都不做） */
+  async releaseRunLock(
+    id: string,
+    tenantId: string,
+    holderId: string,
+  ): Promise<{ released: boolean }> {
+    await this.assertOwner(id, tenantId);
+    const r = await this.prisma.canvasSession.updateMany({
+      where: { id, tenantId, runLockHolder: holderId },
+      data: { runLockHolder: null, runLockLabel: null, runLockExpiresAt: null },
+    });
+    if (r.count > 0) {
+      await this.stream.publish(id, {
+        type: 'canvas_lock',
+        payload: { runLock: null },
+      });
+    }
+    return { released: r.count > 0 };
+  }
+
+  /**
+   * desktop agent 的每次写入前确认锁还在自己手里且未过期（过期后可能已被别人拿走）。
+   * 不在 → CANVAS_BUSY，desktop 侧据此重新申请或把错误回给模型。
+   */
+  async assertRunLockHolder(
+    id: string,
+    tenantId: string,
+    holderId: string,
+  ): Promise<void> {
+    const s = await this.assertOwner(id, tenantId);
+    if (runLockOf(s)?.holderId !== holderId) {
+      throw new BusinessException(ErrorCodes.CANVAS_BUSY);
+    }
   }
 
   /**
@@ -695,7 +741,7 @@ export class CanvasService {
   ): Promise<{ cleared: true }> {
     const session = await this.prisma.canvasSession.findFirst({
       where: { id, tenantId },
-      select: { id: true, status: true },
+      select: { id: true, status: true, ...LOCK_COLUMNS },
     });
     if (!session) {
       throw new BusinessException(
@@ -703,7 +749,11 @@ export class CanvasService {
         HttpStatus.NOT_FOUND,
       );
     }
-    if (!['idle', 'done', 'failed', 'stopped'].includes(session.status)) {
+    // desktop 本机 agent 持锁期间服务端 agent 不能开跑（反之 desktop 拿不到锁，见 acquireRunLock）
+    if (
+      !['idle', 'done', 'failed', 'stopped'].includes(session.status) ||
+      runLockOf(session)
+    ) {
       throw new BusinessException(ErrorCodes.CANVAS_BUSY);
     }
 
@@ -849,7 +899,7 @@ export class CanvasService {
     }
     const session = await this.prisma.canvasSession.findFirst({
       where: { id, tenantId },
-      select: { id: true, status: true },
+      select: { id: true, status: true, ...LOCK_COLUMNS },
     });
     if (!session) {
       throw new BusinessException(
@@ -857,7 +907,11 @@ export class CanvasService {
         HttpStatus.NOT_FOUND,
       );
     }
-    if (!['idle', 'done', 'failed', 'stopped'].includes(session.status)) {
+    // desktop 本机 agent 持锁期间服务端 agent 不能开跑（反之 desktop 拿不到锁，见 acquireRunLock）
+    if (
+      !['idle', 'done', 'failed', 'stopped'].includes(session.status) ||
+      runLockOf(session)
+    ) {
       throw new BusinessException(ErrorCodes.CANVAS_BUSY);
     }
 
@@ -1024,7 +1078,7 @@ export class CanvasService {
     return this.prisma.$transaction(async (tx) => {
       const session = await tx.canvasSession.findUnique({
         where: { id: sessionId },
-        select: { id: true, status: true, revision: true },
+        select: { id: true, status: true, revision: true, ...LOCK_COLUMNS },
       });
       if (!session) {
         throw new BusinessException(
@@ -1033,7 +1087,11 @@ export class CanvasService {
         );
       }
       // 运行期只读：agent 是唯一写者，用户结构变更被拒
-      if (actor === 'user' && BUSY_STATUSES.includes(session.status)) {
+      // desktop 本机 agent 持锁期间同样只读（它的写入以 agent 身份进来，见 canvas-agent 接口）
+      if (
+        actor === 'user' &&
+        isCanvasBusy({ status: session.status, runLock: runLockOf(session) })
+      ) {
         throw new BusinessException(ErrorCodes.CANVAS_BUSY);
       }
       // 乐观并发：用户带 baseRevision 且落后 → 冲突
@@ -1295,7 +1353,13 @@ export class CanvasService {
   private async assertOwner(id: string, tenantId: string) {
     const s = await this.prisma.canvasSession.findFirst({
       where: { id, tenantId },
-      select: { id: true, userId: true, status: true, revision: true },
+      select: {
+        id: true,
+        userId: true,
+        status: true,
+        revision: true,
+        ...LOCK_COLUMNS,
+      },
     });
     if (!s) {
       throw new BusinessException(
@@ -1388,12 +1452,6 @@ export class CanvasService {
  * 档位画幅（`9:16` / `9x16`）→ 宽 / 高；认不出（`auto`、没设）返回 null。
  * 夹到 1:2 ～ 4:1，与前端占位画框（placeholderAspect）一致。
  */
-function parseAspect(value: string | undefined): number | null {
-  const m = /^(\d+(?:\.\d+)?)\s*[:x]\s*(\d+(?:\.\d+)?)$/i.exec(value ?? '');
-  if (!m || Number(m[2]) <= 0) return null;
-  return Math.min(Math.max(Number(m[1]) / Number(m[2]), 1 / 2), 4);
-}
-
 function readFocusIds(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   return value.filter((v): v is string => typeof v === 'string');
@@ -1413,19 +1471,4 @@ export function reorderBySource<T extends { source: string }>(
     .filter((e): e is T => !!e);
   const picked = new Set(listed);
   return [...listed, ...edges.filter((e) => !picked.has(e))];
-}
-
-/** 拼接顺序标注：`<拼接顺序: 短id「标题」 → …>`（按入边顺序）；没有入边返回空串 */
-export function clipOrderTag(
-  nodes: readonly { id: string; label: string | null; type: string }[],
-  edges: readonly { source: string; target: string }[],
-  nodeId: string,
-): string {
-  const byId = new Map(nodes.map((n) => [n.id, n]));
-  const clips = edges
-    .filter((e) => e.target === nodeId)
-    .map((e) => byId.get(e.source))
-    .filter((n): n is NonNullable<typeof n> => !!n)
-    .map((n) => `${shortNodeId(n.id)}「${n.label ?? n.type}」`);
-  return clips.length > 0 ? ` <拼接顺序: ${clips.join(' → ')}>` : '';
 }

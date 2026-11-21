@@ -1,10 +1,19 @@
 "use client";
 
+import type { CanvasRunLock } from "@agent-test/canvas-schema";
+import {
+  CanvasIsland,
+  CanvasIslandButton,
+  CanvasIslandDivider,
+  CanvasSaveStatus,
+  type SaveState,
+} from "@agent-test/canvas-ui";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import {
   ArrowLeft,
   FlaskConical,
   Lock,
+  Monitor,
   Moon,
   Pause,
   Play,
@@ -23,13 +32,6 @@ import {
 import { renameCanvas } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
-import type { SaveState } from "../_hooks/use-canvas";
-import {
-  CanvasIsland,
-  CanvasIslandButton,
-  CanvasIslandDivider,
-} from "./canvas-island";
-import { CanvasSaveStatus } from "./canvas-save-status";
 
 /**
  * 桌面端悬浮面板顶部要让出的高度：上边距 12 + 岛高 46 + 与面板的间距 12。
@@ -281,6 +283,34 @@ function AgentRunningBadge() {
 }
 
 /**
+ * desktop 本机 agent 持有运行锁时的状态胶囊：与 AgentRunningBadge 同一套形态，换成桌面图标与说法。
+ * 锁的说明（desktop 对话标题）放进 tooltip，胶囊本身保持短句。
+ */
+function DesktopLockBadge({ lock }: { lock: CanvasRunLock }) {
+  return (
+    <div className="canvas-badge-pop pointer-events-auto flex h-8 items-center gap-2 rounded-full border border-border bg-card/85 pl-2.5 pr-3 text-xs shadow-lg backdrop-blur-md">
+      <Monitor className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      <span className="font-medium text-foreground" role="status">
+        <span className="max-md:hidden">Desktop agent is editing</span>
+        <span className="md:hidden">Desktop editing</span>
+      </span>
+      <Tooltip>
+        <TooltipTrigger
+          render={<span tabIndex={0} className="flex shrink-0 items-center" />}
+        >
+          <Lock className="size-3 text-muted-foreground" strokeWidth={2.5} />
+        </TooltipTrigger>
+        <TooltipContent side="bottom">
+          {lock.label
+            ? `Read-only while the desktop agent works on “${lock.label}”`
+            : "Canvas is read-only while the desktop agent runs"}
+        </TooltipContent>
+      </Tooltip>
+    </div>
+  );
+}
+
+/**
  * 画布顶部的悬浮控件：左边「返回 + 画布名」，紧挨着是保存状态，中间是运行状态，右边主题切换。
  *
  * 刻意不做成横跨画布的一条 header——那会把画布从视觉上切开，也和底部缩放条、右侧面板入口
@@ -295,6 +325,7 @@ export function CanvasHeader({
   title,
   saveStates,
   busy,
+  desktopLock,
   mockMedia,
   mockMediaAvailable,
   onMockMediaChange,
@@ -309,6 +340,8 @@ export function CanvasHeader({
   saveStates: Record<string, SaveState>;
   /** agent 运行中：中间浮出运行状态胶囊 */
   busy: boolean;
+  /** desktop 本机 agent 正持有运行锁（已过期的不算）：中间浮出「Desktop agent is editing」 */
+  desktopLock: CanvasRunLock | null;
   /** 测试模式（Mock）开关 */
   mockMedia: boolean;
   /** 当前环境允许测试模式才显示开关 */
@@ -356,7 +389,13 @@ export function CanvasHeader({
         />
       </div>
 
-      <div className="shrink-0">{busy && <AgentRunningBadge />}</div>
+      <div className="shrink-0">
+        {busy ? (
+          <AgentRunningBadge />
+        ) : (
+          desktopLock && <DesktopLockBadge lock={desktopLock} />
+        )}
+      </div>
 
       <div className="flex min-w-0 flex-1 justify-end">
         <CanvasIsland>

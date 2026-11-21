@@ -13,6 +13,7 @@
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Command } from '@langchain/langgraph';
+import { createCanvasStateMiddleware } from '@agent-test/agent-core/canvas/canvas-state-middleware';
 import { buildAgent, type ModelResolver } from '@agent-test/agent-core/agent/agent.factory';
 import type { RawEvent } from '@agent-test/agent-core/agent/event-normalizer';
 import { parseModelRef } from '@agent-test/agent-core/providers/model-ref';
@@ -52,6 +53,9 @@ import {
   mcpAppContextBlock,
 } from './prompts';
 import { type DesktopRegistry, desktopCapabilities } from './tool-registry';
+import { CanvasRunSession } from '../canvas/canvas-run';
+import type { CanvasRunContext } from '../canvas/canvas-tools';
+import { CanvasWeb } from '../canvas/canvas-web';
 
 /** 桌面端单用户：contextSchema 要求 userId 必填，固定传这个值 */
 export const LOCAL_USER_ID = 'local';
@@ -98,6 +102,11 @@ export class BusyError extends Error {}
 
 export class RunService {
   private readonly active = new Map<string, ActiveRun>();
+  /**
+   * 停在审批上的对话的画布上下文：运行锁不放（心跳照常），续跑沿用同一个持锁方——
+   * 与 Web 画布 agent 等审批时画布仍算忙一致。审批被停止 / 对话被删时释放。
+   */
+  private readonly parkedCanvas = new Map<string, CanvasRunContext>();
   /** 后台任务（与 RunService 互相引用：任务结束要唤醒新一轮，一轮结束要补投通知），装配后注入 */
   private background: BackgroundService | null = null;
 
@@ -124,6 +133,7 @@ export class RunService {
 
   /** 删除会话时一并清掉它在 checkpointer 里的中断态与运行目录（附件副本） */
   async forgetThread(conversationId: string): Promise<void> {
+    await this.releaseParkedCanvas(conversationId);
     await this.deps.checkpointer.deleteThread(conversationId);
     await rm(this.runtimeDir(conversationId), { recursive: true, force: true });
   }
@@ -214,6 +224,8 @@ export class RunService {
     // 停止 = 停止所有操作：一并取消这个会话的后台任务（同 backend ConversationsService.stop）
     this.background?.cancelByConversation(conversationId);
     const changed = repo.transition(conversationId, ['running', 'waiting_approval'], 'stopped');
+    // 停在审批上的那一轮不会再续跑：放掉它一直持有的画布锁
+    void this.releaseParkedCanvas(conversationId);
     const run = this.active.get(conversationId);
     if (run) {
       run.abort.abort();
@@ -243,6 +255,13 @@ export class RunService {
     let deliverAfter = false;
     const persist = (raw: RawEvent) =>
       repo.appendMessage(conversationId, roleOf(raw.type), raw.type, raw.payload);
+    // 画布（登录了 Web 账号才有）：本轮对画布的写入共用一个运行锁持有方，本轮结束统一释放；
+    // 审批续跑接着用上一轮停下时留着的那个（锁一直在手里）
+    const parked = this.parkedCanvas.get(conversationId);
+    this.parkedCanvas.delete(conversationId);
+    const canvasRun = this.deps.webApi ? (parked ?? this.canvasContext(conversationId, this.deps.webApi)) : null;
+    /** 本轮停在审批上：画布锁留着给续跑 */
+    let awaitingApproval = false;
     try {
       await mkdir(workspaceDir, { recursive: true });
       await mkdir(runtimeDir, { recursive: true });
@@ -359,7 +378,13 @@ export class RunService {
           conversationId,
           userId: LOCAL_USER_ID,
           env,
-          host: { workspaceDir, runtimeDir, permission: conv.permission, mcpServers: assembly.mcpServers },
+          host: {
+            workspaceDir,
+            runtimeDir,
+            permission: conv.permission,
+            mcpServers: assembly.mcpServers,
+            canvas: canvasRun,
+          },
         },
         (sid, name, args) => this.deps.mcp.callTool(sid, name, args),
       );
@@ -383,6 +408,11 @@ export class RunService {
         checkpointer: this.deps.checkpointer,
         dynamicContext: [activePlanProvider, mcpAppContextProvider],
         subagents,
+        // 画布状态注入：挂了画布工具、且对话绑定了画布时，画布一变就追加一份最新状态（与 Web 画布 agent 同一份逻辑）
+        middleware:
+          canvasRun && tools.some((t) => t.name === 'add_node')
+            ? [createCanvasStateMiddleware(() => this.canvasContextText(canvasRun))]
+            : [],
       });
 
       const stream = await agent.stream(input, {
@@ -432,6 +462,7 @@ export class RunService {
           this.finalizeStopped(conversationId);
           return;
         }
+        awaitingApproval = true;
         const evt: RawEvent = { type: 'control_request', payload: interrupt.value };
         emit(conversationId, evt);
         persist(evt);
@@ -462,10 +493,57 @@ export class RunService {
       persist(errorEvt);
     } finally {
       this.active.delete(conversationId);
+      // 释放本轮持有的画布运行锁；停在审批上时留给续跑（见 parkedCanvas）
+      if (canvasRun && awaitingApproval) this.parkedCanvas.set(conversationId, canvasRun);
+      else await canvasRun?.session.close();
       await inner.stop();
       this.deps.listChanged();
       // 会话现在空闲：当时没投出去的后台任务通知写进会话并唤醒新一轮
       if (deliverAfter) this.background?.deliverPending(conversationId);
+    }
+  }
+
+  /** 本轮的画布上下文：当前画布取自对话的绑定（工具 open_canvas / create_canvas 或用户点开画布会改它） */
+  private canvasContext(conversationId: string, webApi: WebApi): CanvasRunContext {
+    const { repo } = this.deps;
+    const web = new CanvasWeb(webApi);
+    return {
+      web,
+      // 给其它端看的说明：对话标题，没起标题的新对话用它的目标（第一条消息）
+      session: new CanvasRunSession(
+        web,
+        () => {
+          const c = repo.get(conversationId);
+          return c?.title || c?.goal.slice(0, 60) || null;
+        },
+        (m) => this.deps.log?.(m),
+      ),
+      conversationId,
+      current: () => repo.get(conversationId)?.canvasId ?? null,
+      bind: (canvasId) => {
+        repo.setCanvas(conversationId, canvasId);
+        this.deps.listChanged();
+      },
+    };
+  }
+
+  /** 放掉停在审批上的那一轮一直持有的画布锁（审批被停止 / 对话被删） */
+  private async releaseParkedCanvas(conversationId: string): Promise<void> {
+    const parked = this.parkedCanvas.get(conversationId);
+    if (!parked) return;
+    this.parkedCanvas.delete(conversationId);
+    await parked.session.close();
+  }
+
+  /** 注入给模型的画布文本；没绑定画布或取不到（网络 / 画布已删）就不注入 */
+  private async canvasContextText(ctx: CanvasRunContext): Promise<string | null> {
+    const id = ctx.current();
+    if (!id) return null;
+    try {
+      return await ctx.web.agentContext(id);
+    } catch (e) {
+      this.deps.log?.(`取画布状态失败 canvas=${id}: ${String(e)}`);
+      return null;
     }
   }
 

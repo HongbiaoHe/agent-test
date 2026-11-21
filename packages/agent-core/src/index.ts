@@ -1,4 +1,5 @@
 export * from './agent/agent.factory';
+export * from './canvas';
 export * from './agent/event-normalizer';
 export * from './agent/guardable-sandbox';
 export * from './agent/guarded-sandbox';

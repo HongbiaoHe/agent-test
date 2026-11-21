@@ -1,5 +1,6 @@
 import { McpAppCard, McpReconnectCard } from "@/components/mcp";
 import { VideoProjectCard } from "@/features/video-editor";
+import { CanvasCard } from "@/features/canvas/components/canvas-card";
 
 import type { ThreadItem } from "../lib/thread";
 import { isSameDay } from "../lib/time";
@@ -85,8 +86,9 @@ export function ThreadRows({
         renderSub={renderSub}
       />
     ) : r.item.kind === "media" ? (
-      // 媒体卡片与助手内容同列左对齐，conversationId 必有（卡片只在已有会话里出现）
-      <div key={r.item.id}>
+      // 媒体卡片与助手内容同列左对齐，conversationId 必有（卡片只在已有会话里出现）；
+      // data-thread-item：会话信息侧栏点「生成的媒体」时滚到这里
+      <div key={r.item.id} data-thread-item={r.item.id}>
         <MediaGroup
           conversationId={conversationId as string}
           generationIds={r.item.generationIds}
@@ -97,6 +99,8 @@ export function ThreadRows({
       <PreviewCard key={r.item.id} spec={r.item.spec} />
     ) : r.item.kind === "video_project" ? (
       <VideoProjectCard key={r.item.id} conversationId={conversationId as string} info={r.item.info} />
+    ) : r.item.kind === "canvas" ? (
+      <CanvasCard key={r.item.id} conversationId={conversationId as string} info={r.item.info} />
     ) : r.item.kind === "bg_task" ? (
       <BackgroundTaskCard key={r.item.id} conversationId={conversationId as string} taskId={r.item.taskId} />
     ) : r.item.kind === "notification" ? (
