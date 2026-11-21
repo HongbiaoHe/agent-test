@@ -33,5 +33,7 @@ import { CanvasService } from './canvas.service';
     checkpointerProvider,
     canvasAbortsProvider,
   ],
+  // 画布 MCP 对外服务（mcp-server 模块）经同一个 CanvasService 操作画布
+  exports: [CanvasService],
 })
 export class CanvasModule {}

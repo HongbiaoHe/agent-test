@@ -16,6 +16,8 @@ const PROTECTED_PREFIXES = [
   "/conversations",
   "/skills",
   "/settings",
+  // 第三方 agent 的 OAuth 同意页：未登录先登录，登录完带着 request 参数回来
+  "/oauth/consent",
 ];
 
 // SSR 守卫（无闪烁，在服务端直接重定向）：
@@ -78,6 +80,7 @@ export const config = {
     "/conversations/:path*",
     "/skills/:path*",
     "/settings/:path*",
+    "/oauth/consent",
     "/api-backend/:path*",
   ],
 };

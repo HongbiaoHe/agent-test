@@ -16,6 +16,7 @@ import { DesignModule } from './design/design.module';
 import { ConversationsModule } from './conversations/conversations.module';
 import { BackgroundModule } from './background/background.module';
 import { McpModule } from './mcp/mcp.module';
+import { McpServerModule } from './mcp-server/mcp-server.module';
 import { MediaModule } from './media/media.module';
 import { ModesModule } from './modes/modes.module';
 import { SandboxModule } from './sandbox/sandbox.module';
@@ -63,6 +64,7 @@ import { WorkerModule } from './worker/worker.module';
     PreviewModule,
     UsersModule,
     CanvasModule,
+    McpServerModule,
     DesignModule,
   ],
   controllers: [AppController],

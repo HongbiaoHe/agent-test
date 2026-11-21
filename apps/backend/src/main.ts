@@ -7,6 +7,7 @@ import { pinEnvProxyDispatcher } from './common/env-proxy-dispatcher';
 import { AllExceptionsFilter } from './common/filters/all-exceptions.filter';
 import { ResponseInterceptor } from './common/interceptors/response.interceptor';
 import { mcpSandboxHttp } from './mcp/mcp-sandbox';
+import { McpServerHttp } from './mcp-server/mcp-server.http';
 import { PreviewProxy } from './preview/preview-proxy';
 
 async function bootstrap() {
@@ -36,6 +37,9 @@ async function bootstrap() {
   app.use(preview.http);
   // MCP App 的 sandbox 代理页（m-<hash>.<基域名>）同理：另一个源，在这里终结（见 mcp-sandbox.ts）
   app.use(mcpSandboxHttp);
+  // 画布 MCP 对外服务的协议端点（/mcp、/oauth/*、/.well-known/oauth-*）：响应格式由 MCP / OAuth 规范决定，
+  // 不能被 Nest 的响应包装与异常过滤器改写，所以挂在 express 层（见 mcp-server.http.ts）
+  app.use(app.get(McpServerHttp).router);
   app.enableCors({
     origin: process.env.CORS_ORIGIN ?? 'http://localhost:3100',
     credentials: true,

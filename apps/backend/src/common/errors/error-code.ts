@@ -255,6 +255,15 @@ export const ErrorCodes = {
     message: 'Authorization expired or was already used, please try again',
   },
   MCP_REQUEST_FAILED: { code: 80010, message: 'MCP server request failed' },
+  // 画布 MCP 对外服务（第三方 agent 经 /mcp 操作画布）
+  MCP_GRANT_NOT_FOUND: {
+    code: 80101,
+    message: 'Authorized app not found or already revoked',
+  },
+  MCP_CONSENT_NOT_FOUND: {
+    code: 80102,
+    message: 'Authorization request expired, please start again from your app',
+  },
   BACKGROUND_TASK_NOT_FOUND: {
     code: 90001,
     message: 'Background task not found',

@@ -647,3 +647,58 @@ model SandboxMigration {
 
   @@index([userId, createdAt])
 }
+
+// ─────────────────────────────────────────────────────────────────────────────
+// 画布 MCP 对外服务（第三方 agent 经 /mcp 操作画布；设计见
+// docs/superpowers/specs/2026-11-21-canvas-mcp-server-design.md）。
+// 与上面的 McpServer（我方作为 MCP 客户端连外部服务）方向相反，互不相干。
+// ─────────────────────────────────────────────────────────────────────────────
+
+/// 动态客户端注册（DCR，RFC 7591）登记的 OAuth 客户端。
+model McpOAuthClient {
+  /// client_id（随机生成，对外可见）
+  id         String   @id @db.VarChar(64)
+  /// 机密客户端的 client_secret（AES-256-GCM 密文，SDK 的客户端认证要拿明文比对，所以不能只存哈希）；
+  /// 公开客户端（token_endpoint_auth_method=none）为 null
+  secretEnc  String?  @db.Text
+  /// 注册时提交的完整元数据（client_name / redirect_uris / grant_types …，SDK 校验过的形状）
+  metadata   Json
+  createdAt  DateTime @default(now())
+}
+
+/// 一条授权 = 「已授权应用」列表里的一行：OAuth 同意一次得到一条，手动建一个 PAT 得到一条。
+model McpGrant {
+  id         String     @id @default(cuid())
+  /// oauth | pat
+  kind       String     @db.VarChar(16)
+  userId     String
+  tenantId   String
+  /// 展示名：OAuth 取客户端的 client_name，PAT 取用户起的名字
+  name       String     @db.VarChar(200)
+  /// OAuth 授权所属客户端；PAT 为 null
+  clientId   String?    @db.VarChar(64)
+  /// 授予的 scope（string[]：canvas:read / canvas:write / media:generate）
+  scopes     Json
+  lastUsedAt DateTime?
+  revokedAt  DateTime?
+  /// 授权整体到期（PAT 的有效期）；null = 不过期（OAuth 授权靠 refresh token 自身到期）
+  expiresAt  DateTime?
+  createdAt  DateTime   @default(now())
+  tokens     McpToken[]
+
+  @@index([userId, createdAt])
+}
+
+/// 授权下的令牌，只存 SHA-256 哈希。access / refresh 属于 OAuth 授权，pat 属于 PAT 授权。
+model McpToken {
+  id        String   @id @default(cuid())
+  grantId   String
+  grant     McpGrant @relation(fields: [grantId], references: [id], onDelete: Cascade)
+  /// access | refresh | pat
+  kind      String   @db.VarChar(16)
+  hash      String   @unique @db.VarChar(64)
+  expiresAt DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([grantId])
+}
