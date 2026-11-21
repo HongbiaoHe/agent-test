@@ -31,6 +31,7 @@ import { RunService } from './run/run-service';
 import { buildDesktopRegistry } from './run/tool-registry';
 import { SkillStore } from './skills/skill-store';
 import { ffmpegBinaries } from './video/ffmpeg-paths';
+import { CanvasWatcher } from './canvas/canvas-watcher';
 import { VideoService } from './video/video-service';
 import { WebApi } from './web-media/web-api';
 import { ProcessTracker } from './workspace/process-tracker';
@@ -189,7 +190,13 @@ const video = new VideoService({
   binaries: ffmpegBinaries,
 });
 
+// 画布：打开着的画布的实时事件从 Web 后端转发给画布视图（登录了 Web 账号才有）
+const canvasWatcher = webApi
+  ? new CanvasWatcher(webApi, (canvasId, event) => broadcast({ kind: 'event', type: 'canvas', canvasId, event }), log)
+  : null;
+
 const handlers = createHandlers({
+  canvasWatcher,
   video,
   background,
   webApi,

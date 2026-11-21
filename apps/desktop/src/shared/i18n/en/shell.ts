@@ -35,6 +35,13 @@ export const shell = {
     noMatch: 'No matching chats',
     empty: 'No chats yet',
   },
+  sidePanel: {
+    label: 'Side panel',
+    expand: 'Expand',
+    collapse: 'Back to side panel',
+    close: 'Close side panel',
+    resize: 'Drag to resize the side panel',
+  },
   conversation: {
     untitled: 'New chat',
     pin: 'Pin',

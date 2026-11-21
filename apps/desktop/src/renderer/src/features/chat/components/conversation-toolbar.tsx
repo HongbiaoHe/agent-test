@@ -21,8 +21,9 @@ import { Tooltip, TooltipContent, TooltipTrigger } from '@/components/ui/tooltip
 import { DeleteConversationDialog, RenameConversationDialog } from '@/features/conversations/conversation-dialogs';
 import { ConversationMenuItems } from '@/features/conversations/conversation-menu-items';
 import { useConversationActions } from '@/features/conversations/use-conversation-actions';
-import { type PreviewSpec, previewLocation } from '@/features/viewer/preview-target';
+import { previewLocation } from '@/features/viewer/preview-target';
 import { useFileViewer } from '@/features/viewer/viewer-context';
+import { collectOutputs } from '../lib/conversation-outputs';
 import type { ThreadItem } from '../lib/thread';
 
 export function ConversationTitleMenu({
@@ -90,26 +91,12 @@ export function ConversationTitleMenu({
   );
 }
 
-/** 本会话出现过的网页预览，最新的在前，同一地址只留一条 */
-function previewsOf(items: ThreadItem[]): PreviewSpec[] {
-  const seen = new Set<string>();
-  const out: PreviewSpec[] = [];
-  for (let i = items.length - 1; i >= 0; i--) {
-    const it = items[i];
-    if (it?.kind !== 'preview') continue;
-    const loc = previewLocation(it.spec);
-    if (seen.has(loc)) continue;
-    seen.add(loc);
-    out.push(it.spec);
-  }
-  return out;
-}
-
 export function ConversationToolbarIcons({ items }: { items: ThreadItem[] }) {
   const { t } = useTranslation();
   const viewer = useFileViewer();
   const plan = items.find((it): it is Extract<ThreadItem, { kind: 'plan' }> => it.kind === 'plan');
-  const previews = previewsOf(items);
+  // 本会话出现过的网页预览，最新的在前，同一地址只留一条
+  const previews = collectOutputs(items).sites;
   const done = plan?.todos.filter((t) => t.status === 'completed').length ?? 0;
 
   return (

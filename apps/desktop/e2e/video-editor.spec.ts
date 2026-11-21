@@ -1,6 +1,6 @@
 /**
  * 视频剪辑器端到端（素材用打包的 ffmpeg 现场生成：testsrc 画面 + sine 音频）：
- * 1. 真实模型：agent 调 create_video_project → 对话里的工程卡片 →「打开剪辑器」→ 三轨片段齐全，工程文件可解析；
+ * 1. 真实模型：agent 调 create_video_project → 对话里的工程卡片 →「打开剪辑器」（在对话右侧侧栏）→ 三轨片段齐全，工程文件可解析；
  * 2. 工作区面板打开工程 → 改出点 / 原声音量 / 加字幕改文本 / 字幕样式 / 背景音乐淡入 → 自动保存落盘 → ⌘Z 撤销一步再落盘；
  * 3. 预览：播放 1 秒后暂停时间前进；<video>/<audio> 经 spark-preview:// 真正载入（含 Range 206）；字幕按时间显示；
  * 4. 导入本机音频为背景音乐：出现在音频轨，文件复制进 media/imports/；
@@ -127,15 +127,42 @@ const saveState = (page: Page) => page.getByTestId('video-save-state');
 const title = (page: Page) => editor(page).getByRole('heading', { level: 1 });
 const clipBlock = (page: Page, label: string): Locator => timeline(page).getByRole('button', { name: label, exact: true });
 
-/** 新建对话 → 工作区文件面板 → 逐级点开目录 → 点工程文件，进入剪辑器视图 */
+const sidePanel = (page: Page) => page.getByTestId('chat-side-panel');
+
+/**
+ * 新建对话 → 工作区文件面板 → 逐级点开目录 → 点工程文件：剪辑器开在对话右侧的侧栏里（对话还在），
+ * 再「展开全部」盖住对话区，编辑类用例在与原先整页剪辑器相同的空间里操作
+ */
 async function openFromPanel(page: Page, rel: string): Promise<void> {
   await page.getByRole('button', { name: '工作区文件', exact: true }).click();
   const sheet = page.getByRole('dialog');
   const parts = rel.split('/');
   for (const dir of parts.slice(0, -1)) await sheet.getByRole('button', { name: dir, exact: true }).click();
   await sheet.getByRole('button', { name: parts[parts.length - 1], exact: true }).click();
-  await expect(page.locator('main[data-view]')).toHaveAttribute('data-view', `video:${rel}`);
-  await expect(editor(page)).toBeVisible();
+  await expect(sidePanel(page).getByTestId('video-editor')).toBeVisible();
+  await expect(page.locator('main[data-view]')).toHaveAttribute('data-view', /^chat:/);
+  if ((await sidePanel(page).getAttribute('data-expanded')) !== 'true') {
+    await sidePanel(page).getByRole('button', { name: '展开全部' }).click();
+    await expect(sidePanel(page)).toHaveAttribute('data-expanded', 'true');
+  }
+  // 展开后时间线按新宽度重新适配（ResizeObserver 异步）：等比例尺稳定再操作，免得拿到展开前的刻度
+  const timelineReady = page.getByTestId('video-timeline');
+  if (await timelineReady.isVisible()) {
+    await expect
+      .poll(async () => {
+        const before = await timelinePps(page);
+        await page.waitForTimeout(200);
+        return (await timelinePps(page)) === before;
+      })
+      .toBe(true);
+  }
+}
+
+/** 关掉侧栏里的剪辑器，回到对话 */
+async function closeEditor(page: Page): Promise<void> {
+  await sidePanel(page).getByRole('button', { name: '关闭侧栏' }).click();
+  await expect(editor(page)).toBeHidden();
+  await expect(page.locator('main[data-view]')).toHaveAttribute('data-view', /^chat:/);
 }
 
 /** 准备好工作区（素材 + 工程）后启动、新建对话并从面板打开工程 */
@@ -298,15 +325,17 @@ test('真实模型：create_video_project → 工程卡片 → 打开剪辑器�
   expect(project.audio.map((c) => c.src)).toEqual(['media/music.m4a']);
   expect(project.subtitles.cues.map((c) => c.text)).toEqual(['第一句', '第二句']);
 
+  // 在对话右侧的侧栏里打开（不跳走）：对话还在旁边
   await card.getByRole('button', { name: '打开剪辑器' }).click();
-  await expect(page.locator('main[data-view]')).toHaveAttribute('data-view', `video:videos/${files[0]}`);
+  await expect(sidePanel(page).getByTestId('video-editor')).toBeVisible();
+  await expect(page.locator('main[data-view]')).toHaveAttribute('data-view', /^chat:/);
+  await expect(page.getByTestId('timeline')).toBeVisible();
   await expect(title(page)).toHaveText('E2E 宣传片');
   await expect(page.getByTestId('video-timeline-content').getByRole('button')).toHaveCount(5);
   for (const label of ['a.mp4', 'b.mp4', 'music.m4a', '第一句', '第二句']) await expect(clipBlock(page, label)).toBeVisible();
 
-  // 返回对话
-  await editor(page).getByRole('button', { name: '返回对话' }).click();
-  await expect(page.locator('main[data-view]')).toHaveAttribute('data-view', /^chat:/);
+  // 关掉侧栏
+  await closeEditor(page);
   await app.close();
 });
 
@@ -358,6 +387,35 @@ test('工作区面板打开工程：裁剪 / 原声音量 / 字幕 / 字幕样�
   expect(after.subtitles.style).toBe('bottom-box');
   expect(after.subtitles.cues).toHaveLength(3);
   expect(after.video[0].type === 'video' && after.video[0].outPoint).toBe(2.5);
+  await app.close();
+});
+
+test('侧栏里的剪辑器：在对话那边按退格不删片段；在剪辑器里选中再按才删；改完立刻关掉侧栏也落盘', async () => {
+  const { app, page, ws, rel } = await openEditor('video-side', (ws) => {
+    writeProject(ws, 'videos/side.sparkvideo.json', demoProject(ws, makeMedia(ws)));
+    return 'videos/side.sparkvideo.json';
+  });
+  await expect(saveState(page)).toHaveText('已保存');
+  const clips = () => readProject(ws, rel).video.length;
+  expect(clips()).toBe(2);
+  // 收回停靠：对话就在旁边
+  await sidePanel(page).getByRole('button', { name: '收起为侧栏' }).click();
+  await expect(sidePanel(page)).toHaveAttribute('data-expanded', 'false');
+
+  // 在剪辑器里选中 a.mp4，然后点到对话那边（不是输入框）再按退格：快捷键不归剪辑器，片段不删
+  await clipBlock(page, 'a.mp4').click();
+  await page.getByText('开始对话').click();
+  await page.keyboard.press('Backspace');
+  await page.waitForTimeout(1500);
+  expect(clips()).toBe(2);
+  await expect(clipBlock(page, 'a.mp4')).toBeVisible();
+
+  // 回到剪辑器里再按：删掉；不等自动保存（约 1 秒）立刻关掉侧栏，改动照样写回
+  await clipBlock(page, 'a.mp4').click();
+  await page.keyboard.press('Backspace');
+  await expect(clipBlock(page, 'a.mp4')).toHaveCount(0);
+  await closeEditor(page);
+  await expect.poll(clips, { timeout: 10_000 }).toBe(1);
   await app.close();
 });
 
@@ -506,8 +564,7 @@ test('损坏工程：非法 JSON 与 schema 不过都显示报错页并列出问
   await expect(invalid).toContainText('JSON');
   await expect(invalid.getByRole('button', { name: '重试' })).toBeVisible();
 
-  await editor(page).getByRole('button', { name: '返回对话' }).click();
-  await expect(page.locator('main[data-view]')).toHaveAttribute('data-view', /^chat:/);
+  await closeEditor(page);
   await openFromPanel(page, 'videos/bad.sparkvideo.json');
   await expect(invalid).toBeVisible();
   await expect(invalid).toContainText('video.0.outPoint: 出点不能超过素材时长');

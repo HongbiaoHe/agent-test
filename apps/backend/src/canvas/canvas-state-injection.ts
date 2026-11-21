@@ -1,4 +1,9 @@
 import { HumanMessage, type BaseMessage } from '@langchain/core/messages';
+import {
+  buildCanvasStateUpdate as buildSharedCanvasStateUpdate,
+  lastMarked,
+} from '@agent-test/agent-core/canvas/canvas-state-middleware';
+import { CANVAS_STATE_MARKER } from '@agent-test/canvas-schema';
 
 /**
  * 画布 agent 的**上下文注入**（实时画布状态 + 当前任务计划）。纯逻辑，刻意不依赖 deepagents，
@@ -26,12 +31,12 @@ import { HumanMessage, type BaseMessage } from '@langchain/core/messages';
  * 那一份为准」，避免模型读到过期快照。
  */
 
-/** 注入消息的识别标记：作为正文首行，回读时据此找出上一份同类注入。 */
-export const CANVAS_STATE_MARKER = '## 当前画布实时状态';
+/** 注入消息的识别标记：作为正文首行，回读时据此找出上一份同类注入。画布状态的标记与写法在 canvas-schema（两端共用） */
+export { CANVAS_STATE_MARKER };
 export const CANVAS_PLAN_MARKER = '## 当前任务计划';
 
 /**
- * 算出本次模型调用前要追加的画布状态消息。
+ * 算出本次模型调用前要追加的画布状态消息（判断逻辑在 agent-core，desktop 本机 agent 用的是同一份）。
  * 返回 undefined = 不更新 state（无 sessionId / 取不到文本 / 画布与上一份快照一致）。
  */
 export async function buildCanvasStateUpdate(
@@ -40,11 +45,7 @@ export async function buildCanvasStateUpdate(
   getCanvasContext?: (sessionId: string) => Promise<string>,
 ): Promise<{ messages: BaseMessage[] } | undefined> {
   if (!sessionId || !getCanvasContext) return undefined;
-  const text = await getCanvasContext(sessionId);
-  if (!text) return undefined;
-  if (lastMarked(state.messages, CANVAS_STATE_MARKER) === text)
-    return undefined;
-  return { messages: [new HumanMessage(text)] };
+  return buildSharedCanvasStateUpdate(state, () => getCanvasContext(sessionId));
 }
 
 /**
@@ -69,13 +70,4 @@ export function buildPlanUpdate(
     return undefined;
   }
   return { messages: [new HumanMessage(activePlan)] };
-}
-
-/** 倒序找最后一条以 marker 开头的消息正文；没有则 null。 */
-function lastMarked(messages: BaseMessage[], marker: string): string | null {
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    const text = messages[i].text;
-    if (text.startsWith(marker)) return text;
-  }
-  return null;
 }

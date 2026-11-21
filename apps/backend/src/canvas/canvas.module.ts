@@ -7,6 +7,7 @@ import { MediaModule } from '../media/media.module';
 import { MediaAnalysisModule } from '../media-analysis/media-analysis.module';
 import { CanvasSkillsModule } from '../canvas-skills/canvas-skills.module';
 import { canvasAbortsProvider } from './canvas.abort';
+import { CanvasAgentController } from './canvas-agent.controller';
 import { CanvasController } from './canvas.controller';
 import { CanvasGateway } from './canvas.gateway';
 import { CanvasProcessor } from './canvas.processor';
@@ -24,7 +25,7 @@ import { CanvasService } from './canvas.service';
     MediaAnalysisModule,
     CanvasSkillsModule,
   ],
-  controllers: [CanvasController],
+  controllers: [CanvasController, CanvasAgentController],
   providers: [
     CanvasService,
     CanvasProcessor,

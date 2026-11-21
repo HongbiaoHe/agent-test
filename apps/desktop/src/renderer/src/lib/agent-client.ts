@@ -29,6 +29,12 @@ const eventSchema = z.discriminatedUnion('type', [
   z.object({ kind: z.literal('event'), type: z.literal('llm-changed') }),
   z.object({
     kind: z.literal('event'),
+    type: z.literal('canvas'),
+    canvasId: z.string(),
+    event: z.object({ type: z.string(), payload: z.unknown().optional() }),
+  }),
+  z.object({
+    kind: z.literal('event'),
     type: z.literal('video-file-changed'),
     conversationId: z.string(),
     path: z.string(),

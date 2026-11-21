@@ -1,0 +1,38 @@
+{
+  "name": "@agent-test/ui",
+  "version": "0.0.1",
+  "private": true,
+  "description": "共享的 shadcn/ui 基础组件（base-nova 风格，构建于 @base-ui/react）与 cn 工具：web / desktop 两端共用。直接发 TS 源码，由使用方的打包器编译（Next transpilePackages / Vite）",
+  "sideEffects": false,
+  "exports": {
+    "./utils": "./src/utils.ts",
+    "./*": "./src/*.tsx"
+  },
+  "scripts": {
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "lint": "eslint src"
+  },
+  "peerDependencies": {
+    "react": "^19",
+    "react-dom": "^19"
+  },
+  "dependencies": {
+    "@base-ui/react": "^1.5.0",
+    "class-variance-authority": "^0.7.1",
+    "clsx": "^2.1.1",
+    "lucide-react": "^1.17.0",
+    "tailwind-merge": "^3.6.0"
+  },
+  "devDependencies": {
+    "@eslint/js": "^9.18.0",
+    "@types/react": "^19",
+    "@types/react-dom": "^19",
+    "eslint": "^9.18.0",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "globals": "^17.0.0",
+    "react": "19.2.4",
+    "react-dom": "19.2.4",
+    "typescript": "^5.7.3",
+    "typescript-eslint": "^8.20.0"
+  }
+}

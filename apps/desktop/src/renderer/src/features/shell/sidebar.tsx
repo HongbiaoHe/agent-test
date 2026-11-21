@@ -5,7 +5,7 @@
  * 收起时由外壳以浮层形式临时弹出（floating），内容相同。
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { ChevronDown, LogIn, MessageSquare, MoreHorizontal, Plus, Search, Settings } from 'lucide-react';
+import { ChevronDown, LogIn, MessageSquare, MoreHorizontal, Network, Plus, Search, Settings } from 'lucide-react';
 import { type ReactNode, useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -33,11 +33,15 @@ export type View =
   | { kind: 'chat'; id: string }
   | { kind: 'home' }
   /** 剪辑器：path 是该会话工作区里的工程文件（videos/*.sparkvideo.json），「返回对话」回到 conversationId */
-  | { kind: 'video'; conversationId: string; path: string };
+  | { kind: 'video'; conversationId: string; path: string }
+  /** 画布列表（Web 账号下的画布） */
+  | { kind: 'canvas-list' }
+  /** 画布视图：右侧对话栏显示 conversationId（null = 还没有对话，发第一条消息时新建并绑定） */
+  | { kind: 'canvas'; canvasId: string; conversationId: string | null };
 
 /** 当前视图属于哪个会话（侧栏高亮、删除会话时回首页） */
 const viewConversationId = (v: View): string | null =>
-  v.kind === 'chat' ? v.id : v.kind === 'video' ? v.conversationId : null;
+  v.kind === 'chat' ? v.id : v.kind === 'video' || v.kind === 'canvas' ? v.conversationId : null;
 
 function StatusDot({ status }: { status: ConversationSummary['status'] }) {
   const cls =
@@ -58,6 +62,7 @@ function SidebarAction({
   hint,
   ariaLabel,
   disabled,
+  active,
   onClick,
 }: {
   icon: ReactNode;
@@ -65,15 +70,21 @@ function SidebarAction({
   hint?: string;
   ariaLabel?: string;
   disabled?: boolean;
+  /** 当前所在的页面（画布列表 / 画布视图）：高亮 */
+  active?: boolean;
   onClick: () => void;
 }) {
   return (
     <Button
       variant="ghost"
       aria-label={ariaLabel}
+      aria-current={active ? 'page' : undefined}
       disabled={disabled}
       onClick={onClick}
-      className="h-8 w-full justify-start gap-2.5 px-2.5 font-normal [&_svg:not([class*='size-'])]:size-4"
+      className={cn(
+        "h-8 w-full justify-start gap-2.5 px-2.5 font-normal [&_svg:not([class*='size-'])]:size-4",
+        active && 'bg-accent text-accent-foreground',
+      )}
     >
       {icon}
       <span className="flex-1 text-left">{label}</span>
@@ -217,6 +228,12 @@ export function Sidebar({
           onClick={() => create.mutate()}
         />
         <SidebarAction icon={<Search />} label={t('shell.sidebar.search')} hint="⌘K" onClick={onOpenSearch} />
+        <SidebarAction
+          icon={<Network />}
+          label={t('canvas.sidebar.entry')}
+          active={view.kind === 'canvas-list' || view.kind === 'canvas'}
+          onClick={() => onNavigate({ kind: 'canvas-list' })}
+        />
       </div>
       <nav className="min-h-0 flex-1 overflow-y-auto px-2 pb-2" aria-label={t('shell.sidebar.conversations')}>
         {groups.map((g) => {

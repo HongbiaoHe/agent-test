@@ -19,6 +19,7 @@ function conv(id: string, updatedAt: number, pinnedAt: number | null = null): Co
     updatedAt,
     pinnedAt,
     modeId: null,
+    canvasId: null,
   };
 }
 

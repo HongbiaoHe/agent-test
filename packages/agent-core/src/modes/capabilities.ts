@@ -15,7 +15,11 @@ export type Capability =
   /** 可外发邮件 */
   | 'email'
   /** 后台任务服务可用 */
-  | 'background';
+  | 'background'
+  /** 画布服务可达（desktop：登录了 Web 账号；画布数据在 Web 后端） */
+  | 'canvas'
+  /** 可以改画布（desktop 只读档位没有：只能看） */
+  | 'canvas_write';
 
 export const CAPABILITIES: readonly Capability[] = [
   'sandbox',
@@ -24,6 +28,8 @@ export const CAPABILITIES: readonly Capability[] = [
   'media_api',
   'email',
   'background',
+  'canvas',
+  'canvas_write',
 ];
 
 export interface RuntimeEnvironment {

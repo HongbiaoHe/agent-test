@@ -9,6 +9,7 @@ export type ConversationEventType =
   | 'result'
   | 'media_update' // 媒体生成卡片状态变更（不落 messages 表，仅经 Redis Stream 推流）
   | 'canvas_patch' // 画布节点/边增量变更（画布模块专用，不落 messages 表，仅经 Redis Stream 推流）
+  | 'canvas_lock' // 画布运行锁变化（desktop 本机 agent 持锁 / 续期 / 释放；仅推流）
   | 'token_usage' // 单次模型调用 token 用量（画布与 Spark 对话共用，不落 messages 表，仅经 Redis Stream 推流）
   | 'bg_task_update' // 后台任务状态变更（不落 messages 表；前端据此更新任务卡片）
   | 'task_notification' // 后台任务结束通知（已作为 role=user 的消息落库；推流让前端即时插入通知行）

@@ -10,7 +10,10 @@
     "e2e": "playwright test"
   },
   "dependencies": {
+    "@agent-test/canvas-schema": "workspace:*",
+    "@agent-test/canvas-ui": "workspace:*",
     "@agent-test/design-schema": "workspace:*",
+    "@agent-test/ui": "workspace:*",
     "@base-ui/react": "^1.5.0",
     "@gsap/react": "^2.1.2",
     "@modelcontextprotocol/ext-apps": "1.7.5",

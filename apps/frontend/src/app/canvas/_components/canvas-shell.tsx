@@ -1,5 +1,11 @@
 "use client";
 
+import {
+  CanvasPlatformProvider,
+  FlowCanvas,
+  useIsMobile,
+  type CanvasPlatform,
+} from "@agent-test/canvas-ui";
 import { LayoutGrid, MessagesSquare } from "lucide-react";
 import { useCallback, useRef, useState } from "react";
 
@@ -19,10 +25,10 @@ import {
   DrawerTitle,
 } from "@/components/ui/drawer";
 import { PanelHeader } from "@/components/ui/floating-panel";
+import { fetchMediaAssetBlob, listAigcModels } from "@/lib/api";
 
 import { useAgentPhaseUi } from "../_hooks/use-agent-phase-ui";
 import { useCanvas } from "../_hooks/use-canvas";
-import { useIsMobile } from "../_hooks/use-is-mobile";
 import { CanvasBoot } from "./canvas-boot";
 import { CanvasChat } from "./canvas-chat";
 import { CanvasFloatingLayer } from "./canvas-floating-layer";
@@ -30,8 +36,17 @@ import { CanvasGallery } from "./canvas-gallery";
 import { CanvasHeader } from "./canvas-header";
 import { CanvasSidebar } from "./canvas-sidebar";
 import { ChatHeaderActions } from "./chat-header-actions";
-import { FlowCanvas } from "./flow-canvas";
 import { ThinkingGrid } from "./thinking-indicator";
+
+/**
+ * 画布编辑区（@agent-test/canvas-ui）在 web 上的平台实现：资产与模型目录走本站 API，界面英文。
+ * 模块常量，引用恒定——包内 hook 的依赖不会因 shell 重渲染而失效。
+ */
+const WEB_CANVAS_PLATFORM: CanvasPlatform = {
+  locale: "en",
+  fetchMediaAssetBlob,
+  listAigcModels,
+};
 
 export function CanvasShell({ sessionId }: { sessionId: string | null }) {
   // 收起完全走 CSS（内容保持挂载）：useCanvas 在本组件、CanvasChat 收起也不卸载，
@@ -89,6 +104,7 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
   );
 
   return (
+    <CanvasPlatformProvider value={WEB_CANVAS_PLATFORM}>
     <div className="flex h-full w-full flex-col">
       {/* 画布铺满：两块面板改为悬浮在它之上，不再从两侧挤压 */}
       <div className="relative min-h-0 min-w-0 flex-1">
@@ -115,7 +131,7 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
             loading={c.isLoading}
             focusNodeIds={c.focusNodeIds}
             onSetFocus={c.setFocus}
-            onAddConnectedNode={(input) => void c.addConnectedNode(input)}
+            onAddConnectedNode={c.addConnectedNode}
           />
           {/* 顶部悬浮控件：返回 + 画布名（可改名）+ 保存状态 / 运行状态 / 主题切换。
               桌面与手机都展示，只有小屏的紧凑样式不同；空态页不渲染——
@@ -125,6 +141,7 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
             title={c.title}
             saveStates={c.saveStates}
             busy={c.busy}
+            desktopLock={c.desktopLock}
             mockMedia={c.mockMedia}
             mockMediaAvailable={c.mockMediaAvailable}
             onMockMediaChange={c.setMockMedia}
@@ -255,5 +272,6 @@ export function CanvasShell({ sessionId }: { sessionId: string | null }) {
         </DialogContent>
       </Dialog>
     </div>
+    </CanvasPlatformProvider>
   );
 }

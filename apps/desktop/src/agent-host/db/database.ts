@@ -211,6 +211,13 @@ const MIGRATIONS: readonly string[] = [
     value TEXT NOT NULL
   );
   `,
+  // v13：对话绑定的当前画布（Web 账号下的画布 id；画布数据在 Web 后端，本机只记绑定关系）+ 绑定时刻
+  // （从画布列表打开时，右侧显示最近绑定它的对话：按绑定时刻而不是最后一条消息的时刻）
+  `
+  ALTER TABLE conversation ADD COLUMN canvas_id TEXT;
+  ALTER TABLE conversation ADD COLUMN canvas_bound_at INTEGER;
+  CREATE INDEX conversation_canvas_idx ON conversation(canvas_id, canvas_bound_at);
+  `,
 ];
 
 export type Db = DatabaseSync;

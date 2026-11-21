@@ -11,6 +11,7 @@
  * 其余路径落到 GuardedSandbox(工作区)；read_only 档位再把它的写与执行也拒掉。
  */
 import { GuardedSandbox } from '@agent-test/agent-core/agent/guarded-sandbox';
+import { CANVAS_SENSITIVE_TOOLS } from '@agent-test/agent-core/canvas/canvas-tools';
 import {
   CompositeBackend,
   type EditResult,
@@ -100,5 +101,7 @@ export function permissionInterrupts(permission: WorkspacePermission): Record<st
     run_in_background: true,
     // 把媒体下载进工作区 = 写文件
     sync_media_to_sandbox: true,
+    // 画布：删除（破坏性）与生成 / 拼接（花用户额度）要确认；加节点、改参数、连线不用
+    ...Object.fromEntries(CANVAS_SENSITIVE_TOOLS.map((name) => [name, true] as const)),
   };
 }

@@ -154,10 +154,21 @@ export async function regenerateMedia(
     .parse(await agent.call('media.regenerate', { generationId, prompt, referenceVersionIds }));
 }
 
-/** 取某版本的二进制：aigc 产物都有 CDN 地址，直接从 CDN 取（桌面端没有本地拼接产物） */
+function base64ToBytes(base64: string): Uint8Array<ArrayBuffer> {
+  const bin = atob(base64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  return bytes;
+}
+
+/** 取某版本的二进制：aigc 产物有 CDN 地址，直接从 CDN 取；画布的拼接成片等落在 Web 后端本地的走 media.asset */
 export async function fetchMediaAssetBlob(versionId: string): Promise<Blob> {
   const { url } = await agent.call('media.source', { versionId });
-  if (!url) throw new Error('This asset has no downloadable URL');
+  // 没有 CDN 地址（拼接成片、测试模式占位图、早期版本）：资产在 Web 后端本地，经 agent-host 带令牌取回（同 Web 端改走 asset 接口）
+  if (!url) {
+    const { base64, contentType } = await agent.call('media.asset', { versionId });
+    return new Blob([base64ToBytes(base64)], { type: contentType });
+  }
   const cdn = await fetch(url);
   if (!cdn.ok) throw new Error(`Failed to load asset (${cdn.status})`);
   return cdn.blob();

@@ -24,6 +24,9 @@ import { COLLAPSED_HEADER_INSET, SidebarToggle } from './features/shell/sidebar-
 import { SIDEBAR_MAX_WIDTH, SIDEBAR_MIN_WIDTH, useSidebarLayout } from './features/shell/use-sidebar-layout';
 import { FileViewerProvider } from './features/viewer/file-viewer';
 import { VideoEditorOpenerContext, VideoEditorView } from './features/video-editor';
+import { CanvasListView } from './features/canvas/canvas-list-view';
+import { CanvasView } from './features/canvas/canvas-view';
+import { CanvasOpenerContext, type CanvasTarget } from './features/canvas/open-canvas-context';
 
 function Home({
   hasModels,
@@ -147,6 +150,8 @@ export function App() {
   };
   const openVideoEditor = (target: { conversationId: string; path: string }) =>
     navigate({ kind: 'video', conversationId: target.conversationId, path: target.path });
+  const openCanvas = (target: CanvasTarget) =>
+    navigate({ kind: 'canvas', canvasId: target.canvasId, conversationId: target.conversationId });
   const sidebarProps = {
     view,
     width: layout.width,
@@ -201,11 +206,20 @@ export function App() {
         {/* data-view：e2e 失败时打印当前视图（排查过「对话区被换掉」的偶发问题） */}
         <main
           className="min-w-0 flex-1"
-          data-view={view.kind === 'chat' ? `chat:${view.id}` : view.kind === 'video' ? `video:${view.path}` : view.kind}
+          data-view={
+            view.kind === 'chat'
+              ? `chat:${view.id}`
+              : view.kind === 'video'
+                ? `video:${view.path}`
+                : view.kind === 'canvas'
+                  ? `canvas:${view.canvasId}`
+                  : view.kind
+          }
         >
           {view.kind === 'chat' && (
             // 对话里的工程卡片 / 工作区面板经这个上下文切到剪辑器
             <VideoEditorOpenerContext.Provider value={openVideoEditor}>
+              <CanvasOpenerContext.Provider value={openCanvas}>
               <ChatView
                 key={view.id}
                 id={view.id}
@@ -214,6 +228,35 @@ export function App() {
                 headerInset={layout.collapsed ? COLLAPSED_HEADER_INSET : undefined}
                 onDeleted={() => navigate({ kind: 'home' })}
               />
+              </CanvasOpenerContext.Provider>
+            </VideoEditorOpenerContext.Provider>
+          )}
+          {view.kind === 'canvas-list' && (
+            <CanvasListView
+              headerInset={layout.collapsed ? COLLAPSED_HEADER_INSET : undefined}
+              onOpen={openCanvas}
+              onSignIn={signIn}
+            />
+          )}
+          {view.kind === 'canvas' && (
+            // 右侧对话栏里的画布卡片 / 工程卡片也能切视图
+            <VideoEditorOpenerContext.Provider value={openVideoEditor}>
+              <CanvasOpenerContext.Provider value={openCanvas}>
+                <CanvasView
+                  key={view.canvasId}
+                  canvasId={view.canvasId}
+                  conversationId={view.conversationId}
+                  hasModels={hasModels}
+                  headerInset={layout.collapsed ? COLLAPSED_HEADER_INSET : undefined}
+                  onBack={() =>
+                    navigate(view.conversationId ? { kind: 'chat', id: view.conversationId } : { kind: 'canvas-list' })
+                  }
+                  onOpenModelSettings={() => openSettings('models')}
+                  onConversationChange={(conversationId) =>
+                    setView({ kind: 'canvas', canvasId: view.canvasId, conversationId })
+                  }
+                />
+              </CanvasOpenerContext.Provider>
             </VideoEditorOpenerContext.Provider>
           )}
           {view.kind === 'video' && (

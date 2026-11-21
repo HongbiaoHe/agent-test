@@ -35,6 +35,13 @@ export const shell = {
     noMatch: '找不到符合的對話',
     empty: '還沒有對話',
   },
+  sidePanel: {
+    label: '側欄',
+    expand: '展開全部',
+    collapse: '收起為側欄',
+    close: '關閉側欄',
+    resize: '拖動調整側欄寬度',
+  },
   conversation: {
     untitled: '新對話',
     pin: '釘選',

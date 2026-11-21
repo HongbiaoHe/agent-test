@@ -1,8 +1,13 @@
 @import "tailwindcss";
 @import "tw-animate-css";
+/* 共享包里的组件（画布编辑区、shadcn 基础组件）也要被 Tailwind 扫到 */
+@source "../../../../../packages/ui/src";
+@source "../../../../../packages/canvas-ui/src";
 
 /* 手动切换的暗色模式：.dark 类挂在 <html> 上时，dark: 变体生效 */
 @custom-variant dark (&:is(.dark *));
+/* 窗口全屏（lib/fullscreen-sync.ts 设的 <html data-fullscreen>）：没有红绿灯，收回为它预留的左上角位置 */
+@custom-variant fullscreen (&:where([data-fullscreen], [data-fullscreen] *));
 
 /*
  * manus 风格的暖中性设计系统

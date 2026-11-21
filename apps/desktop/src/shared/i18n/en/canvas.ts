@@ -1,0 +1,56 @@
+import type { MessageShape } from '../shape';
+import type { canvas as source } from '../zh-CN/canvas';
+
+export const canvas = {
+  sidebar: {
+    entry: 'Canvases',
+  },
+  list: {
+    title: 'Canvases',
+    description: 'These canvases live in your web account — the same ones you see on the web.',
+    create: 'New canvas',
+    creating: 'Creating…',
+    empty: 'No canvases yet',
+    emptyHint: 'Create a canvas, or ask the agent in a chat to build an image / video workflow for you.',
+    loadFailed: 'Failed to load canvases: {{message}}',
+    signInTitle: 'Sign in to use canvases',
+    signInDescription: 'Canvases are stored in your web account. Sign in to open and edit them here and let the local agent work on them.',
+    signIn: 'Sign in',
+    untitled: 'Untitled canvas',
+    updatedAt: 'Updated {{time}}',
+  },
+  card: {
+    open: 'Open canvas',
+    nodes_one: '{{count}} node',
+    nodes_other: '{{count}} nodes',
+  },
+  view: {
+    back: 'Back',
+    backToChat: 'Back to chat',
+    loading: 'Opening canvas…',
+    loadFailed: 'Failed to open canvas: {{message}}',
+    retry: 'Retry',
+    rename: 'Rename canvas',
+    renameFailed: 'Rename failed: {{message}}',
+    lockedByAgent: 'The agent in “{{label}}” is editing — you can only move nodes',
+    lockedByAgentUnnamed: 'A desktop agent is editing — you can only move nodes',
+    serverAgentRunning: 'The web canvas agent is running — you can only move nodes',
+    showChat: 'Show chat',
+    hideChat: 'Hide chat',
+    focusAdded_one: 'Added {{count}} node to the chat',
+    focusAdded_other: 'Added {{count}} nodes to the chat',
+    focusCleared: 'Cleared the selected nodes',
+    opFailed: 'Action failed: {{message}}',
+    uploadTooLarge: 'File too large: files without a local path are limited to 100 MB — save it to disk first, then drop it in',
+  },
+  panel: {
+    title: 'Chat',
+    emptyTitle: 'Work on this canvas with the agent',
+    emptyDescription: 'Your first message starts a new chat with this canvas as its current canvas.',
+    placeholder: 'Describe what you want to do on the canvas…',
+    send: 'Send',
+    sending: 'Starting…',
+    noModels: 'Add an API connection first',
+    startFailed: 'Failed to start the chat: {{message}}',
+  },
+} satisfies MessageShape<typeof source>;

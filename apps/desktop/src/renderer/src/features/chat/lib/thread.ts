@@ -1,6 +1,11 @@
 import type { Todo } from "@/components/agent/todo-list";
 import { parseAttachments } from "@/components/attachments/attachments";
 import type { McpAppArtifact, McpAuthRequired } from "@/components/mcp/api";
+import {
+  CANVAS_CARD_TOOLS,
+  parseCanvasResult,
+  type CanvasCardInfo,
+} from "@/features/canvas/lib/tool-result";
 import type { PreviewSpec } from "@/features/viewer/preview-target";
 import {
   parseVideoProjectResult,
@@ -102,6 +107,8 @@ export type ThreadItem =
   | { kind: "preview"; id: string; spec: PreviewSpec }
   // 剪辑工程卡片（桌面端）：create_video_project 成功后在工具 chip 之后追加，「打开剪辑器」进剪辑器视图
   | { kind: "video_project"; id: string; info: VideoProjectCardInfo }
+  // 画布卡片（桌面端）：create_canvas / open_canvas 成功后在工具 chip 之后追加，「打开画布」进画布视图
+  | { kind: "canvas"; id: string; info: CanvasCardInfo }
   // MCP App 卡片：MCP 工具结果带 UI 资源时（tool_end.mcpApp）在工具 chip 之后追加，iframe 渲染 App。
   // callId 是对应的 tool call id：App 的 ui/update-model-context 按它归档，去重也按它。
   | { kind: "mcp_app"; id: string; callId: string; app: McpAppArtifact }
@@ -577,6 +584,10 @@ function reduceEvent(input: ThreadState, ev: NormalizedEvent): ThreadState {
       if (name === VIDEO_PROJECT_TOOL) {
         const info = parseVideoProjectResult(ev.payload?.content);
         if (info) items.push({ kind: "video_project", id: id(), info });
+      }
+      if (typeof name === "string" && CANVAS_CARD_TOOLS.includes(name)) {
+        const info = parseCanvasResult(ev.payload?.content);
+        if (info) items.push({ kind: "canvas", id: id(), info });
       }
       // MCP 工具：卡片锚点按 tool call id 去重（历史折叠后 live 又收到同一个 tool_end 时不重复插）
       const mcpCallId = typeof callId === "string" ? callId : "";

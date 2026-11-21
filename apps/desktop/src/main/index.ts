@@ -38,6 +38,7 @@ const settingsPatch = z
 
 function registerIpc(): void {
   ipcMain.handle('desktop:getSettings', () => store.getSettings());
+  ipcMain.handle('desktop:isFullScreen', (e) => BrowserWindow.fromWebContents(e.sender)?.isFullScreen() ?? false);
   ipcMain.handle('desktop:getLocale', () => appLocale(store));
   ipcMain.handle('desktop:updateSettings', (_e, patch: unknown) => {
     const next = store.updateSettings(settingsPatch.parse(patch));
@@ -128,6 +129,9 @@ function createWindow(): void {
     },
   });
   win.once('ready-to-show', () => win.show());
+  // 全屏时红绿灯不在了：告诉界面，左上角不再为它们留位（侧栏开关、各顶栏的左侧让位）
+  win.on('enter-full-screen', () => win.webContents.send('desktop:fullscreen', true));
+  win.on('leave-full-screen', () => win.webContents.send('desktop:fullscreen', false));
   // 外链一律交给系统浏览器，不在应用窗口里打开
   win.webContents.setWindowOpenHandler(({ url }) => {
     if (/^https?:/.test(url)) void shell.openExternal(url);

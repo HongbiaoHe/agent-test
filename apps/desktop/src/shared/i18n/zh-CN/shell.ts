@@ -33,6 +33,13 @@ export const shell = {
     noMatch: '没有找到匹配的会话',
     empty: '还没有会话',
   },
+  sidePanel: {
+    label: '侧栏',
+    expand: '展开全部',
+    collapse: '收起为侧栏',
+    close: '关闭侧栏',
+    resize: '拖动调整侧栏宽度',
+  },
   conversation: {
     untitled: '新对话',
     pin: '置顶',

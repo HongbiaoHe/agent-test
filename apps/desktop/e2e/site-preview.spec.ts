@@ -40,8 +40,15 @@ async function freePort(): Promise<number> {
   return port;
 }
 
-const viewer = (page: Page) => page.getByTestId('file-viewer');
+// 网页预览开在对话右侧的侧栏里（不再是全屏弹窗）
+const viewer = (page: Page) => page.getByTestId('site-pane');
 const frame = (page: Page) => viewer(page).locator('iframe').contentFrame();
+
+/** 关掉右侧侧栏（网页预览），等它消失 */
+async function closeSidePanel(page: Page): Promise<void> {
+  await page.getByTestId('chat-side-panel').getByRole('button', { name: '关闭侧栏' }).click();
+  await expect(viewer(page)).toBeHidden();
+}
 
 test('工作区面板：.html 以网页打开（相对路径资源、交互、刷新、深色主题下的画布），不需要模型', async () => {
   const ws = join(dirs.root, 'panel-workspace');
@@ -89,8 +96,54 @@ test('工作区面板：.html 以网页打开（相对路径资源、交互、�
     // 出域请求一律 404：页面里 fetch 工作区外的文件拿不到
     const status = await frame(page).locator('body').evaluate(async () => (await fetch('../../../etc/hosts')).status);
     expect(status).toBe(404);
+    // 侧栏挤压对话：对话输入框仍在旁边可用；「展开全部」盖住对话区（左侧会话栏还在），再收回
+    const side = page.getByTestId('chat-side-panel');
+    await expect(side).toHaveAttribute('data-expanded', 'false');
+    await expect(page.getByLabel('消息')).toBeInViewport();
+    await side.getByRole('button', { name: '展开全部' }).click();
+    await expect(side).toHaveAttribute('data-expanded', 'true');
+    const chatBox = await page.locator('main').boundingBox();
+    const sideBox = await side.boundingBox();
+    expect(sideBox?.width).toBe(chatBox?.width);
+    await expect(page.getByRole('button', { name: '新建对话' })).toBeInViewport();
+    await page.screenshot({ path: join(screens, '50-site-preview-panel-expanded.png') });
+    // 左侧会话栏收起时，展开的侧栏顶栏给侧栏开关让位：标题不被开关盖住
+    await page.getByRole('button', { name: '收起侧栏' }).click();
+    // 开关收起时有 200ms 的位移动画：等它停稳再比位置
+    await expect
+      .poll(async () => {
+        const toggleBox = await page.getByRole('button', { name: '展开侧栏' }).boundingBox();
+        const titleBox = await side.getByRole('heading').boundingBox();
+        return titleBox && toggleBox ? Math.round(titleBox.x - (toggleBox.x + toggleBox.width)) : null;
+      })
+      .toBeGreaterThanOrEqual(0);
+    await page.screenshot({ path: join(screens, '50-site-preview-panel-expanded-collapsed.png') });
+    await page.getByRole('button', { name: '展开侧栏' }).click();
+    // Esc：展开时收回，停靠时关闭
+    await page.keyboard.press('Escape');
+    await expect(side).toHaveAttribute('data-expanded', 'false');
+    // 拖左边缘调宽：往右拖 120px 窄 120px（往左已到「给对话留 360px」的上限）；重新打开仍是这个宽度（记在本机）
+    const before = (await side.boundingBox())?.width ?? 0;
+    const handle = side.getByRole('separator', { name: '拖动调整侧栏宽度' });
+    const hb = await handle.boundingBox();
+    if (!hb) throw new Error('找不到拖宽把手');
+    await page.mouse.move(hb.x + hb.width / 2, hb.y + hb.height / 2);
+    await page.mouse.down();
+    await page.mouse.move(hb.x + hb.width / 2 + 60, hb.y + hb.height / 2, { steps: 5 });
+    await page.mouse.move(hb.x + hb.width / 2 + 120, hb.y + hb.height / 2, { steps: 5 });
+    await page.mouse.up();
+    await expect.poll(async () => Math.round(before - ((await side.boundingBox())?.width ?? 0))).toBeCloseTo(120, -1);
+    const resized = (await side.boundingBox())?.width ?? 0;
     await page.keyboard.press('Escape');
     await expect(viewer(page)).toBeHidden();
+    await page.getByRole('button', { name: '工作区文件', exact: true }).click();
+    if (!(await sheet.getByRole('button', { name: 'index.html' }).isVisible())) {
+      await sheet.getByRole('button', { name: 'site' }).click();
+    }
+    await sheet.getByRole('button', { name: 'index.html' }).click();
+    await sheet.getByRole('button', { name: '预览网页' }).click();
+    await expect.poll(async () => Math.round((await side.boundingBox())?.width ?? 0)).toBe(Math.round(resized));
+    await closeSidePanel(page);
   } finally {
     await app.close();
   }
@@ -134,25 +187,35 @@ test('网页预览（真实模型）：preview_page 静态页 / 端口、对话�
     // 刷新：iframe 重新加载，计数回到 0
     await viewer(page).getByRole('button', { name: '刷新' }).click();
     await expect(frame(page).locator('#count')).toHaveText('0');
-    await page.keyboard.press('Escape');
-    await expect(viewer(page)).toBeHidden();
+    await closeSidePanel(page);
 
     // 消息流里留下卡片，可再次打开
     const timeline = page.getByTestId('timeline');
     await timeline.getByRole('button', { name: '预览', exact: true }).first().click();
     await expect(frame(page).getByRole('heading', { name: '静态页预览' })).toBeVisible();
-    await page.keyboard.press('Escape');
+    await closeSidePanel(page);
 
-    // 2) 工作区面板：选中 .html → Preview page
+    // 会话信息侧栏：产出物里列着这个网页，点开换成网页预览
+    await page.getByTestId('conversation-info-toggle').click();
+    const info = page.getByTestId('conversation-info');
+    const sites = info.getByRole('list', { name: '网页预览' });
+    await expect(sites.getByRole('button')).toHaveCount(1);
+    await expect(sites).toContainText('hello/index.html');
+    await page.screenshot({ path: join(screens, '51b-conversation-info-outputs.png') });
+    await sites.getByRole('button').click();
+    await expect(info).toBeHidden();
+    await expect(frame(page).getByRole('heading', { name: '静态页预览' })).toBeVisible();
+    await closeSidePanel(page);
+
+    // 2) 工作区面板：选中 .html → 预览网页（面板收起，网页开在侧栏）
     await page.getByRole('button', { name: '工作区文件', exact: true }).click();
     const sheet = page.getByRole('dialog');
     await sheet.getByRole('button', { name: 'hello' }).click();
     await sheet.getByRole('button', { name: 'index.html' }).click();
     await sheet.getByRole('button', { name: '预览网页' }).click();
+    await expect(sheet).toBeHidden();
     await expect(frame(page).getByRole('heading', { name: '静态页预览' })).toBeVisible();
-    await page.keyboard.press('Escape');
-    await expect(viewer(page)).toBeHidden();
-    await page.keyboard.press('Escape');
+    await closeSidePanel(page);
 
     // 3) 端口：已在运行的本机服务 + 应用内 path
     await sendAndWait(
@@ -161,7 +224,7 @@ test('网页预览（真实模型）：preview_page 静态页 / 端口、对话�
     );
     await expect(frame(page).getByRole('heading', { name: '关于页' })).toBeVisible();
     await expect(viewer(page)).toContainText(`localhost:${port}/about`);
-    await page.keyboard.press('Escape');
+    await closeSidePanel(page);
 
     // 4) 对话链接：本机服务 / 工作区 .html 都在应用内预览
     await sendAndWait(
@@ -181,10 +244,10 @@ test('网页预览（真实模型）：preview_page 静态页 / 端口、对话�
     await expect(page.locator('html')).toHaveClass(/\bdark\b/);
     await page.screenshot({ path: join(screens, '53-site-preview-port-dark.png') });
     await page.emulateMedia({ colorScheme: 'light' });
-    await page.keyboard.press('Escape');
+    await closeSidePanel(page);
     await timeline.getByRole('link', { name: '静态页链接' }).click();
     await expect(frame(page).getByRole('heading', { name: '静态页预览' })).toBeVisible();
-    await page.keyboard.press('Escape');
+    await closeSidePanel(page);
     expect(await app.evaluate(() => (globalThis as unknown as { __opened: string[] }).__opened)).toEqual([]);
 
     // 5) 后台拉起服务 → 紧接着预览（工具等端口就绪）
@@ -195,7 +258,7 @@ test('网页预览（真实模型）：preview_page 静态页 / 端口、对话�
     );
     await expect(frame(page).getByRole('heading', { name: '静态页预览' })).toBeVisible();
     await page.screenshot({ path: join(screens, '54-site-preview-background.png') });
-    await page.keyboard.press('Escape');
+    await closeSidePanel(page);
   } finally {
     await app.close();
     server.close();

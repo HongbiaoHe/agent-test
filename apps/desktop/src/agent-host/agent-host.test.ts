@@ -314,6 +314,11 @@ describe('会话工作区与权限', () => {
       edit_file: true,
       run_in_background: true,
       sync_media_to_sandbox: true,
+      // 画布：删除与生成 / 拼接要确认，加节点、改参数、连线不用
+      clear_canvas: true,
+      delete_node: true,
+      generate_media_node: true,
+      merge_video_node: true,
     });
     expect(permissionInterrupts('auto')).toEqual({});
     expect(permissionInterrupts('read_only')).toEqual({});

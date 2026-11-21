@@ -210,6 +210,40 @@ test("canvas list: create, rename in the editor and the list, reopen", async ({ 
   await expect(page.getByRole("button", { name: renamed, exact: true })).toBeVisible();
 });
 
+test("switching canvases in place and back keeps structural edits working", async ({ page }) => {
+  // 回归：在同一个画布外壳里切到另一块画布、再切回已缓存的那块时，乐观并发的 revision 基线曾被清零，
+  // 之后每次结构编辑都带 baseRevision 0 被判冲突（保存失败、节点建不出来）。切换走侧栏的客户端跳转。
+  const tag = uniqueTag();
+  const titleA = `E2E Switch A ${tag}`;
+  const titleB = `E2E Switch B ${tag}`;
+  const a = await createCanvas(page, titleA);
+  const b = await createCanvas(page, titleB);
+  createdCanvases.push(a, b);
+  await page.addInitScript(() => {
+    localStorage.setItem("canvas.panel.chat.open", "false");
+    localStorage.setItem("canvas.panel.list.open", "true");
+    localStorage.setItem("canvas.panel.list.pinned", "true");
+  });
+  await page.goto(`/canvas/${a}`);
+  await waitCanvasReady(page);
+
+  // A 上先建一个节点（revision 推进到 1，快照进缓存）
+  const first = await addNodeAt(page, a, 900, 500, "Image");
+
+  // 侧栏切到 B、再切回 A（A 的快照命中缓存）
+  await page.getByRole("button", { name: titleB, exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/canvas/${b}$`));
+  await waitCanvasReady(page);
+  await page.getByRole("button", { name: titleA, exact: true }).click();
+  await expect(page).toHaveURL(new RegExp(`/canvas/${a}$`));
+  await expect(flowNode(page, first.id)).toBeVisible();
+
+  // 切回来后的结构编辑照常落库（不被判冲突）
+  const box = await stableBox(flowNode(page, first.id));
+  const second = await addNodeAt(page, a, box.x + box.width + 260, box.y + box.height / 2, "Video");
+  expect((await getCanvas(page, a)).nodes.map((n) => n.id).sort()).toEqual([first.id, second.id].sort());
+});
+
 test("build structure by hand: nodes, prompts, model settings, edge; survives reload", async ({
   page,
 }) => {
@@ -384,7 +418,9 @@ test("agent builds the workflow in review mode without generating", async ({ pag
   if (!link) throw new Error("unreachable");
   await expect(flowNode(page, link.source)).toBeVisible();
   await expect(flowNode(page, link.target)).toBeVisible();
-  await expect(flowEdge(page, link.id)).toBeVisible();
+  // 连线只断言已渲染：两个节点被 agent 放在同一行时连线是条水平线，外框高度为 0，
+  // Playwright 会把它判成 hidden（与连线是否真的画出来无关）
+  await expect(flowEdge(page, link.id)).toBeAttached();
   expect(snap.approvalMode).toBe("review");
 
   await expectNoGeneration(page, id);

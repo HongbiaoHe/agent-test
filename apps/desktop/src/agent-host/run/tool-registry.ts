@@ -19,6 +19,17 @@ import {
 } from '@agent-test/agent-core/modes/tool-registry';
 import type { WorkspacePermission } from '../../shared/workspace';
 import type { BackgroundService } from '../background/background-service';
+import {
+  type CanvasRunContext,
+  createBoundCanvasTools,
+  createCreateCanvasTool,
+  createListCanvasesTool,
+  createOpenCanvasTool,
+  CREATE_CANVAS_TOOL,
+  DESKTOP_CANVAS_PROMPT,
+  LIST_CANVASES_TOOL,
+  OPEN_CANVAS_TOOL,
+} from '../canvas/canvas-tools';
 import { backgroundPrompt, createBackgroundTools, RUN_IN_BACKGROUND_TOOL } from '../background/background-tools';
 import { createPreviewPageTool, PREVIEW_PAGE_TOOL } from '../preview/preview-page.tool';
 import { createSaveSkillTool, SAVE_SKILL_TOOL } from '../skills/save-skill.tool';
@@ -41,6 +52,8 @@ export interface DesktopToolHost {
   permission: WorkspacePermission;
   /** 本轮装配进来的 MCP server（watch_until 只能轮询这些） */
   mcpServers: RuntimeServer[];
+  /** 画布上下文：登录了 Web 账号才有（capability canvas 缺失时画布工具不会被实例化） */
+  canvas: CanvasRunContext | null;
 }
 
 export type DesktopRegistry = ToolRegistry<DesktopToolHost>;
@@ -65,6 +78,9 @@ export function desktopCapabilities(opts: {
   const caps = new Set<Capability>(['workspace']);
   if (opts.permission !== 'read_only') caps.add('workspace_write');
   if (opts.webApi) caps.add('media_api');
+  // 画布在 Web 账号下：登录了才能看；只读档位只能看、不能改
+  if (opts.webApi) caps.add('canvas');
+  if (opts.webApi && opts.permission !== 'read_only') caps.add('canvas_write');
   if (opts.background) caps.add('background');
   return caps;
 }
@@ -77,6 +93,21 @@ const MEDIA_ENTRIES: Entry[] = [
   { name: 'generate_audio', title: '配音', description: '文字转语音（TTS）' },
   { name: 'clone_voice', title: '克隆音色', description: '用参考音频克隆一个可用于配音的音色' },
 ].map((e) => ({ ...e, requires: ['media_api'] as const, promptSection: MEDIA_GENERATION_PROMPT }));
+
+/** 画布结构 / 生成工具（定义在 core canvas-tools.ts，与 Web 画布 agent 共用）：改画布要 canvas_write */
+const CANVAS_ENTRIES: Entry[] = [
+  { name: 'add_node', title: '画布：加节点', description: '在当前画布上新建一个节点' },
+  { name: 'add_nodes', title: '画布：批量加节点', description: '一次新建多个节点' },
+  { name: 'update_node', title: '画布：改节点', description: '修改节点标题 / 提示词或移动位置' },
+  { name: 'update_nodes', title: '画布：批量改节点', description: '一次修改 / 移动多个节点' },
+  { name: 'connect_nodes', title: '画布：连线', description: '连接两个节点（上游作参考素材）' },
+  { name: 'delete_node', title: '画布：删节点', description: '删除一个节点（询问权限要确认）' },
+  { name: 'clear_canvas', title: '画布：清空', description: '删除全部节点与连线（询问权限要确认）' },
+  { name: 'set_node_model', title: '画布：设模型', description: '给生成节点设模型与档位' },
+  { name: 'generate_media_node', title: '画布：生成', description: '触发生成节点出图 / 出视频（询问权限要确认）' },
+  { name: 'merge_video_node', title: '画布：拼接', description: '触发视频拼接节点（询问权限要确认）' },
+  { name: 'set_clip_order', title: '画布：拼接顺序', description: '调整拼接节点的成片顺序' },
+].map((e) => ({ ...e, requires: ['canvas', 'canvas_write'] as const, promptSection: DESKTOP_CANVAS_PROMPT }));
 
 /** 后台任务说明段随后台工具一起出现（没勾就没有）；可写工作区才提 run_in_background。 */
 const backgroundSection = (env: RuntimeEnvironment): string =>
@@ -118,6 +149,10 @@ export function buildDesktopRegistry(deps: DesktopRegistryDeps): DesktopRegistry
     if (!deps.webApi) throw new Error('media_api 能力缺失时不应实例化媒体工具');
     return deps.webApi;
   };
+  const requireCanvas = (ctx: Ctx): CanvasRunContext => {
+    if (!ctx.host.canvas) throw new Error('canvas 能力缺失时不应实例化画布工具');
+    return ctx.host.canvas;
+  };
   const requireBackground = (): BackgroundService => {
     const bg = deps.background();
     if (!bg) throw new Error('background 能力缺失时不应实例化后台任务工具');
@@ -151,6 +186,31 @@ export function buildDesktopRegistry(deps: DesktopRegistryDeps): DesktopRegistry
       description: '把本会话的附件 / 生成产物下载到工作区 media/ 目录供命令处理',
       requires: ['media_api', 'workspace_write'],
       create: (ctx) => createSyncMediaTool(requireWeb(), ctx.conversationId, ctx.host.workspaceDir),
+    },
+    ...shareFactory<DesktopToolHost>((ctx) => createBoundCanvasTools(requireCanvas(ctx)), CANVAS_ENTRIES),
+    {
+      name: LIST_CANVASES_TOOL,
+      title: '画布：列出',
+      description: '列出 Web 账号下的画布',
+      requires: ['canvas'],
+      promptSection: DESKTOP_CANVAS_PROMPT,
+      create: (ctx) => createListCanvasesTool(requireCanvas(ctx)),
+    },
+    {
+      name: OPEN_CANVAS_TOOL,
+      title: '画布：打开',
+      description: '打开一块已有画布作为当前对话的画布',
+      requires: ['canvas'],
+      promptSection: DESKTOP_CANVAS_PROMPT,
+      create: (ctx) => createOpenCanvasTool(requireCanvas(ctx)),
+    },
+    {
+      name: CREATE_CANVAS_TOOL,
+      title: '画布：新建',
+      description: '新建一块画布作为当前对话的画布',
+      requires: ['canvas', 'canvas_write'],
+      promptSection: DESKTOP_CANVAS_PROMPT,
+      create: (ctx) => createCreateCanvasTool(requireCanvas(ctx)),
     },
     ...shareFactory<DesktopToolHost>(backgroundFactory, BACKGROUND_ENTRIES),
     {

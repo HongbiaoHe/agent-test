@@ -134,19 +134,21 @@ export function WorkspaceFilesButton({
                 <div className="flex h-11 shrink-0 items-center justify-between gap-2 border-b px-3">
                   <span className="truncate font-mono text-xs">{selected}</span>
                   <div className="flex shrink-0 items-center gap-0.5">
-                    {/* HTML 入口：以可交互网页打开（与 agent 的 preview_page 同一个弹窗） */}
+                    {/* HTML 入口：以可交互网页打开（与 agent 的 preview_page 同一处：对话的右侧侧栏）；
+                        先收起本面板，网页开在它后面的侧栏里 */}
                     {viewer && /\.html?$/i.test(selected) && (
                       <Button
                         variant="ghost"
                         size="icon-sm"
                         aria-label={t("chat.workspace.previewPage")}
                         title={t("chat.workspace.previewPage")}
-                        onClick={() =>
+                        onClick={() => {
+                          setOpen(false);
                           viewer.show({
                             source: "site",
                             spec: { kind: "file", path: selected, title: selected.split("/").pop() ?? selected },
-                          })
-                        }
+                          });
+                        }}
                       >
                         <AppWindow />
                       </Button>

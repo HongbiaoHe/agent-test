@@ -1,7 +1,9 @@
 "use client";
 
+import { runLockFromEvent } from "@agent-test/canvas-schema";
+import { useCanvasBoard, type CanvasBoardSource } from "@agent-test/canvas-ui";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 
 import {
@@ -21,11 +23,9 @@ import {
   pauseCanvasMedia,
   resumeCanvasMedia,
   uploadCanvasNodeFile,
-  type CanvasNodeType,
-  type CanvasOpInput,
   type CanvasPatch,
+  type CanvasSnapshot,
   type MessageAttachment,
-  type UploadOptions,
 } from "@/lib/api";
 import {
   respondCanvasControl,
@@ -34,7 +34,6 @@ import {
 } from "@/lib/socket";
 
 import { buildDecisions } from "../_lib/ask-decisions";
-import { applyPatch, type CanvasState } from "../_lib/canvas-state";
 import {
   buildBaseChat,
   emptyChat,
@@ -42,16 +41,7 @@ import {
   type ChatEvent,
 } from "../_lib/chat";
 
-const EMPTY_CANVAS: CanvasState = { nodes: [], edges: [], revision: 0 };
-/** 稳定的空数组：每次渲染新建 [] 会让下游 memo/effect 白白失效 */
-const EMPTY_FOCUS: string[] = [];
 const BUSY = new Set(["queued", "running", "waiting_approval"]);
-
-/** update_node 保存状态（按 nodeId）：saving 在途 / saved 刚成功 / error 失败已重拉快照 */
-export type SaveState = "saving" | "saved" | "error";
-/** 终态自动消失延时（毫秒） */
-const SAVED_LINGER_MS = 1500;
-const ERROR_LINGER_MS = 3000;
 
 /**
  * 单个画布会话的完整状态编排：
@@ -78,24 +68,39 @@ export function useCanvas(sessionId: string | null) {
     refetchOnWindowFocus: false,
   });
 
-  // —— 画布投影：快照作基底（seed），patch 增量应用 ——
-  const [canvas, setCanvas] = useState<CanvasState>(EMPTY_CANVAS);
-  // token 累计：快照持久化总量作基底，token_usage 事件（会话级累计）覆盖。
-  // 声明须在下方快照 sync 块之前（块内 setTokens 在渲染期执行，避免 TDZ）。
+  // —— 画布编辑区：投影、保存状态、用户操作、运行锁（与 desktop 共用 canvas-ui 的 useCanvasBoard）——
+  // useCanvasBoard 只在 canvasId 非空时调用 source（各操作开头都判了），这里的空串分支走不到
+  const id = sessionId ?? "";
+  const source: CanvasBoardSource = {
+    applyOp: (op, baseRevision) =>
+      applyCanvasOp(id, op, baseRevision),
+    moveNode: (nodeId, x, y) =>
+      moveCanvasNode(id, nodeId, x, y),
+    generateNode: (nodeId) => generateCanvasNode(id, nodeId),
+    mergeVideo: (nodeId) => mergeCanvasVideoNode(id, nodeId),
+    pauseMedia: (nodeId) => pauseCanvasMedia(id, nodeId),
+    resumeMedia: (nodeId) => resumeCanvasMedia(id, nodeId),
+    retryMedia: (generationId) => regenerateMedia(generationId),
+    uploadNodeFile: (nodeId, file, opts) =>
+      uploadCanvasNodeFile(id, nodeId, file, opts),
+    setFocus: (nodeIds) => setCanvasFocus(id, nodeIds),
+    refresh: () => void qc.invalidateQueries({ queryKey: ["canvas", sessionId] }),
+  };
+  const board = useCanvasBoard({
+    canvasId: sessionId,
+    snapshot: snapQ.data,
+    snapshotUpdatedAt: snapQ.dataUpdatedAt,
+    source,
+    locale: "en",
+  });
+  const applyBoardEvent = board.applyEvent;
+
+  // token 累计：快照持久化总量作基底，token_usage 事件（会话级累计）覆盖
   const [tokens, setTokens] = useState(0);
   const snapKey = `${sessionId ?? ""}:${snapQ.dataUpdatedAt}`;
   const [trackedSnap, setTrackedSnap] = useState("");
   if (trackedSnap !== snapKey) {
     setTrackedSnap(snapKey);
-    setCanvas(
-      snapQ.data
-        ? {
-            nodes: snapQ.data.nodes,
-            edges: snapQ.data.edges,
-            revision: snapQ.data.revision,
-          }
-        : EMPTY_CANVAS,
-    );
     // token 以快照的持久化总量为基底（切会话不残留旧值、刷新不归零）；
     // 运行期 token_usage 事件（会话级累计口径）随后覆盖
     setTokens(snapQ.data?.totalTokens ?? 0);
@@ -114,33 +119,6 @@ export function useCanvas(sessionId: string | null) {
   // 清空会话请求在途（按钮转圈禁用）
   const [clearing, setClearing] = useState(false);
 
-  // update_node 保存状态（按 nodeId）：inflight 计数聚合连续编辑，
-  // 避免防抖多次提交时先返回的响应提前把 loading 清掉。
-  const [saveStates, setSaveStates] = useState<Record<string, SaveState>>({});
-  const inflight = useRef<Record<string, number>>({});
-  const clearTimers = useRef<Record<string, ReturnType<typeof setTimeout>>>({});
-  // 最新已知 revision：CAS 基线。必须用 ref 而非闭包里的 canvas.revision——
-  // 连续编辑（改完标题接着改正文）时 React 还没重渲染、socket patch 也可能还没到，
-  // 用旧 revision 发第二个 op 必然 409（实测表现为"保存失败"）。
-  // 来源两处：本地 canvas 同步（含 patch/快照）+ applyOp 响应里的新 revision。
-  const revisionRef = useRef(canvas.revision);
-  useEffect(() => {
-    revisionRef.current = Math.max(revisionRef.current, canvas.revision);
-  }, [canvas.revision]);
-  // 切会话时基线归零重新跟随（revision 是会话内计数，跨会话不可比）
-  useEffect(() => {
-    revisionRef.current = 0;
-  }, [sessionId]);
-  // 用户 op 串行队列：避免同一时刻多个 op 抢同一 revision 基线
-  const opChain = useRef<Promise<unknown>>(Promise.resolve());
-  // 卸载/切会话时清掉未到点的终态计时器
-  useEffect(
-    () => () => {
-      for (const t of Object.values(clearTimers.current)) clearTimeout(t);
-    },
-    [],
-  );
-
   const serverStatus = snapQ.data?.status;
   const [syncedStatus, setSyncedStatus] = useState<string | undefined>();
   if (syncedStatus !== serverStatus) {
@@ -156,7 +134,21 @@ export function useCanvas(sessionId: string | null) {
       sessionId,
       (e: CanvasEvent) => {
         if (e.type === "canvas_patch") {
-          setCanvas((prev) => applyPatch(prev, e.payload as CanvasPatch));
+          applyBoardEvent(e.payload as CanvasPatch);
+          return;
+        }
+        if (e.type === "canvas_lock") {
+          // desktop 本机 agent 拿到 / 续期 / 释放了运行锁：只改缓存快照里的 runLock。
+          // updatedAt 沿用原值——dataUpdatedAt 一变，上面的快照同步块会按这份（可能较旧的）快照
+          // 重铺画布，冲掉之后到达的 patch
+          const runLock = runLockFromEvent(e.payload);
+          if (runLock === undefined) return;
+          const key = ["canvas", sessionId];
+          qc.setQueryData<CanvasSnapshot>(
+            key,
+            (prev) => (prev ? { ...prev, runLock } : prev),
+            { updatedAt: qc.getQueryState(key)?.dataUpdatedAt },
+          );
           return;
         }
         if (e.type === "token_usage") {
@@ -193,7 +185,7 @@ export function useCanvas(sessionId: string | null) {
       },
     );
     return unsub;
-  }, [sessionId, qc, refetchSnap, refetchMsg]);
+  }, [sessionId, qc, refetchSnap, refetchMsg, applyBoardEvent]);
 
   const baseChat = useMemo(
     () => (msgQ.data ? buildBaseChat(msgQ.data) : emptyChat),
@@ -207,6 +199,9 @@ export function useCanvas(sessionId: string | null) {
     : pending
       ? "running"
       : (serverStatus ?? "idle");
+
+  // desktop 本机 agent 持有的运行锁（快照基底 + canvas_lock 事件更新；到点自动失效，见 useCanvasBoard）
+  const desktopLock = board.activeLock;
 
   // —— actions ——
   async function send(
@@ -297,270 +292,6 @@ export function useCanvas(sessionId: string | null) {
     setPending(true);
   }
 
-  /**
-   * 节点位置变更（LWW，空闲期）。本地已由 react-flow 更新，这里只落库。
-   * 同样计入保存指示：拖完节点也要看到「保存中 → 已保存」（与内容编辑一致）。
-   */
-  function moveNode(nodeId: string, x: number, y: number) {
-    if (!sessionId) return;
-    setCanvas((prev) => ({
-      ...prev,
-      nodes: prev.nodes.map((n) => (n.id === nodeId ? { ...n, x, y } : n)),
-    }));
-    beginSave(nodeId);
-    void moveCanvasNode(sessionId, nodeId, x, y)
-      .then(() => settleSave(nodeId, "saved", SAVED_LINGER_MS))
-      .catch(() => {
-        void refetchSnap();
-        settleSave(nodeId, "error", ERROR_LINGER_MS);
-      });
-  }
-
-  /**
-   * 保存状态的记账键。画布左上角的保存徽标是全局聚合的，键本身不需要对应仍然存在的节点
-   * （删除后该键短暂停留在 saved 再自动清掉，正是我们想要的反馈）。
-   * 带 nodeId 的 op 按 nodeId 记；连线类 op 没有 nodeId，按 op 名合成一个键
-   * （同名 op 并发由 inflight 计数聚合，不会互相顶掉）。
-   */
-  function saveKeyOf(op: CanvasOpInput): string | null {
-    switch (op.op) {
-      case "update_node":
-      case "remove_node":
-        return op.nodeId;
-      case "add_node":
-      case "add_edge":
-      case "remove_edge":
-        return `op:${op.op}`;
-      default:
-        return null;
-    }
-  }
-
-  /**
-   * 用户结构编辑（空闲期）：带当前 revision 做乐观并发，409 重拉快照。
-   * 按 saveKeyOf 记账保存状态（saving→saved/error），供画布左上角的保存徽标显示 loading。
-   */
-  async function applyUserOp(op: CanvasOpInput) {
-    await runUserOp(op);
-  }
-
-  /** applyUserOp 的内核：多回传一个 patch，供「新建节点后立刻接线」取服务端分配的 id。 */
-  async function runUserOp(op: CanvasOpInput): Promise<CanvasPatch | null> {
-    if (!sessionId) return null;
-    const nodeId = saveKeyOf(op);
-    // 键入时已 markSaving 点亮；这里补在途计数（beginSave 内含 markSaving，幂等）
-    if (nodeId) beginSave(nodeId);
-    // 串行执行：排在上一个 op 之后，保证取到的 revision 基线已被前一个响应更新
-    const run = opChain.current.then(async () => {
-      try {
-        const res = await applyCanvasOp(sessionId, op, revisionRef.current);
-        revisionRef.current = res.revision; // 立即推进基线，无需等 socket patch
-        if (nodeId) settleSave(nodeId, "saved", SAVED_LINGER_MS);
-        return res.patch;
-      } catch {
-        void refetchSnap();
-        if (nodeId) settleSave(nodeId, "error", ERROR_LINGER_MS);
-        return null;
-      }
-    });
-    opChain.current = run;
-    return run;
-  }
-
-  /**
-   * 从某个节点的端口拖到空白处后，新建一个**已经接好线**的节点。
-   *
-   * 分两步走而不是一个 op：add_node 的 id 由服务端分配，只有拿到返回的 patch 才知道
-   * 该给谁接线。第一步失败（并发 409 等）就直接放弃，不留一个孤立的空节点。
-   */
-  async function addConnectedNode(input: {
-    /** 拖拽起点节点。null = 不接线，就地建一个孤立节点（画布右键菜单） */
-    fromId: string | null;
-    /** 从出口拉出来 → 新节点在下游；从入口拉出来 → 新节点在上游 */
-    direction: "downstream" | "upstream";
-    type: CanvasNodeType;
-    x: number;
-    y: number;
-    /** 新节点的初始正文（在生成节点面板里直接写提示词时用） */
-    text?: string;
-  }): Promise<string | null> {
-    const patch = await runUserOp({
-      op: "add_node",
-      type: input.type,
-      text: input.text,
-      x: input.x,
-      y: input.y,
-    });
-    if (!patch || patch.op !== "add_node") return null;
-    const created = patch.node.id;
-    if (!input.fromId) return created;
-    await runUserOp({
-      op: "add_edge",
-      source: input.direction === "downstream" ? input.fromId : created,
-      target: input.direction === "downstream" ? created : input.fromId,
-    });
-    return created;
-  }
-
-  /**
-   * 键入即进入 loading（防抖窗口内就显示，不等请求发出——"触发就开始"）。
-   * 由编辑器在 onChange 时调用；随后的真实请求沿用同一 saving 态直到落终态。
-   */
-  function markSaving(nodeId: string) {
-    const t = clearTimers.current[nodeId];
-    if (t) {
-      clearTimeout(t);
-      delete clearTimers.current[nodeId];
-    }
-    setSaveStates((prev) =>
-      prev[nodeId] === "saving" ? prev : { ...prev, [nodeId]: "saving" },
-    );
-  }
-
-  /** 请求发起：在途计数 +1 并置 saving（内容编辑与位置移动共用）。 */
-  function beginSave(nodeId: string) {
-    inflight.current[nodeId] = (inflight.current[nodeId] ?? 0) + 1;
-    markSaving(nodeId);
-  }
-
-  /** 撤销 loading：内容改回原值、最终没有 op 要发时调用（有在途请求则保持 saving）。 */
-  function cancelSaving(nodeId: string) {
-    if ((inflight.current[nodeId] ?? 0) > 0) return;
-    setSaveStates((prev) => {
-      if (!(nodeId in prev)) return prev;
-      const next = { ...prev };
-      delete next[nodeId];
-      return next;
-    });
-  }
-
-  /**
-   * 重发一次生成（节点上「Retry」用）：同一个 generation 叠一个新版本，
-   * 提示词与参考图沿用上一版（后端 MediaService.regenerate 的缺省行为）——
-   * 失败重试要的就是"照原样再来一次"，不夹带上游此刻可能已经变了的内容。
-   *
-   * 状态不必手动改：新版本落库即推 media_update，socket 收到后重拉快照，
-   * 节点的 mediaStatus 会自己走到 queued → generating → done/failed。
-   */
-  function retryMedia(generationId: string) {
-    void regenerateMedia(generationId)
-      .then(() => {
-        void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
-      })
-      .catch((e: unknown) => {
-        toast.error(e instanceof Error ? e.message : "Retry failed");
-      });
-  }
-
-  /**
-   * 暂停 / 继续生成（不传 nodeId = 整张画布；传了 = 该节点及其下游）。
-   * 卡片状态不用手动改：后端改完状态即推 media_update，快照随之重拉。
-   * 已经提交给模型的停不下来（云端会跑完），提示一句免得以为没生效。
-   */
-  function pauseMedia(nodeId?: string) {
-    if (!sessionId) return;
-    void pauseCanvasMedia(sessionId, nodeId)
-      .then(({ paused, skipped }) => {
-        if (skipped > 0) {
-          toast(
-            paused > 0
-              ? `Paused ${paused} · ${skipped} already submitted will finish`
-              : "Already submitted to the model — it can't be paused",
-          );
-        }
-        void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
-      })
-      .catch((e: unknown) => {
-        toast.error(e instanceof Error ? e.message : "Pause failed");
-      });
-  }
-
-  function resumeMedia(nodeId?: string) {
-    if (!sessionId) return;
-    void resumeCanvasMedia(sessionId, nodeId)
-      .then(() => {
-        void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
-      })
-      .catch((e: unknown) => {
-        toast.error(e instanceof Error ? e.message : "Resume failed");
-      });
-  }
-
-  /**
-   * 用节点上选定的模型生成一次（生成节点面板上的 Generate）。
-   *
-   * 提示词与参考图由服务端按入边收集（与 agent 的 generate_media_node 同一段逻辑），
-   * 所以这里只需要给出节点 id。落一个新的 generation 并回填到节点上——
-   * 之后卡片的状态与资产跟 agent 触发的没有区别（queued → generating → done/failed）。
-   */
-  function generateNode(nodeId: string) {
-    if (!sessionId) return;
-    beginSave(nodeId);
-    void generateCanvasNode(sessionId, nodeId)
-      .then(() => {
-        settleSave(nodeId, "saved", SAVED_LINGER_MS);
-        void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
-      })
-      .catch((e: unknown) => {
-        settleSave(nodeId, "error", ERROR_LINGER_MS);
-        toast.error(e instanceof Error ? e.message : "Generation failed");
-      });
-  }
-
-  /**
-   * 触发视频拼接。素材由服务端按入边顺序收集（与卡片预览顺序同源），
-   * 落一个 MediaVersion 并回填 generationId——之后卡片的状态与资产就跟生成节点一样自动更新。
-   */
-  function mergeVideo(nodeId: string) {
-    if (!sessionId) return;
-    beginSave(nodeId);
-    void mergeCanvasVideoNode(sessionId, nodeId)
-      .then(() => {
-        settleSave(nodeId, "saved", SAVED_LINGER_MS);
-        void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
-      })
-      .catch((e: unknown) => {
-        settleSave(nodeId, "error", ERROR_LINGER_MS);
-        toast.error(e instanceof Error ? e.message : "Merge failed");
-      });
-  }
-
-  /**
-   * 给上传节点传文件（卡片上的选择 / 拖入）。进度与失败由卡片自己显示；传完后端会广播
-   * update_node patch 让节点出图，这里再刷一次快照兜底（patch 漏了也不至于停在「没文件」）。
-   */
-  async function uploadNodeFile(
-    nodeId: string,
-    file: File,
-    opts: UploadOptions,
-  ): Promise<{ versionId: string }> {
-    if (!sessionId) throw new Error("Canvas not loaded");
-    const { versionId } = await uploadCanvasNodeFile(
-      sessionId,
-      nodeId,
-      file,
-      opts,
-    );
-    void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
-    return { versionId };
-  }
-
-  /**
-   * 「加入对话」：把选中的节点圈给 agent（传空数组 = 取消圈定）。
-   * 会话级持续生效，服务端存在 CanvasSession.focusNodeIds 上，注入上下文时据此裁剪。
-   * 成功后重拉快照，画布上的圈定标记与输入框上的提示都跟着刷新。
-   */
-  function setFocus(nodeIds: string[]) {
-    if (!sessionId) return;
-    void setCanvasFocus(sessionId, nodeIds)
-      .then(() => {
-        void qc.invalidateQueries({ queryKey: ["canvas", sessionId] });
-      })
-      .catch((e: unknown) => {
-        toast.error(e instanceof Error ? e.message : "Could not update focus");
-      });
-  }
-
   // 测试模式开关的乐观值：不改 react-query 里的快照（那会让画布按旧快照重铺、冲掉之后到达的 patch），
   // 本地先显示，等快照里的值追上来再交还（render 期同步，规避 effect-setState）
   const [mockPending, setMockPending] = useState<boolean | null>(null);
@@ -579,39 +310,30 @@ export function useCanvas(sessionId: string | null) {
       });
   }
 
-  /** 保存结账：仅当该节点无其他在途请求时落终态，并在 linger 后自动清除状态。 */
-  function settleSave(nodeId: string, state: SaveState, linger: number) {
-    inflight.current[nodeId] = Math.max((inflight.current[nodeId] ?? 1) - 1, 0);
-    if (inflight.current[nodeId] > 0) return; // 还有后续编辑在途 → 保持 saving
-    setSaveStates((prev) => ({ ...prev, [nodeId]: state }));
-    clearTimers.current[nodeId] = setTimeout(() => {
-      delete clearTimers.current[nodeId];
-      setSaveStates((prev) => {
-        const next = { ...prev };
-        delete next[nodeId];
-        return next;
-      });
-    }, linger);
-  }
-
   return {
-    canvas,
+    canvas: board.canvas,
     chat,
     tokens,
     /** 画布标题（快照未落地时为 null），顶部 header 展示用 */
     title: snapQ.data?.title ?? null,
     status,
     busy,
-    readOnly: busy,
+    /**
+     * 结构只读：服务端 agent 在跑（busy），或 desktop 本机 agent 持有有效的运行锁——与后端
+     * canvas-schema 的 isCanvasBusy 同一口径（用户只能拖位置，结构编辑会被服务端拒）
+     */
+    readOnly: busy || desktopLock !== null,
+    /** desktop 本机 agent 正持有的运行锁（已过期的不算）；null = 没有 */
+    desktopLock,
     /** 会话当前 agent 模型（用于初始化输入框的模型切换器）；未设时为 null。 */
     model: snapQ.data?.model ?? null,
     thinkingLevel: snapQ.data?.thinkingLevel ?? null,
     isLoading: !!sessionId && (snapQ.isLoading || msgQ.isLoading),
     /** update_node 保存状态（nodeId → saving/saved/error），驱动画布左上角的保存指示 */
-    saveStates,
+    saveStates: board.saveStates,
     /** 键入即亮 loading（防抖窗口内也显示）；内容回退无 op 可发时用 cancelSaving 撤销 */
-    markSaving,
-    cancelSaving,
+    markSaving: board.markSaving,
+    cancelSaving: board.cancelSaving,
     send,
     stop,
     /** 清空会话记录与 agent 上下文（节点/连线与 token 统计保留） */
@@ -621,26 +343,26 @@ export function useCanvas(sessionId: string | null) {
     clearPlan,
     answerAsk,
     resolveControl,
-    moveNode,
-    applyUserOp,
+    moveNode: board.moveNode,
+    applyUserOp: board.applyOp,
     /** 从端口拖到空白处新建一个已接好线的节点 */
-    addConnectedNode,
+    addConnectedNode: board.addNode,
     /** 重发一次失败的生成（节点卡片上的 Retry） */
-    retryMedia,
+    retryMedia: board.retryMedia,
     /** 用选定的模型生成一次（生成节点面板上的 Generate） */
-    generateNode,
+    generateNode: board.generateNode,
     /** 触发视频拼接（video_concat 卡片上的 Merge） */
-    mergeVideo,
+    mergeVideo: board.mergeVideo,
     /** 暂停 / 继续生成（顶栏的全部暂停 / 继续、卡片上的单节点暂停 / 继续） */
-    pauseMedia,
-    resumeMedia,
+    pauseMedia: board.pauseMedia,
+    resumeMedia: board.resumeMedia,
     /** 给上传节点传文件（卡片上的选择 / 拖入） */
-    uploadNodeFile,
+    uploadNodeFile: board.uploadNodeFile,
     /** 敏感操作审批模式（会话级，后端已归一化） */
     approvalMode: snapQ.data?.approvalMode ?? "review",
     /** 「加入对话」圈定的节点 id（空 = 关注整块画布） */
-    focusNodeIds: snapQ.data?.focusNodeIds ?? EMPTY_FOCUS,
-    setFocus,
+    focusNodeIds: board.focusNodeIds,
+    setFocus: board.setFocus,
     /** 测试模式（Mock）：当前开关（含乐观值）、环境是否允许、切换 */
     mockMedia: mockPending ?? serverMock,
     mockMediaAvailable: snapQ.data?.mockMediaAvailable ?? false,

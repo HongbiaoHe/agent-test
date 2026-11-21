@@ -4,7 +4,7 @@
  * 改动经 conversations.update 落到 agent-host，下一轮运行生效。
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
-import { KeyRound } from 'lucide-react';
+import { KeyRound, PanelRight } from 'lucide-react';
 import { useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
@@ -20,10 +20,16 @@ import { ConversationTitleMenu, ConversationToolbarIcons } from './components/co
 import { PreviewAutoOpen } from './components/preview-card';
 import { DetailPanel } from './components/detail-panel';
 import { conversationKey, useConversation } from './hooks/use-conversation';
+import { useConversationOutputs } from './lib/conversation-outputs';
 import { findToolItem } from './lib/thread';
 import { FileViewerProvider } from '../viewer/file-viewer';
 import { writeModePreference } from '../modes/mode-preference';
 import { useHostStatus, useModelOptions } from '../llm/api';
+import { CanvasAutoOpen } from '../canvas/canvas-auto-open';
+import { CanvasOpenerContext, useOpenCanvas } from '../canvas/open-canvas-context';
+import { ChatSidePanel } from '../side-panel/chat-side-panel';
+import { useSidePanel } from '../side-panel/use-side-panel';
+import { useOpenVideoEditor, VideoEditorOpenerContext } from '../video-editor/open-editor-context';
 
 export function ChatView({
   id,
@@ -31,6 +37,7 @@ export function ChatView({
   onOpenModelSettings,
   headerInset,
   onDeleted,
+  embedded = false,
 }: {
   id: string;
   /** 账号下至少有一个已启用的模型（host.status.hasModels）；没有时引导去添加 API 连接，不能发送 */
@@ -40,6 +47,11 @@ export function ChatView({
   headerInset?: string;
   /** 在顶栏菜单里删除了本会话 */
   onDeleted: () => void;
+  /**
+   * 嵌在别的视图里（画布视图的右侧对话栏）：宽度有限，工具详情不再并排展开成侧栏，
+   * 而是盖在对话上（关掉回到对话）
+   */
+  embedded?: boolean;
 }) {
   const { t } = useTranslation();
   const qc = useQueryClient();
@@ -49,7 +61,13 @@ export function ChatView({
   const conv = list.data?.find((c) => c.id === id) ?? thread.summary;
   const [activeDetailId, setActiveDetailId] = useState<string | null>(null);
   const [panelOpen, setPanelOpen] = useState(true);
+  // 右侧侧栏（网页预览 / 剪辑器 / 画布）；外壳给的打开方式（切整页）留给嵌在画布页里的情况
+  const side = useSidePanel();
+  const outerVideoOpener = useOpenVideoEditor();
+  const outerCanvasOpener = useOpenCanvas();
   const [stopRequested, setStopRequested] = useState(false);
+  const outputs = useConversationOutputs(thread.items);
+  const infoOpen = side.item?.kind === 'info';
 
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: conversationKey(id) });
@@ -111,14 +129,30 @@ export function ChatView({
   const savedLevel = asThinkingLevel(conv?.thinkingLevel) ?? 'auto';
   // 换模型后旧档位可能不再可选：显示实际生效的「自动」（同 host 的 effectiveLevel）
   const thinkingLevel: ThinkingLevel = thinkingLevels.includes(savedLevel) ? savedLevel : 'auto';
+  // agent 发来审批 / 提问时，展开全部的侧栏会把对话里的审批面板整个盖住：收回停靠，让审批露出来
+  const approvalPending = thread.approval != null;
+  const [sawApproval, setSawApproval] = useState(approvalPending);
+  if (approvalPending !== sawApproval) {
+    setSawApproval(approvalPending);
+    if (approvalPending && side.expanded) side.collapse();
+  }
   const untitled = t('shell.conversation.untitled');
   const title = conv ? conv.title ?? (conv.goal || untitled) : untitled;
 
   return (
     // 对话里的链接在这里预览：带会话 id 与工作区，相对路径能读到工作区文件
-    <FileViewerProvider conversationId={id} workspaceDir={conv?.workspaceDir ?? null}>
+    <FileViewerProvider
+      conversationId={id}
+      workspaceDir={conv?.workspaceDir ?? null}
+      // 网页预览开在右侧侧栏（嵌在画布页里时没有侧栏，仍用全屏弹窗）
+      onShowSite={embedded ? undefined : side.openSite}
+    >
       <PreviewAutoOpen conversationId={id} />
-      <div className="flex h-full w-full overflow-clip">
+      {!embedded && <CanvasAutoOpen conversationId={id} onOpen={side.openCanvas} />}
+      {/* 剪辑工程卡片、画布卡片、工作区面板经这两个上下文打开：在对话里开到侧栏；嵌在画布页里时沿用外壳的（切整页） */}
+      <VideoEditorOpenerContext.Provider value={embedded ? outerVideoOpener : (target) => side.openVideo(target.path)}>
+      <CanvasOpenerContext.Provider value={embedded ? outerCanvasOpener : (target) => side.openCanvas(target.canvasId)}>
+      <div className="relative flex h-full w-full overflow-clip">
         <ChatThread
           title={title}
           headerInset={headerInset}
@@ -132,6 +166,22 @@ export function ChatView({
             />
           }
           headerTools={<ConversationToolbarIcons items={thread.items} />}
+          // 会话信息侧栏（嵌在画布页里时没有侧栏）
+          headerEnd={
+            embedded ? undefined : (
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={t('chat.info.open')}
+                title={t('chat.info.open')}
+                aria-pressed={infoOpen}
+                data-testid="conversation-info-toggle"
+                onClick={side.toggleInfo}
+              >
+                <PanelRight />
+              </Button>
+            )
+          }
           conversationId={id}
           items={thread.items}
           approval={thread.approval}
@@ -192,10 +242,34 @@ export function ChatView({
             update.mutate({ modeId });
           }}
         />
-        {panelOpen && selectedTool && (
+        {panelOpen && selectedTool && !embedded && (
           <DetailPanel tool={selectedTool} onClose={() => setPanelOpen(false)} />
         )}
+        {panelOpen && selectedTool && embedded && (
+          <DetailPanel
+            tool={selectedTool}
+            onClose={() => setPanelOpen(false)}
+            className="lg:absolute lg:inset-0 lg:z-10 lg:w-full lg:border-l-0"
+          />
+        )}
+        {!embedded && (
+          <ChatSidePanel
+            item={side.item}
+            expanded={side.expanded}
+            width={side.width}
+            actions={side.actions}
+            conversationId={id}
+            workspaceDir={conv?.workspaceDir ?? null}
+            headerInset={headerInset}
+            detailOpen={panelOpen && !!selectedTool}
+            conversation={conv}
+            tokens={thread.tokens}
+            outputs={outputs}
+          />
+        )}
       </div>
+      </CanvasOpenerContext.Provider>
+      </VideoEditorOpenerContext.Provider>
     </FileViewerProvider>
   );
 }

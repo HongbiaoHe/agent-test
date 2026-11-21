@@ -28,10 +28,16 @@ import { type FileViewerApi, FileViewerContext } from './viewer-context';
 export function FileViewerProvider({
   conversationId = null,
   workspaceDir = null,
+  onShowSite,
   children,
 }: {
   conversationId?: string | null;
   workspaceDir?: string | null;
+  /**
+   * 网页预览改由宿主接管（对话视图把它开在右侧侧栏里，见 features/side-panel）；
+   * 不给就仍用这里的全屏弹窗（App 根部、嵌在画布页里的对话等没有侧栏的地方）
+   */
+  onShowSite?: (spec: PreviewSpec) => void;
   children: ReactNode;
 }) {
   const [target, setTarget] = useState<PreviewTarget | null>(null);
@@ -39,6 +45,10 @@ export function FileViewerProvider({
   const [openCount, setOpenCount] = useState(0);
   const api = useMemo<FileViewerApi>(() => {
     const show = (t: PreviewTarget) => {
+      if (t.source === 'site' && onShowSite) {
+        onShowSite(t.spec);
+        return;
+      }
       setTarget(t);
       setOpenCount((n) => n + 1);
     };
@@ -53,7 +63,7 @@ export function FileViewerProvider({
       },
       show,
     };
-  }, [conversationId, workspaceDir]);
+  }, [conversationId, workspaceDir, onShowSite]);
   return (
     <FileViewerContext.Provider value={api}>
       {children}
@@ -104,8 +114,8 @@ function FileViewerContent({
       onClick={closeOnBlank}
       className="top-0 left-0 flex h-screen w-screen max-w-none translate-x-0 translate-y-0 flex-col gap-0 rounded-none bg-background/95 p-0 ring-0 backdrop-blur-sm sm:max-w-none"
     >
-      {/* pl-20：给 macOS 左上角的红绿灯留位置 */}
-      <header className="flex h-12 shrink-0 items-center gap-2 pr-3 pl-20" onClick={closeOnBlank}>
+      {/* pl-20：给 macOS 左上角的红绿灯留位置（全屏时没有红绿灯） */}
+      <header className="flex h-12 shrink-0 items-center gap-2 pr-3 pl-20 fullscreen:pl-4" onClick={closeOnBlank}>
         <DialogTitle className="min-w-0 flex-1 truncate text-sm font-medium">
           {name}
           {target.source === 'site' && (
@@ -156,11 +166,12 @@ function FileViewerContent({
  */
 const SITE_SANDBOX = 'allow-scripts allow-forms allow-modals allow-popups allow-downloads allow-same-origin';
 
-function portUrl(spec: Extract<PreviewSpec, { kind: 'port' }>): string {
+export function portUrl(spec: Extract<PreviewSpec, { kind: 'port' }>): string {
   return `http://localhost:${spec.port}${spec.path}`;
 }
 
-function SiteBody({ spec, workspaceDir }: { spec: PreviewSpec; workspaceDir: string | null }) {
+/** 网页预览的 iframe（全屏弹窗与右侧侧栏共用） */
+export function SiteBody({ spec, workspaceDir }: { spec: PreviewSpec; workspaceDir: string | null }) {
   const { t } = useTranslation();
   const fileRoot = spec.kind === 'file' ? workspaceDir : null;
   const origin = useQuery({

@@ -93,7 +93,9 @@ export type CanvasEventType =
   | "canvas_patch"
   | "token_usage"
   // 会话记录与 agent 上下文被清空：各端据此清掉本地对话投影
-  | "messages_cleared";
+  | "messages_cleared"
+  // desktop 本机 agent 拿到 / 续期 / 释放运行锁：payload { runLock: CanvasRunLock | null }
+  | "canvas_lock";
 
 export interface CanvasEvent {
   seq: string;

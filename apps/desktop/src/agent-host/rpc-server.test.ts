@@ -16,6 +16,7 @@ import type { RunService } from './run/run-service';
 import { buildDesktopRegistry } from './run/tool-registry';
 import { SkillStore } from './skills/skill-store';
 import { VideoService } from './video/video-service';
+import type { WebApi } from './web-media/web-api';
 
 let dir: string;
 beforeEach(async () => {
@@ -62,6 +63,7 @@ function setup() {
       emit: () => undefined,
       binaries: () => ({ ffmpeg: 'ffmpeg', ffprobe: 'ffprobe' }),
     }),
+    canvasWatcher: null,
   };
   return {
     s: services,
@@ -437,5 +439,21 @@ describe('剪辑器 RPC（video.*）', () => {
     } finally {
       await rm(outside, { recursive: true, force: true });
     }
+  });
+});
+
+describe('媒体资产 RPC（media.asset）', () => {
+  it('本地资产经 JSON 回包后字节不变（base64），路径带版本 id', async () => {
+    const { s } = setup();
+    const bytes = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x00, 0xff, 0x10]);
+    const download = vi.fn(() => Promise.resolve({ bytes, contentType: 'image/png' }));
+    // 只用到 download：在注入处收窄成真实类型
+    const h = createHandlers({ ...s, webApi: { download } as unknown as WebApi });
+    const result = await h['media.asset']({ versionId: 'v-local' });
+    expect(download).toHaveBeenCalledWith('/media/versions/v-local/asset');
+    // 同 agent-host/index.ts 回包前的那次 JSON 往返
+    const wire = z.object({ base64: z.string(), contentType: z.string() }).parse(JSON.parse(JSON.stringify(result)));
+    expect([...Buffer.from(wire.base64, 'base64')]).toEqual([...bytes]);
+    expect(wire.contentType).toBe('image/png');
   });
 });

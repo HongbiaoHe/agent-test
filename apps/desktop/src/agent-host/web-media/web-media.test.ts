@@ -55,6 +55,12 @@ function handle(req: IncomingMessage, res: ServerResponse, body: Buffer) {
       }),
     );
   }
+  // 本地资产（拼接成片 / 测试模式占位图）：鉴权后回二进制；不存在回 JSON 信封
+  if (url === '/media/versions/v-local/asset') {
+    res.writeHead(200, { 'content-type': 'video/mp4' });
+    return res.end(Buffer.from('MP4DATA'));
+  }
+  if (url === '/media/versions/v-missing/asset') return send(404, { code: 4004, message: '版本不存在' });
   if (url.startsWith('/media-api/uploads')) {
     return send(200, ok({ versionId: 'up1', type: 'image', url: `${base}/cdn/up1.png`, contentType: 'image/png', size: body.length }));
   }
@@ -112,6 +118,17 @@ describe('WebApi', () => {
     const err = await new WebApi(base, 'expired').get('/media-api/models?type=image').catch((e: unknown) => e);
     expect(err).toBeInstanceOf(WebApiError);
     expect(err instanceof WebApiError && err.unauthorized).toBe(true);
+  });
+
+  it('download：带令牌取回二进制与类型；失败按信封报错，401 → 登录过期', async () => {
+    const got = await new WebApi(base, 'good-token').download('/media/versions/v-local/asset');
+    expect(Buffer.from(got.bytes).toString()).toBe('MP4DATA');
+    expect(got.contentType).toBe('video/mp4');
+    const missing = await new WebApi(base, 'good-token').download('/media/versions/v-missing/asset').catch((e: unknown) => e);
+    expect(missing).toBeInstanceOf(WebApiError);
+    expect(missing instanceof WebApiError && missing.message).toBe('版本不存在');
+    const expired = await new WebApi(base, 'expired').download('/media/versions/v-local/asset').catch((e: unknown) => e);
+    expect(expired instanceof WebApiError && expired.unauthorized).toBe(true);
   });
 });
 
