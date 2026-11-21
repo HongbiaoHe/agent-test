@@ -13,6 +13,17 @@ export interface CanvasRunLock {
   expiresAt: string;
 }
 
+/**
+ * 第三方 agent 经画布 MCP 对外服务改画布时也持同一把锁（每次写入隐式续期），holderId 带这个前缀
+ * （后接授权 id），label 是客户端 / 令牌名——其它端据此显示「外部 agent 在改」而不是「desktop 在改」。
+ */
+export const MCP_LOCK_HOLDER_PREFIX = 'mcp:';
+
+/** 这把锁是否由画布 MCP 对外服务（第三方 agent）持有 */
+export function isMcpLock(lock: Pick<CanvasRunLock, 'holderId'>): boolean {
+  return lock.holderId.startsWith(MCP_LOCK_HOLDER_PREFIX);
+}
+
 /** 锁的时长：持锁方每 CANVAS_LOCK_RENEW_MS 续一次，连续丢两次心跳仍在有效期内 */
 export const CANVAS_LOCK_TTL_MS = 60_000;
 export const CANVAS_LOCK_RENEW_MS = 20_000;

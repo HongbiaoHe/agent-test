@@ -1,6 +1,6 @@
 "use client";
 
-import type { CanvasRunLock } from "@agent-test/canvas-schema";
+import { type CanvasRunLock, isMcpLock } from "@agent-test/canvas-schema";
 import {
   CanvasIsland,
   CanvasIslandButton,
@@ -23,6 +23,7 @@ import { useTheme } from "next-themes";
 import { useRouter } from "next/navigation";
 import { useRef, useState, useSyncExternalStore } from "react";
 
+import { AgentLogo, agentDisplayName } from "@/components/mcp-server/agent-logo";
 import { Input } from "@/components/ui/input";
 import {
   Tooltip,
@@ -283,16 +284,36 @@ function AgentRunningBadge() {
 }
 
 /**
- * desktop 本机 agent 持有运行锁时的状态胶囊：与 AgentRunningBadge 同一套形态，换成桌面图标与说法。
- * 锁的说明（desktop 对话标题）放进 tooltip，胶囊本身保持短句。
+ * 别的 agent 持有运行锁时的状态胶囊：与 AgentRunningBadge 同一套形态，换成对应图标与说法。
+ * 持锁方有两种：desktop 本机 agent，与经画布 MCP 对外服务操作的第三方 agent（holderId 带 mcp: 前缀）。
+ * 锁的说明（desktop 对话标题 / 第三方客户端名）放进 tooltip，胶囊本身保持短句。
  */
 function DesktopLockBadge({ lock }: { lock: CanvasRunLock }) {
+  const external = isMcpLock(lock);
+  // 外部 agent 的 label 是它自报的名字（Claude Code / Codex / Cursor…），见 AgentLogo
+  const agent = external && lock.label ? agentDisplayName(lock.label) : null;
   return (
-    <div className="canvas-badge-pop pointer-events-auto flex h-8 items-center gap-2 rounded-full border border-border bg-card/85 pl-2.5 pr-3 text-xs shadow-lg backdrop-blur-md">
-      <Monitor className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
-      <span className="font-medium text-foreground" role="status">
-        <span className="max-md:hidden">Desktop agent is editing</span>
-        <span className="md:hidden">Desktop editing</span>
+    <div className="canvas-badge-pop pointer-events-auto flex h-8 max-w-[min(28rem,calc(100vw-2rem))] items-center gap-2 rounded-full border border-border bg-card/85 pl-2.5 pr-3 text-xs shadow-lg backdrop-blur-md">
+      {external ? (
+        <AgentLogo
+          agent={lock.label}
+          className="size-3.5 text-muted-foreground"
+        />
+      ) : (
+        <Monitor className="size-3.5 shrink-0 text-muted-foreground" aria-hidden />
+      )}
+      <span className="min-w-0 truncate font-medium text-foreground" role="status">
+        {external ? (
+          <>
+            {agent ?? "External agent"}
+            <span className="max-md:hidden"> is editing</span>
+          </>
+        ) : (
+          <>
+            <span className="max-md:hidden">Desktop agent is editing</span>
+            <span className="md:hidden">Desktop editing</span>
+          </>
+        )}
       </span>
       <Tooltip>
         <TooltipTrigger
@@ -301,9 +322,11 @@ function DesktopLockBadge({ lock }: { lock: CanvasRunLock }) {
           <Lock className="size-3 text-muted-foreground" strokeWidth={2.5} />
         </TooltipTrigger>
         <TooltipContent side="bottom">
-          {lock.label
-            ? `Read-only while the desktop agent works on “${lock.label}”`
-            : "Canvas is read-only while the desktop agent runs"}
+          {external
+            ? `Read-only while ${agent ?? "an external agent"} edits this canvas over MCP`
+            : lock.label
+              ? `Read-only while the desktop agent works on “${lock.label}”`
+              : "Canvas is read-only while the desktop agent runs"}
         </TooltipContent>
       </Tooltip>
     </div>

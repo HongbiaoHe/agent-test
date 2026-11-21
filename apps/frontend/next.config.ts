@@ -31,6 +31,34 @@ const nextConfig: NextConfig = {
         source: "/api-backend/:path*",
         destination: `${BACKEND}/:path*`,
       },
+      // 画布 MCP 对外服务（第三方 agent 经 MCP 操作画布）：协议规定发现元数据挂在域名根，
+      // MCP 端点与 OAuth 端点也对外用主站域名，原路径透传给后端（见后端 mcp-server.http.ts）。
+      // /oauth/consent 是前端同意页，不在这里
+      { source: "/mcp", destination: `${BACKEND}/mcp` },
+      {
+        source: "/.well-known/oauth-authorization-server",
+        destination: `${BACKEND}/.well-known/oauth-authorization-server`,
+      },
+      {
+        source: "/.well-known/oauth-protected-resource/:path*",
+        destination: `${BACKEND}/.well-known/oauth-protected-resource/:path*`,
+      },
+      {
+        source: "/oauth/:endpoint(authorize|token|register|revoke)",
+        destination: `${BACKEND}/oauth/:endpoint`,
+      },
+    ];
+  },
+  // OAuth 同意页禁止被嵌入：防止恶意页面把它套进 iframe 诱导用户点「允许」（点击劫持）
+  async headers() {
+    return [
+      {
+        source: "/oauth/consent",
+        headers: [
+          { key: "X-Frame-Options", value: "DENY" },
+          { key: "Content-Security-Policy", value: "frame-ancestors 'none'" },
+        ],
+      },
     ];
   },
 };

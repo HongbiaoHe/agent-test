@@ -1,6 +1,6 @@
 "use client";
 
-import { Box, CircleUserRound, Plug, SlidersHorizontal, Wrench } from "lucide-react";
+import { Box, CircleUserRound, KeyRound, Plug, SlidersHorizontal, Wrench } from "lucide-react";
 import Link from "next/link";
 import { usePathname } from "next/navigation";
 
@@ -11,6 +11,7 @@ const ITEMS = [
   { href: "/settings/skills", label: "Skills", icon: Wrench },
   { href: "/settings/modes", label: "Modes", icon: SlidersHorizontal },
   { href: "/settings/mcp", label: "Connectors", icon: Plug },
+  { href: "/settings/mcp-server", label: "MCP access", icon: KeyRound },
   { href: "/settings/sandbox", label: "Sandbox", icon: Box },
 ] as const;
 
@@ -20,7 +21,8 @@ export function SettingsNav() {
   return (
     <nav className="flex gap-1 overflow-x-auto sm:flex-col sm:overflow-visible">
       {ITEMS.map(({ href, label, icon: Icon }) => {
-        const active = pathname.startsWith(href);
+        // 按路径段匹配：/settings/mcp-server 不能让 /settings/mcp 也亮
+        const active = pathname === href || pathname.startsWith(`${href}/`);
         return (
           <Link
             key={href}
