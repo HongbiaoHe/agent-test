@@ -219,6 +219,16 @@ export const ErrorCodes = {
     message:
       'An upstream node has no output yet and is not generating: generate it first',
   },
+  CANVAS_NODE_FIELD_INVALID: {
+    code: 70014,
+    message:
+      'Node field out of range (label at most 191 characters, x / y finite and within ±1,000,000)',
+  },
+  CANVAS_EDGE_CYCLE: {
+    code: 70015,
+    message:
+      'This connection would create a loop: a node cannot feed into itself, directly or through other nodes',
+  },
   CANVAS_UPLOAD_TYPE_MISMATCH: {
     code: 70011,
     message:

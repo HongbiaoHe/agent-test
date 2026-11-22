@@ -6,6 +6,7 @@ import {
 } from '@langchain/core/tools';
 import {
   CANVAS_NODE_TYPES,
+  clampNodeLabel,
   collectGenerationInputs,
   collectVideoSources,
   isCanvasNodeType,
@@ -465,7 +466,8 @@ export function createCanvasTools(
         };
       }
       mediaGenerationId = asset.generationId;
-      defaultLabel = asset.filename;
+      // 文件名最长 255，标题上限 191：截断，免得节点因标题超长建不出来
+      defaultLabel = clampNodeLabel(asset.filename);
     }
     // 生成节点建时就定好模型与档位（同 set_node_model 的严格校验），不合法一个节点都不建——
     // 先建成默认再改，用户会先看到一张 1:1 / 默认模型的卡片，且 agent 常常忘了回头改。
