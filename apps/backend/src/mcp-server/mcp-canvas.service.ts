@@ -18,6 +18,7 @@ import {
 } from '../media/media-upload.service';
 import { MediaService } from '../media/media.service';
 import { PrismaService } from '../prisma/prisma.service';
+import { toPublicError } from './mcp-errors';
 import type { McpPrincipal } from './mcp-grant.service';
 import { canvasUrl, mcpPublicOrigin } from './mcp-server.config';
 import { safeFetch } from './safe-fetch';
@@ -25,7 +26,14 @@ import { safeFetch } from './safe-fetch';
 /** 生成任务还没结束的状态（其余 done / failed / paused 都算已有结论） */
 const RUNNING = new Set(['queued', 'generating']);
 const WAIT_POLL_MS = 1500;
-export const WAIT_MAX_S = 60;
+/**
+ * wait_for_generations 单次最多等几秒：要短于主站 Next rewrites 反代的 30 秒超时
+ * （next/dist/server/lib/router-utils/proxy-request.js 的 proxyTimeout 默认值），否则请求会被反代掐断成 500。
+ */
+export const WAIT_MAX_S = 25;
+export const WAIT_DEFAULT_S = 20;
+/** timeoutSeconds 参数接受到多少（超过 WAIT_MAX_S 的按 WAIT_MAX_S 等）：之前的上限是 60，照旧传 60 的客户端不该被参数校验拒掉 */
+export const WAIT_ACCEPT_MAX_S = 60;
 
 export interface GenerationState {
   generationId: string;
@@ -94,7 +102,15 @@ export class McpCanvasService {
       sessionId: canvasId,
       userId: p.userId,
     });
-    return createSharedCanvasTools(() => Promise.resolve(backend));
+    // 批量工具会把单项失败的 message 原样写进结果（add_nodes 的 results[i].error），
+    // 这里先把非业务异常换成通用说法，免得 Prisma 报错原文带着源码位置回给第三方
+    const applyOp: typeof backend.applyOp = (op) =>
+      backend.applyOp(op).catch((e: unknown) => {
+        throw toPublicError(e);
+      });
+    return createSharedCanvasTools(() =>
+      Promise.resolve({ ...backend, applyOp }),
+    );
   }
 
   /** 画布状态：与画布 agent 每轮注入的同一份文本，外加生成 / 上传节点的产物明细 */
@@ -165,6 +181,7 @@ export class McpCanvasService {
     canvasId: string,
     url: string,
     filename?: string,
+    signal?: AbortSignal,
   ) {
     await this.canvas.assertAccess(canvasId, p.tenantId);
     const file = await safeFetch(url, {
@@ -172,7 +189,10 @@ export class McpCanvasService {
         const type = UPLOAD_CONTENT_TYPES[ct];
         return type ? UPLOAD_MAX_BYTES[type] : null;
       },
+      signal,
     });
+    // 下载刚好在取消之后完成：不再落库，免得留下一份调用方以为已经取消的素材
+    signal?.throwIfAborted();
     const asset = await this.uploads.store({
       contentType: file.contentType,
       size: file.body.length,

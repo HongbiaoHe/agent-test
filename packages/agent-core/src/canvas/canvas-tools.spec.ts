@@ -85,17 +85,70 @@ describe('createCanvasTools（共享画布工具）', () => {
       node('cuid000bbbb22'),
     ]);
     const tools = createCanvasTools(() => Promise.resolve(backend));
+    // 短 id = 完整 id 末 6 位（shortNodeId）
     await toolNamed(tools, 'update_node').invoke({
-      nodeId: 'aa11',
+      nodeId: 'aaaa11',
       label: '新标题',
     });
     expect(ops).toEqual([
       { op: 'update_node', nodeId: 'cuid000aaaa11', label: '新标题' },
     ]);
     const missing: unknown = await toolNamed(tools, 'delete_node').invoke({
-      nodeId: 'zzzz',
+      nodeId: 'zzzzzz',
     });
     expect(JSON.parse(String(missing))).toMatchObject({ error: '节点不存在' });
+    // 不足 6 位的残缺 id 即使恰好唯一也不认，免得误删
+    const partial: unknown = await toolNamed(tools, 'delete_node').invoke({
+      nodeId: 'b22',
+    });
+    expect(JSON.parse(String(partial))).toMatchObject({ error: '节点不存在' });
+    expect(ops).toHaveLength(1);
+  });
+
+  it('上传节点挂附件时用文件名兜底当标题，超过标题上限就截断', async () => {
+    const longName = 'f'.repeat(240) + '.png';
+    const { backend, ops } = fakeBackend([], {
+      findUploadedAsset: () =>
+        Promise.resolve({
+          generationId: 'g9',
+          type: 'image',
+          filename: longName,
+        }),
+    });
+    const tools = createCanvasTools(() => Promise.resolve(backend));
+    await toolNamed(tools, 'add_node').invoke({
+      type: 'image_upload',
+      versionId: 'v9',
+      x: 0,
+      y: 0,
+    });
+    expect(ops[0]).toMatchObject({ op: 'add_node', label: 'f'.repeat(191) });
+  });
+
+  it('批量建节点：调用方中止后剩下的不再落库（MCP 客户端断开时不留「以为失败、其实建完」的节点）', async () => {
+    const ac = new AbortController();
+    const { backend, ops } = fakeBackend([], {
+      applyOp: (op) => {
+        ops.push(op);
+        if (ops.length === 2) ac.abort();
+        return Promise.resolve({
+          revision: ops.length,
+          patch: { op: 'clear', revision: ops.length },
+        });
+      },
+    });
+    const tools = createCanvasTools(() => Promise.resolve(backend));
+    const nodes = Array.from({ length: 5 }, (_, i) => ({
+      type: 'image_upload',
+      x: i,
+      y: 0,
+    }));
+    await expect(
+      toolNamed(tools, 'add_nodes').invoke({ nodes }, { signal: ac.signal }),
+    ).rejects.toThrow();
+    // 让工具函数跑完剩下的循环（invoke 已因中止先行返回）
+    await new Promise((r) => setTimeout(r, 0));
+    expect(ops).toHaveLength(2);
   });
 
   it('生成：执行端业务拒绝原样回给模型；成功后把 generationId 回填到节点', async () => {

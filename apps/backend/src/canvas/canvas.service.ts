@@ -37,10 +37,13 @@ import {
   type CanvasRunLock,
   isCanvasBusy,
   canConnectNodeTypes,
+  clampNodeLabel,
   collectGenerationInputs,
   collectVideoSources,
   isCanvasNodeType,
   isUploadNodeType,
+  NODE_LABEL_MAX,
+  nodeLabelLength,
   resolveNodeIdIn,
   UPLOAD_NODE_ASSET,
 } from './canvas.types';
@@ -442,7 +445,8 @@ export class CanvasService {
       nodeId,
       mediaGenerationId: asset.generationId,
       // 没起过名的卡片用文件名当标题，一眼认得出传的是哪个
-      ...(node.label?.trim() ? {} : { label: asset.filename }),
+      // （文件名最长 255，标题上限 191：截断，免得传完文件反被标题校验拒掉、留下没人引用的资产）
+      ...(node.label?.trim() ? {} : { label: clampNodeLabel(asset.filename) }),
     });
     return { generationId: asset.generationId, versionId: asset.versionId };
   }
@@ -1016,6 +1020,7 @@ export class CanvasService {
     op: CanvasOpInput,
     baseRevision?: number,
   ): Promise<ApplyOpResult> {
+    assertNodeFields(op);
     // 同会话进程内串行化：agent 一个回合可能并发触发多个结构工具（LangGraph 并行执行
     // tool_calls），并发写会撞 revision/CanvasOp 唯一键。单 worker 下串行即根除竞争；
     // 跨 worker 仍靠事务内 revision CAS + 唯一键 + 重试兜底。
@@ -1129,6 +1134,40 @@ export class CanvasService {
 
       return { revision: nextRevision, patch };
     });
+  }
+
+  /**
+   * 沿连线方向从 from 出发能否走到 to（from === to 算能：自环）。
+   * 按层只查当前这一层的出边：只读得到 from 下游那一片，不随整块画布的连线数增长。
+   *
+   * 并发：applyOp 在 op 落表之前先做 revision CAS，同一画布的并发写只有一个能过 CAS，
+   * 落空的那个整体重试、重新走到这里时已能读到先提交的那条边——跨进程也不会两边各连一半成环。
+   */
+  private async reaches(
+    tx: Prisma.TransactionClient,
+    sessionId: string,
+    from: string,
+    to: string,
+  ): Promise<boolean> {
+    if (from === to) return true;
+    const seen = new Set([from]);
+    let frontier = [from];
+    while (frontier.length > 0) {
+      const out = await tx.canvasEdge.findMany({
+        where: { sessionId, source: { in: frontier } },
+        select: { target: true },
+      });
+      const next: string[] = [];
+      for (const { target } of out) {
+        if (target === to) return true;
+        if (!seen.has(target)) {
+          seen.add(target);
+          next.push(target);
+        }
+      }
+      frontier = next;
+    }
+    return false;
   }
 
   /** 在事务内把 op 落到物化表并返回对应 patch。 */
@@ -1254,6 +1293,13 @@ export class CanvasService {
         ) {
           throw new BusinessException(
             ErrorCodes.CANVAS_EDGE_INVALID,
+            HttpStatus.BAD_REQUEST,
+          );
+        }
+        // 不许成环：生成按上游 → 下游等素材，环上的节点会互相等到天荒地老
+        if (await this.reaches(tx, sessionId, op.target, op.source)) {
+          throw new BusinessException(
+            ErrorCodes.CANVAS_EDGE_CYCLE,
             HttpStatus.BAD_REQUEST,
           );
         }
@@ -1471,4 +1517,27 @@ export function reorderBySource<T extends { source: string }>(
     .filter((e): e is T => !!e);
   const picked = new Set(listed);
   return [...listed, ...edges.filter((e) => !picked.has(e))];
+}
+
+/** 坐标上限：远超任何真实布局，挡住 1e308 这类会让网页画布平移失控的值 */
+const NODE_COORD_MAX = 1_000_000;
+
+/**
+ * 节点字段的范围校验（用户 REST、服务端 agent、desktop、MCP 共用 applyOp 这一个入口）：
+ * 超长 label 原本会在落库时撞列长度变成 500，并把 Prisma 报错原文带出去。
+ */
+function assertNodeFields(op: CanvasOpInput): void {
+  if (op.op !== 'add_node' && op.op !== 'update_node') return;
+  const badCoord = (v: number | undefined) =>
+    v !== undefined && !(Number.isFinite(v) && Math.abs(v) <= NODE_COORD_MAX);
+  if (
+    (op.label != null && nodeLabelLength(op.label) > NODE_LABEL_MAX) ||
+    badCoord(op.x) ||
+    badCoord(op.y)
+  ) {
+    throw new BusinessException(
+      ErrorCodes.CANVAS_NODE_FIELD_INVALID,
+      HttpStatus.BAD_REQUEST,
+    );
+  }
 }

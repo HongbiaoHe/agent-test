@@ -14,7 +14,7 @@ import { AbortRegistry } from '../agent/abort-registry';
 import { CHECKPOINTER } from '../agent/checkpointer.provider';
 import { CANVAS_ABORTS } from './canvas.abort';
 import { CanvasService, reorderBySource } from './canvas.service';
-import { clipOrderTag } from './canvas.types';
+import { clipOrderTag, NODE_LABEL_MAX } from './canvas.types';
 import { PrismaService } from '../prisma/prisma.service';
 import { StreamService } from '../events/stream.service';
 import { MediaService } from '../media/media.service';
@@ -58,7 +58,8 @@ function makeTx(): MockTx {
       deleteMany: jest.fn(),
       // 新边接末尾：取该终点入边的最大序号（缺省没有入边）
       aggregate: jest.fn().mockResolvedValue({ _max: { position: null } }),
-      findMany: jest.fn(),
+      // 成环检查读全部连线（缺省画布上没有连线）
+      findMany: jest.fn().mockResolvedValue([]),
       update: jest.fn(),
     },
     canvasOp: { create: jest.fn() },
@@ -510,6 +511,34 @@ describe('CanvasService', () => {
       expect(r).toEqual({ generationId: 'g-1', versionId: 'v-1' });
     });
 
+    it('文件名超过标题上限时截断后再当标题（否则传完文件反被标题校验拒掉）', async () => {
+      const longName = 'n'.repeat(250) + '.mp4';
+      mockPrisma.canvasNode.findFirst.mockResolvedValue({
+        type: 'video_upload',
+        label: null,
+      });
+      mockUploads.store.mockResolvedValue({
+        generationId: 'g-1',
+        versionId: 'v-1',
+        filename: longName,
+      });
+      const applyOp = jest.spyOn(service, 'applyOp').mockResolvedValue({
+        revision: 4,
+        patch: { op: 'clear', revision: 4 },
+      });
+
+      await service.uploadNodeFile('s1', 't1', 'u1', 'n1', {
+        ...file,
+        filename: longName,
+      });
+
+      expect(applyOp).toHaveBeenCalledWith(
+        's1',
+        'user',
+        expect.objectContaining({ label: 'n'.repeat(NODE_LABEL_MAX) }),
+      );
+    });
+
     it('文件类型与节点不符 → CANVAS_UPLOAD_TYPE_MISMATCH，不中转', async () => {
       mockPrisma.canvasNode.findFirst.mockResolvedValue({
         type: 'image_upload',
@@ -845,6 +874,121 @@ describe('CanvasService', () => {
       }),
     ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_EDGE_INVALID.code });
     expect(tx.canvasEdge.upsert).not.toHaveBeenCalled();
+  });
+
+  describe('add_edge 不许成环', () => {
+    beforeEach(() => {
+      tx.canvasSession.findUnique.mockResolvedValue({
+        id: 's1',
+        status: 'running',
+        revision: 3,
+      });
+      tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
+      tx.canvasNode.findMany.mockResolvedValue([
+        { id: 'a', type: 'image_gen' },
+        { id: 'b', type: 'image_gen' },
+        { id: 'c', type: 'image_gen' },
+      ]);
+    });
+
+    it('自环 → CANVAS_EDGE_CYCLE，不落库', async () => {
+      await expect(
+        service.applyOp('s1', 'agent', {
+          op: 'add_edge',
+          source: 'a',
+          target: 'a',
+        }),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_EDGE_CYCLE.code });
+      expect(tx.canvasEdge.upsert).not.toHaveBeenCalled();
+    });
+
+    /** 按 where.source.in 返回出边，模拟逐层查询 */
+    const edgesFrom =
+      (edges: { source: string; target: string }[]) =>
+      ({ where }: { where: { source: { in: string[] } } }) =>
+        Promise.resolve(
+          edges
+            .filter((e) => where.source.in.includes(e.source))
+            .map(({ target }) => ({ target })),
+        );
+
+    it('经别的节点绕回来（b→c→a 已在，再连 a→b）→ CANVAS_EDGE_CYCLE', async () => {
+      tx.canvasEdge.findMany.mockImplementation(
+        edgesFrom([
+          { source: 'b', target: 'c' },
+          { source: 'c', target: 'a' },
+        ]),
+      );
+      await expect(
+        service.applyOp('s1', 'agent', {
+          op: 'add_edge',
+          source: 'a',
+          target: 'b',
+        }),
+      ).rejects.toMatchObject({ errCode: ErrorCodes.CANVAS_EDGE_CYCLE.code });
+      expect(tx.canvasEdge.upsert).not.toHaveBeenCalled();
+    });
+
+    it('同向已有路径（a→b→c 再连 a→c）不算环，照常落库；只查 c 下游的出边', async () => {
+      tx.canvasEdge.findMany.mockImplementation(
+        edgesFrom([
+          { source: 'a', target: 'b' },
+          { source: 'b', target: 'c' },
+        ]),
+      );
+      tx.canvasEdge.upsert.mockResolvedValue({
+        id: 'e9',
+        source: 'a',
+        target: 'c',
+      });
+      const r = await service.applyOp('s1', 'agent', {
+        op: 'add_edge',
+        source: 'a',
+        target: 'c',
+      });
+      expect(r.patch).toMatchObject({ op: 'add_edge', edge: { id: 'e9' } });
+      expect(tx.canvasEdge.findMany).toHaveBeenCalledWith({
+        where: { sessionId: 's1', source: { in: ['c'] } },
+        select: { target: true },
+      });
+    });
+  });
+
+  it.each([
+    [
+      'label 超过 191 字',
+      { op: 'add_node', type: 'image_gen', label: 'L'.repeat(192) },
+    ],
+    ['x = 1e308', { op: 'add_node', type: 'image_gen', x: 1e308 }],
+    ['y = NaN', { op: 'update_node', nodeId: 'n1', y: Number.NaN }],
+    ['x = -Infinity', { op: 'update_node', nodeId: 'n1', x: -Infinity }],
+  ] as const)(
+    '节点字段越界（%s）→ CANVAS_NODE_FIELD_INVALID，事务都不开',
+    async (_name, op) => {
+      await expect(service.applyOp('s1', 'agent', op)).rejects.toMatchObject({
+        errCode: ErrorCodes.CANVAS_NODE_FIELD_INVALID.code,
+      });
+      expect(mockPrisma.$transaction).not.toHaveBeenCalled();
+    },
+  );
+
+  it('label 按字符计：191 个 emoji（UTF-16 长度 382）不算超长', async () => {
+    tx.canvasSession.findUnique.mockResolvedValue({
+      id: 's1',
+      status: 'running',
+      revision: 3,
+    });
+    tx.canvasSession.updateMany.mockResolvedValue({ count: 1 });
+    tx.canvasNode.findFirst.mockResolvedValue({ id: 'n1' });
+    tx.canvasNode.update.mockResolvedValue({ id: 'n1', type: 'image_gen' });
+    await service
+      .applyOp('s1', 'agent', {
+        op: 'update_node',
+        nodeId: 'n1',
+        label: '😀'.repeat(NODE_LABEL_MAX),
+      })
+      .catch(() => undefined); // 只关心字段校验有没有拦：拦了就不会开事务
+    expect(mockPrisma.$transaction).toHaveBeenCalled();
   });
 
   it('update_node 回填 mediaGenerationId：patch 带上生成状态（排队中也看得见）', async () => {

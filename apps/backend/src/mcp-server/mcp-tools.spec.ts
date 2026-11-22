@@ -6,9 +6,13 @@ import { ErrorCodes } from '../common/errors/error-code';
 import type { McpCanvasService } from './mcp-canvas.service';
 import type { McpPrincipal } from './mcp-grant.service';
 import type { McpScope } from './mcp-server.config';
+import type { StructuredToolInterface } from '@langchain/core/tools';
+import { CANVAS_LOCK_RENEW_MS } from '@agent-test/canvas-schema';
+import { INTERNAL_ERROR_MESSAGE } from './mcp-errors';
 import {
   adaptDescription,
   buildCanvasMcpServer,
+  MCP_BATCH_MAX,
   SHARED_TOOL_SCOPES,
 } from './mcp-tools';
 
@@ -134,6 +138,157 @@ describe('画布 MCP 工具装配', () => {
       'cv1',
     );
     expect(svc.sharedTools).not.toHaveBeenCalled();
+  });
+
+  /** sharedTools 换成只有一个工具的桩：invoke 由用例决定 */
+  function withFakeTool(
+    svc: ReturnType<typeof fakeSvc>,
+    name: string,
+    invoke: jest.Mock,
+  ) {
+    svc.sharedTools.mockReturnValue([
+      { name, invoke } as unknown as StructuredToolInterface,
+    ]);
+  }
+
+  it(`批量参数加上 ${MCP_BATCH_MAX} 项上限（add_nodes / update_nodes）`, async () => {
+    const client = await connect(fakeSvc(), ['canvas:read', 'canvas:write']);
+    const { tools } = await client.listTools();
+    const prop = (tool: string, key: string) =>
+      (
+        tools.find((t) => t.name === tool)?.inputSchema.properties as Record<
+          string,
+          { maxItems?: number }
+        >
+      )[key];
+    expect(prop('add_nodes', 'nodes').maxItems).toBe(MCP_BATCH_MAX);
+    expect(prop('update_nodes', 'updates').maxItems).toBe(MCP_BATCH_MAX);
+  });
+
+  it('非业务异常只回通用说法，不带异常原文（服务端路径 / 源码）', async () => {
+    const svc = fakeSvc();
+    withFakeTool(
+      svc,
+      'add_node',
+      jest.fn(() =>
+        Promise.reject(
+          new Error('Invalid `tx.canvasNode.create()` invocation in /srv/x.ts'),
+        ),
+      ),
+    );
+    const client = await connect(svc, ['canvas:read', 'canvas:write']);
+    const r = await client.callTool({
+      name: 'add_node',
+      arguments: { canvasId: 'cv1', type: 'image_gen', x: 0, y: 0 },
+    });
+    expect(r.isError).toBe(true);
+    const out = JSON.stringify(r.content);
+    expect(out).toContain(INTERNAL_ERROR_MESSAGE);
+    expect(out).not.toContain('/srv/x.ts');
+  });
+
+  it('写工具把中止信号传给共享工具，并在执行期间按心跳续锁', async () => {
+    jest.useFakeTimers({
+      doNotFake: ['nextTick', 'setImmediate', 'queueMicrotask'],
+    });
+    try {
+      const svc = fakeSvc();
+      let finish: (v: string) => void = () => undefined;
+      const invoke = jest.fn(
+        () => new Promise<string>((res) => (finish = res)),
+      );
+      withFakeTool(svc, 'add_node', invoke);
+      const client = await connect(svc, ['canvas:read', 'canvas:write']);
+      const call = client.callTool(
+        {
+          name: 'add_node',
+          arguments: { canvasId: 'cv1', type: 'image_gen', x: 0, y: 0 },
+        },
+        undefined,
+        { timeout: CANVAS_LOCK_RENEW_MS * 100 }, // 假时钟推进时别让客户端自己超时
+      );
+      // 等调用真正进到工具里
+      while (invoke.mock.calls.length === 0) {
+        await new Promise((r) => setImmediate(r));
+      }
+      expect(svc.lockForWrite).toHaveBeenCalledTimes(1);
+      await jest.advanceTimersByTimeAsync(CANVAS_LOCK_RENEW_MS * 3);
+      expect(svc.lockForWrite).toHaveBeenCalledTimes(4);
+      finish('{"ok":true}');
+      await call;
+      await jest.advanceTimersByTimeAsync(CANVAS_LOCK_RENEW_MS * 3);
+      expect(svc.lockForWrite).toHaveBeenCalledTimes(4); // 调用结束就不再续
+      expect(invoke).toHaveBeenCalledWith(
+        { type: 'image_gen', x: 0, y: 0 },
+        { signal: expect.any(AbortSignal) as unknown },
+      );
+    } finally {
+      jest.useRealTimers();
+    }
+  });
+
+  it('调用被取消：回「调用已取消」，不当成内部错误', async () => {
+    const svc = fakeSvc();
+    const ac = new AbortController();
+    withFakeTool(
+      svc,
+      'add_node',
+      jest.fn(() => {
+        ac.abort();
+        return Promise.reject(new Error('Aborted'));
+      }),
+    );
+    const server = buildCanvasMcpServer(
+      svc as unknown as McpCanvasService,
+      principal(['canvas:read', 'canvas:write']),
+      ac.signal,
+    );
+    const [x, y] = InMemoryTransport.createLinkedPair();
+    const client = new Client({ name: 'test', version: '0' });
+    await Promise.all([server.connect(x), client.connect(y)]);
+    const r = await client.callTool({
+      name: 'add_node',
+      arguments: { canvasId: 'cv1', type: 'image_gen', x: 0, y: 0 },
+    });
+    expect(r.isError).toBe(true);
+    const out = JSON.stringify(r.content);
+    expect(out).toContain('调用已取消');
+    expect(out).not.toContain(INTERNAL_ERROR_MESSAGE);
+  });
+
+  it('wait_for_generations 照旧接受 timeoutSeconds=60（实际等多久由服务端封顶）', async () => {
+    const svc = fakeSvc();
+    svc.waitForGenerations.mockResolvedValue({ done: true, generations: [] });
+    const client = await connect(svc, ['canvas:read']);
+    const r = await client.callTool({
+      name: 'wait_for_generations',
+      arguments: { canvasId: 'cv1', generationIds: ['g1'], timeoutSeconds: 60 },
+    });
+    expect(r.isError).toBeFalsy();
+    expect(svc.waitForGenerations).toHaveBeenCalledWith(
+      expect.anything(),
+      'cv1',
+      ['g1'],
+      60,
+      expect.any(AbortSignal),
+    );
+  });
+
+  it('import_asset 把中止信号交给下载（取消后不再落库）', async () => {
+    const svc = fakeSvc();
+    svc.importAsset.mockResolvedValue({ versionId: 'v1' });
+    const client = await connect(svc, ['canvas:read', 'canvas:write']);
+    await client.callTool({
+      name: 'import_asset',
+      arguments: { canvasId: 'cv1', url: 'https://example.com/a.png' },
+    });
+    expect(svc.importAsset).toHaveBeenCalledWith(
+      expect.anything(),
+      'cv1',
+      'https://example.com/a.png',
+      undefined,
+      expect.any(AbortSignal),
+    );
   });
 
   it('读的共享工具只做归属校验、不上锁', async () => {

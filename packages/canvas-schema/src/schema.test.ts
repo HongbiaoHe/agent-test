@@ -5,9 +5,12 @@ import {
   buildAgentCanvasContext,
   CANVAS_STATE_MARKER,
   canConnectNodeTypes,
+  clampNodeLabel,
   clipOrderTag,
   collectGenerationInputs,
   isCanvasBusy,
+  NODE_LABEL_MAX,
+  nodeLabelLength,
   resolveNodeIdIn,
   runLockFromEvent,
   type CanvasNodeDto,
@@ -98,10 +101,22 @@ test('注入文本：用短 id；圈定节点时只列圈定的与相邻连线�
 });
 
 test('短 id 反解：完整 id 精确匹配，后缀唯一才认', () => {
-  assert.equal(resolveNodeIdIn(['abc123', 'xyz123'], 'abc123'), 'abc123');
-  assert.equal(resolveNodeIdIn(['abc123', 'xyz456'], '456'), 'xyz456');
-  assert.equal(resolveNodeIdIn(['abc123', 'xyz123'], '123'), null);
-  assert.equal(resolveNodeIdIn(['abc123'], 'nope'), null);
+  const ids = ['node00abc123', 'node00xyz456', 'node11xyz123'];
+  assert.equal(resolveNodeIdIn(ids, 'node00abc123'), 'node00abc123');
+  assert.equal(resolveNodeIdIn(ids, 'xyz456'), 'node00xyz456');
+  assert.equal(resolveNodeIdIn(ids, '0xyz456'), 'node00xyz456');
+  assert.equal(resolveNodeIdIn(ids, 'nope00'), null);
+  // 后缀有歧义
+  assert.equal(resolveNodeIdIn(['aaaaaa123456', 'bbbbbb123456'], '123456'), null);
+});
+
+test('短 id 反解：不足短 id 长度的残缺 id 一律不认，即使恰好唯一', () => {
+  const ids = ['node00abc123', 'node00xyz456'];
+  assert.equal(resolveNodeIdIn(ids, ''), null);
+  assert.equal(resolveNodeIdIn(['node00abc123'], ''), null);
+  assert.equal(resolveNodeIdIn(['node00abc123'], '3'), null);
+  assert.equal(resolveNodeIdIn(ids, '456'), null);
+  assert.equal(resolveNodeIdIn(ids, 'yz456'), null);
 });
 
 test('忙碌判定：服务端 agent 在跑，或 desktop 锁未过期', () => {
@@ -119,4 +134,14 @@ test('canvas_lock 事件解析：锁 / 释放（null）/ 形状不对（undefine
   assert.equal(runLockFromEvent({ runLock: null }), null);
   assert.equal(runLockFromEvent({ runLock: { holderId: 1 } }), undefined);
   assert.equal(runLockFromEvent('x'), undefined);
+});
+
+test('节点标题上限按码点计：emoji 不算两个；兜底标题截断不切断代理对', () => {
+  const emoji = '😀'.repeat(NODE_LABEL_MAX);
+  assert.equal(nodeLabelLength(emoji), NODE_LABEL_MAX);
+  assert.equal(clampNodeLabel(emoji), emoji);
+  const long = 'a'.repeat(250) + '😀';
+  assert.equal(clampNodeLabel(long), 'a'.repeat(NODE_LABEL_MAX));
+  const tail = 'a'.repeat(NODE_LABEL_MAX - 1) + '😀😀';
+  assert.equal(clampNodeLabel(tail), 'a'.repeat(NODE_LABEL_MAX - 1) + '😀');
 });

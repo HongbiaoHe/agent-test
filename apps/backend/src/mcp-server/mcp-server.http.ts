@@ -1,5 +1,10 @@
 import { Injectable, Logger } from '@nestjs/common';
-import express, { type Request, type Response, Router } from 'express';
+import express, {
+  type ErrorRequestHandler,
+  type Request,
+  type Response,
+  Router,
+} from 'express';
 import { authorizationHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/authorize.js';
 import { metadataHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/metadata.js';
 import { clientRegistrationHandler } from '@modelcontextprotocol/sdk/server/auth/handlers/register.js';
@@ -16,6 +21,7 @@ import type {
 } from '@modelcontextprotocol/sdk/shared/auth.js';
 import { McpCanvasService } from './mcp-canvas.service';
 import { McpGrantService } from './mcp-grant.service';
+import { InflightCalls } from './mcp-inflight';
 import { McpOAuthProvider } from './mcp-oauth.provider';
 import {
   MCP_SCOPES,
@@ -23,6 +29,7 @@ import {
   mcpResourceUrl,
 } from './mcp-server.config';
 import { buildCanvasMcpServer } from './mcp-tools';
+import { z } from 'zod';
 
 /**
  * 限流按真实客户端 IP 计：后端只经 Next rewrites 对外（同机反代），所有请求的 socket 地址都是 Next，
@@ -49,6 +56,8 @@ const rateLimit = { keyGenerator: clientIp, validate: false };
 export class McpServerHttp {
   private readonly logger = new Logger(McpServerHttp.name);
   readonly router: Router;
+  /** 在途的 tools/call：客户端发来取消通知时据此中止原调用（见 InflightCalls） */
+  private readonly inflight = new InflightCalls();
 
   constructor(
     private readonly provider: McpOAuthProvider,
@@ -115,6 +124,16 @@ export class McpServerHttp {
     r.post('/mcp', express.json({ limit: '1mb' }), (req, res) => {
       void this.handleMcp(req, res);
     });
+    // 请求体超限：body-parser 抛 entity.too.large，不接住会落到全局过滤器变成 500「System is busy」
+    r.use('/mcp', ((err, _req, res, next) => {
+      if (isBodyTooLarge(err)) {
+        res
+          .status(413)
+          .json(rpcError(-32600, 'Request body too large (limit 1MB)'));
+        return;
+      }
+      next(err);
+    }) satisfies ErrorRequestHandler);
     // 无状态：没有 SSE 推送流（GET）也没有会话可删（DELETE）
     r.all('/mcp', (_req, res) => {
       res
@@ -148,12 +167,22 @@ export class McpServerHttp {
       ...verified,
       agent: await this.grants.agentOf(verified, req.body),
     };
-    const server = buildCanvasMcpServer(this.canvas, principal);
+    const keyOf = (id: RequestId) =>
+      `${verified.grantId}|${clientIp(req)}|${String(id)}`;
+    for (const id of cancelledIds(req.body)) this.inflight.cancel(keyOf(id));
+    const abort = new AbortController();
+    const calls = toolCallIds(req.body).map(keyOf);
+    this.inflight.register(calls, abort);
+
+    const server = buildCanvasMcpServer(this.canvas, principal, abort.signal);
     const transport = new StreamableHTTPServerTransport({
       sessionIdGenerator: undefined,
       enableJsonResponse: true,
     });
     res.on('close', () => {
+      // 连接断了（客户端中止 / 反代超时）同样停掉还在跑的工具
+      abort.abort();
+      this.inflight.release(calls, abort);
       void transport.close();
       void server.close();
     });
@@ -169,6 +198,44 @@ export class McpServerHttp {
       }
     }
   }
+}
+
+const requestId = z.union([z.string(), z.number()]);
+type RequestId = z.infer<typeof requestId>;
+const toolCall = z.object({ method: z.literal('tools/call'), id: requestId });
+const cancelled = z.object({
+  method: z.literal('notifications/cancelled'),
+  params: z.object({ requestId }),
+});
+
+/** JSON-RPC 请求体（单条或批量）里每条消息 */
+function messagesOf(body: unknown): unknown[] {
+  return Array.isArray(body) ? body : [body];
+}
+
+/** 这次请求里 tools/call 的 id */
+function toolCallIds(body: unknown): RequestId[] {
+  return messagesOf(body).flatMap((m) => {
+    const r = toolCall.safeParse(m);
+    return r.success ? [r.data.id] : [];
+  });
+}
+
+/** 这次请求里 notifications/cancelled 要取消的请求 id */
+function cancelledIds(body: unknown): RequestId[] {
+  return messagesOf(body).flatMap((m) => {
+    const r = cancelled.safeParse(m);
+    return r.success ? [r.data.params.requestId] : [];
+  });
+}
+
+function isBodyTooLarge(err: unknown): boolean {
+  return (
+    typeof err === 'object' &&
+    err !== null &&
+    'type' in err &&
+    err.type === 'entity.too.large'
+  );
 }
 
 function rpcError(code: number, message: string) {

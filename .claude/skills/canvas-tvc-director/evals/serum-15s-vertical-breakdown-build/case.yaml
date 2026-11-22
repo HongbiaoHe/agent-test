@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: serum-15s-vertical-breakdown-build
+expected_outcome: |
+  新建画布；放一个空的 image_upload 节点并在标签里请用户上传产品图；产品多视图以它为参考；1 张 9:16 的 3x3 分镜 + End Frame + 1 段 15 秒 9:16 视频，没有多余的拼接节点；视频连了分镜(图1)、产品多视图(图2)、End Frame(图3)；分镜每格以景别·视角开头；没有触发生成。

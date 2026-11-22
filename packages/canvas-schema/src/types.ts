@@ -340,6 +340,25 @@ export function shortNodeId(id: string): string {
   return id.slice(-SHORT_NODE_ID_LEN);
 }
 
+/**
+ * 节点标题最多几个字符：库里是 VARCHAR(191)（Prisma String 在 MySQL 的默认长度），
+ * utf8mb4 按字符（码点）计，所以这里也按码点数，不按 JS 的 UTF-16 length（emoji 算 2）。
+ */
+export const NODE_LABEL_MAX = 191;
+
+/** 标题的字符数（码点） */
+export function nodeLabelLength(label: string): number {
+  return [...label].length;
+}
+
+/** 把拿来兜底当标题的文本（如上传文件名，最长 255）截到标题上限，不切断代理对 */
+export function clampNodeLabel(label: string): string {
+  const chars = [...label];
+  return chars.length > NODE_LABEL_MAX
+    ? chars.slice(0, NODE_LABEL_MAX).join('')
+    : label;
+}
+
 /** 上游节点里收集素材要用到的字段（快照里的 CanvasNodeDto 天然满足）。 */
 export type UpstreamNode = Pick<
   CanvasNodeDto,

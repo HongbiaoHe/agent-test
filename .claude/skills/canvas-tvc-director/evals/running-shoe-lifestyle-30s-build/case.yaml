@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: running-shoe-lifestyle-30s-build
+expected_outcome: |
+  新建画布；无参考图路径用文字精写产品多视图；模特造型图为全身且连入产品多视图、每个视角重复写穿着图1的跑鞋；两个场景各一张场景图；分镜参考顺序为产品多视图→模特→场景并与提示词图号一致；2 张分镜、End Frame、2 段视频、拼接成片；没有触发生成。

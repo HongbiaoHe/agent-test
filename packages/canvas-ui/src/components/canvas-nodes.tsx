@@ -46,6 +46,7 @@ import type { CanvasMessages } from "../i18n/messages";
 import { useCanvasT } from "../i18n/use-canvas-t";
 import { useMediaAsset } from "../hooks/use-media-asset";
 import { placeholderAspect } from "../lib/aigc-params";
+import { knownAspect, rememberAspect } from "../lib/media-aspect";
 import { useNodeUpload } from "../hooks/use-node-upload";
 import {
   isSourceInFlight,
@@ -701,22 +702,35 @@ function HeroLoadError({ onRetry }: { onRetry: () => void }) {
   );
 }
 
+/** 没有画幅参数可依（上传素材 / 拼接成片）时的占位比例：与空画框同为 16:9，空 → 有的过程不变形 */
+const FALLBACK_ASPECT = 16 / 9;
+
 /**
  * 已出图/出片的主视觉：满宽、按素材自己的比例铺开，**不裁切**——用户判断"这张行不行"
- * 靠的就是构图，`object-cover` 会把竖图裁成一条带。超过 224px 高的素材缩进框里留白
- * （框底色是 --muted，留白读起来像相纸边，不像缺角）。
+ * 靠的就是构图，`object-cover` 会把竖图裁成一条带。
+ *
+ * 画框的比例在素材到手**之前**就定好（以前量过的真实比例 → 调用方给的画幅参数），
+ * 素材在框里淡入；比例对不上时只在第一次加载时校正一次并记下来（lib/media-aspect），
+ * 之后再打开画布卡片从头到尾同一个形状。加载期间框里是与骨架相同的弱化底 + 扫光，
+ * 不露出 img 的 alt 文字，也没有 <video> 默认 300×150 的黑框。
  *
  * 视频在卡上只当静帧看（不给 controls）——小卡上的进度条既难点、又会跟拖拽抢手势，
  * 要播放点开灯箱。
  */
 function HeroMedia({
   url,
+  versionId,
+  aspect,
   kind,
   title,
   onZoom,
   mock = false,
 }: {
   url: string;
+  /** 产物版本 id：真实画幅按它记在本机（理论上出片必有；没有就只是不记） */
+  versionId: string | null;
+  /** 没量过真实画幅时的占位比例（宽 / 高） */
+  aspect: number;
   kind: "image" | "video";
   title: string;
   onZoom: () => void;
@@ -724,33 +738,67 @@ function HeroMedia({
   mock?: boolean;
 }) {
   const t = useCanvasT();
-  // 满宽 + 高度按比例自适应：卡片高度因此**就是**素材的高度，既不留信箱黑边
-  // （object-contain 撞上固定 max-height 时竖图两侧会空出灰带），也不裁掉构图
-  // （object-cover 会把竖图切成一条）。卡面只剩画面之后，画面自己定卡片的形状。
-  const fill = "pointer-events-none block h-auto w-full";
+  // 量到的真实比例 / 是否就绪都跟着 url 记：同一张卡换了版本（重新生成）url 就变，自动作废，不用 effect 去重置
+  const [measured, setMeasured] = useState<{ url: string; aspect: number } | null>(
+    null,
+  );
+  const [readyUrl, setReadyUrl] = useState<string | null>(null);
+  const box =
+    measured?.url === url
+      ? measured.aspect
+      : (knownAspect(versionId) ?? aspect);
+  const ready = readyUrl === url;
+
+  const measure = (w: number, h: number) => {
+    if (w > 0 && h > 0) {
+      const real = w / h;
+      if (versionId) rememberAspect(versionId, real);
+      // 差不到 1% 就钉住当前框不改：免得为一两个像素的取整让卡片抖一下
+      // （不钉的话下一次渲染会读到刚记下的真实值，照样抖）
+      setMeasured({
+        url,
+        aspect: Math.abs(real - box) / box > 0.01 ? real : box,
+      });
+    }
+  };
+
+  const fill = cn(
+    "pointer-events-none absolute inset-0 block size-full object-contain transition-opacity duration-300 ease-out motion-reduce:transition-none",
+    ready ? "opacity-100" : "opacity-0",
+  );
   return (
-    <HeroFrame full onZoom={onZoom}>
-      {kind === "image" ? (
-        // 用原生 img：blob 源，不走任何框架的图片优化
-        <img src={url} alt={title || t.node.generatedImageAlt} className={fill} />
-      ) : (
-        <video
-          src={url}
-          muted
-          playsInline
-          preload="metadata"
-          // 元数据到手前 <video> 用的是默认的 300×150（2:1），按它算出来的高度配上
-          // object-fit:contain，画面上下会先留一截黑边——正是「视频没填满」。
-          // 拿到真实尺寸后把比例钉死，盒子与画面从此完全同形。
-          onLoadedMetadata={(e) => {
-            const v = e.currentTarget;
-            if (v.videoWidth && v.videoHeight) {
-              v.style.aspectRatio = `${v.videoWidth} / ${v.videoHeight}`;
+    <HeroFrame full busy={!ready} onZoom={onZoom}>
+      <div className="relative bg-muted" style={{ aspectRatio: box }}>
+        {kind === "image" ? (
+          // 用原生 img：blob 源，不走任何框架的图片优化
+          <img
+            src={url}
+            alt={title || t.node.generatedImageAlt}
+            className={fill}
+            onLoad={(e) => {
+              measure(e.currentTarget.naturalWidth, e.currentTarget.naturalHeight);
+              setReadyUrl(url);
+            }}
+            // 解码失败也别一直扫光：露出浏览器的破图标记，至少看得出是坏了
+            onError={() => setReadyUrl(url)}
+          />
+        ) : (
+          <video
+            // #t=0.001：让浏览器在 preload=metadata 下也定位并画出首帧（Safari 默认不画，卡面会是一块空底）
+            src={`${url}#t=0.001`}
+            muted
+            playsInline
+            preload="metadata"
+            // 拿到尺寸就定框，首帧真画出来了才淡入、停扫光：只有元数据时画面还是空的
+            onLoadedMetadata={(e) =>
+              measure(e.currentTarget.videoWidth, e.currentTarget.videoHeight)
             }
-          }}
-          className={fill}
-        />
-      )}
+            onLoadedData={() => setReadyUrl(url)}
+            onError={() => setReadyUrl(url)}
+            className={fill}
+          />
+        )}
+      </div>
       {mock && <MockBadge />}
     </HeroFrame>
   );
@@ -924,6 +972,8 @@ function UploadNode({
         ) : (
           <HeroMedia
             url={asset.url}
+            versionId={data.mediaVersionId}
+            aspect={FALLBACK_ASPECT}
             kind={kind}
             title={title}
             onZoom={() => setZoom(true)}
@@ -932,7 +982,16 @@ function UploadNode({
       ) : asset.status === "error" ? (
         <HeroLoadError onRetry={asset.retry} />
       ) : (
-        <HeroSkeleton kind={kind} />
+        // 资产在途：卡面只留骨架、形状与出片后一致（量过就按真实比例，没量过 16:9）
+        <HeroSkeleton
+          kind={kind}
+          full
+          aspect={
+            kind === "audio"
+              ? undefined
+              : (knownAspect(data.mediaVersionId) ?? FALLBACK_ASPECT)
+          }
+        />
       );
   }
 
@@ -1032,7 +1091,8 @@ function UploadNode({
         dragging={dragging}
         label={data.label ?? ""}
         mediaOnly={
-          (done && asset.status === "ready") || uploading || (empty && !status)
+          // 资产在途也只留画面位（骨架）：不先露出标题 / 状态再在出片时收起
+          (done && asset.status !== "error") || uploading || (empty && !status)
         }
         hero={hero}
         heroActions={heroActions}
@@ -1130,8 +1190,11 @@ function MediaGenNode({
     data.mediaModel,
     data.mediaParams,
   );
-  // 空态 / 骨架按当前生效的画幅占位（没有画幅这一维或自适应时 16:9）
-  const aspect = placeholderAspect(resolved?.values.aspect_ratio);
+  // 空态 / 骨架按当前生效的画幅占位（没有画幅这一维或自适应时 16:9）。
+  // 模型目录还没拉到时先用节点自己存的画幅：否则一打开画布，卡片先按 16:9 摆、目录到了再变形
+  const aspect = placeholderAspect(
+    resolved?.values.aspect_ratio ?? data.mediaParams?.aspect_ratio,
+  );
   // 提示词是这个节点自己的字段（入边只提供参考图）
   const prompt = data.prompt?.trim() ?? "";
   const title = data.label?.trim() || t.nodeType[nodeType];
@@ -1158,7 +1221,10 @@ function MediaGenNode({
   // 没出片的一律只留画框（失败 / 取消的提示与 Retry 收进框里）——提示词点开面板就有
   const failedNow =
     data.mediaStatus === "failed" || data.mediaStatus === "cancelled";
-  const mediaOnly = (done && asset.status === "ready") || !done;
+  // 资产在途同样只留画面位：先露出标题 / 提示词、出片时再收起，卡片会先高后矮地跳一下
+  const mediaOnly = !(done && asset.status === "error");
+  // 出片后的画框比例：这个版本量过真实比例就用它，否则按画幅参数
+  const resultAspect = (done && knownAspect(data.mediaVersionId)) || aspect;
 
   let hero: React.ReactNode = null;
   if (done) {
@@ -1166,6 +1232,8 @@ function MediaGenNode({
       asset.status === "ready" ? (
         <HeroMedia
           url={asset.url}
+          versionId={data.mediaVersionId}
+          aspect={aspect}
           kind={kind}
           title={title}
           onZoom={() => setZoom(true)}
@@ -1174,7 +1242,7 @@ function MediaGenNode({
       ) : asset.status === "error" ? (
         <HeroLoadError onRetry={asset.retry} />
       ) : (
-        <HeroSkeleton kind={kind} aspect={aspect} />
+        <HeroSkeleton kind={kind} full aspect={resultAspect} />
       );
   } else if (
     data.mediaStatus === "generating" ||
@@ -1380,13 +1448,15 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
     // 暂停中与在跑同样处理：卡面只留骨架（角标写 Paused），不给 Merge
     d.mediaStatus === "paused";
   const merged = done && asset.status === "ready";
+  // 成片资产在途：同样只留画面位（骨架），出片时原地接替
+  const loadingResult = done && asset.status === "loading";
   const failedNow = d.mediaStatus === "failed" || d.mediaStatus === "cancelled";
   // 每段都有着落了才给 Merge：合成要花时间，不在连线的瞬间替用户决定
   const canMerge = missingClips === 0 && totalClips >= 2;
   // 还没有能预览的片段：卡面只留空画框（同生成节点），Retry / Merge 收进框里
   const placeholder = !done && !busyNow && clips.length === 0;
   // 同生成节点：合成完只留成片，合成中只留骨架 + 角标
-  const mediaOnly = merged || busyNow || placeholder;
+  const mediaOnly = merged || loadingResult || busyNow || placeholder;
 
   const download = () => {
     if (asset.status !== "ready") return;
@@ -1434,6 +1504,8 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
     hero = (
       <HeroMedia
         url={asset.url}
+        versionId={d.mediaVersionId}
+        aspect={FALLBACK_ASPECT}
         kind="video"
         title={title}
         onZoom={() => setZoom(true)}
@@ -1445,7 +1517,11 @@ function VideoConcatNode({ data, selected, dragging }: NodeProps) {
       asset.status === "error" ? (
         <HeroLoadError onRetry={asset.retry} />
       ) : (
-        <HeroSkeleton kind="video" />
+        <HeroSkeleton
+          kind="video"
+          full
+          aspect={knownAspect(d.mediaVersionId) ?? FALLBACK_ASPECT}
+        />
       );
   } else if (
     d.mediaStatus === "generating" ||

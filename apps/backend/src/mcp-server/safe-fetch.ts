@@ -87,6 +87,8 @@ export interface SafeFetchOptions {
   maxBytesFor: (contentType: string) => number | null;
   timeoutMs?: number;
   maxRedirects?: number;
+  /** 调用方放弃（MCP 客户端取消 / 断开）时中止下载 */
+  signal?: AbortSignal;
 }
 
 function checkUrl(raw: string): URL {
@@ -135,7 +137,12 @@ function getOnce(
     if (timeoutMs <= 0) return reject(new SafeFetchError('下载超时'));
     const req = httpsRequest(
       url,
-      { method: 'GET', lookup: guardedLookup, timeout: timeoutMs },
+      {
+        method: 'GET',
+        lookup: guardedLookup,
+        timeout: timeoutMs,
+        signal: opts.signal,
+      },
       (res) => {
         const status = res.statusCode ?? 0;
         if (status >= 300 && status < 400 && res.headers.location) {

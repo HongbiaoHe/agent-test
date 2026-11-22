@@ -1,4 +1,9 @@
-import { shortNodeId, type CanvasEdgeDto, type CanvasNodeDto } from './types';
+import {
+  SHORT_NODE_ID_LEN,
+  shortNodeId,
+  type CanvasEdgeDto,
+  type CanvasNodeDto,
+} from './types';
 
 /**
  * 注入给 agent 的「实时画布状态 + 放置安全区」文本（替代 agent 反复调用查询工具）。
@@ -116,12 +121,16 @@ export function clipOrderTag(
 /**
  * 把模型给的节点 id 解析成完整 id：完整 id 精确匹配；否则按后缀匹配（短 id），
  * 匹配不到或有歧义返回 null，由调用方报错给模型。
+ *
+ * 后缀至少要有短 id 那么长：否则空串、一两位的残缺 id 只要在画布上恰好唯一就会命中某个节点，
+ * delete_node 传错就删掉一个毫不相干的节点（上千节点的画布上实测复现）。
  */
 export function resolveNodeIdIn(
   nodeIds: readonly string[],
   id: string,
 ): string | null {
   if (nodeIds.includes(id)) return id;
+  if (id.length < SHORT_NODE_ID_LEN) return null;
   const matched = nodeIds.filter((n) => n.endsWith(id));
   return matched.length === 1 ? matched[0] : null;
 }

@@ -6,6 +6,7 @@ import {
 } from '@langchain/core/tools';
 import {
   CANVAS_NODE_TYPES,
+  clampNodeLabel,
   collectGenerationInputs,
   collectVideoSources,
   isCanvasNodeType,
@@ -465,7 +466,8 @@ export function createCanvasTools(
         };
       }
       mediaGenerationId = asset.generationId;
-      defaultLabel = asset.filename;
+      // 文件名最长 255，标题上限 191：截断，免得节点因标题超长建不出来
+      defaultLabel = clampNodeLabel(asset.filename);
     }
     // 生成节点建时就定好模型与档位（同 set_node_model 的严格校验），不合法一个节点都不建——
     // 先建成默认再改，用户会先看到一张 1:1 / 默认模型的卡片，且 agent 常常忘了回头改。
@@ -535,9 +537,11 @@ export function createCanvasTools(
    * results 与 nodes 一一对应（同序），模型按位置取各自的 nodeId 去连线。
    */
   const addNodes = canvasTool(
-    async ({ nodes }) => {
+    async ({ nodes }, config) => {
       const results: Record<string, unknown>[] = [];
       for (const n of nodes) {
+        // 调用方已放弃（MCP 客户端断开 / 用户停止）：剩下的不再建——否则对方以为失败重试，会建出重复节点
+        if (config.signal?.aborted) break;
         try {
           results.push(await addOneNode(n));
         } catch (e) {
@@ -548,6 +552,7 @@ export function createCanvasTools(
       return JSON.stringify({
         ok: created === nodes.length,
         created,
+        ...(results.length < nodes.length ? { aborted: true } : {}),
         results,
       });
     },
@@ -603,10 +608,13 @@ export function createCanvasTools(
    * 逐条串行落库（applyOp 本就按会话串行），某条失败不影响其余，结果逐条回报。
    */
   const updateNodes = canvasTool(
-    async ({ updates }) => {
+    async ({ updates }, config) => {
       let revision: number | undefined;
+      let done = 0;
       const failed: { nodeId: string; error: string }[] = [];
       for (const { nodeId, label, prompt, x, y } of updates) {
+        if (config.signal?.aborted) break; // 同 add_nodes：调用方已放弃就停
+        done++;
         const full = await resolveId(nodeId);
         if (!full) {
           failed.push({ nodeId, error: '节点不存在' });
@@ -632,8 +640,9 @@ export function createCanvasTools(
         }
       }
       return JSON.stringify({
-        ok: failed.length === 0,
-        updated: updates.length - failed.length,
+        ok: failed.length === 0 && done === updates.length,
+        updated: done - failed.length,
+        ...(done < updates.length ? { aborted: true } : {}),
         ...(failed.length ? { failed } : {}),
         ...(revision !== undefined ? { revision } : {}),
       });
