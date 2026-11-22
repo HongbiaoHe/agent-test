@@ -4,13 +4,18 @@ import type {
   ToolAnnotations,
 } from '@modelcontextprotocol/sdk/types.js';
 import { createCanvasTools as createSharedCanvasTools } from '@agent-test/agent-core/canvas/canvas-tools';
+import { CANVAS_LOCK_RENEW_MS } from '@agent-test/canvas-schema';
 import { z } from 'zod';
 import { BusinessException } from '../common/errors/business.exception';
 import type { McpCanvasService } from './mcp-canvas.service';
-import { WAIT_MAX_S } from './mcp-canvas.service';
+import {
+  WAIT_ACCEPT_MAX_S,
+  WAIT_DEFAULT_S,
+  WAIT_MAX_S,
+} from './mcp-canvas.service';
+import { toPublicError } from './mcp-errors';
 import type { McpPrincipal } from './mcp-grant.service';
 import type { McpScope } from './mcp-server.config';
-import { SafeFetchError } from './safe-fetch';
 
 /**
  * 每个请求按令牌的 scope 装一个 McpServer（无状态）：没授权的工具根本不注册，模型看不到也就不会去撞权限错误。
@@ -58,8 +63,13 @@ const DESCRIPTION_REWRITES: [RegExp, string][] = [
   [/此操作有破坏性，会先请用户确认再执行。/g, '此操作有破坏性，不可撤销。'],
 ];
 
-const MCP_NOTE =
-  '\n\n[MCP] 必须传 canvasId。节点 id 可用 get_canvas 列出的短 id 或完整 id。';
+/**
+ * 批量工具（add_nodes / update_nodes / set_clip_order）每次最多几项。实测 add_nodes 每个节点 2.5~10ms
+ * （画布越大越慢），不设上限时单次调用能跑过 60 秒锁 TTL 与主站反代的 30 秒超时；500 项约 1~5 秒。
+ */
+export const MCP_BATCH_MAX = 500;
+
+const MCP_NOTE = `\n\n[MCP] 必须传 canvasId。节点 id 用 get_canvas 列出的 6 位短 id 或完整 id。批量参数每次最多 ${MCP_BATCH_MAX} 项，更多请分批调用。`;
 
 export function adaptDescription(description: string): string {
   let d = description;
@@ -84,19 +94,56 @@ const text = (s: string, isError = false): CallToolResult => ({
 });
 const json = (v: unknown): CallToolResult => text(JSON.stringify(v));
 
-/** 业务拒绝（画布不存在 / 正忙 / 下载失败…）回一句话给模型；其它异常交给 SDK 兜成 isError */
-async function guarded(run: () => Promise<CallToolResult>) {
+/**
+ * 业务拒绝（画布不存在 / 正忙 / 下载失败…）回一句话给模型；其它异常记日志、只回通用说法
+ * （交给 SDK 兜的话会把异常原文——含服务端文件路径与源码行——发给第三方）。
+ * 调用被取消（signal 已中止）不是故障：直接回「已取消」，不记错误日志。
+ */
+async function guarded(
+  run: () => Promise<CallToolResult>,
+  signal?: AbortSignal,
+) {
   try {
     return await run();
   } catch (e) {
-    if (e instanceof BusinessException) {
-      return text(JSON.stringify({ error: e.getResponse() }), true);
+    if (signal?.aborted) {
+      return text(JSON.stringify({ error: CANCELLED_MESSAGE }), true);
     }
-    if (e instanceof SafeFetchError) {
-      return text(JSON.stringify({ error: e.message }), true);
+    const pub = toPublicError(e);
+    if (pub instanceof BusinessException) {
+      return text(JSON.stringify({ error: pub.getResponse() }), true);
     }
-    throw e;
+    return text(JSON.stringify({ error: pub.message }), true);
   }
+}
+
+const CANCELLED_MESSAGE = '调用已取消';
+
+/**
+ * 写操作执行期间按 CANVAS_LOCK_RENEW_MS 续锁：锁只在调用开始时申请一次，一次调用若跑过 60 秒 TTL，
+ * 别的 agent / 网页用户就能在它还在写的时候插进来。续不上（已被别人接手）就由下一次写入报 CANVAS_BUSY。
+ */
+async function withLockRenewal<T>(
+  renew: () => Promise<void>,
+  run: () => Promise<T>,
+): Promise<T> {
+  const timer = setInterval(() => {
+    renew().catch(() => undefined);
+  }, CANVAS_LOCK_RENEW_MS);
+  try {
+    return await run();
+  } finally {
+    clearInterval(timer);
+  }
+}
+
+/** 共享 schema 里的数组参数加上 MCP_BATCH_MAX 上限（只影响 MCP，画布内置 agent 不变） */
+function capArrays(schema: z.ZodObject<z.ZodRawShape>): z.ZodRawShape {
+  const capped: Record<string, z.ZodType> = {};
+  for (const [key, field] of Object.entries(schema.shape)) {
+    if (field instanceof z.ZodArray) capped[key] = field.max(MCP_BATCH_MAX);
+  }
+  return capped;
 }
 
 const canvasId = z
@@ -117,19 +164,27 @@ const INSTRUCTIONS = [
   '这是一个可视化 AI 生成画布：节点是图片 / 视频的上传或生成步骤，连线表示上游素材流向下游。',
   '工作方式：先 list_canvases 或 create_canvas 拿到 canvasId，再 get_canvas 看现状（含放置安全区），然后增删改节点与连线。',
   PREVIEW_HINT,
-  '生成是异步的：generate_media_node / merge_video_node 返回 generationId 后，用 wait_for_generations 等结果（单次最多等 60 秒，没完再调）。',
+  `生成是异步的：generate_media_node / merge_video_node 返回 generationId 后，用 wait_for_generations 等结果（单次最多等 ${WAIT_MAX_S} 秒，没完再调）。`,
   '相互依赖的调用请逐个进行、等上一个返回再调下一个。画布被别人占用时会返回 CANVAS_BUSY，稍后重试即可。',
 ].join('\n');
 
+/**
+ * @param abort 这次 HTTP 请求的中止信号（连接断开 / 客户端发来取消通知，见 McpServerHttp）。
+ * 无状态部署下 SDK 自己的 extra.signal 收不到客户端的取消，两个一起听。
+ */
 export function buildCanvasMcpServer(
   svc: McpCanvasService,
   p: McpPrincipal,
+  abort?: AbortSignal,
 ): McpServer {
   const server = new McpServer(
     { name: 'agent-test-canvas', version: '1.0.0' },
     { instructions: INSTRUCTIONS },
   );
   const can = (s: McpScope) => p.scopes.includes(s);
+  /** 这次调用的中止信号：SDK 自己的（连接关闭）+ 本次 HTTP 请求的（客户端取消通知，见 McpServerHttp） */
+  const signalOf = (extra: { signal: AbortSignal }) =>
+    abort ? AbortSignal.any([extra.signal, abort]) : extra.signal;
 
   if (can('canvas:read')) {
     server.registerTool(
@@ -171,24 +226,30 @@ export function buildCanvasMcpServer(
             .number()
             .int()
             .min(1)
-            .max(WAIT_MAX_S)
+            .max(WAIT_ACCEPT_MAX_S)
             .optional()
-            .describe(`默认 30，最大 ${WAIT_MAX_S}`),
+            .describe(
+              `默认 ${WAIT_DEFAULT_S}；单次最多实际等 ${WAIT_MAX_S} 秒，传更大按 ${WAIT_MAX_S} 算`,
+            ),
         },
         annotations: annotationsFor('wait_for_generations', 'canvas:read'),
       },
-      ({ canvasId: id, generationIds, timeoutSeconds }, extra) =>
-        guarded(async () =>
-          json(
-            await svc.waitForGenerations(
-              p,
-              id,
-              generationIds,
-              timeoutSeconds ?? 30,
-              extra.signal,
+      ({ canvasId: id, generationIds, timeoutSeconds }, extra) => {
+        const signal = signalOf(extra);
+        return guarded(
+          async () =>
+            json(
+              await svc.waitForGenerations(
+                p,
+                id,
+                generationIds,
+                timeoutSeconds ?? WAIT_DEFAULT_S,
+                signal,
+              ),
             ),
-          ),
-        ),
+          signal,
+        );
+      },
     );
   }
 
@@ -220,11 +281,13 @@ export function buildCanvasMcpServer(
         },
         annotations: { readOnlyHint: false, openWorldHint: true },
       },
-      ({ canvasId: id, url, filename }) =>
-        guarded(async () => {
+      ({ canvasId: id, url, filename }, extra) => {
+        const signal = signalOf(extra);
+        return guarded(async () => {
           await svc.lockForWrite(p, id);
-          return json(await svc.importAsset(p, id, url, filename));
-        }),
+          return json(await svc.importAsset(p, id, url, filename, signal));
+        }, signal);
+      },
     );
   }
 
@@ -238,23 +301,29 @@ export function buildCanvasMcpServer(
       t.name,
       {
         description: adaptDescription(t.description),
-        inputSchema: t.schema.extend({ canvasId }),
+        inputSchema: t.schema.extend({ ...capArrays(t.schema), canvasId }),
         annotations: annotationsFor(t.name, scope),
       },
-      ({ canvasId: rawId, ...args }) =>
-        guarded(async () => {
+      ({ canvasId: rawId, ...args }, extra) => {
+        // 调用被取消 / 连接断开时中止信号触发：批量工具据此停在当前项，不再继续写
+        const signal = signalOf(extra);
+        return guarded(async () => {
           // 共享 schema 是泛型 ZodObject，推不出 canvasId 的类型；SDK 已按 schema 校验过，这里再收窄一次
           const id = canvasId.parse(rawId);
+          const invoke = async () => {
+            const tool = svc.sharedTools(p, id).find((x) => x.name === t.name);
+            if (!tool) throw new Error(`共享画布工具 ${t.name} 不存在`);
+            const out: unknown = await tool.invoke(args, { signal });
+            return text(typeof out === 'string' ? out : JSON.stringify(out));
+          };
           if (scope === 'canvas:read') {
             await svc.assertAccess(p, id);
-          } else {
-            await svc.lockForWrite(p, id);
+            return invoke();
           }
-          const tool = svc.sharedTools(p, id).find((x) => x.name === t.name);
-          if (!tool) throw new Error(`共享画布工具 ${t.name} 不存在`);
-          const out: unknown = await tool.invoke(args);
-          return text(typeof out === 'string' ? out : JSON.stringify(out));
-        }),
+          await svc.lockForWrite(p, id);
+          return withLockRenewal(() => svc.lockForWrite(p, id), invoke);
+        }, signal);
+      },
     );
   }
 

@@ -125,6 +125,32 @@ describe('createCanvasTools（共享画布工具）', () => {
     expect(ops[0]).toMatchObject({ op: 'add_node', label: 'f'.repeat(191) });
   });
 
+  it('批量建节点：调用方中止后剩下的不再落库（MCP 客户端断开时不留「以为失败、其实建完」的节点）', async () => {
+    const ac = new AbortController();
+    const { backend, ops } = fakeBackend([], {
+      applyOp: (op) => {
+        ops.push(op);
+        if (ops.length === 2) ac.abort();
+        return Promise.resolve({
+          revision: ops.length,
+          patch: { op: 'clear', revision: ops.length },
+        });
+      },
+    });
+    const tools = createCanvasTools(() => Promise.resolve(backend));
+    const nodes = Array.from({ length: 5 }, (_, i) => ({
+      type: 'image_upload',
+      x: i,
+      y: 0,
+    }));
+    await expect(
+      toolNamed(tools, 'add_nodes').invoke({ nodes }, { signal: ac.signal }),
+    ).rejects.toThrow();
+    // 让工具函数跑完剩下的循环（invoke 已因中止先行返回）
+    await new Promise((r) => setTimeout(r, 0));
+    expect(ops).toHaveLength(2);
+  });
+
   it('生成：执行端业务拒绝原样回给模型；成功后把 generationId 回填到节点', async () => {
     const gen = node('nodeGen000001', { prompt: '一只猫' });
     const rejected = fakeBackend([gen], {

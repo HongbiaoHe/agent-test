@@ -190,7 +190,7 @@ await step(
       w = await call(client, 'wait_for_generations', {
         canvasId,
         generationIds: [gen.json.generationId, gen2.json.generationId],
-        timeoutSeconds: 60,
+        timeoutSeconds: 25,
       });
       if (w.json.done) break;
     }
