@@ -1,0 +1,4 @@
+schema_version: "1.1"
+name: formula-30s-crosscut-build
+expected_outcome: |
+  建一块新画布：产品参考图经 import_asset 上画布；产品多视图、2 张 3x3 分镜、End Frame、2 段 15 秒视频、1 个拼接成片节点齐全；连线顺序与提示词里的图号一致；所有生成节点 16:9；视频提示词每段写无背景音乐且说明分镜图不要出现宫格；全程没有触发生成；对话里给出带产品出镜格数的规划表。
