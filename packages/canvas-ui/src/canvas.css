@@ -25,12 +25,12 @@
 }
 
 .dark {
-  /* 暗色下节点类型色：提亮以在深卡上醒目，chroma 保持一致（见 :root 说明）。 */
-  --edge-selected: oklch(0.74 0.18 255);
-  --node-upload: oklch(0.74 0.1 210);
-  --node-image: oklch(0.72 0.15 292);
-  --node-video: oklch(0.73 0.17 12);
-  --node-concat: oklch(0.72 0.12 165);
+  /* 暗色下节点类型色：提亮并降低饱和度，柔和但在深色表面上仍 ≥ 4.5:1（色相与 :root 一致）。 */
+  --edge-selected: oklch(0.78 0.105 255);
+  --node-upload: oklch(0.8 0.08 210);
+  --node-image: oklch(0.78 0.11 292);
+  --node-video: oklch(0.78 0.12 12);
+  --node-concat: oklch(0.8 0.09 165);
 }
 
 /* 高光横扫（节点主视觉骨架、面板附件格共用）。与 web 全局的 media-card-shimmer 同一条曲线，
