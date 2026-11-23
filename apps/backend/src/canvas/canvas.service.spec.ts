@@ -103,7 +103,10 @@ describe('CanvasService', () => {
     resumeVersions: jest.fn(),
   };
   const mockUploads = { store: jest.fn() };
-  const mockAnalysis = { enqueue: jest.fn().mockResolvedValue(undefined) };
+  const mockAnalysis = {
+    enqueue: jest.fn().mockResolvedValue(undefined),
+    analyzeAndWait: jest.fn(),
+  };
 
   beforeEach(async () => {
     tx = makeTx();
@@ -460,6 +463,98 @@ describe('CanvasService', () => {
       assetPath: '/a.png',
     });
     expect(legacy.patch).toMatchObject({ node: { outputs: [] } });
+  });
+
+  describe('inspectMedia（inspect_node_media 的执行端）', () => {
+    it('只分析这块画布节点上挂着的版本；别处的版本回 not_found、不投分析', async () => {
+      mockPrisma.canvasNode.findMany.mockResolvedValue([
+        { mediaGenerationId: 'g-mine' },
+      ]);
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        { id: 'v-mine', generationId: 'g-mine' },
+        { id: 'v-other', generationId: 'g-other' },
+      ]);
+      mockAnalysis.analyzeAndWait.mockResolvedValue([
+        {
+          versionId: 'v-mine',
+          status: 'done',
+          summary: '一副耳机',
+          detail: { subject: '耳机' },
+          error: null,
+        },
+      ]);
+
+      const ac = new AbortController();
+      const r = await service.inspectMedia(
+        's1',
+        ['v-mine', 'v-other'],
+        ac.signal,
+      );
+
+      // 只按这几个版本的生成去查本画布节点，不扫整块画布
+      expect(mockPrisma.canvasNode.findMany).toHaveBeenCalledWith({
+        where: {
+          sessionId: 's1',
+          mediaGenerationId: { in: ['g-mine', 'g-other'] },
+        },
+        select: { mediaGenerationId: true },
+      });
+      // 取消信号一路传到等待
+      expect(mockAnalysis.analyzeAndWait).toHaveBeenCalledWith(
+        ['v-mine'],
+        expect.any(Number),
+        ac.signal,
+      );
+      expect(r).toEqual([
+        {
+          versionId: 'v-mine',
+          status: 'done',
+          summary: '一副耳机',
+          detail: { subject: '耳机' },
+          error: null,
+        },
+        {
+          versionId: 'v-other',
+          status: 'not_found',
+          summary: null,
+          detail: null,
+          error: null,
+        },
+      ]);
+    });
+
+    it('等不到分析结果的回 pending；版本都不存在就不查节点', async () => {
+      mockPrisma.canvasNode.findMany.mockResolvedValue([
+        { mediaGenerationId: 'g-mine' },
+      ]);
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([
+        { id: 'v-mine', generationId: 'g-mine' },
+      ]);
+      mockAnalysis.analyzeAndWait.mockResolvedValue([
+        {
+          versionId: 'v-mine',
+          status: 'pending',
+          summary: null,
+          detail: null,
+          error: null,
+        },
+      ]);
+      expect((await service.inspectMedia('s1', ['v-mine']))[0].status).toBe(
+        'pending',
+      );
+
+      mockPrisma.canvasNode.findMany.mockClear();
+      mockAnalysis.analyzeAndWait.mockResolvedValue([]);
+      mockPrisma.mediaVersion.findMany.mockResolvedValue([]);
+      const none = await service.inspectMedia('s1', ['v-nope']);
+      expect(none[0].status).toBe('not_found');
+      expect(mockPrisma.canvasNode.findMany).not.toHaveBeenCalled();
+      expect(mockAnalysis.analyzeAndWait).toHaveBeenLastCalledWith(
+        [],
+        expect.any(Number),
+        undefined,
+      );
+    });
   });
 
   describe('uploadNodeFile（给上传节点传文件）', () => {

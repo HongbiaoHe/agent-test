@@ -105,14 +105,15 @@ describe('CanvasRunSession（本轮的画布运行锁）', () => {
       ),
     );
     const backend = new CanvasRunSession(web, () => null).backendFor('c1', 'conv-1');
-    expect(await backend.resolveNodeId?.('aa11')).toBe('node00aaaa11');
+    // 短 id = 完整 id 末 6 位（不足 6 位的残缺 id 不认，见 resolveNodeIdIn）
+    expect(await backend.resolveNodeId?.('aaaa11')).toBe('node00aaaa11');
     expect(await backend.resolveNodeId?.('node00aaaa11')).toBe('node00aaaa11');
     expect(mock.snapshot).toHaveBeenCalledTimes(1);
     await backend.applyOp({ op: 'add_node', type: 'image_gen' });
-    expect(await backend.resolveNodeId?.('99xx')).toBe('nodeNEW99xx');
+    expect(await backend.resolveNodeId?.('NEW99xx')).toBe('nodeNEW99xx');
     expect(mock.snapshot).toHaveBeenCalledTimes(1);
     // 不认识的 id：重拉一次快照再解析（别人刚加的节点），还是没有就 null
-    expect(await backend.resolveNodeId?.('zzzz')).toBeNull();
+    expect(await backend.resolveNodeId?.('zzzzzz')).toBeNull();
     expect(mock.snapshot).toHaveBeenCalledTimes(2);
   });
 

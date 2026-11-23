@@ -50,6 +50,7 @@ function fakeBackend(
     createGeneration: () => Promise.resolve({ generationId: 'g1' }),
     createConcat: () => Promise.resolve({ generationId: 'c1' }),
     modelCatalog: () => Promise.resolve({ models: [] }),
+    inspectMedia: () => Promise.resolve([]),
     ...over,
   };
   return { backend, ops };
@@ -123,6 +124,120 @@ describe('createCanvasTools（共享画布工具）', () => {
       y: 0,
     });
     expect(ops[0]).toMatchObject({ op: 'add_node', label: 'f'.repeat(191) });
+  });
+
+  it('inspect_node_media：只分析已出片的节点，按节点回描述；未出片 / 不存在 / 各种分析状态各有说法', async () => {
+    const asked: string[][] = [];
+    const signals: (AbortSignal | undefined)[] = [];
+    const { backend } = fakeBackend(
+      [
+        node('cuid000done01', {
+          mediaStatus: 'done',
+          mediaVersionId: 'v-done',
+          label: '镜1',
+        }),
+        node('cuid000pend02', {
+          mediaStatus: 'done',
+          mediaVersionId: 'v-pend',
+        }),
+        node('cuid000mock03', {
+          mediaStatus: 'done',
+          mediaVersionId: 'v-mock',
+        }),
+        node('cuid000gen004', {
+          mediaStatus: 'generating',
+          mediaVersionId: 'v-gen',
+        }),
+      ],
+      {
+        inspectMedia: (ids, signal) => {
+          asked.push(ids);
+          signals.push(signal);
+          return Promise.resolve([
+            {
+              versionId: 'v-done',
+              status: 'done',
+              summary: '一副耳机',
+              detail: { subject: '耳机' },
+              error: null,
+            },
+            {
+              versionId: 'v-pend',
+              status: 'pending',
+              summary: null,
+              detail: null,
+              error: null,
+            },
+            {
+              versionId: 'v-mock',
+              status: 'skipped',
+              summary: null,
+              detail: null,
+              error: null,
+            },
+          ]);
+        },
+      },
+    );
+    const tools = createCanvasTools(() => Promise.resolve(backend));
+    const ac = new AbortController();
+    const out = JSON.parse(
+      String(
+        await toolNamed(tools, 'inspect_node_media').invoke(
+          {
+            nodeIds: ['done01', 'pend02', 'mock03', 'gen004', 'nope00'],
+            detail: true,
+          },
+          { signal: ac.signal },
+        ),
+      ),
+    ) as { nodes: Record<string, unknown>[] };
+    // 生成中的节点不送去分析；取消信号传给执行端
+    expect(asked).toEqual([['v-done', 'v-pend', 'v-mock']]);
+    expect(signals[0]).toBeInstanceOf(AbortSignal);
+    expect(out.nodes).toEqual([
+      expect.objectContaining({
+        nodeId: 'done01',
+        label: '镜1',
+        status: 'done',
+        summary: '一副耳机',
+        analysis: { subject: '耳机' },
+      }),
+      expect.objectContaining({ nodeId: 'pend02', status: 'pending' }),
+      expect.objectContaining({ nodeId: 'mock03', status: 'skipped' }),
+      expect.objectContaining({ nodeId: 'gen004', status: 'no_output' }),
+      { nodeId: 'nope00', error: '节点不存在' },
+    ]);
+
+    // 默认只回摘要，不带完整结构化描述
+    const brief = JSON.parse(
+      String(
+        await toolNamed(tools, 'inspect_node_media').invoke({
+          nodeIds: ['done01'],
+        }),
+      ),
+    ) as { nodes: Record<string, unknown>[] };
+    expect(brief.nodes[0]).toMatchObject({ summary: '一副耳机' });
+    expect(brief.nodes[0]).not.toHaveProperty('analysis');
+  });
+
+  it('inspect_node_media：超过上限只看前 10 个并提示分批；一个产物都没有就不调执行端', async () => {
+    const inspect = jest.fn(() => Promise.resolve([]));
+    const nodes = Array.from({ length: 12 }, (_, i) =>
+      node(`cuid00node${String(i).padStart(2, '0')}`),
+    );
+    const { backend } = fakeBackend(nodes, { inspectMedia: inspect });
+    const tools = createCanvasTools(() => Promise.resolve(backend));
+    const out = JSON.parse(
+      String(
+        await toolNamed(tools, 'inspect_node_media').invoke({
+          nodeIds: nodes.map((n) => n.id),
+        }),
+      ),
+    ) as { nodes: unknown[]; note?: string };
+    expect(out.nodes).toHaveLength(10);
+    expect(out.note).toContain('10');
+    expect(inspect).not.toHaveBeenCalled();
   });
 
   it('批量建节点：调用方中止后剩下的不再落库（MCP 客户端断开时不留「以为失败、其实建完」的节点）', async () => {

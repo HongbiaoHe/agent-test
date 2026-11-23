@@ -13,6 +13,7 @@ import {
   ValidateNested,
 } from 'class-validator';
 import { Type } from 'class-transformer';
+import { INSPECT_NODES_MAX } from '@agent-test/agent-core/canvas/canvas-tools';
 import { DESKTOP_SCOPE_RE } from '../../media/dto/media-api.dto';
 
 /** 运行锁持锁方标识：desktop 每轮运行生成一个（UUID 等），只收字母、数字、连字符 */
@@ -139,4 +140,13 @@ export class CanvasAgentUploadedAssetDto {
   @IsString()
   @MaxLength(64)
   versionId!: string;
+}
+
+/** 看节点产物的理解结果（inspect_node_media）：版本 id 取自画布快照，服务端再按节点引用核对 */
+export class CanvasAgentInspectMediaDto {
+  @IsArray()
+  @ArrayMinSize(1)
+  @ArrayMaxSize(INSPECT_NODES_MAX)
+  @IsString({ each: true })
+  versionIds!: string[];
 }

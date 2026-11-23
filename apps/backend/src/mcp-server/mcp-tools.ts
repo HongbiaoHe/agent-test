@@ -3,7 +3,10 @@ import type {
   CallToolResult,
   ToolAnnotations,
 } from '@modelcontextprotocol/sdk/types.js';
-import { createCanvasTools as createSharedCanvasTools } from '@agent-test/agent-core/canvas/canvas-tools';
+import {
+  CANVAS_READONLY_TOOLS,
+  createCanvasTools as createSharedCanvasTools,
+} from '@agent-test/agent-core/canvas/canvas-tools';
 import { CANVAS_LOCK_RENEW_MS } from '@agent-test/canvas-schema';
 import { z } from 'zod';
 import { BusinessException } from '../common/errors/business.exception';
@@ -24,9 +27,17 @@ import type { McpScope } from './mcp-server.config';
  * 这里只做三件事：入参加 canvasId、写操作前上隐式锁、按 MCP 的调用方式改写描述。
  */
 
-/** 共享画布工具各属哪个 scope；新增共享工具没登记时按 canvas:write 处理（单测会提醒补上） */
+/**
+ * 共享画布工具各属哪个 scope；新增共享工具没登记时按 canvas:write 处理（单测会提醒补上）。
+ * 只读的那批取自 agent-core 的 CANVAS_READONLY_TOOLS，不在这里另记一份。
+ */
 export const SHARED_TOOL_SCOPES: Record<string, McpScope> = {
-  list_media_models: 'canvas:read',
+  ...Object.fromEntries(
+    CANVAS_READONLY_TOOLS.map((name): [string, McpScope] => [
+      name,
+      'canvas:read',
+    ]),
+  ),
   add_node: 'canvas:write',
   add_nodes: 'canvas:write',
   update_node: 'canvas:write',
@@ -165,6 +176,7 @@ const INSTRUCTIONS = [
   '工作方式：先 list_canvases 或 create_canvas 拿到 canvasId，再 get_canvas 看现状（含放置安全区），然后增删改节点与连线。',
   PREVIEW_HINT,
   `生成是异步的：generate_media_node / merge_video_node 返回 generationId 后，用 wait_for_generations 等结果（单次最多等 ${WAIT_MAX_S} 秒，没完再调）。`,
+  '要看节点产物（图 / 视频 / 音频）的实际内容（如检查分镜、人物一致性）用 inspect_node_media，它回画面的文字描述（默认摘要，detail=true 给完整描述）；get_canvas 只有结构与产物 URL。',
   '相互依赖的调用请逐个进行、等上一个返回再调下一个。画布被别人占用时会返回 CANVAS_BUSY，稍后重试即可。',
 ].join('\n');
 
