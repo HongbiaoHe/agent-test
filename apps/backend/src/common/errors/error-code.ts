@@ -178,6 +178,10 @@ export const ErrorCodes = {
     message:
       'Real generation cannot use mock (simulated) outputs as references: generate those upstream nodes for real first',
   },
+  MEDIA_REVIEW_FAILED: {
+    code: 60011,
+    message: 'Video review failed, please try again later',
+  },
   MEDIA_ATTACHMENT_INVALID: {
     code: 60008,
     message:

@@ -47,9 +47,9 @@ export class WebApi {
     return this.request('GET', path);
   }
 
-  /** signal：调用方放弃时中止（与请求超时一起生效） */
-  post(path: string, body: object, signal?: AbortSignal): Promise<unknown> {
-    return this.request('POST', path, JSON.stringify(body), 'application/json', signal);
+  /** signal：调用方放弃时中止（与请求超时一起生效）；timeoutMs 默认 30 秒，慢接口（如审片）单独放宽 */
+  post(path: string, body: object, signal?: AbortSignal, timeoutMs = REQUEST_TIMEOUT_MS): Promise<unknown> {
+    return this.request('POST', path, JSON.stringify(body), 'application/json', signal, timeoutMs);
   }
 
   patch(path: string, body: object): Promise<unknown> {
@@ -135,8 +135,9 @@ export class WebApi {
     body?: string,
     contentType?: string,
     signal?: AbortSignal,
+    timeoutMs = REQUEST_TIMEOUT_MS,
   ): Promise<unknown> {
-    const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
+    const timeout = AbortSignal.timeout(timeoutMs);
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}${path}`, {

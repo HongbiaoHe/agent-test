@@ -23,7 +23,7 @@ import { THINKING_LEVELS } from '@agent-test/agent-core/agent/thinking-level';
 import { PROVIDER_PROTOCOLS, THINKING_STYLES } from '@agent-test/agent-core/providers/types';
 import { z } from 'zod';
 import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
-import type { VideoProject } from '@agent-test/video-schema';
+import type { ReviewFile, VideoProject } from '@agent-test/video-schema';
 import type {
   AigcCatalog,
   ApplyOpResult,
@@ -436,6 +436,12 @@ export const rpcSchemas = {
     wrappedSubtitles: z.record(z.string(), z.string()).optional(),
   }),
   'video.exportCancel': z.object({ jobId: z.string().min(1) }),
+  /** 还能撤销几轮 agent 修改（agent 写工程前存的快照） */
+  'video.snapshots': z.object({ conversationId: z.string().min(1), path: z.string().min(1) }),
+  /** 撤销 agent 最近一轮修改：最新快照写回工程文件 */
+  'video.restoreSnapshot': z.object({ conversationId: z.string().min(1), path: z.string().min(1) }),
+  /** 工程旁边的审片结果（<名字>.review.json）；没有为 null */
+  'video.readReview': z.object({ conversationId: z.string().min(1), path: z.string().min(1) }),
   // 画布（数据在 Web 账号下，agent-host 代为调用 Web 后端的 /canvas 接口；规则由服务端执行）
   'canvas.list': z.object({ cursor: z.string().min(1).optional() }),
   'canvas.create': z.object({ title: z.string().max(100).optional() }),
@@ -603,6 +609,9 @@ export interface RpcResults {
   'video.importFiles': VideoMediaProbe[];
   'video.export': { jobId: string; outputPath: string };
   'video.exportCancel': { ok: true };
+  'video.snapshots': { count: number; latestAt: number | null };
+  'video.restoreSnapshot': { count: number; latestAt: number | null };
+  'video.readReview': ReviewFile | null;
   'skills.list': SkillInfo[];
   'skills.get': SkillDetail;
   'skills.install': SkillInfo;
@@ -660,6 +669,8 @@ export type HostEvent =
   | { kind: 'event'; type: 'canvas'; canvasId: string; event: CanvasStreamEvent }
   /** 编辑器正在打开的工程文件被外部（agent / 用户手改）修改了 */
   | { kind: 'event'; type: 'video-file-changed'; conversationId: string; path: string; mtimeMs: number }
+  /** 工程旁边的审片结果文件变了（path 是工程路径） */
+  | { kind: 'event'; type: 'video-review-changed'; conversationId: string; path: string }
   /** 导出进度：progress 0～1；done 时带 outputPath（工作区相对），failed 时带 error */
   | {
       kind: 'event';

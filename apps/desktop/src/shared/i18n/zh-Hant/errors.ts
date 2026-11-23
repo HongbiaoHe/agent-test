@@ -137,6 +137,7 @@ export const errors = {
     missingMedia: '找不到素材：{{paths}}',
     importNotFile: '不是檔案：{{path}}',
     jobNotFound: '匯出任務不存在：{{id}}',
+    noSnapshot: '沒有可撤銷的 agent 修改',
     exportFailed: 'ffmpeg 匯出失敗（結束碼 {{code}}）：{{detail}}',
   },
 } satisfies MessageShape<typeof source>;

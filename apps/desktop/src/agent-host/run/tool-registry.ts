@@ -36,6 +36,7 @@ import { createPreviewPageTool, PREVIEW_PAGE_TOOL } from '../preview/preview-pag
 import { createSaveSkillTool, SAVE_SKILL_TOOL } from '../skills/save-skill.tool';
 import type { SkillStore } from '../skills/skill-store';
 import { ffmpegBinaries } from '../video/ffmpeg-paths';
+import { REVIEW_VIDEO_PROJECT_TOOL, reviewVideoProjectTool, VIDEO_REVIEW_PROMPT } from '../video/review-tool';
 import {
   CHECK_VIDEO_PROJECT_TOOL,
   checkVideoProjectTool,
@@ -249,10 +250,25 @@ export function buildDesktopRegistry(deps: DesktopRegistryDeps): DesktopRegistry
     {
       name: CHECK_VIDEO_PROJECT_TOOL,
       title: '检查剪辑工程',
-      description: '只读校验剪辑工程：格式问题、缺失素材、成片总时长',
+      description: '只读校验剪辑工程：格式问题、缺失素材、成片总时长，以及字幕 / 画面 / 黑场 / 静音 / 响度等规则检查',
       requires: ['workspace'],
       promptSection: VIDEO_PROJECT_PROMPT,
-      create: (ctx) => checkVideoProjectTool({ workspaceDir: ctx.host.workspaceDir }),
+      create: (ctx) => checkVideoProjectTool({ workspaceDir: ctx.host.workspaceDir, binaries: ffmpegBinaries }),
+    },
+    {
+      name: REVIEW_VIDEO_PROJECT_TOOL,
+      title: '审片',
+      description: '渲染低清预览交给视觉模型整片审看，返回带时间区间的修改意见并标在剪辑器时间线上（需登录 Web 账号）',
+      // 审片结果写进工程旁边的 <名字>.review.json
+      requires: ['workspace_write'],
+      promptSection: VIDEO_REVIEW_PROMPT,
+      create: (ctx) =>
+        reviewVideoProjectTool({
+          conversationId: ctx.conversationId,
+          workspaceDir: ctx.host.workspaceDir,
+          webApi: deps.webApi,
+          binaries: ffmpegBinaries,
+        }),
     },
   ]);
 }

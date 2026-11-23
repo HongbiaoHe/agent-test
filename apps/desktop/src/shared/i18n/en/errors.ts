@@ -139,6 +139,7 @@ export const errors = {
     missingMedia: 'Media not found: {{paths}}',
     importNotFile: 'Not a file: {{path}}',
     jobNotFound: 'Export job not found: {{id}}',
+    noSnapshot: 'No agent changes to undo',
     exportFailed: 'ffmpeg export failed (exit code {{code}}): {{detail}}',
   },
 } satisfies MessageShape<typeof source>;

@@ -15,7 +15,7 @@ const REF_SIZE = 100;
 let ctx: CanvasRenderingContext2D | null = null;
 
 /** 一段文字在 1em 字号下的宽（em） */
-function measureEm(text: string): number {
+export function measureEm(text: string): number {
   ctx ??= document.createElement('canvas').getContext('2d');
   if (!ctx) return [...text].length;
   ctx.font = `${REF_SIZE}px "${SUBTITLE_FONT_FAMILY}"`;

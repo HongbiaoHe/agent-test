@@ -2,7 +2,16 @@
  * 检查器：选中片段的可编辑字段（视频 / 图片 / 音频 / 字幕）+ 工程全局设置。
  * 每次改动经 lib/edit.ts 夹到 schema 允许的范围，合并键 = 对象 id + 字段（连续拖滑块只算一步撤销）。
  */
-import { type AudioClip, type ImageClip, SUBTITLE_STYLES, type SubtitleCue, type VideoClip, type VideoProject } from '@agent-test/video-schema';
+import {
+  type AudioClip,
+  AUDIO_ROLES,
+  type AudioRole,
+  type ImageClip,
+  SUBTITLE_STYLES,
+  type SubtitleCue,
+  type VideoClip,
+  type VideoProject,
+} from '@agent-test/video-schema';
 import { ArrowLeft, ArrowRight, Trash2 } from 'lucide-react';
 import type { ReactNode } from 'react';
 import { useTranslation } from 'react-i18next';
@@ -28,10 +37,12 @@ import {
 } from '../lib/edit';
 import { formatTime } from '../lib/timeline';
 import { Field, NumberField, TextField } from './fields';
+import { TransitionPicker } from './transition-picker';
 
 type Edit = (project: VideoProject, key?: string) => void;
 
 const isSubtitleStyle = (v: unknown): v is VideoProject['subtitles']['style'] => SUBTITLE_STYLES.some((s) => s === v);
+const isAudioRole = (v: unknown): v is AudioRole => AUDIO_ROLES.some((r) => r === v);
 
 export function Inspector({
   project,
@@ -93,6 +104,8 @@ export function Inspector({
         </>
       );
     }
+  } else if (selection?.kind === 'transition') {
+    body = <TransitionPicker project={project} clipId={selection.id} edit={edit} />;
   } else if (selection?.kind === 'cue') {
     const cue = project.subtitles.cues.find((c) => c.id === selection.id);
     if (cue) {
@@ -206,9 +219,30 @@ function AudioClipFields({ clip, project, edit }: { clip: AudioClip; project: Vi
   const { t } = useTranslation();
   const set = (field: string, fn: (c: AudioClip) => AudioClip) => edit(updateAudioClip(project, clip.id, fn), `${clip.id}:${field}`);
   const length = clip.outPoint - clip.inPoint;
+  const roleItems = Object.fromEntries(AUDIO_ROLES.map((r) => [r, t(`video.inspector.roles.${r}`)]));
   return (
     <>
       <SectionTitle title={t('video.inspector.audioClip')} src={clip.src} />
+      <Field label={t('video.inspector.role')}>
+        <Select
+          items={roleItems}
+          value={clip.role}
+          onValueChange={(v) => {
+            if (isAudioRole(v)) set('role', (c) => ({ ...c, role: v }));
+          }}
+        >
+          <SelectTrigger className="w-full" aria-label={t('video.inspector.role')}>
+            <SelectValue />
+          </SelectTrigger>
+          <SelectContent>
+            {AUDIO_ROLES.map((r) => (
+              <SelectItem key={r} value={r}>
+                {roleItems[r]}
+              </SelectItem>
+            ))}
+          </SelectContent>
+        </Select>
+      </Field>
       <NumberField
         label={t('video.inspector.start')}
         value={clip.start}

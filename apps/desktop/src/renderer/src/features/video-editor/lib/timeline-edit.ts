@@ -20,6 +20,7 @@ import {
   updateTrackClip,
 } from './edit';
 import { audioSpan } from './timeline';
+import { withoutTransition } from './transition-edit';
 
 export type ClipKind = NonNullable<Selection>['kind'];
 /** move = 拖片段本体；start / end = 拖左边 / 右边裁剪 */
@@ -220,7 +221,7 @@ export function splitSelectionAt(
   t: number,
   makeId: (prefix: string) => string = newId,
 ): { project: VideoProject; selection: Selection } | null {
-  if (!sel) return null;
+  if (!sel || sel.kind === 'transition') return null;
   const span = spanOf(project, sel.kind, sel.id);
   if (!span) return null;
   const local = t - span.start;
@@ -232,12 +233,13 @@ export function splitSelectionAt(
     const id = makeId('clip');
     let head: TrackClip;
     let tail: TrackClip;
+    // 分割点是硬切：转场（接下一段的）留给后半段
     if (c.type === 'image') {
-      head = { ...c, duration: round3(local) };
+      head = withoutTransition({ ...c, duration: round3(local) });
       tail = { ...c, id, duration: round3(c.duration - local) };
     } else {
       const cut = round3(c.inPoint + local);
-      head = { ...c, outPoint: cut };
+      head = withoutTransition({ ...c, outPoint: cut });
       tail = { ...c, id, inPoint: cut };
     }
     const video = [...project.video.slice(0, i), head, tail, ...project.video.slice(i + 1)];
@@ -273,7 +275,7 @@ export function duplicateSelection(
   sel: Selection,
   makeId: (prefix: string) => string = newId,
 ): { project: VideoProject; selection: Selection } | null {
-  if (!sel) return null;
+  if (!sel || sel.kind === 'transition') return null;
   if (sel.kind === 'video') {
     const i = project.video.findIndex((c) => c.id === sel.id);
     if (i < 0) return null;

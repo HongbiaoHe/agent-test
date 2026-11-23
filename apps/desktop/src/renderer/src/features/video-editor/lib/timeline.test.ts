@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { emptyProject } from '@agent-test/video-schema';
 import { sampleProject } from './fixtures';
-import { audioVoicesAt, cueAt, fadeFactor, formatTime, videoFrameAt } from './timeline';
+import { audioVoicesAt, cueAt, fadeFactor, formatTime, videoFrameAt, videoLayersAt } from './timeline';
 
 describe('videoFrameAt：成片时间 → 当前片段与素材内时间', () => {
   const p = sampleProject();
@@ -94,3 +94,27 @@ describe('formatTime', () => {
   });
 });
 
+
+describe('videoLayersAt：转场重叠区两层合成', () => {
+  const withFade = () => {
+    const p = sampleProject();
+    // a 段 [0, 4)，img 段 2 秒；a → img 用 1 秒 fade：img 从 3 秒开始
+    p.video[0] = { ...p.video[0], transition: { type: 'fade', duration: 1 } };
+    return p;
+  };
+
+  it('转场前只有一层；重叠区里两层、进度从 1 降到 0', () => {
+    const p = withFade();
+    expect(videoLayersAt(p, 2)).toMatchObject({ b: null, transition: null, progress: 1 });
+    const mid = videoLayersAt(p, 3.5);
+    expect(mid?.a.laid.clip.id).toBe('a');
+    expect(mid?.b?.laid.clip.id).toBe('img');
+    expect(mid?.b?.sourceTime).toBeCloseTo(0.5);
+    expect(mid?.progress).toBeCloseTo(0.5);
+    expect(mid?.transition?.type).toBe('fade');
+    // 前一段结束后只剩下一段
+    const after = videoLayersAt(p, 4.2);
+    expect(after?.a.laid.clip.id).toBe('img');
+    expect(after?.b).toBeNull();
+  });
+});

@@ -1,12 +1,15 @@
 /**
- * 预览播放器：画布按工程宽高比适配舞台；按播放时钟逐帧（rAF）同步媒体元素。
- * - 视频轨：两个 <video> 交替——当前片段在 index % 2 号槽，下一段预先在另一槽载入并停在入点，切换时不黑屏；
- *   图片片段用 <img>；尺寸不同的素材 object-contain + 黑底（与导出的等比缩放补黑边一致）；
+ * 预览播放器：画布按工程宽高比适配舞台；按播放时钟逐帧（rAF）同步媒体元素，画面用 WebGL 合成。
+ * - 视频轨：两个槽交替（第 i 段在 i % 2 号槽），每个槽有一个 <video> 和一个 <img>；下一段预先在另一槽载入并停在入点，
+ *   切换时不黑屏。媒体元素只负责解码（不可见），画面由 lib/transition-gl.ts 合成到 <canvas>：
+ *   平时画当前一段；落在转场重叠区里时两槽同时播放，按与导出相同的 xfade 公式合成；
+ *   尺寸不同的素材等比缩放补黑边（与导出一致）。媒体元素带 crossorigin，spark-preview:// 回 CORS 头才能作为纹理；
+ * - 原声：转场期间前一段音量 × P、后一段 × (1 - P)（同导出的 acrossfade 线性交叉）；
  * - 音频轨：每段一个 <audio>，播放区间内对齐 currentTime，音量 = volume × 淡入淡出（<audio> 上限 1）；
  * - 字幕：DOM 叠加，尺寸 / 字体 / 断行与导出共用（video-schema 的 subtitleLayout + lib/subtitle-wrap.ts），按断好的行渲染、不让浏览器自己折行。
  * 画布里的黑底 / 白字是成片画面本身的颜色（与导出一致），不随亮暗主题变，故不用语义 token。
  */
-import type { SubtitleStyle, VideoProject } from '@agent-test/video-schema';
+import type { LaidOutClip, SubtitleStyle, VideoProject } from '@agent-test/video-schema';
 import {
   layoutVideoTrack,
   SUBTITLE_FONT_FAMILY,
@@ -20,15 +23,13 @@ import { type PlaybackClock, useClockSelect } from '../hooks/use-clock';
 import { useElementSize } from '../hooks/use-element-size';
 import { mediaUrl } from '../lib/media-url';
 import { wrapCueText } from '../lib/subtitle-wrap';
-import { audioVoicesAt, cueAt, videoFrameAt } from '../lib/timeline';
+import { audioVoicesAt, cueAt, videoLayersAt } from '../lib/timeline';
+import { type CompositeFrame, type FrameSource, TransitionCompositor } from '../lib/transition-gl';
 
 /** 播放中允许的漂移（秒）：超过才 seek，避免每帧 seek 卡顿；暂停时要精确到帧 */
 const DRIFT_PLAYING = 0.3;
 const DRIFT_PAUSED = 0.04;
 
-const setVisible = (el: HTMLElement | null, visible: boolean) => {
-  if (el) el.style.visibility = visible ? 'visible' : 'hidden';
-};
 const pause = (el: HTMLMediaElement | null) => {
   if (el && !el.paused) el.pause();
 };
@@ -39,6 +40,9 @@ const play = (el: HTMLMediaElement) => {
 const align = (el: HTMLMediaElement, target: number, tolerance: number) => {
   if (Math.abs(el.currentTime - target) > tolerance) el.currentTime = target;
 };
+
+type Slot = 0 | 1;
+const slotOf = (laid: LaidOutClip): Slot => (laid.index % 2 === 0 ? 0 : 1);
 
 export function PreviewPlayer({
   project,
@@ -52,77 +56,81 @@ export function PreviewPlayer({
 }) {
   const { t } = useTranslation();
   const [stageRef, stage] = useElementSize<HTMLDivElement>();
-  const slots = useRef<[HTMLVideoElement | null, HTMLVideoElement | null]>([null, null]);
+  const videos = useRef<[HTMLVideoElement | null, HTMLVideoElement | null]>([null, null]);
+  const images = useRef<[HTMLImageElement | null, HTMLImageElement | null]>([null, null]);
   /** 每个槽当前载入的素材（clip id + src），换了才重设 src */
   const slotKeys = useRef<[string | null, string | null]>([null, null]);
-  const imgRef = useRef<HTMLImageElement>(null);
   const audios = useRef(new Map<string, HTMLAudioElement>());
+  const canvasRef = useRef<HTMLCanvasElement>(null);
+  /** 这一刻要合成的画面（sync 写、绘制循环读） */
+  const frame = useRef<CompositeFrame>({ a: null, b: null, transition: null, progress: 1 });
 
   // 每帧同步：时钟变化（播放推进 / seek / 播放暂停）或工程变化时跑一次
   useEffect(() => {
     if (!origin) return;
     const url = (src: string) => mediaUrl(origin, src);
-    const loadSlot = (slot: 0 | 1, clipId: string, src: string) => {
-      const el = slots.current[slot];
+    const loadVideo = (slot: Slot, clipId: string, src: string) => {
+      const el = videos.current[slot];
       const key = `${clipId}|${src}`;
       if (!el || slotKeys.current[slot] === key) return el;
       slotKeys.current[slot] = key;
       el.src = url(src);
       return el;
     };
+    const loadImage = (slot: Slot, src: string) => {
+      const img = images.current[slot];
+      const u = url(src);
+      if (img && img.dataset.src !== u) {
+        img.dataset.src = u;
+        img.src = u;
+      }
+      return img;
+    };
 
     const sync = () => {
       const t = clock.time();
       const playing = clock.playing();
       const tolerance = playing ? DRIFT_PLAYING : DRIFT_PAUSED;
-      const frame = videoFrameAt(project, t);
-      const [a, b] = slots.current;
+      const layers = videoLayersAt(project, t);
+      const used = new Set<Slot>();
 
-      if (!frame) {
-        pause(a);
-        pause(b);
-        setVisible(a, false);
-        setVisible(b, false);
-        setVisible(imgRef.current, false);
-      } else {
-        const cur = frame.laid;
-        const active: 0 | 1 = cur.index % 2 === 0 ? 0 : 1;
-        const other: 0 | 1 = active === 0 ? 1 : 0;
-        const otherEl = slots.current[other];
-        const activeEl = slots.current[active];
-
-        if (cur.clip.type === 'video') {
-          const el = loadSlot(active, cur.clip.id, cur.clip.src);
-          if (el) {
-            align(el, frame.sourceTime, tolerance);
-            el.volume = Math.min(1, cur.clip.volume);
-            el.muted = cur.clip.volume === 0;
-            if (playing && t < cur.end) play(el);
-            else pause(el);
-          }
-          setVisible(el, true);
-          setVisible(imgRef.current, false);
-        } else {
-          pause(activeEl);
-          setVisible(activeEl, false);
-          const img = imgRef.current;
-          if (img) {
-            const src = url(cur.clip.src);
-            if (img.dataset.src !== src) {
-              img.dataset.src = src;
-              img.src = src;
-            }
-          }
-          setVisible(img, true);
+      /** 让一层在它的槽里就位，返回要合成的画面源；gain 是转场交叉时原声的系数 */
+      const show = (laid: LaidOutClip, sourceTime: number, gain: number): FrameSource | null => {
+        const slot = slotOf(laid);
+        used.add(slot);
+        const clip = laid.clip;
+        if (clip.type === 'video') {
+          const el = loadVideo(slot, clip.id, clip.src);
+          if (!el) return null;
+          align(el, sourceTime, tolerance);
+          el.volume = Math.min(1, Math.max(0, clip.volume * gain));
+          el.muted = clip.volume === 0;
+          if (playing && t < laid.end) play(el);
+          else pause(el);
+          return el;
         }
+        pause(videos.current[slot]);
+        return loadImage(slot, clip.src);
+      };
 
-        // 另一槽：预载下一段视频并停在入点
-        const next = layoutVideoTrack(project)[cur.index + 1];
-        pause(otherEl);
-        setVisible(otherEl, false);
-        if (next?.clip.type === 'video') {
-          const el = loadSlot(other, next.clip.id, next.clip.src);
-          if (el) align(el, next.clip.inPoint, DRIFT_PAUSED);
+      if (!layers) {
+        for (const el of videos.current) pause(el);
+        frame.current = { a: null, b: null, transition: null, progress: 1 };
+      } else {
+        const { a, b, progress } = layers;
+        const srcA = show(a.laid, a.sourceTime, b ? progress : 1);
+        const srcB = b ? show(b.laid, b.sourceTime, 1 - progress) : null;
+        frame.current = { a: srcA, b: srcB, transition: layers.transition, progress };
+
+        // 空着的槽：预载下一段视频并停在入点
+        const next = layoutVideoTrack(project)[(b ?? a).laid.index + 1];
+        for (const slot of [0, 1] as const) {
+          if (used.has(slot)) continue;
+          pause(videos.current[slot]);
+          if (next && slotOf(next) === slot && next.clip.type === 'video') {
+            const el = loadVideo(slot, next.clip.id, next.clip.src);
+            if (el) align(el, next.clip.inPoint, DRIFT_PAUSED);
+          }
         }
       }
 
@@ -148,12 +156,32 @@ export function PreviewPlayer({
     return clock.subscribe(sync);
   }, [clock, project, origin]);
 
+  // 合成循环：每个动画帧把当前画面画到画布上（暂停时 seek 完成的新帧也能及时出现）
+  useEffect(() => {
+    const canvas = canvasRef.current;
+    if (!canvas) return;
+    let compositor: TransitionCompositor;
+    try {
+      compositor = new TransitionCompositor(canvas);
+    } catch (e) {
+      console.error('preview compositor init failed', e);
+      return;
+    }
+    let raf = 0;
+    const loop = () => {
+      compositor.draw(frame.current);
+      raf = requestAnimationFrame(loop);
+    };
+    raf = requestAnimationFrame(loop);
+    return () => cancelAnimationFrame(raf);
+  }, []);
+
   // 卸载时停掉所有媒体（离开剪辑器不留声音）
   useEffect(() => {
-    const slotEls = slots.current;
+    const videoEls = videos.current;
     const audioEls = audios.current;
     return () => {
-      for (const el of slotEls) pause(el);
+      for (const el of videoEls) pause(el);
       for (const el of audioEls.values()) pause(el);
     };
   }, []);
@@ -161,6 +189,7 @@ export function PreviewPlayer({
   const aspect = project.canvas.width / project.canvas.height;
   const fitWidth = Math.min(stage.width, stage.height * aspect);
   const fitHeight = fitWidth / aspect;
+  const dpr = typeof window === 'undefined' ? 1 : window.devicePixelRatio || 1;
 
   return (
     <div ref={stageRef} className="relative flex min-h-0 flex-1 items-center justify-center">
@@ -173,14 +202,32 @@ export function PreviewPlayer({
           <video
             key={slot}
             ref={(el) => {
-              slots.current[slot === 0 ? 0 : 1] = el;
+              videos.current[slot === 0 ? 0 : 1] = el;
             }}
             className="invisible absolute inset-0 size-full object-contain"
+            crossOrigin="anonymous"
             playsInline
             preload="auto"
           />
         ))}
-        <img ref={imgRef} alt="" className="invisible absolute inset-0 size-full object-contain" />
+        {[0, 1].map((slot) => (
+          <img
+            key={slot}
+            ref={(el) => {
+              images.current[slot === 0 ? 0 : 1] = el;
+            }}
+            alt=""
+            crossOrigin="anonymous"
+            className="invisible absolute inset-0 size-full object-contain"
+          />
+        ))}
+        <canvas
+          ref={canvasRef}
+          className="absolute inset-0 size-full"
+          width={Math.max(1, Math.round(fitWidth * dpr))}
+          height={Math.max(1, Math.round(fitHeight * dpr))}
+          data-testid="video-gl"
+        />
         {origin &&
           project.audio.map((clip) => (
             <audio

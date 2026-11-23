@@ -6,9 +6,10 @@
  * - 拖片段本体：视频轨换位，音频 / 字幕改起点；拖片段左右边：裁剪（见 lib/timeline-edit.ts）。
  *   拖动中吸附到 0、播放头与其他片段的边（按住 Alt 关闭吸附），吸附处画一条辅助线。
  *   拖拽期间只改本地草稿，松手时整体提交一次（一步撤销、一次自动保存）。
+ * - 刻度行底部标出检查问题（规则检查 + 审片），颜色按严重程度，过期的审片标记变淡；点标记跳过去并选中片段。
  */
 import { layoutVideoTrack, projectDuration, type VideoProject } from '@agent-test/video-schema';
-import { Captions, Film, Image as ImageIcon, Maximize2, Music, ZoomIn, ZoomOut } from 'lucide-react';
+import { Blend, Captions, Film, Image as ImageIcon, Maximize2, Music, Plus, ZoomIn, ZoomOut } from 'lucide-react';
 import { type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
@@ -17,6 +18,8 @@ import { cn } from '@/lib/utils';
 import { type PlaybackClock, useClockTime } from '../hooks/use-clock';
 import { useElementSize } from '../hooks/use-element-size';
 import type { Selection } from '../lib/edit';
+import type { EditorIssue, IssueTone } from '../lib/issues';
+import { fileName, seamsOf } from '../lib/transition-edit';
 import { audioSpan, formatTime } from '../lib/timeline';
 import {
   applyDrag,
@@ -58,6 +61,19 @@ interface Draft {
   id: string;
 }
 
+export interface TimelineMarker {
+  issue: EditorIssue;
+  /** 工程在审片之后改过：标记变淡 */
+  stale: boolean;
+  title: string;
+}
+
+const MARKER_TONE: Record<IssueTone, string> = {
+  destructive: 'bg-destructive',
+  warning: 'bg-warning',
+  muted: 'bg-muted-foreground',
+};
+
 export function Timeline({
   project,
   duration,
@@ -65,6 +81,8 @@ export function Timeline({
   selection,
   onSelect,
   onCommit,
+  markers = [],
+  onJump,
 }: {
   project: VideoProject;
   duration: number;
@@ -73,6 +91,8 @@ export function Timeline({
   onSelect: (sel: Selection) => void;
   /** 拖拽结束时提交新工程（记一步撤销） */
   onCommit: (project: VideoProject) => void;
+  markers?: TimelineMarker[];
+  onJump?: (issue: EditorIssue) => void;
 }) {
   const { t } = useTranslation();
   const [setViewport, viewportSize] = useElementSize<HTMLDivElement>();
@@ -280,6 +300,27 @@ export function Timeline({
                   {formatTime(sec).replace(/\.0$/, '')}
                 </span>
               ))}
+              {markers.map((m) => (
+                <button
+                  key={m.issue.key}
+                  type="button"
+                  title={m.title}
+                  aria-label={m.title}
+                  // 不触发刻度行的 scrub
+                  onPointerDown={(e) => e.stopPropagation()}
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    onJump?.(m.issue);
+                  }}
+                  className={cn(
+                    'absolute bottom-0 z-10 h-1.5 min-w-1.5 rounded-full outline-none hover:h-2 focus-visible:ring-2 focus-visible:ring-ring/50',
+                    MARKER_TONE[m.issue.tone],
+                    m.stale && 'opacity-40',
+                  )}
+                  style={{ left: px(m.issue.start), width: Math.max(6, px(m.issue.end - m.issue.start)) }}
+                  data-testid="video-issue-marker"
+                />
+              ))}
             </div>
             {/* 成片之外（导出会截掉）的区域淡一些 */}
             <div className="pointer-events-none absolute inset-y-0 right-0 bg-muted/60" style={{ left: px(shownDuration) }} />
@@ -297,6 +338,40 @@ export function Timeline({
                   {...clipProps('video', clip.id)}
                 />
               ))}
+              {/* 接缝：有转场显示转场图标，没有显示「+」；点一下选中，检查器里换转场 */}
+              {seamsOf(shown).map((seam) => {
+                const has = !!seam.from.clip.transition;
+                const selected = selection?.kind === 'transition' && selection.id === seam.from.clip.id;
+                const label = t('video.transitions.seam', {
+                  from: fileName(seam.from.clip.src),
+                  to: fileName(seam.to.clip.src),
+                });
+                return (
+                  <button
+                    key={`seam-${seam.from.clip.id}`}
+                    type="button"
+                    title={label}
+                    aria-label={label}
+                    aria-pressed={selected}
+                    onPointerDown={(e) => e.stopPropagation()}
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      onSelect({ kind: 'transition', id: seam.from.clip.id });
+                    }}
+                    className={cn(
+                      // 骑在行的上沿：不挡片段边缘的裁剪把手
+                      'absolute top-0 z-20 flex size-5 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border bg-background text-muted-foreground shadow-sm outline-none hover:text-foreground focus-visible:ring-2 focus-visible:ring-ring/50 [&_svg]:size-3',
+                      has ? 'border-primary text-primary' : 'opacity-60 hover:opacity-100',
+                      selected && 'ring-2 ring-ring',
+                    )}
+                    style={{ left: px(seam.at) }}
+                    data-testid="transition-seam"
+                    data-has-transition={has}
+                  >
+                    {has ? <Blend /> : <Plus />}
+                  </button>
+                );
+              })}
             </Row>
             <Row>
               {shown.audio.map((clip) => (

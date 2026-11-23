@@ -7,6 +7,7 @@ import {
   type LaidOutClip,
   layoutVideoTrack,
   type SubtitleCue,
+  type Transition,
   type VideoProject,
 } from '@agent-test/video-schema';
 
@@ -28,6 +29,38 @@ export function videoFrameAt(project: Pick<VideoProject, 'video'>, t: number): V
   const local = Math.min(Math.max(0, time - hit.start), hit.end - hit.start);
   const sourceTime = hit.clip.type === 'video' ? hit.clip.inPoint + local : local;
   return { laid: hit, sourceTime };
+}
+
+export interface VideoLayers {
+  /** 当前一段（转场期间是正在离开的那段） */
+  a: VideoFrame;
+  /** 转场期间叠进来的下一段；不在转场里为 null */
+  b: VideoFrame | null;
+  /** a → b 的转场；不在转场里为 null */
+  transition: Transition | null;
+  /** 转场进度：开始时 1、结束时 0（同 xfade）；不在转场里为 1 */
+  progress: number;
+}
+
+const frameOf = (laid: LaidOutClip, time: number): VideoFrame => {
+  const local = Math.min(Math.max(0, time - laid.start), laid.end - laid.start);
+  return { laid, sourceTime: laid.clip.type === 'video' ? laid.clip.inPoint + local : local };
+};
+
+/** t 处的画面层：平时一层；落在转场重叠区里时两层 + 转场与进度（预览按这个合成） */
+export function videoLayersAt(project: Pick<VideoProject, 'video'>, t: number): VideoLayers | null {
+  const a = videoFrameAt(project, t);
+  if (!a) return null;
+  const time = Math.max(0, t);
+  const next = layoutVideoTrack(project)[a.laid.index + 1];
+  const d = a.laid.transitionOut;
+  if (!next || d <= 0 || time < next.start || time >= a.laid.end) return { a, b: null, transition: null, progress: 1 };
+  return {
+    a,
+    b: frameOf(next, time),
+    transition: a.laid.clip.transition ?? null,
+    progress: Math.min(1, Math.max(0, 1 - (time - next.start) / d)),
+  };
 }
 
 /** 一段音频在成片里占的时长 */

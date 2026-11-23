@@ -2,7 +2,8 @@
  * 剪辑工程的两个 agent 工具（只在 desktop 注册）：
  * - create_video_project：把生成产物（versionId，先下载进 media/<versionId>/）或工作区文件拼成
  *   `videos/<slug>.sparkvideo.json`，ffprobe 补全时长与宽高；
- * - check_video_project：只读校验一个工程（schema、缺失素材、总时长），agent 用文件工具改完工程后自查。
+ * - check_video_project：只读校验一个工程（schema、缺失素材、总时长）+ 规则检查（warnings：纯计算的
+ *   lintProject 与读素材的 media-checks），agent 用文件工具改完工程后自查。
  *
  * 结果形状 `{ path, name, duration, videoClips, audioClips, subtitles, warnings }` 由 renderer 的
  * features/video-editor/lib/tool-result.ts 解析成「打开剪辑器」卡片，字段名不能改。
@@ -12,8 +13,19 @@ import { isAbsolute, relative, sep } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { tool } from '@langchain/core/tools';
 import {
+  AUDIO_ROLES,
+  DEFAULT_TRANSITION_SECONDS,
+  EXPR_VARS,
+  MAX_TRANSITION_SECONDS,
+  MIN_TRANSITION_SECONDS,
+  type Transition,
+  TRANSITION_GROUPS,
+  type TransitionGroup,
+  TRANSITION_TYPES,
   type AudioClip,
   type Canvas,
+  describeLintIssue,
+  lintProject,
   parseProject,
   PROJECT_FILE_SUFFIX,
   PROJECTS_DIR,
@@ -27,6 +39,8 @@ import {
 import { z } from 'zod';
 import type { WebApi } from '../web-media/web-api';
 import { syncMediaToWorkspace } from '../web-media/web-media';
+import type { FfmpegBinaries } from './ffmpeg-paths';
+import { describeMediaIssue, runMediaChecks } from './media-checks';
 import { type MediaInfo, probeMedia } from './probe';
 import {
   missingSources,
@@ -45,15 +59,29 @@ export const CHECK_VIDEO_PROJECT_TOOL = 'check_video_project';
 
 const DEFAULT_IMAGE_SECONDS = 3;
 
+const TRANSITION_GROUP_LABELS: ReadonlyArray<[TransitionGroup, string]> = [
+  ['fade', '淡化'],
+  ['wipe', '擦除'],
+  ['slide', '推移'],
+  ['shape', '形状'],
+  ['effect', '特效'],
+];
+
 /** 给模型看的工程格式说明（勾选任一剪辑工具时拼进系统提示） */
 export const VIDEO_PROJECT_PROMPT = `## 视频剪辑工程
 - 用 \`${CREATE_VIDEO_PROJECT_TOOL}\` 把生成的视频 / 图片 / 音频（versionId）或工作区文件（path）拼成剪辑工程，写在 \`${PROJECTS_DIR}/<名字>${PROJECT_FILE_SUFFIX}\`；用户在对话卡片上点「打开剪辑器」即可预览、调整与导出。
 - 工程是 JSON，固定三轨：
-  - \`video\`：视频轨，按数组顺序首尾相接。视频片段 \`{ id, type:"video", src, sourceDuration, inPoint, outPoint, volume, width, height }\`（截取 [inPoint, outPoint) 秒，volume 是原声音量 0～2）；图片片段 \`{ id, type:"image", src, duration, width, height }\`。
-  - \`audio\`：背景音乐 / 配音，可多段、可重叠：\`{ id, src, sourceDuration, start, inPoint, outPoint, volume, fadeIn, fadeOut }\`，start 是在成片里的起点（秒）。
+  - \`video\`：视频轨，按数组顺序拼接。视频片段 \`{ id, type:"video", src, sourceDuration, inPoint, outPoint, volume, width, height, transition? }\`（截取 [inPoint, outPoint) 秒，volume 是原声音量 0～2）；图片片段 \`{ id, type:"image", src, duration, width, height, transition? }\`。
+  - \`audio\`：背景音乐 / 配音，可多段、可重叠：\`{ id, src, role, sourceDuration, start, inPoint, outPoint, volume, fadeIn, fadeOut }\`，start 是在成片里的起点（秒）；role 标用途：\`voice\` 配音 / 人声、\`music\` 背景音乐（默认）、\`sfx\` 音效——配音一定要标 voice，检查「人声被音乐盖住」靠它。
   - \`subtitles\`：\`{ style, cues: [{ id, start, end, text }] }\`，style 取 ${SUBTITLE_STYLES.map((s) => `\`${s}\``).join(' / ')}。
-  - \`canvas\`：\`{ width, height, fps }\`；尺寸不同的片段等比缩放后补黑边。成片时长 = 视频轨总长，超出的音频与字幕导出时截掉。
-- src 一律是工作区相对路径。小改动（调出入点、改字幕、换顺序、调音量）可以直接用文件工具改 JSON；id 全局唯一，出点不能超过 sourceDuration。改完必须调用 \`${CHECK_VIDEO_PROJECT_TOOL}\` 自查。
+  - \`canvas\`：\`{ width, height, fps }\`；尺寸不同的片段等比缩放后补黑边。成片时长 = 视频轨总长（扣掉转场重叠），超出的音频与字幕导出时截掉。
+- 转场：视频轨片段上的 \`transition: { type, duration }\` 表示「这一段 → 下一段」的转场（最后一段上的不生效）。前后两段在 duration 秒内叠在一起播，**成片变短 duration 秒**，下一段及之后的画面整体提前——音频轨与字幕按绝对时间放、不会跟着移动，加转场后要检查它们的时间。duration ${MIN_TRANSITION_SECONDS}～${MAX_TRANSITION_SECONDS} 秒（常用 0.3～1），实际生效最多为前后两段各自时长的一半。
+  - 内置 type（${TRANSITION_TYPES.length} 种）：${TRANSITION_GROUP_LABELS.map(([g, label]) => `${label} ${TRANSITION_GROUPS[g].join(' ')}`).join('；')}。
+  - 自创转场：\`{ type: "custom", duration, name, expr }\`，expr 是 ffmpeg xfade 的逐像素表达式，对每个像素的每个颜色通道求值，结果就是输出值（0～255）。变量 ${EXPR_VARS.join(' ')}：X/Y 像素坐标（左上为 0）、W/H 画面宽高、A/B 前一段 / 后一段该像素该通道的值（0～255）、**P 是进度：转场开始时 1、结束时 0**、PLANE 通道（0=G 1=B 2=R）。运算 + - * / ^ 与括号，函数 sin cos tan asin acos atan atan2 exp log sqrt abs floor ceil trunc round min max pow hypot mod clip(x,lo,hi) between(x,lo,hi) gt gte lt lte eq not if(cond,a[,b]) ifnot，常量 PI E PHI；**没有 < > 运算符**（用 gt/lt），不支持 st/ld/random 与 ; 。
+    例：从中心菱形展开 \`if(lt(abs(X-W/2)/W+abs(Y-H/2)/H,1-P),B,A)\`；波浪擦除 \`if(gt(X/W+0.05*sin(Y/H*PI*6),P*1.2-0.1),B,A)\`；同时闪白 \`clip(A*P+B*(1-P)+255*sin(PI*(1-P))*0.6,0,255)\`。
+    用户想要某种效果而内置里没有时，自己写一个 custom 转场；写完调用 \`${CHECK_VIDEO_PROJECT_TOOL}\`，表达式不合法会在 issues 里报出来。
+- src 一律是工作区相对路径。小改动（调出入点、改字幕、换顺序、调音量）可以直接用文件工具改 JSON；id 全局唯一，出点不能超过 sourceDuration。
+- 每次建好或改完工程都必须调用 \`${CHECK_VIDEO_PROJECT_TOOL}\` 自查：\`issues\` / \`missing\` 是硬错误必须修；\`warnings\` 是规则检查发现的问题（字幕超时长 / 重叠 / 过长 / 太快、黑边、发糊、片段过短、音频超出、黑场、静音、响度、人声被音乐盖住），对错明确，**直接修掉再查一次**，不必问用户；确实是有意为之的（如片尾特意留白）在回复里说明。
 - 你没有导出工具：需要成片时，提醒用户在剪辑器里点「导出」（产物在 exports/ 目录）。`;
 
 const refFields = {
@@ -72,6 +100,20 @@ const createSchema = z.object({
         outPoint: z.number().min(0).optional().describe('视频片段：出点（秒），默认素材结尾'),
         duration: z.number().min(0).max(600).optional().describe(`图片片段：显示秒数，默认 ${DEFAULT_IMAGE_SECONDS}`),
         volume: z.number().min(0).max(2).optional().describe('视频片段原声音量 0～2，默认 1；0 = 静音'),
+        transition: z
+          .object({
+            type: z.enum([...TRANSITION_TYPES, 'custom']).describe('转场类型（见系统提示的列表）；custom = 自创表达式'),
+            duration: z
+              .number()
+              .min(MIN_TRANSITION_SECONDS)
+              .max(MAX_TRANSITION_SECONDS)
+              .optional()
+              .describe(`转场秒数，默认 ${DEFAULT_TRANSITION_SECONDS}`),
+            expr: z.string().max(2000).optional().describe('type=custom 时必填：xfade 逐像素表达式'),
+            name: z.string().max(60).optional().describe('type=custom 时给自创转场起个名字'),
+          })
+          .optional()
+          .describe('这一段到下一段的转场（最后一段不用给）'),
       }),
     )
     .min(1)
@@ -85,6 +127,10 @@ const createSchema = z.object({
         inPoint: z.number().min(0).optional().describe('截取起点（秒），默认 0'),
         outPoint: z.number().min(0).optional().describe('截取终点（秒），默认素材结尾'),
         volume: z.number().min(0).max(2).optional().describe('音量 0～2，默认 1'),
+        role: z
+          .enum(AUDIO_ROLES)
+          .optional()
+          .describe('用途：voice 配音 / 人声（generate_audio 的产物一律填 voice）、music 背景音乐（默认）、sfx 音效'),
         fadeIn: z.number().min(0).optional().describe('淡入秒数，默认 0'),
         fadeOut: z.number().min(0).optional().describe('淡出秒数，默认 0'),
       }),
@@ -199,8 +245,11 @@ async function createProject(opts: VideoToolOptions, args: CreateArgs) {
     const width = info.width ?? 0;
     const height = info.height ?? 0;
     const versionId = c.versionId ? { versionId: c.versionId } : {};
+    const transition: { transition?: Transition } = c.transition
+      ? { transition: { ...c.transition, duration: c.transition.duration ?? DEFAULT_TRANSITION_SECONDS } }
+      : {};
     if (info.kind === 'image') {
-      video.push({ id, type: 'image', src, duration: c.duration || DEFAULT_IMAGE_SECONDS, width, height, ...versionId });
+      video.push({ id, type: 'image', src, duration: c.duration || DEFAULT_IMAGE_SECONDS, width, height, ...versionId, ...transition });
       continue;
     }
     if (info.kind !== 'video' || info.duration === null) {
@@ -214,7 +263,7 @@ async function createProject(opts: VideoToolOptions, args: CreateArgs) {
     }
     const inPoint = c.inPoint ?? 0;
     if (inPoint >= outPoint) throw new ToolInputError(`clips[${i}] 的入点必须小于出点（素材时长 ${round3(sourceDuration)}s）`);
-    video.push({ id, type: 'video', src, sourceDuration, inPoint, outPoint, volume: c.volume ?? 1, width, height, ...versionId });
+    video.push({ id, type: 'video', src, sourceDuration, inPoint, outPoint, volume: c.volume ?? 1, width, height, ...versionId, ...transition });
   }
   const total = projectDuration({ video });
 
@@ -241,7 +290,7 @@ async function createProject(opts: VideoToolOptions, args: CreateArgs) {
     }
     if (a.start >= total) warnings.push(`audio[${i}] 的起点 ${a.start}s 在成片（${round3(total)}s）之后，导出时听不到`);
     const versionId = a.versionId ? { versionId: a.versionId } : {};
-    audio.push({ id: `a${i + 1}`, src, sourceDuration, start: a.start, inPoint, outPoint, volume: a.volume ?? 1, fadeIn, fadeOut, ...versionId });
+    audio.push({ id: `a${i + 1}`, src, role: a.role ?? 'music', sourceDuration, start: a.start, inPoint, outPoint, volume: a.volume ?? 1, fadeIn, fadeOut, ...versionId });
   }
 
   const cues: SubtitleCue[] = [];
@@ -298,25 +347,76 @@ export function createVideoProjectTool(opts: VideoToolOptions) {
   );
 }
 
-/** 只读校验：结构 + 缺失素材 + 总时长 */
-export async function checkProject(workspaceDir: string, path: string) {
+export interface CheckWarning {
+  code: string;
+  message: string;
+  /** 成片时间轴上的区间（秒） */
+  start: number;
+  end: number;
+}
+
+export interface CheckOptions {
+  workspaceDir: string;
+  /** 不给就只跑纯计算的规则（单测 / 没有 ffmpeg 时） */
+  binaries?: () => FfmpegBinaries;
+}
+
+/** 只读校验：结构 + 缺失素材 + 总时长 + 规则检查（warnings） */
+export async function checkProject(opts: CheckOptions, path: string) {
+  const { workspaceDir } = opts;
   const rel = isAbsolute(path) ? relative(workspaceDir, path) : path;
   const file = await readProjectFile(workspaceDir, rel);
-  if (!file.project) return { ok: false, issues: file.issues, missing: [], duration: null };
-  const missing = await missingSources(workspaceDir, file.project);
+  if (!file.project) return { ok: false, issues: file.issues, missing: [], duration: null, warnings: [] };
+  const project = file.project;
+  const missing = await missingSources(workspaceDir, project);
+  const warnings: CheckWarning[] = lintProject(project).map((i) => ({
+    code: i.code,
+    message: describeLintIssue(i),
+    start: round3(i.start),
+    end: round3(i.end),
+  }));
+  let mediaCheckError: string | undefined;
+  // 素材缺了就读不了内容：等 missing 修好再查
+  if (opts.binaries && missing.length === 0) {
+    try {
+      const { ffmpeg, ffprobe } = opts.binaries();
+      const absBySrc = new Map<string, string>();
+      const audioBySrc = new Map<string, boolean>();
+      for (const clip of project.video) {
+        if (absBySrc.has(clip.src)) continue;
+        const abs = await resolveExisting(workspaceDir, clip.src);
+        absBySrc.set(clip.src, abs);
+        if (clip.type === 'video') audioBySrc.set(clip.src, (await probeMedia(ffprobe, abs, clip.src)).hasAudio);
+      }
+      for (const a of project.audio) {
+        if (!absBySrc.has(a.src)) absBySrc.set(a.src, await resolveExisting(workspaceDir, a.src));
+      }
+      const media = await runMediaChecks(project, {
+        ffmpeg,
+        resolve: (src) => absBySrc.get(src) ?? src,
+        hasAudio: (src) => audioBySrc.get(src) ?? false,
+      });
+      for (const i of media) warnings.push({ code: i.code, message: describeMediaIssue(i), start: i.start, end: i.end });
+      warnings.sort((a, b) => a.start - b.start);
+    } catch (e) {
+      mediaCheckError = `素材内容检查（黑场 / 静音 / 响度 / 人声）没跑成：${e instanceof Error ? e.message : String(e)}`;
+    }
+  }
   return {
     ok: missing.length === 0,
     issues: [],
     missing,
-    duration: round3(projectDuration(file.project)),
+    duration: round3(projectDuration(project)),
+    warnings,
+    ...(mediaCheckError ? { mediaCheckError } : {}),
   };
 }
 
-export function checkVideoProjectTool(opts: Pick<VideoToolOptions, 'workspaceDir'>) {
+export function checkVideoProjectTool(opts: CheckOptions) {
   return tool(
     async ({ path }: { path: string }) => {
       try {
-        return JSON.stringify(await checkProject(opts.workspaceDir, path));
+        return JSON.stringify(await checkProject(opts, path));
       } catch (e) {
         return JSON.stringify({ error: e instanceof Error ? e.message : String(e) });
       }
@@ -324,8 +424,9 @@ export function checkVideoProjectTool(opts: Pick<VideoToolOptions, 'workspaceDir
     {
       name: CHECK_VIDEO_PROJECT_TOOL,
       description:
-        `校验一个剪辑工程（${PROJECT_FILE_SUFFIX}）：返回 { ok, issues, missing, duration }——issues 是格式问题，` +
-        'missing 是工作区里找不到的素材路径，duration 是成片总时长（秒）。用文件工具改完工程后必须调用一次自查。',
+        `校验一个剪辑工程（${PROJECT_FILE_SUFFIX}）：返回 { ok, issues, missing, duration, warnings }——issues 是格式问题，` +
+        'missing 是工作区里找不到的素材路径，duration 是成片总时长（秒），warnings 是规则检查发现的问题（每条带 message 与成片时间区间，' +
+        '对错明确，直接修掉再查）。会读素材分析黑场 / 静音 / 响度，要几秒。建好或用文件工具改完工程后必须调用一次自查。',
       schema: z.object({ path: z.string().min(1).describe(`工程文件路径（工作区相对路径，如 videos/promo${PROJECT_FILE_SUFFIX}）`) }),
     },
   );

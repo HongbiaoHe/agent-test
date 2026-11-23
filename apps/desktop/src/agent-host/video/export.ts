@@ -6,7 +6,8 @@
  *   等比缩放 + 补黑边到输出尺寸、setsar=1、统一 fps 与像素格式；
  *   每段配一路音频：有原声且音量 > 0 → 原声（调音量，apad + atrim 补齐到片段时长）；否则 anullsrc 静音，
  *   保证 concat 时每段音视频都在、时长对齐；
- * - concat 成主视频 + 主音轨；
+ * - concat 成主视频 + 主音轨；有转场时逐个接缝合并：有转场的接缝画面用 xfade（在 gbrp 上做，与剪辑器 WebGL 预览
+ *   同在 RGB 上算同一套公式）、原声用 acrossfade（线性），偏移 = 下一段在成片里的起点；没有转场的接缝两两 concat；
  * - 音频轨每段：atrim 由输入端 -ss/-t 完成 → 音量 → 淡入淡出 → adelay 延到 start → 与主音轨 amix
  *   （normalize=0：不按路数压低音量；duration=first：以主音轨即视频轨长度为准）；
  * - 字幕：生成 ASS（3 种预设样式）后用 libass 的 subtitles 滤镜烧录；尺寸与断行和预览共用
@@ -16,6 +17,8 @@
 import { spawn } from 'node:child_process';
 import {
   clipDuration,
+  type LaidOutClip,
+  layoutVideoTrack,
   projectDuration,
   SUBTITLE_FONT_FAMILY,
   SUBTITLE_FONT_HEIGHT_EM,
@@ -37,6 +40,8 @@ export interface ExportOptions {
   height: number | null;
   /** 字幕 ASS 文件路径；工程没有字幕时不用 */
   assPath: string | null;
+  /** preview = 审片用的低清快编（ultrafast、低码率）；默认 final */
+  quality?: 'final' | 'preview';
 }
 
 /** 秒数保留 3 位小数，避免浮点长尾写进命令行 */
@@ -66,10 +71,13 @@ export function buildExportArgs(project: VideoProject, opts: ExportOptions): str
   const total = projectDuration(project);
   const { width: W, height: H } = outputSize(project, opts.height);
   const fps = project.canvas.fps;
+  const preview = opts.quality === 'preview';
   const inputs: string[] = [];
   const filters: string[] = [];
   let inputIndex = 0;
 
+  const laid = layoutVideoTrack(project);
+  const withTransitions = laid.some((l) => l.transitionOut > 0);
   const concatPads: string[] = [];
   project.video.forEach((clip, i) => {
     const dur = clipDuration(clip);
@@ -81,41 +89,25 @@ export function buildExportArgs(project: VideoProject, opts: ExportOptions): str
     }
     filters.push(
       `[${k}:v]scale=${W}:${H}:force_original_aspect_ratio=decrease:force_divisible_by=2,` +
-        `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${fps},format=yuv420p,` +
+        `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1,fps=${fps},format=${withTransitions ? 'gbrp' : 'yuv420p'},` +
         `trim=duration=${sec(dur)},setpts=PTS-STARTPTS[v${i}]`,
     );
-    const useSource = clip.type === 'video' && clip.volume > 0 && opts.hasAudio(clip.src);
-    filters.push(
-      useSource
-        ? `[${k}:a]${AUDIO_FORMAT},volume=${clip.volume},apad,atrim=duration=${sec(dur)},asetpts=PTS-STARTPTS[a${i}]`
-        : `anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${sec(dur)}[a${i}]`,
-    );
+    filters.push(clipAudioFilter(clip, k, i, dur, opts));
     concatPads.push(`[v${i}][a${i}]`);
   });
-  filters.push(`${concatPads.join('')}concat=n=${project.video.length}:v=1:a=1[vcat][acat]`);
-
-  // 音频轨：音量为 0 或起点已在成片之外的段不参与
-  const mixPads: string[] = [];
-  project.audio.forEach((clip, j) => {
-    if (clip.volume <= 0 || clip.start >= total) return;
-    const dur = clip.outPoint - clip.inPoint;
-    const k = inputIndex++;
-    inputs.push('-ss', sec(clip.inPoint), '-t', sec(dur), '-i', opts.resolve(clip.src));
-    const chain = [`[${k}:a]${AUDIO_FORMAT}`, `volume=${clip.volume}`];
-    if (clip.fadeIn > 0) chain.push(`afade=t=in:st=0:d=${sec(clip.fadeIn)}`);
-    if (clip.fadeOut > 0) chain.push(`afade=t=out:st=${sec(dur - clip.fadeOut)}:d=${sec(clip.fadeOut)}`);
-    const delayMs = Math.round(clip.start * 1000);
-    if (delayMs > 0) chain.push(`adelay=${delayMs}:all=1`);
-    filters.push(`${chain.join(',')}[m${j}]`);
-    mixPads.push(`[m${j}]`);
-  });
-  let audioOut = 'acat';
-  if (mixPads.length) {
-    filters.push(
-      `[acat]${mixPads.join('')}amix=inputs=${mixPads.length + 1}:duration=first:dropout_transition=0:normalize=0[amix]`,
-    );
-    audioOut = 'amix';
+  if (withTransitions) {
+    const v = joinSeams(laid, 'v', filters, (l) => xfadeFilter(l));
+    filters.push(`[${v}]format=yuv420p[vcat]`);
+    const a = joinSeams(laid, 'a', filters, (l) => `acrossfade=d=${sec(l.transitionOut)}:c1=tri:c2=tri`);
+    filters.push(`[${a}]anull[acat]`);
+  } else {
+    filters.push(`${concatPads.join('')}concat=n=${project.video.length}:v=1:a=1[vcat][acat]`);
   }
+
+  const mix = mixAudioTrack(project, total, inputIndex, opts.resolve);
+  inputs.push(...mix.inputs);
+  filters.push(...mix.filters);
+  const audioOut = mix.out;
 
   let videoOut = 'vcat';
   if (opts.assPath && project.subtitles.cues.some((c) => c.start < total)) {
@@ -134,9 +126,9 @@ export function buildExportArgs(project: VideoProject, opts: ExportOptions): str
     '-c:v',
     'libx264',
     '-preset',
-    'veryfast',
+    preview ? 'ultrafast' : 'veryfast',
     '-crf',
-    '20',
+    preview ? '30' : '20',
     '-pix_fmt',
     'yuv420p',
     '-r',
@@ -144,7 +136,7 @@ export function buildExportArgs(project: VideoProject, opts: ExportOptions): str
     '-c:a',
     'aac',
     '-b:a',
-    '192k',
+    preview ? '96k' : '192k',
     '-ar',
     '48000',
     '-t',
@@ -153,6 +145,123 @@ export function buildExportArgs(project: VideoProject, opts: ExportOptions): str
     '+faststart',
     opts.outputPath,
   ];
+}
+
+/** 第 i 段 → 第 i+1 段的 xfade（偏移 = 下一段在成片里的起点） */
+function xfadeFilter(l: LaidOutClip & { next: LaidOutClip }): string {
+  const t = l.clip.transition;
+  const timing = `duration=${sec(l.transitionOut)}:offset=${sec(l.next.start)}`;
+  if (t?.type === 'custom') return `xfade=transition=custom:expr=${escapeFilterValue(t.expr ?? 'A')}:${timing}`;
+  return `xfade=transition=${t?.type ?? 'fade'}:${timing}`;
+}
+
+/**
+ * 把 [<kind>0] [<kind>1] … 逐个接缝合并成一路：有转场的接缝用 join（xfade / acrossfade），没有的用两两 concat。
+ * 返回最终的标签。
+ */
+function joinSeams(
+  laid: LaidOutClip[],
+  kind: 'v' | 'a',
+  filters: string[],
+  join: (l: LaidOutClip & { next: LaidOutClip }) => string,
+): string {
+  let acc = `${kind}0`;
+  for (let i = 0; i < laid.length - 1; i++) {
+    const l = laid[i];
+    const out = `${kind}j${i}`;
+    const f =
+      l.transitionOut > 0
+        ? join({ ...l, next: laid[i + 1] })
+        : `concat=n=2:v=${kind === 'v' ? 1 : 0}:a=${kind === 'a' ? 1 : 0}`;
+    filters.push(`[${acc}][${kind}${i + 1}]${f}[${out}]`);
+    acc = out;
+  }
+  return acc;
+}
+
+/** 视频轨第 i 段的音频：有原声且音量 > 0 用原声（补齐到片段时长），否则同长静音 → [a<i>] */
+function clipAudioFilter(
+  clip: VideoProject['video'][number],
+  k: number,
+  i: number,
+  dur: number,
+  opts: Pick<ExportOptions, 'hasAudio'>,
+): string {
+  const useSource = clip.type === 'video' && clip.volume > 0 && opts.hasAudio(clip.src);
+  return useSource
+    ? `[${k}:a]${AUDIO_FORMAT},volume=${clip.volume},apad,atrim=duration=${sec(dur)},asetpts=PTS-STARTPTS[a${i}]`
+    : `anullsrc=channel_layout=stereo:sample_rate=48000,atrim=duration=${sec(dur)}[a${i}]`;
+}
+
+/**
+ * 音频轨各段（裁剪 → 音量 → 淡入淡出 → 延到 start）与主音轨 [acat] 混音；音量为 0 或起点已在成片之外的段不参与。
+ * 输入编号从 firstInput 起；返回新增的输入参数、滤镜与混音后的标签（没有音频轨时就是 acat）。
+ */
+function mixAudioTrack(
+  project: VideoProject,
+  total: number,
+  firstInput: number,
+  resolve: (src: string) => string,
+): { inputs: string[]; filters: string[]; out: string } {
+  const inputs: string[] = [];
+  const filters: string[] = [];
+  const mixPads: string[] = [];
+  let k = firstInput;
+  project.audio.forEach((clip, j) => {
+    if (clip.volume <= 0 || clip.start >= total) return;
+    const dur = clip.outPoint - clip.inPoint;
+    inputs.push('-ss', sec(clip.inPoint), '-t', sec(dur), '-i', resolve(clip.src));
+    const chain = [`[${k}:a]${AUDIO_FORMAT}`, `volume=${clip.volume}`];
+    k++;
+    if (clip.fadeIn > 0) chain.push(`afade=t=in:st=0:d=${sec(clip.fadeIn)}`);
+    if (clip.fadeOut > 0) chain.push(`afade=t=out:st=${sec(dur - clip.fadeOut)}:d=${sec(clip.fadeOut)}`);
+    const delayMs = Math.round(clip.start * 1000);
+    if (delayMs > 0) chain.push(`adelay=${delayMs}:all=1`);
+    filters.push(`${chain.join(',')}[m${j}]`);
+    mixPads.push(`[m${j}]`);
+  });
+  if (!mixPads.length) return { inputs, filters, out: 'acat' };
+  filters.push(
+    `[acat]${mixPads.join('')}amix=inputs=${mixPads.length + 1}:duration=first:dropout_transition=0:normalize=0[amix]`,
+  );
+  return { inputs, filters, out: 'amix' };
+}
+
+/**
+ * 只算成片的混音（不解码画面），接上分析滤镜后输出到 null：给静音段 / 响度检查用。
+ * analysis 是接在混音后面的滤镜链（如 `silencedetect=...,ebur128=...`），结果从 stderr 读。
+ */
+export function buildAudioAnalysisArgs(
+  project: VideoProject,
+  opts: Pick<ExportOptions, 'resolve' | 'hasAudio'>,
+  analysis: string,
+): string[] {
+  if (project.video.length === 0) throw new Error('empty timeline');
+  const total = projectDuration(project);
+  const inputs: string[] = [];
+  const filters: string[] = [];
+  let inputIndex = 0;
+  const pads: string[] = [];
+  project.video.forEach((clip, i) => {
+    const dur = clipDuration(clip);
+    const usesInput = clip.type === 'video' && clip.volume > 0 && opts.hasAudio(clip.src);
+    const k = usesInput ? inputIndex++ : -1;
+    if (usesInput) inputs.push('-ss', sec(clip.inPoint), '-t', sec(dur), '-i', opts.resolve(clip.src));
+    filters.push(clipAudioFilter(clip, k, i, dur, opts));
+    pads.push(`[a${i}]`);
+  });
+  const laid = layoutVideoTrack(project);
+  if (laid.some((l) => l.transitionOut > 0)) {
+    const a = joinSeams(laid, 'a', filters, (l) => `acrossfade=d=${sec(l.transitionOut)}:c1=tri:c2=tri`);
+    filters.push(`[${a}]anull[acat]`);
+  } else {
+    filters.push(`${pads.join('')}concat=n=${project.video.length}:v=0:a=1[acat]`);
+  }
+  const mix = mixAudioTrack(project, total, inputIndex, opts.resolve);
+  inputs.push(...mix.inputs);
+  filters.push(...mix.filters);
+  filters.push(`[${mix.out}]${analysis}[aout]`);
+  return [...inputs, '-filter_complex', filters.join(';'), '-map', '[aout]', '-t', sec(total), '-f', 'null', '-'];
 }
 
 /** ASS 时间：h:mm:ss.cc */

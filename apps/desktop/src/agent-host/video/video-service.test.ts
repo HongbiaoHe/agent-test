@@ -1,11 +1,13 @@
-import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { emptyProject, type VideoProject } from '@agent-test/video-schema';
+import { emptyProject, type ReviewFile, type VideoProject } from '@agent-test/video-schema';
 import { afterAll, afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { z } from 'zod';
 import type { HostEvent } from '../../shared/rpc';
 import { ffmpegBinaries } from './ffmpeg-paths';
 import { makeFixtures, makeVideo } from './test-media';
+import { VideoSnapshots } from './snapshots';
 import { exportStamp, VideoService } from './video-service';
 
 let ws: string;
@@ -27,7 +29,12 @@ afterEach(() => service?.dispose());
 
 function newService() {
   events = [];
-  service = new VideoService({ workspaceOf: () => ws, emit: (e) => events.push(e), binaries: ffmpegBinaries });
+  service = new VideoService({
+    workspaceOf: () => ws,
+    emit: (e) => events.push(e),
+    binaries: ffmpegBinaries,
+    snapshots: new VideoSnapshots(join(src, 'snapshots')),
+  });
   return service;
 }
 
@@ -83,6 +90,64 @@ describe('VideoService', () => {
     await writeFile(join(ws, path), JSON.stringify(project('再改')));
     await new Promise((r) => setTimeout(r, 400));
     expect(events).toEqual([]);
+  });
+
+  it('审片文件：变化时广播 video-review-changed；readReview 只认合法内容', async () => {
+    const s = newService();
+    const path = 'videos/rev.sparkvideo.json';
+    await s.write('c', path, project('rev'));
+    await s.read('c', path);
+    expect(await s.readReview('c', path)).toBeNull();
+
+    const review: ReviewFile = {
+      version: 1,
+      reviewedAt: '2026-11-23T00:00:00.000Z',
+      fingerprint: 'abcd1234',
+      brief: '15 秒产品广告',
+      summary: '整体顺',
+      verdict: 'needs_work',
+      strengths: [],
+      issues: [
+        { id: 'r1', start: 0, end: 1, severity: 'high', category: 'hook', problem: '开头平', suggestion: '换镜头', targets: [{ kind: 'video', id: 'v1' }] },
+      ],
+    };
+    await writeFile(join(ws, 'videos/rev.review.json'), JSON.stringify(review));
+    await waitFor(() => events.some((e) => e.type === 'video-review-changed'));
+    expect(events.find((e) => e.type === 'video-review-changed')).toMatchObject({ conversationId: 'c', path });
+    // 改审片文件不算工程变化
+    expect(events.some((e) => e.type === 'video-file-changed')).toBe(false);
+    expect(await s.readReview('c', path)).toEqual(review);
+
+    await writeFile(join(ws, 'videos/rev.review.json'), '{"version":2}');
+    expect(await s.readReview('c', path)).toBeNull();
+  });
+
+  it('撤销 agent 修改：每轮第一次写之前存快照，恢复最新一份并消耗掉', async () => {
+    const s = newService();
+    const snaps = new VideoSnapshots(join(src, 'snap-direct'));
+    const path = 'videos/snap.sparkvideo.json';
+    const abs = join(ws, path);
+    // 新建（文件还不存在）不存快照
+    await snaps.capture('c', ws, abs, 'run0');
+    await s.write('c', path, project('v0'));
+    // 第一轮：两次写只存第一次之前的 v0
+    await snaps.capture('c', ws, abs, 'run1');
+    await writeFile(abs, JSON.stringify(project('v1')));
+    await snaps.capture('c', ws, abs, 'run1');
+    await writeFile(abs, JSON.stringify(project('v1b')));
+    // 第二轮
+    await snaps.capture('c', ws, path, 'run2');
+    await writeFile(abs, JSON.stringify(project('v2')));
+    // 不是剪辑工程不存
+    await snaps.capture('c', ws, join(ws, 'notes.txt'), 'run2');
+
+    expect((await snaps.info('c', path)).count).toBe(2);
+    const name = async () => z.object({ name: z.string() }).loose().parse(JSON.parse(await readFile(abs, 'utf8'))).name;
+    expect((await snaps.restoreLatest('c', ws, path)).count).toBe(1);
+    expect(await name()).toBe('v1b');
+    expect((await snaps.restoreLatest('c', ws, path)).count).toBe(0);
+    expect(await name()).toBe('v0');
+    await expect(snaps.restoreLatest('c', ws, path)).rejects.toThrow();
   });
 
   it('importFiles：复制到 media/imports/（重名加后缀）并探测；不是文件报错', async () => {

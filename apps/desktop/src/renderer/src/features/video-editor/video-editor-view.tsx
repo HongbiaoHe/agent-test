@@ -4,28 +4,33 @@
  */
 import { projectDuration } from '@agent-test/video-schema';
 import { useQuery } from '@tanstack/react-query';
-import { ArrowLeft, Check, Clapperboard, Loader2, Redo2, Undo2 } from 'lucide-react';
+import { ArrowLeft, Bot, Check, Clapperboard, Loader2, Redo2, Undo2 } from 'lucide-react';
 import { type ReactNode, useEffect, useRef, useState } from 'react';
 import { EditActions } from './components/edit-actions';
 import { useTranslation } from 'react-i18next';
+import { toast } from 'sonner';
 import { Button } from '@/components/ui/button';
 import { ScrollArea } from '@/components/ui/scroll-area';
+import { Separator } from '@/components/ui/separator';
 import { agent } from '@/lib/agent-client';
 import { cn } from '@/lib/utils';
 import { FileViewerProvider } from '../viewer/file-viewer';
 import { ConflictBanner } from './components/conflict-banner';
 import { ExportDialog } from './components/export-dialog';
 import { Inspector } from './components/inspector';
+import { IssuesPanel } from './components/issues-panel';
 import { InvalidProject } from './components/invalid-project';
 import { MediaToolbar } from './components/media-toolbar';
 import { PlaybackControls } from './components/playback-controls';
 import { PreviewPlayer } from './components/preview-player';
-import { Timeline } from './components/timeline';
+import { Timeline, type TimelineMarker } from './components/timeline';
+import { type EditorChecks, useEditorChecks } from './hooks/use-editor-checks';
 import { type PlaybackClock, useClockSelect, useCreateClock } from './hooks/use-clock';
 import { useVideoDocument, type VideoDocument } from './hooks/use-video-document';
 import { useVideoExport } from './hooks/use-video-export';
 import { useWorkspaceOrigin } from './hooks/use-workspace-origin';
 import { removeSelection, type Selection } from './lib/edit';
+import { type EditorIssue, ruleParams } from './lib/issues';
 import { isTypingTarget } from './lib/keyboard';
 import { duplicateSelection, splitSelectionAt } from './lib/timeline-edit';
 
@@ -69,6 +74,7 @@ export function VideoEditorView({
   const [selection, setSelection] = useState<Selection>(null);
   const [exportOpen, setExportOpen] = useState(false);
   const exporter = useVideoExport({ conversationId, path, project: doc.project, flush: doc.flush });
+  const checks = useEditorChecks(conversationId, path, doc.project);
 
   const project = doc.project;
   const duration = project ? projectDuration(project) : 0;
@@ -127,6 +133,16 @@ export function VideoEditorView({
     return () => window.removeEventListener('keydown', onKey);
   });
 
+  /** 撤销 agent 最近一轮修改：先把本地没写回的改动写掉（否则写回快照会撞成冲突） */
+  const undoAgent = async () => {
+    try {
+      if (!(await doc.flush())) return;
+      await checks.restoreAgentChanges();
+    } catch (e) {
+      toast.error(t('video.editor.agentUndoFailed', { message: e instanceof Error ? e.message : String(e) }));
+    }
+  };
+
   const exportBlocked = !project || project.video.length === 0
     ? t('video.export.empty')
     : doc.conflict
@@ -151,6 +167,18 @@ export function VideoEditorView({
           </div>
           {project && (
             <div className="flex shrink-0 items-center gap-1">
+              {checks.agentRounds > 0 && (
+                <Button
+                  variant="ghost"
+                  size="sm"
+                  title={t('video.editor.agentUndoHint', { count: checks.agentRounds })}
+                  onClick={() => void undoAgent()}
+                  data-testid="video-agent-undo"
+                >
+                  <Bot />
+                  {t('video.editor.agentUndo')}
+                </Button>
+              )}
               <Button
                 variant="ghost"
                 size="icon-sm"
@@ -199,6 +227,7 @@ export function VideoEditorView({
           {doc.phase === 'ready' && project && (
             <EditorBody
               doc={doc}
+              checks={checks}
               conversationId={conversationId}
               origin={origin}
               clock={clock}
@@ -231,6 +260,7 @@ export function VideoEditorView({
 
 function EditorBody({
   doc,
+  checks,
   conversationId,
   origin,
   clock,
@@ -242,6 +272,7 @@ function EditorBody({
   onRemove,
 }: {
   doc: VideoDocument;
+  checks: EditorChecks;
   conversationId: string;
   origin: string | null;
   clock: PlaybackClock;
@@ -255,7 +286,21 @@ function EditorBody({
   const project = doc.project;
   // 播放头在选中片段内（离两边都不太近）才能分割；makeId 固定，只判断不生成
   const canSplit = useClockSelect(clock, (t) => !!project && splitSelectionAt(project, selection, t, () => 'probe') !== null);
+  const { t } = useTranslation();
   if (!project) return null;
+  /** 点问题（面板或时间线标记）：跳到问题开始处并选中涉及的片段 */
+  const jump = (issue: EditorIssue) => {
+    clock.seek(Math.min(duration, issue.start));
+    if (issue.target) onSelect(issue.target);
+  };
+  const markers: TimelineMarker[] = [
+    ...checks.rules.map((issue) => ({
+      issue,
+      stale: false,
+      title: t(`video.issues.rule.${issue.issue.code}`, ruleParams(issue.issue)),
+    })),
+    ...checks.reviewEntries.map((issue) => ({ issue, stale: checks.reviewStale, title: issue.problem })),
+  ];
   return (
     <div className="flex h-full min-h-0">
       <div className="flex min-w-0 flex-1 flex-col gap-3 p-4">
@@ -278,9 +323,15 @@ function EditorBody({
           selection={selection}
           onSelect={onSelect}
           onCommit={(next) => doc.edit(next)}
+          markers={markers}
+          onJump={jump}
         />
       </div>
       <ScrollArea className="w-72 shrink-0 border-l">
+        <div className="px-4 pt-4">
+          <IssuesPanel checks={checks} onJump={jump} />
+          <Separator className="mt-4" />
+        </div>
         <Inspector project={project} duration={duration} selection={selection} onSelect={onSelect} edit={doc.edit} />
       </ScrollArea>
     </div>

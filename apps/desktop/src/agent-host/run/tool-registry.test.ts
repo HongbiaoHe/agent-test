@@ -6,6 +6,7 @@ import { resolveMode } from '@agent-test/agent-core/modes/resolve-mode';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { openDatabase } from '../db/database';
 import { SkillStore } from '../skills/skill-store';
+import { VIDEO_REVIEW_PROMPT } from '../video/review-tool';
 import { VIDEO_PROJECT_PROMPT } from '../video/video-tools';
 import { buildDesktopRegistry, desktopCapabilities } from './tool-registry';
 
@@ -24,7 +25,7 @@ function registry(webApi: null = null) {
 
 const MEDIA = ['list_media_models', 'generate_image', 'generate_video', 'generate_audio', 'clone_voice'];
 const BACKGROUND = ['watch_until', 'run_in_background', 'schedule_wakeup', 'cancel_background_task'];
-const VIDEO = ['create_video_project', 'check_video_project'];
+const VIDEO = ['create_video_project', 'check_video_project', 'review_video_project'];
 const CANVAS = [
   'add_node',
   'add_nodes',
@@ -63,6 +64,8 @@ describe('desktop 工具注册表', () => {
     expect(byName.preview_page).toEqual(['workspace']);
     expect(byName.create_video_project).toEqual(['workspace_write']);
     expect(byName.check_video_project).toEqual(['workspace']);
+    // 审片写 <名字>.review.json；没登录也挂上（返回 not_logged_in 让 agent 提示用户登录）
+    expect(byName.review_video_project).toEqual(['workspace_write']);
     // 画布在 Web 账号下：看要 canvas，改要 canvas_write（只读档位没有）
     for (const name of CANVAS) expect(byName[name]).toEqual(['canvas', 'canvas_write']);
     // 看产物是只读的：只读档位也能用
@@ -72,6 +75,7 @@ describe('desktop 工具注册表', () => {
     expect(byName.create_canvas).toEqual(['canvas', 'canvas_write']);
     expect(reg.get('create_video_project')?.promptSection).toBe(VIDEO_PROJECT_PROMPT);
     expect(reg.get('check_video_project')?.promptSection).toBe(VIDEO_PROJECT_PROMPT);
+    expect(reg.get('review_video_project')?.promptSection).toBe(VIDEO_REVIEW_PROMPT);
     expect(reg.get('save_skill')?.interruptOn).toBe(true);
     for (const name of MEDIA) expect(reg.get(name)?.promptSection).toBe(MEDIA_GENERATION_PROMPT);
   });
