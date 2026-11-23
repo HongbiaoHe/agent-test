@@ -1,7 +1,9 @@
+import { execFile } from 'node:child_process';
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { emptyProject, type VideoProject } from '@agent-test/video-schema';
+import { promisify } from 'node:util';
+import { emptyProject, projectDuration, type VideoProject } from '@agent-test/video-schema';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { buildAss, buildExportArgs, escapeFilterValue, type ExportOptions, outputSize, runFfmpeg } from './export';
 import { ffmpegBinaries } from './ffmpeg-paths';
@@ -65,11 +67,11 @@ describe('buildExportArgs', () => {
   it('音频轨：裁剪、音量、淡入淡出、按 start 延后，与主音轨 amix 且不归一化；总长截到视频轨', () => {
     const p = project();
     p.audio = [
-      { id: 'a1', src: 'music.mp3', sourceDuration: 60, start: 1.5, inPoint: 10, outPoint: 20, volume: 0.8, fadeIn: 1, fadeOut: 2 },
-      { id: 'a2', src: 'vo.mp3', sourceDuration: 5, start: 0, inPoint: 0, outPoint: 5, volume: 1, fadeIn: 0, fadeOut: 0 },
+      { id: 'a1', src: 'music.mp3', role: 'music', sourceDuration: 60, start: 1.5, inPoint: 10, outPoint: 20, volume: 0.8, fadeIn: 1, fadeOut: 2 },
+      { id: 'a2', src: 'vo.mp3', role: 'voice', sourceDuration: 5, start: 0, inPoint: 0, outPoint: 5, volume: 1, fadeIn: 0, fadeOut: 0 },
       // 起点在成片之后 / 音量为 0：不参与混音
-      { id: 'a3', src: 'late.mp3', sourceDuration: 5, start: 100, inPoint: 0, outPoint: 5, volume: 1, fadeIn: 0, fadeOut: 0 },
-      { id: 'a4', src: 'mute.mp3', sourceDuration: 5, start: 0, inPoint: 0, outPoint: 5, volume: 0, fadeIn: 0, fadeOut: 0 },
+      { id: 'a3', src: 'late.mp3', role: 'music', sourceDuration: 5, start: 100, inPoint: 0, outPoint: 5, volume: 1, fadeIn: 0, fadeOut: 0 },
+      { id: 'a4', src: 'mute.mp3', role: 'music', sourceDuration: 5, start: 0, inPoint: 0, outPoint: 5, volume: 0, fadeIn: 0, fadeOut: 0 },
     ];
     const args = buildExportArgs(p, opts());
     const joined = args.join(' ');
@@ -177,7 +179,7 @@ describe('真实 ffmpeg 导出', () => {
         { id: 'v2', type: 'video', src: files.clipB, sourceDuration: 2, inPoint: 0, outPoint: 1.5, volume: 1, width: 640, height: 360 },
         { id: 'v3', type: 'image', src: files.logo, duration: 1, width: 200, height: 100 },
       ],
-      audio: [{ id: 'a1', src: files.music, sourceDuration: 5, start: 0.5, inPoint: 0, outPoint: 5, volume: 0.5, fadeIn: 0.5, fadeOut: 0.5 }],
+      audio: [{ id: 'a1', src: files.music, role: 'music', sourceDuration: 5, start: 0.5, inPoint: 0, outPoint: 5, volume: 0.5, fadeIn: 0.5, fadeOut: 0.5 }],
       subtitles: { style: 'bottom-box', cues: [{ id: 's1', start: 0, end: 2, text: '你好 Spark' }] },
     };
     const assPath = join(ws, 'sub.ass');
@@ -220,5 +222,75 @@ describe('真实 ffmpeg 导出', () => {
 
     const bad = buildExportArgs(p, { resolve: () => join(ws, 'nope.mp4'), hasAudio: () => false, outputPath: out, height: null, assPath: null });
     await expect(runFfmpeg(ffmpeg, bad, 1, () => undefined).done).rejects.toThrow(/nope\.mp4/);
+  }, 60_000);
+});
+
+describe('转场导出（真跑 ffmpeg）', () => {
+  let tws: string;
+  const run = promisify(execFile);
+  beforeAll(async () => {
+    tws = await mkdtemp(join(tmpdir(), 'spark-export-transition-'));
+    const { ffmpeg } = ffmpegBinaries();
+    // 纯红 / 纯蓝两段（带正弦原声），方便按像素判断转场画面
+    for (const [name, color, freq] of [['red', 'red', 440], ['blue', 'blue', 660]] as const) {
+      await run(ffmpeg, [
+        '-hide_banner', '-loglevel', 'error', '-y',
+        '-f', 'lavfi', '-i', `color=c=${color}:s=320x240:r=30:d=2`,
+        '-f', 'lavfi', '-i', `sine=frequency=${freq}:sample_rate=48000:duration=2`,
+        '-c:v', 'libx264', '-pix_fmt', 'yuv444p', '-c:a', 'aac', '-shortest', join(tws, `${name}.mp4`),
+      ]);
+    }
+  }, 60_000);
+  afterAll(async () => {
+    await rm(tws, { recursive: true, force: true });
+  });
+
+  const twoClips = (transition: NonNullable<VideoProject['video'][number]['transition']>): VideoProject => ({
+    ...emptyProject('转场', { width: 320, height: 240 }),
+    video: [
+      { id: 'r', type: 'video', src: 'red.mp4', sourceDuration: 2, inPoint: 0, outPoint: 2, volume: 1, width: 320, height: 240, transition },
+      { id: 'b', type: 'video', src: 'blue.mp4', sourceDuration: 2, inPoint: 0, outPoint: 2, volume: 1, width: 320, height: 240 },
+    ],
+  });
+
+  /** 导出后取 t 秒那一帧，返回 (x, y) 处的 RGB */
+  async function exportAndSample(p: VideoProject, t: number, points: Array<[number, number]>) {
+    const { ffmpeg, ffprobe } = ffmpegBinaries();
+    const out = join(tws, `${p.video[0].transition?.type ?? 'x'}.mp4`);
+    const args = buildExportArgs(p, { resolve: (s) => join(tws, s), hasAudio: () => true, outputPath: out, height: null, assPath: null });
+    await runFfmpeg(ffmpeg, args, projectDuration(p), () => undefined).done;
+    const info = await probeMedia(ffprobe, out, 'out.mp4');
+    const { stdout } = await run(
+      ffmpeg,
+      ['-hide_banner', '-loglevel', 'error', '-ss', String(t), '-i', out, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'],
+      { encoding: 'buffer', maxBuffer: 16 * 1024 * 1024 },
+    );
+    const rgb = points.map(([x, y]) => {
+      const o = (y * 320 + x) * 3;
+      return [stdout[o], stdout[o + 1], stdout[o + 2]];
+    });
+    return { info, rgb };
+  }
+
+  const isRed = ([r, g, b]: number[]) => r > 200 && g < 60 && b < 60;
+  const isBlue = ([r, g, b]: number[]) => b > 200 && r < 60 && g < 60;
+
+  it('内置 wipeleft：成片 = 4 - 0.5 秒；转场正中左半是前一段、右半是后一段；有音轨', async () => {
+    const p = twoClips({ type: 'wipeleft', duration: 0.5 });
+    expect(projectDuration(p)).toBe(3.5);
+    // 转场 [1.5, 2.0)，正中 1.75 秒：P = 0.5，x <= W*P 为前一段（红）
+    const { info, rgb } = await exportAndSample(p, 1.75, [[40, 120], [280, 120]]);
+    expect(info.hasAudio).toBe(true);
+    expect(info.duration).toBeGreaterThan(3.5 - 0.1);
+    expect(info.duration).toBeLessThan(3.5 + 0.1);
+    expect(isRed(rgb[0])).toBe(true);
+    expect(isBlue(rgb[1])).toBe(true);
+  }, 60_000);
+
+  it('自定义表达式：上半前一段、下半后一段（与内置一样逐像素求值）', async () => {
+    const p = twoClips({ type: 'custom', duration: 0.5, expr: 'if(lt(Y,H/2),A,B)', name: '上下分屏' });
+    const { rgb } = await exportAndSample(p, 1.75, [[160, 40], [160, 200]]);
+    expect(isRed(rgb[0])).toBe(true);
+    expect(isBlue(rgb[1])).toBe(true);
   }, 60_000);
 });

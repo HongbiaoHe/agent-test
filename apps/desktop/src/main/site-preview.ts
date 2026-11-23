@@ -68,6 +68,18 @@ async function fileSlice(abs: string, start: number, end: number): Promise<Reada
 
 const notFound = () => new Response('Not found', { status: 404 });
 
+/**
+ * 允许跨源读取（CORS）的来源：只有应用自己的界面——开发时是 electron-vite 的地址，打包后是 file://。
+ * 剪辑器预览用 WebGL 合成画面，<video crossorigin> 的素材必须带 CORS 头才能当纹理；
+ * 不用 `*`：工作区网页预览（spark-preview://w-<hash>）之间仍然不能互相读文件。
+ */
+export function corsOrigin(requestOrigin: string | null, devUrl: string | undefined): string | null {
+  if (!requestOrigin) return null;
+  const allowed = new Set(['file://']);
+  if (devUrl) allowed.add(new URL(devUrl).origin);
+  return allowed.has(requestOrigin) ? requestOrigin : null;
+}
+
 /** app ready 之后调用：默认 session（主窗口所在）上处理 spark-preview:// 请求 */
 export function handleSitePreviewProtocol(): void {
   protocol.handle(SCHEME, async (req) => {
@@ -91,6 +103,11 @@ export function handleSitePreviewProtocol(): void {
       const res = await net.fetch(pathToFileURL(abs).toString(), { method: req.method, headers: forwarded });
       const headers = new Headers(res.headers);
       headers.set('Cache-Control', 'no-store');
+      const allowOrigin = corsOrigin(req.headers.get('origin'), process.env.ELECTRON_RENDERER_URL);
+      if (allowOrigin) {
+        headers.set('Access-Control-Allow-Origin', allowOrigin);
+        headers.set('Vary', 'Origin');
+      }
       headers.set('Accept-Ranges', 'bytes');
       const range = res.ok ? parseRange(req.headers.get('range'), st.size) : { kind: 'full' as const };
       if (range.kind === 'full') return new Response(res.body, { status: res.status, headers });

@@ -82,3 +82,42 @@ describe('文档状态机：撤销合并', () => {
     expect(s.editVersion).toBe(v + 1);
   });
 });
+
+describe('外部修改后的重载进撤销栈', () => {
+  const agentFile = (name: string, mtimeMs: number) => ({ ...file(mtimeMs), project: { ...sampleProject(), name } });
+
+  it('agent 改了工程：新内容成为一步，⌘Z 退回改之前；重载不触发自动保存', () => {
+    let s = docReducer(loaded(), { type: 'fileChanged', mtimeMs: 3000 });
+    s = docReducer(s, { type: 'reloaded', file: agentFile('agent 改', 3000) });
+    expect(s.history?.present.name).toBe('agent 改');
+    expect(s.history?.past).toHaveLength(1);
+    expect(s.editVersion).toBe(s.savedVersion);
+    expect(s.mtimeMs).toBe(3000);
+
+    s = docReducer(s, { type: 'undo' });
+    expect(s.history?.present.name).toBe(sampleProject().name);
+    // 撤销是本地编辑：要写回磁盘
+    expect(s.editVersion).not.toBe(s.savedVersion);
+  });
+
+  it('内容没变（只是 mtime 变了）不新增一步', () => {
+    const s = docReducer(loaded(), { type: 'reloaded', file: file(4000) });
+    expect(s.history?.past).toHaveLength(0);
+    expect(s.mtimeMs).toBe(4000);
+  });
+
+  it('冲突时选「重新加载」：本地没写回的改动留在撤销栈里', () => {
+    let s = docReducer(edited(loaded(), 1), { type: 'fileChanged', mtimeMs: 3000 });
+    expect(s.conflict).toBe('external');
+    s = docReducer(s, { type: 'reloaded', file: agentFile('agent 改', 3000) });
+    expect(s.conflict).toBeNull();
+    s = docReducer(s, { type: 'undo' });
+    expect(s.history?.present.name).toBe('n1');
+  });
+
+  it('重载读到坏文件：同初次载入，进 invalid', () => {
+    const s = docReducer(loaded(), { type: 'reloaded', file: { ...file(5000), project: null, issues: ['坏了'] } });
+    expect(s.phase).toBe('invalid');
+    expect(s.issues).toEqual(['坏了']);
+  });
+});

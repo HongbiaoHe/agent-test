@@ -12,9 +12,9 @@ export function sampleProject(): VideoProject {
     ],
     audio: [
       // 成片 [1, 5)，素材 10～14 秒，淡入 1 秒、淡出 2 秒，音量 0.8
-      { id: 'bgm', src: 'media/bgm.mp3', sourceDuration: 60, start: 1, inPoint: 10, outPoint: 14, volume: 0.8, fadeIn: 1, fadeOut: 2 },
+      { id: 'bgm', src: 'media/bgm.mp3', role: 'music', sourceDuration: 60, start: 1, inPoint: 10, outPoint: 14, volume: 0.8, fadeIn: 1, fadeOut: 2 },
       // 成片 [3, 8)，不淡入淡出
-      { id: 'vo', src: 'media/vo.mp3', sourceDuration: 5, start: 3, inPoint: 0, outPoint: 5, volume: 1, fadeIn: 0, fadeOut: 0 },
+      { id: 'vo', src: 'media/vo.mp3', role: 'voice', sourceDuration: 5, start: 3, inPoint: 0, outPoint: 5, volume: 1, fadeIn: 0, fadeOut: 0 },
     ],
     subtitles: {
       style: 'bottom-outline',

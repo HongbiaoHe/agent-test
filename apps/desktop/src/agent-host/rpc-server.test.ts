@@ -15,6 +15,7 @@ import { createHandlers, type Services } from './rpc-server';
 import type { RunService } from './run/run-service';
 import { buildDesktopRegistry } from './run/tool-registry';
 import { SkillStore } from './skills/skill-store';
+import { VideoSnapshots } from './video/snapshots';
 import { VideoService } from './video/video-service';
 import type { WebApi } from './web-media/web-api';
 
@@ -62,6 +63,7 @@ function setup() {
       workspaceOf: (id) => repo.require(id).workspaceDir,
       emit: () => undefined,
       binaries: () => ({ ffmpeg: 'ffmpeg', ffprobe: 'ffprobe' }),
+      snapshots: new VideoSnapshots(join(tmpdir(), 'spark-rpc-test-snapshots')),
     }),
     canvasWatcher: null,
   };

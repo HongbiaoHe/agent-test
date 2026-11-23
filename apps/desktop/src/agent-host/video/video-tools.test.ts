@@ -1,12 +1,12 @@
 import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { parseProject } from '@agent-test/video-schema';
+import { parseProject, TRANSITION_TYPES, validateExpr } from '@agent-test/video-schema';
 import { afterAll, beforeAll, describe, expect, it } from 'vitest';
 import { z } from 'zod';
 import { ffmpegBinaries } from './ffmpeg-paths';
 import { makeFixtures } from './test-media';
-import { checkVideoProjectTool, type CreateVideoProjectArgs, createVideoProjectTool } from './video-tools';
+import { checkVideoProjectTool, type CreateVideoProjectArgs, createVideoProjectTool, VIDEO_PROJECT_PROMPT } from './video-tools';
 
 let ws: string;
 let files: Awaited<ReturnType<typeof makeFixtures>>;
@@ -95,7 +95,14 @@ describe('check_video_project', () => {
     const path = String(res.path);
     const check = checkVideoProjectTool({ workspaceDir: ws });
     const ok = json(await check.invoke({ path }));
-    expect(ok).toEqual({ ok: true, issues: [], missing: [], duration: 5 });
+    // 画布取第一段 320x240（4:3），第二段 640x360（16:9）会有黑边
+    expect(ok).toMatchObject({ ok: true, issues: [], missing: [], duration: 5 });
+    const [warning, ...rest] = z
+      .array(z.object({ code: z.string(), message: z.string(), start: z.number(), end: z.number() }))
+      .parse(ok.warnings);
+    expect(rest).toEqual([]);
+    expect(warning).toMatchObject({ code: 'letterbox', start: 3, end: 5 });
+    expect(warning.message).toMatch(/视频片段 v2 的宽高比/);
 
     const raw = z
       .object({ video: z.array(z.object({ src: z.string() }).loose()) })
@@ -103,7 +110,7 @@ describe('check_video_project', () => {
       .parse(JSON.parse(await readFile(join(ws, path), 'utf8')));
     raw.video[1].src = 'media/gone.mp4';
     await writeFile(join(ws, path), JSON.stringify(raw));
-    expect(json(await check.invoke({ path }))).toEqual({
+    expect(json(await check.invoke({ path }))).toMatchObject({
       ok: false,
       issues: [],
       missing: ['media/gone.mp4'],
@@ -114,5 +121,50 @@ describe('check_video_project', () => {
     const broken = z.object({ ok: z.boolean(), issues: z.array(z.string()) }).parse(json(await check.invoke({ path })));
     expect(broken.ok).toBe(false);
     expect(broken.issues[0]).toMatch(/^JSON/);
+  });
+
+  it('带 ffmpeg 时并入素材内容检查：没有原声的段报静音', async () => {
+    const res = await create({ name: 'check-media', clips: [{ path: files.clipB }] });
+    const check = checkVideoProjectTool({ workspaceDir: ws, binaries: ffmpegBinaries });
+    const out = z
+      .object({ ok: z.boolean(), warnings: z.array(z.object({ code: z.string(), message: z.string() })) })
+      .parse(json(await check.invoke({ path: String(res.path) })));
+    expect(out.ok).toBe(true);
+    expect(out.warnings.map((w) => w.code)).toContain('silence');
+  }, 60_000);
+
+  it('配音 role 写进工程', async () => {
+    const res = await create({ name: 'role', clips: [{ path: files.clipA }], audio: [{ path: files.music, start: 0, role: 'voice' }] });
+    const saved = parseProject(JSON.parse(await readFile(join(ws, String(res.path)), 'utf8')));
+    expect(saved.ok && saved.project.audio[0].role).toBe('voice');
+  });
+});
+
+describe('转场', () => {
+  it('提示词列出全部内置转场；里面的自创示例都是合法表达式', () => {
+    for (const type of TRANSITION_TYPES) expect(VIDEO_PROJECT_PROMPT).toContain(type);
+    const examples = [...VIDEO_PROJECT_PROMPT.matchAll(/`((?:if|clip)\(.*?)`/g)].map((m) => m[1]);
+    expect(examples).toHaveLength(3);
+    for (const expr of examples) expect(validateExpr(expr)).toBeNull();
+  });
+
+  it('create_video_project：内置与自创转场写进工程，默认时长 0.5；表达式不合法时报错不落盘', async () => {
+    const res = await create({
+      name: '转场',
+      clips: [
+        { path: files.clipA, transition: { type: 'wipeleft' } },
+        { path: files.logo, duration: 2, transition: { type: 'custom', duration: 0.4, name: '菱形', expr: 'if(lt(abs(X-W/2)/W+abs(Y-H/2)/H,1-P),B,A)' } },
+        { path: files.clipB },
+      ],
+    });
+    // 3 + 2 + 2 - 0.5 - 0.4
+    expect(res.duration).toBe(6.1);
+    const saved = parseProject(JSON.parse(await readFile(join(ws, String(res.path)), 'utf8')));
+    expect(saved.ok && saved.project.video.map((c) => c.transition?.type ?? null)).toEqual(['wipeleft', 'custom', null]);
+    expect(saved.ok && saved.project.video[0].transition?.duration).toBe(0.5);
+
+    const bad = await create({ name: '坏转场', clips: [{ path: files.clipA, transition: { type: 'custom', expr: 'A<B' } }, { path: files.clipB }] });
+    expect(String(bad.error)).toBe('工程校验不通过');
+    expect(JSON.stringify(bad.issues)).toMatch(/转场表达式不合法/);
   });
 });

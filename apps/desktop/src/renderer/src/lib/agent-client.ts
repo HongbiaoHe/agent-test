@@ -42,6 +42,12 @@ const eventSchema = z.discriminatedUnion('type', [
   }),
   z.object({
     kind: z.literal('event'),
+    type: z.literal('video-review-changed'),
+    conversationId: z.string(),
+    path: z.string(),
+  }),
+  z.object({
+    kind: z.literal('event'),
     type: z.literal('video-export'),
     jobId: z.string(),
     status: z.enum(['running', 'done', 'failed', 'cancelled']),

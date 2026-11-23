@@ -1,12 +1,14 @@
 import { z } from 'zod';
+import { effectiveTransitions, TransitionSchema } from './transitions';
 
 /**
  * desktop 视频剪辑工程（`<工作区>/videos/<名字>.sparkvideo.json`）。
  *
  * 固定三轨：
- * - 视频轨（video）：片段首尾相接、不可重叠，按数组顺序拼接；视频片段可裁入出点、调原声音量，
- *   图片片段按 duration 秒显示（片尾 Logo 等）；
- * - 音频轨（audio）：任意多段，各自有在成片里的起点 start，可重叠，导出时混音；
+ * - 视频轨（video）：片段按数组顺序拼接；视频片段可裁入出点、调原声音量，
+ *   图片片段按 duration 秒显示（片尾 Logo 等）；片段上的 transition 是它到下一段的转场，前后两段在转场时长内
+ *   叠在一起播（成片变短，见 transitions.ts），没有转场时首尾相接；
+ * - 音频轨（audio）：任意多段，各自有在成片里的起点 start，可重叠，导出时混音；每段标用途 role（配音 / 音乐 / 音效）；
  * - 字幕（subtitles）：一组带起止时间的文本，全局一套样式（预设）。
  * 画布取输出宽高；尺寸不同的片段等比缩放后补黑边。
  *
@@ -53,6 +55,8 @@ export const VideoClipSchema = z
     height: Dimension,
     /** 来源：生成产物的 versionId（仅记录用，不参与渲染） */
     versionId: z.string().optional(),
+    /** 到下一段的转场 */
+    transition: TransitionSchema.optional(),
   })
   .refine((c) => c.outPoint > c.inPoint, { message: '出点必须大于入点', path: ['outPoint'] })
   .refine((c) => c.outPoint <= c.sourceDuration + 1e-6, {
@@ -69,14 +73,24 @@ export const ImageClipSchema = z.object({
   width: Dimension,
   height: Dimension,
   versionId: z.string().optional(),
+  /** 到下一段的转场 */
+  transition: TransitionSchema.optional(),
 });
 
 export const TrackClipSchema = z.union([VideoClipSchema, ImageClipSchema]);
+
+/**
+ * 音频片段的用途：voice = 配音 / 人声，music = 背景音乐，sfx = 音效。
+ * 只给检查规则用（如「人声被音乐盖住」），不影响混音；旧工程没有这个字段，按 music 处理。
+ */
+export const AUDIO_ROLES = ['voice', 'music', 'sfx'] as const;
+export type AudioRole = (typeof AUDIO_ROLES)[number];
 
 export const AudioClipSchema = z
   .object({
     id: Id,
     src: WorkspacePathSchema,
+    role: z.enum(AUDIO_ROLES).default('music'),
     sourceDuration: z.number().finite().positive(),
     /** 在成片时间轴上的起点（秒） */
     start: Seconds,
@@ -171,24 +185,35 @@ export function clipDuration(clip: TrackClip): number {
 export interface LaidOutClip {
   clip: TrackClip;
   index: number;
-  /** 在成片里的起止时间（秒） */
+  /** 在成片里的起止时间（秒）；有转场时与相邻片段重叠 */
   start: number;
   end: number;
+  /** 与上一段 / 下一段重叠的转场时长（实际生效的，见 effectiveTransitions）；没有为 0 */
+  transitionIn: number;
+  transitionOut: number;
 }
 
-/** 视频轨布局：按顺序首尾相接，算出每段在成片里的起止时间 */
+/** 视频轨布局：按顺序拼接，有转场的接缝处下一段提前 d 秒开始（与上一段重叠） */
 export function layoutVideoTrack(project: Pick<VideoProject, 'video'>): LaidOutClip[] {
+  const durations = project.video.map(clipDuration);
+  const overlaps = effectiveTransitions(
+    project.video.map((c) => c.transition),
+    durations,
+  );
   let t = 0;
   return project.video.map((clip, index) => {
     const start = t;
-    t += clipDuration(clip);
-    return { clip, index, start, end: t };
+    const end = start + durations[index];
+    const transitionOut = overlaps[index] ?? 0;
+    t = end - transitionOut;
+    return { clip, index, start, end, transitionIn: overlaps[index - 1] ?? 0, transitionOut };
   });
 }
 
-/** 成片总时长 = 视频轨总时长（音频与字幕超出部分在导出时截掉） */
+/** 成片总时长 = 视频轨总时长（扣掉转场重叠；音频与字幕超出部分在导出时截掉） */
 export function projectDuration(project: Pick<VideoProject, 'video'>): number {
-  return project.video.reduce((sum, c) => sum + clipDuration(c), 0);
+  const laid = layoutVideoTrack(project);
+  return laid.length ? laid[laid.length - 1].end : 0;
 }
 
 /** 新建空工程 */

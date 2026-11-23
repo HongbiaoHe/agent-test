@@ -4,6 +4,7 @@
  */
 import type { AudioClip, ImageClip, SubtitleCue, TrackClip, VideoClip, VideoProject } from '@agent-test/video-schema';
 import type { VideoMediaProbe } from '../../../../../shared/rpc';
+import { setTransition } from './transition-edit';
 
 /** 片段最短保留的秒数（入点出点不能贴死） */
 export const MIN_SPAN = 0.1;
@@ -21,6 +22,8 @@ export type Selection =
   | { kind: 'video'; id: string }
   | { kind: 'audio'; id: string }
   | { kind: 'cue'; id: string }
+  /** 视频轨接缝上的转场：id 是转场挂着的那段（接缝前一段）的 id */
+  | { kind: 'transition'; id: string }
   | null;
 
 const clamp = (v: number, min: number, max: number) => Math.min(max, Math.max(min, v));
@@ -129,6 +132,7 @@ export function moveTrackClip(project: VideoProject, id: string, delta: -1 | 1):
 export function removeSelection(project: VideoProject, sel: Selection): VideoProject {
   if (!sel) return project;
   if (sel.kind === 'video') return { ...project, video: project.video.filter((c) => c.id !== sel.id) };
+  if (sel.kind === 'transition') return setTransition(project, sel.id, null);
   if (sel.kind === 'audio') return { ...project, audio: project.audio.filter((c) => c.id !== sel.id) };
   return { ...project, subtitles: { ...project.subtitles, cues: project.subtitles.cues.filter((c) => c.id !== sel.id) } };
 }
@@ -176,6 +180,7 @@ export function addImportedMedia(
       audio.push({
         id: makeId('audio'),
         src: p.path,
+        role: 'music',
         sourceDuration: duration,
         start: 0,
         inPoint: 0,

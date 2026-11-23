@@ -38,6 +38,8 @@ export interface LocalSandboxOptions {
   env?: Record<string, string>;
   /** 命令登记表：崩溃后由下次启动的 agent-host 清理孤儿进程组 */
   tracker?: { add(pgid: number, commandLine: string): void; remove(pgid: number): void };
+  /** write / edit 落盘前调用（剪辑工程的快照，见 video/snapshots.ts）；不能抛错挡住写入 */
+  beforeWrite?: (filePath: string) => Promise<void>;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -66,6 +68,7 @@ export class LocalWorkspaceSandbox implements GuardableSandbox {
   private readonly maxOutputBytes: number;
   private readonly env: Record<string, string>;
   private readonly tracker: LocalSandboxOptions['tracker'];
+  private readonly beforeWrite: LocalSandboxOptions['beforeWrite'];
 
   constructor(
     readonly root: string,
@@ -76,6 +79,7 @@ export class LocalWorkspaceSandbox implements GuardableSandbox {
     this.maxOutputBytes = opts.maxOutputBytes ?? DEFAULT_MAX_OUTPUT;
     this.env = opts.env ?? whitelistedEnv();
     this.tracker = opts.tracker;
+    this.beforeWrite = opts.beforeWrite;
   }
 
   // ── 生命周期：本机没有远端资源，start/stop 只管子进程 ───────────────────────
@@ -178,16 +182,18 @@ export class LocalWorkspaceSandbox implements GuardableSandbox {
     return this.fs.glob(pattern, path);
   }
 
-  write(filePath: string, content: string): Promise<WriteResult> {
+  async write(filePath: string, content: string): Promise<WriteResult> {
+    await this.beforeWrite?.(filePath);
     return this.fs.write(filePath, content);
   }
 
-  edit(
+  async edit(
     filePath: string,
     oldString: string,
     newString: string,
     replaceAll?: boolean,
   ): Promise<EditResult> {
+    await this.beforeWrite?.(filePath);
     return this.fs.edit(filePath, oldString, newString, replaceAll);
   }
 

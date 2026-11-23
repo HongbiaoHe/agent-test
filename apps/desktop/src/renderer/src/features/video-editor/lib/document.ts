@@ -2,7 +2,7 @@
  * 剪辑器的文档状态机（纯 reducer，单测见 document.test.ts）：载入 / 编辑（撤销栈）/ 自动保存 / 外部修改与冲突。
  * 副作用（读写 RPC、防抖定时器、事件订阅）在 use-video-document.ts，这里只管状态怎么变。
  */
-import type { VideoProject } from '@agent-test/video-schema';
+import { projectFingerprint, type VideoProject } from '@agent-test/video-schema';
 import type { VideoProjectFile } from '../../../../../shared/rpc';
 import { createHistory, type History, pushHistory, redoHistory, undoHistory } from './history';
 import { classifyFileChange } from './sync';
@@ -35,6 +35,11 @@ export interface DocState {
 
 export type DocAction =
   | { type: 'loaded'; file: VideoProjectFile }
+  /**
+   * 外部修改（agent 改了 JSON / 撤销 agent 修改）后的重新加载：新内容作为一步进撤销栈，⌘Z 能退回改之前；
+   * 本地没写回的改动也留在栈里（冲突时选「重新加载」）。工程读不出来时同 loaded。
+   */
+  | { type: 'reloaded'; file: VideoProjectFile }
   | { type: 'loadFailed'; error: string }
   /** project 可以是函数：基于最新的 present 计算（异步操作回来后编辑，不用闭包里过期的工程） */
   | { type: 'edit'; project: VideoProject | ((present: VideoProject) => VideoProject); key?: string; at: number }
@@ -95,6 +100,27 @@ export function docReducer(s: DocState, a: DocAction): DocState {
         mtimeMs: a.file.mtimeMs,
         reloadToken: s.reloadToken,
       };
+    case 'reloaded': {
+      const project = a.file.project;
+      if (!project || !s.history) return docReducer(s, { type: 'loaded', file: a.file });
+      const same = projectFingerprint(project) === projectFingerprint(s.history.present);
+      // 新内容已在磁盘上：记为「已保存」，不触发自动保存
+      const version = same ? s.editVersion : s.editVersion + 1;
+      return {
+        ...s,
+        phase: 'ready',
+        error: null,
+        issues: [],
+        history: same ? s.history : pushHistory(s.history, project),
+        mtimeMs: a.file.mtimeMs,
+        editVersion: version,
+        savedVersion: version,
+        saveError: null,
+        conflict: null,
+        deferredMtimeMs: null,
+        lastEdit: null,
+      };
+    }
     case 'loadFailed':
       return { ...s, phase: s.history ? s.phase : 'error', error: a.error };
     case 'edit': {

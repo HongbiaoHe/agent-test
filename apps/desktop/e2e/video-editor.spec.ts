@@ -9,14 +9,17 @@
  * 7. 导出 720p：进度走完，ffprobe 校验时长 / 音轨 / 高度；再导一次立即取消：状态已取消、无残留文件；
  * 8. 时间线直接编辑：缩放（按钮 / ⌘ 滚轮 / 适应宽度）、拖右边裁剪、拖音频吸附到片段边、拖拽换位 + ⌘Z、
  *    播放头处分割（S）、复制（⌘D）、删除（Delete），每步落盘且工程可解析；
- * 9. 字幕导出与预览一致：长中英混排字幕在三种样式下，导出成片的帧与预览画布截图逐行比对（行数、每行上下左右边界）。
+ * 9. 字幕导出与预览一致：长中英混排字幕在三种样式下，导出成片的帧与预览画布截图逐行比对（行数、每行上下左右边界）；
+ * 10. 检查与撤销：规则问题实时显示并跳转、审片结果标记与过期、外部修改进撤销栈、撤销 agent 修改（快照）、音频用途；
+ * 11. 转场：接缝里从 46 种内置转场选、落盘、成片变短；预览（WebGL）与导出（xfade）在转场中途同一帧逐点比对，内置与自创表达式各一次。
  * 每个用例自建临时目录与素材（失败重跑时也是干净的前置状态）。
  */
 import { execFileSync } from 'node:child_process';
 import { existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
+import { DatabaseSync } from 'node:sqlite';
 import { dirname, join } from 'node:path';
-import { parseProject, type VideoProject } from '@agent-test/video-schema';
+import { parseProject, projectFingerprint, type ReviewFile, type VideoProject } from '@agent-test/video-schema';
 import { type ElectronApplication, expect, type Locator, type Page, test } from '@playwright/test';
 import { z } from 'zod';
 import { apiKey, launch, newChat, saveGoogleKey, screens, sendAndWait, stubOpenDialog, tempDirs } from './helpers';
@@ -93,7 +96,7 @@ function demoProject(ws: string, media: MediaSet, name = '演示工程'): VideoP
       { id: 'v2', type: 'video', src: media.b, sourceDuration: db, inPoint: 0, outPoint: db, volume: 1, width: 320, height: 240 },
     ],
     audio: [
-      { id: 'a1', src: media.music, sourceDuration: dm, start: 0, inPoint: 0, outPoint: dm, volume: 0.6, fadeIn: 0, fadeOut: 0 },
+      { id: 'a1', src: media.music, role: 'music', sourceDuration: dm, start: 0, inPoint: 0, outPoint: dm, volume: 0.6, fadeIn: 0, fadeOut: 0 },
     ],
     subtitles: {
       style: 'bottom-outline',
@@ -179,6 +182,46 @@ async function openEditor(
   return { app, page, ws: dirs.workspace, root: dirs.root, rel };
 }
 
+/** WebGL 预览画布上 (fx, fy)（0～1，左上为原点）处的 RGB */
+async function glPixel(page: Page, fx: number, fy: number): Promise<[number, number, number]> {
+  const rgb = await page.getByTestId('video-gl').evaluate(
+    (gl, [x, y]) => {
+      if (!(gl instanceof HTMLCanvasElement)) return [0, 0, 0];
+      const c = document.createElement('canvas');
+      c.width = gl.width;
+      c.height = gl.height;
+      const ctx = c.getContext('2d');
+      if (!ctx) return [0, 0, 0];
+      ctx.drawImage(gl, 0, 0);
+      const d = ctx.getImageData(Math.floor(x * (gl.width - 1)), Math.floor(y * (gl.height - 1)), 1, 1).data;
+      return [d[0], d[1], d[2]];
+    },
+    [fx, fy],
+  );
+  return [rgb[0] ?? 0, rgb[1] ?? 0, rgb[2] ?? 0];
+}
+
+/** 用播放进度条的键盘操作精确 seek（Home 归零，→ 每次 +0.01 秒），不受时间线像素换算误差影响 */
+async function seekExact(page: Page, t: number): Promise<void> {
+  // 播放控件那一行（时间显示旁边）的进度条
+  const slider = page.getByTestId('video-time').locator('..').getByRole('slider');
+  await slider.focus();
+  await page.keyboard.press('Home');
+  await page.keyboard.press('ArrowRight', { delay: 0 });
+  for (let i = 1; i < Math.round(t * 100); i++) await page.keyboard.press('ArrowRight');
+}
+
+/** 成片 t 秒那一帧在 (fx, fy)（0～1）处的 RGB */
+function exportedPixels(file: string, t: number, W: number, H: number, points: Array<[number, number]>): Array<[number, number, number]> {
+  const raw = execFileSync(FFMPEG, ['-hide_banner', '-loglevel', 'error', '-ss', String(t), '-i', file, '-frames:v', '1', '-f', 'rawvideo', '-pix_fmt', 'rgb24', '-'], {
+    maxBuffer: 64 * 1024 * 1024,
+  });
+  return points.map(([fx, fy]) => {
+    const o = (Math.floor(fy * (H - 1)) * W + Math.floor(fx * (W - 1))) * 3;
+    return [raw[o] ?? 0, raw[o + 1] ?? 0, raw[o + 2] ?? 0];
+  });
+}
+
 /** 等这次编辑写回磁盘：先离开「已保存」，再回到「已保存」 */
 async function waitSaved(page: Page): Promise<void> {
   await expect(saveState(page)).toHaveText('已保存', { timeout: 10_000 });
@@ -226,10 +269,10 @@ function exportsOf(ws: string): string[] {
 }
 
 /** 纯色画面（便于从像素里抠出白色字幕）+ 正弦原声的 mp4 */
-function makeSolidVideo(out: string, seconds: number, size: string): void {
+function makeSolidVideo(out: string, seconds: number, size: string, color = '0x305090'): void {
   ffmpeg(
     [
-      '-f', 'lavfi', '-i', `color=c=0x305090:size=${size}:rate=30:duration=${seconds}`,
+      '-f', 'lavfi', '-i', `color=c=${color}:size=${size}:rate=30:duration=${seconds}`,
       '-f', 'lavfi', '-i', `sine=frequency=440:sample_rate=48000:duration=${seconds}`,
       '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-c:a', 'aac', '-shortest',
     ],
@@ -470,16 +513,15 @@ test('预览：播放 1 秒后暂停时间前进；<video>/<audio> 经 spark-pre
   expect(Math.abs((await currentTime(page)) - 2)).toBeLessThan(0.25);
   await seekTimeline(page, 4);
   await expect(page.getByTestId('video-subtitle')).toHaveCount(0);
-  // 4 秒在第二段里：切到另一个槽播 b.mp4
+  // 4 秒在第二段里：另一个槽载入 b.mp4，WebGL 画布真的画出了画面（素材跨源时没有 CORS 头会是全黑）
   await expect
     .poll(() =>
       canvas.evaluate((root) =>
-        [...root.querySelectorAll('video')].some(
-          (v) => v.style.visibility === 'visible' && v.currentSrc.endsWith('/media/b.mp4') && v.readyState >= 2,
-        ),
+        [...root.querySelectorAll('video')].some((v) => v.currentSrc.endsWith('/media/b.mp4') && v.readyState >= 2),
       ),
     )
     .toBe(true);
+  await expect.poll(() => glPixel(page, 0.5, 0.5).then(([r, g, b]) => r + g + b)).toBeGreaterThan(60);
   await app.close();
 });
 
@@ -546,6 +588,180 @@ test('外部修改：无本地改动自动重载；有未保存改动出冲突�
   await nameField().fill('本地改名四');
   await expect.poll(() => readProject(ws, rel).name, { timeout: 10_000 }).toBe('本地改名四');
   await expect(banner).toHaveCount(0);
+  await app.close();
+});
+
+test('检查与撤销：规则问题实时显示并跳转；审片标记与过期；外部修改进撤销栈；撤销 agent 修改；音频用途', async () => {
+  const { app, page, ws, root, rel } = await openEditor('video-checks', (ws) => {
+    const p = demoProject(ws, makeMedia(ws));
+    // 0.2 秒 8 个字：每秒 40 字，来不及读
+    p.subtitles.cues.push({ id: 's3', start: 3.5, end: 3.7, text: '一二三四五六七八' });
+    writeProject(ws, 'videos/demo.sparkvideo.json', p);
+    return 'videos/demo.sparkvideo.json';
+  });
+  const issues = page.getByTestId('video-issues');
+  const issueRow = (text: string) => issues.getByTestId('video-issue').filter({ hasText: text });
+
+  // a) 规则问题实时显示；点一下跳到 3.5 秒并选中那条字幕
+  await expect(issueRow('来不及读')).toHaveCount(1);
+  expect(await timeline(page).getByTestId('video-issue-marker').count()).toBeGreaterThan(0);
+  await issueRow('来不及读').click();
+  await expect(inspector(page).getByRole('textbox', { name: '文本' })).toHaveValue('一二三四五六七八');
+  expect(await currentTime(page)).toBeCloseTo(3.5, 1);
+  // 改短文本：问题随编辑消失
+  await inspector(page).getByRole('textbox', { name: '文本' }).fill('好');
+  await expect(issueRow('来不及读')).toHaveCount(0);
+  await waitSaved(page);
+
+  // b) agent 写审片结果（指纹 = 当前工程）：面板显示结论与意见，时间线多出标记；之后改工程 → 标为过期
+  const markersBefore = await timeline(page).getByTestId('video-issue-marker').count();
+  const reviewed = readProject(ws, rel);
+  const review: ReviewFile = {
+    version: 1,
+    reviewedAt: new Date().toISOString(),
+    fingerprint: projectFingerprint(reviewed),
+    brief: '5 秒演示',
+    summary: '节奏顺，第二段开头偏暗',
+    verdict: 'needs_work',
+    strengths: [],
+    issues: [
+      {
+        id: 'r1',
+        start: 3,
+        end: 4,
+        severity: 'high',
+        category: 'pacing',
+        problem: '第二段进得太突然',
+        suggestion: '第一段多留半秒',
+        targets: [{ kind: 'video', id: 'v2' }],
+      },
+    ],
+  };
+  writeFileSync(join(ws, 'videos/demo.review.json'), JSON.stringify(review));
+  await expect(page.getByTestId('video-review')).toContainText('节奏顺，第二段开头偏暗');
+  await expect(page.getByTestId('video-review')).toContainText('还需修改');
+  await expect(page.getByTestId('video-review-stale')).toHaveCount(0);
+  await expect(timeline(page).getByTestId('video-issue-marker')).toHaveCount(markersBefore + 1);
+  await issueRow('第二段进得太突然').click();
+  await expect(inspector(page).getByText('视频片段', { exact: true })).toBeVisible();
+  expect(await currentTime(page)).toBeCloseTo(3, 1);
+  await page.screenshot({ path: join(screens, 'video-checks-review.png') });
+  await inspector(page).getByRole('textbox', { name: '工程名' }).fill('审片后改名');
+  await expect(page.getByTestId('video-review-stale')).toBeVisible();
+  await waitSaved(page);
+
+  // c) 外部修改（agent 改了 JSON）进撤销栈：⌘Z 退回改之前并落盘
+  writeProject(ws, rel, { ...readProject(ws, rel), name: 'agent 改名' });
+  await expect(title(page)).toHaveText('agent 改名');
+  await page.getByTestId('video-canvas').click();
+  await page.keyboard.press('Meta+z');
+  await expect(title(page)).toHaveText('审片后改名');
+  await expect.poll(() => readProject(ws, rel).name, { timeout: 10_000 }).toBe('审片后改名');
+  await waitSaved(page);
+
+  // d) 撤销 agent 修改：agent 写工程前存的快照（这里直接放一份），按钮恢复它并消耗掉
+  const db = new DatabaseSync(join(root, 'user-data', 'spark.db'), { readOnly: true });
+  const conversationId = String(db.prepare('SELECT id FROM conversation').get()?.id);
+  db.close();
+  const snapDir = join(root, 'user-data', 'video-snapshots', encodeURIComponent(conversationId), encodeURIComponent(rel));
+  mkdirSync(snapDir, { recursive: true });
+  writeFileSync(join(snapDir, `${Date.now()}-000.json`), JSON.stringify({ ...readProject(ws, rel), name: 'agent 改之前' }));
+  // agent 随后改了工程（文件变化让剪辑器重查快照）
+  writeProject(ws, rel, { ...readProject(ws, rel), name: 'agent 第二轮' });
+  await expect(title(page)).toHaveText('agent 第二轮');
+  const agentUndo = page.getByTestId('video-agent-undo');
+  await expect(agentUndo).toBeVisible();
+  await agentUndo.click();
+  await expect(title(page)).toHaveText('agent 改之前');
+  await expect.poll(() => readProject(ws, rel).name, { timeout: 10_000 }).toBe('agent 改之前');
+  await expect(agentUndo).toHaveCount(0);
+  expect(readdirSync(snapDir)).toEqual([]);
+
+  // e) 音频用途：背景音乐改成配音，落盘 role=voice
+  await clipBlock(page, 'music.m4a').click();
+  await inspector(page).getByRole('combobox', { name: '用途' }).click();
+  await page.getByRole('option', { name: '配音 / 人声' }).click();
+  await expect.poll(() => readProject(ws, rel).audio[0].role, { timeout: 10_000 }).toBe('voice');
+  await app.close();
+});
+
+test('转场：接缝里选转场落盘、成片变短；预览转场中途的画面与导出同一帧逐点一致（内置 + 自创表达式）', async () => {
+  test.setTimeout(240_000);
+  const W = 320;
+  const H = 240;
+  const rel = 'videos/transition.sparkvideo.json';
+  const base = (): VideoProject => ({
+    version: 1,
+    name: '转场',
+    canvas: { width: W, height: H, fps: 30 },
+    video: [
+      { id: 'v1', type: 'video', src: 'media/red.mp4', sourceDuration: 2, inPoint: 0, outPoint: 2, volume: 1, width: W, height: H },
+      { id: 'v2', type: 'video', src: 'media/blue.mp4', sourceDuration: 2, inPoint: 0, outPoint: 2, volume: 1, width: W, height: H },
+    ],
+    audio: [],
+    subtitles: { style: 'bottom-outline', cues: [] },
+  });
+  const { app, page, ws } = await openEditor('video-transition', (ws) => {
+    makeSolidVideo(join(ws, 'media/red.mp4'), 2, `${W}x${H}`, 'red');
+    makeSolidVideo(join(ws, 'media/blue.mp4'), 2, `${W}x${H}`, 'blue');
+    writeProject(ws, rel, base());
+    return rel;
+  });
+
+  // a) 点接缝 → 检查器里是 46 种内置转场的选择面板；选「圆形展开」落盘，成片 4 → 3.5 秒
+  const seam = timeline(page).getByTestId('transition-seam');
+  await expect(seam).toHaveCount(1);
+  await expect(seam).toHaveAttribute('data-has-transition', 'false');
+  await seam.click();
+  const picker = page.getByTestId('transition-picker');
+  await expect(picker.getByTestId('transition-tile')).toHaveCount(46);
+  await picker.getByRole('button', { name: '圆形展开', exact: true }).click();
+  await expect.poll(() => readProject(ws, rel).video[0].transition, { timeout: 10_000 }).toEqual({ type: 'circleopen', duration: 0.5 });
+  await expect(seam).toHaveAttribute('data-has-transition', 'true');
+  await expect(page.getByTestId('video-time')).toContainText('0:03.5');
+  await waitSaved(page);
+  await page.screenshot({ path: join(screens, 'video-transition-picker.png') });
+
+  // b) 预览与导出逐点比对：1.8 秒正好是第 54 帧，两边的进度都是 P = 0.4
+  const grid: Array<[number, number]> = [];
+  for (let gy = 1; gy <= 5; gy++) for (let gx = 1; gx <= 7; gx++) grid.push([gx / 8, gy / 6]);
+  const compare = async (label: string) => {
+    await seekExact(page, 1.8);
+    await expect(page.getByTestId('video-time')).toContainText('0:01.8 /');
+    await page.waitForTimeout(800);
+    const preview = await Promise.all(grid.map(([fx, fy]) => glPixel(page, fx, fy)));
+    await page.getByTestId('video-canvas').screenshot({ path: join(screens, `video-transition-${label}.png`) });
+
+    await editor(page).getByRole('button', { name: '导出', exact: true }).click();
+    const dialog = page.getByRole('dialog');
+    const before = exportsOf(ws);
+    await dialog.getByRole('button', { name: before.length ? '重新导出' : '开始导出' }).click();
+    if (before.length) await dialog.getByRole('button', { name: '开始导出' }).click();
+    await expect(dialog.getByText('导出完成')).toBeVisible({ timeout: 60_000 });
+    const out = exportsOf(ws).find((f) => !before.includes(f));
+    if (!out) throw new Error('没找到新导出的成片');
+    await page.keyboard.press('Escape');
+    await expect(dialog).toBeHidden();
+    expect(durationOf(join(ws, 'exports', out))).toBeCloseTo(3.5, 1);
+    const exported = exportedPixels(join(ws, 'exports', out), 1.8, W, H, grid);
+
+    const diffs = preview.map((p, i) => Math.max(...p.map((v, c) => Math.abs(v - (exported[i]?.[c] ?? 0)))));
+    console.log(label, JSON.stringify({ preview, exported, diffs }));
+    // 确实在转场中途：一批点混进了前一段的红（R > 40），一批点已经是纯蓝的后一段（R < 5）
+    expect(preview.filter(([r]) => r > 40).length).toBeGreaterThanOrEqual(3);
+    expect(preview.filter(([r]) => r < 5).length).toBeGreaterThanOrEqual(3);
+    // 逐点：九成以上的点各通道差 ≤ 40（边界附近有 yuv420p 色度下采样与缩放的误差），平均差 ≤ 20
+    expect(diffs.filter((d) => d <= 40).length).toBeGreaterThanOrEqual(Math.ceil(grid.length * 0.9));
+    expect(diffs.reduce((a, b) => a + b, 0) / diffs.length).toBeLessThanOrEqual(20);
+  };
+  await compare('circleopen');
+
+  // c) agent 自创的转场（菱形展开）：同一条表达式，预览翻译成着色器、导出交给 ffmpeg
+  const custom = { type: 'custom' as const, duration: 0.5, name: '菱形展开', expr: 'if(lt(abs(X-W/2)/W+abs(Y-H/2)/H,1-P),B,A)' };
+  const withCustom = readProject(ws, rel);
+  writeProject(ws, rel, { ...withCustom, video: [{ ...withCustom.video[0], transition: custom }, withCustom.video[1]] });
+  await expect(picker).toContainText('菱形展开');
+  await compare('custom');
   await app.close();
 });
 

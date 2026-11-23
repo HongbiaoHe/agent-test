@@ -33,6 +33,7 @@ import { SkillStore } from './skills/skill-store';
 import { ffmpegBinaries } from './video/ffmpeg-paths';
 import { CanvasWatcher } from './canvas/canvas-watcher';
 import { VideoService } from './video/video-service';
+import { VideoSnapshots } from './video/snapshots';
 import { WebApi } from './web-media/web-api';
 import { ProcessTracker } from './workspace/process-tracker';
 
@@ -134,8 +135,12 @@ const modes = new ModeStore(db);
 // 工具注册表：启动时登记一次；后台任务服务在 RunService 之后才装配，经 getter 延迟取（只在运行期 create 时用到）
 const registry = buildDesktopRegistry({ webApi, skills, skillsChanged, background: () => background });
 
+// agent 改剪辑工程前的快照（剪辑器「撤销 agent 修改」）：RunService 写入、VideoService 读取与恢复
+const videoSnapshots = new VideoSnapshots(join(profileDir, 'video-snapshots'));
+
 const runs = new RunService({
   webApi,
+  videoSnapshots,
   repo,
   checkpointer,
   skills,
@@ -188,6 +193,7 @@ const video = new VideoService({
   workspaceOf: (conversationId) => repo.require(conversationId).workspaceDir,
   emit: broadcast,
   binaries: ffmpegBinaries,
+  snapshots: videoSnapshots,
 });
 
 // 画布：打开着的画布的实时事件从 Web 后端转发给画布视图（登录了 Web 账号才有）

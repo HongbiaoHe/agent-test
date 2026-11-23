@@ -367,6 +367,9 @@ export function createHandlers(s: Services): Handlers {
     'video.probe': (p) => s.video.probe(p.conversationId, p.paths),
     'video.importFiles': (p) => s.video.importFiles(p.conversationId, p.sourcePaths),
     'video.export': (p) => s.video.startExport(p.conversationId, p.path, p.height, p.wrappedSubtitles),
+    'video.snapshots': (p) => s.video.snapshotInfo(p.conversationId, p.path),
+    'video.restoreSnapshot': (p) => s.video.restoreSnapshot(p.conversationId, p.path),
+    'video.readReview': (p) => s.video.readReview(p.conversationId, p.path),
     'video.exportCancel': (p) => {
       s.video.cancelExport(p.jobId);
       return { ok: true };

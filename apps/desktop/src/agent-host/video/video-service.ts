@@ -3,11 +3,18 @@
  * 路径一律是会话工作区内的相对路径，解析后必须仍在工作区内。
  */
 import { randomUUID } from 'node:crypto';
-import { copyFile, mkdtemp, rm, stat, writeFile } from 'node:fs/promises';
+import { copyFile, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises';
 import { type FSWatcher, watch } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { basename, dirname, extname, isAbsolute, join } from 'node:path';
-import { EXPORTS_DIR, parseProject, projectDuration } from '@agent-test/video-schema';
+import {
+  EXPORTS_DIR,
+  parseProject,
+  projectDuration,
+  type ReviewFile,
+  ReviewFileSchema,
+  reviewPathOf,
+} from '@agent-test/video-schema';
 import type {
   HostEvent,
   VideoExportStatus,
@@ -16,6 +23,7 @@ import { hostI18n } from '../i18n';
 import { buildAss, buildExportArgs, FfmpegError, type FfmpegRun, outputSize, runFfmpeg } from './export';
 import type { FfmpegBinaries } from './ffmpeg-paths';
 import { probeMedia } from './probe';
+import type { SnapshotInfo, VideoSnapshots } from './snapshots';
 import {
   assertProjectPath,
   listProjects,
@@ -40,11 +48,15 @@ export interface VideoServiceDeps {
   workspaceOf: (conversationId: string) => string;
   emit: (event: HostEvent) => void;
   binaries: () => FfmpegBinaries;
+  /** agent 改工程前存的快照（「撤销 agent 修改」） */
+  snapshots: VideoSnapshots;
 }
 
 interface WatchEntry {
   watcher: FSWatcher;
   timer: NodeJS.Timeout | null;
+  /** 审片结果文件（<名字>.review.json）变化的防抖 */
+  reviewTimer: NodeJS.Timeout | null;
   /** 最近一次已知的 mtime（读 / 本服务写入时更新）：变化后与它相同就不广播，免得编辑器收到自己写入的回声 */
   knownMtimeMs: number;
 }
@@ -88,6 +100,7 @@ export class VideoService {
     const entry = this.watchers.get(key);
     if (!entry) return;
     if (entry.timer) clearTimeout(entry.timer);
+    if (entry.reviewTimer) clearTimeout(entry.reviewTimer);
     entry.watcher.close();
     this.watchers.delete(key);
   }
@@ -106,6 +119,33 @@ export class VideoService {
     const entry = this.watchers.get(watchKey(conversationId, path));
     if (entry) entry.knownMtimeMs = mtimeMs;
     return { ok: true, mtimeMs };
+  }
+
+  /** 还能撤销几轮 agent 修改 */
+  snapshotInfo(conversationId: string, path: string): Promise<SnapshotInfo> {
+    assertProjectPath(path);
+    this.deps.workspaceOf(conversationId);
+    return this.deps.snapshots.info(conversationId, path);
+  }
+
+  /** 撤销 agent 最近一轮修改：最新快照写回工程（文件监听照常推 video-file-changed，剪辑器据此重载） */
+  restoreSnapshot(conversationId: string, path: string): Promise<SnapshotInfo> {
+    assertProjectPath(path);
+    return this.deps.snapshots.restoreLatest(conversationId, this.deps.workspaceOf(conversationId), path);
+  }
+
+  /** 工程旁边的审片结果；没有或格式不对返回 null */
+  async readReview(conversationId: string, path: string): Promise<ReviewFile | null> {
+    assertProjectPath(path);
+    const root = this.deps.workspaceOf(conversationId);
+    const abs = await resolveExisting(root, reviewPathOf(path)).catch(() => null);
+    if (!abs) return null;
+    try {
+      const parsed = ReviewFileSchema.safeParse(JSON.parse(await readFile(abs, 'utf8')));
+      return parsed.success ? parsed.data : null;
+    } catch {
+      return null;
+    }
   }
 
   async probe(conversationId: string, paths: string[]): Promise<VideoMediaProbe[]> {
@@ -258,10 +298,19 @@ export class VideoService {
       return;
     }
     const name = basename(abs);
+    const reviewName = basename(reviewPathOf(path));
     const watcher = watch(dirname(abs), (_event, filename) => {
-      if (filename !== null && filename !== name) return;
       const entry = this.watchers.get(key);
       if (!entry) return;
+      if (filename === reviewName) {
+        if (entry.reviewTimer) clearTimeout(entry.reviewTimer);
+        entry.reviewTimer = setTimeout(() => {
+          entry.reviewTimer = null;
+          if (this.watchers.has(key)) this.deps.emit({ kind: 'event', type: 'video-review-changed', conversationId, path });
+        }, WATCH_DEBOUNCE_MS);
+        return;
+      }
+      if (filename !== null && filename !== name) return;
       if (entry.timer) clearTimeout(entry.timer);
       entry.timer = setTimeout(() => {
         entry.timer = null;
@@ -276,7 +325,7 @@ export class VideoService {
       }, WATCH_DEBOUNCE_MS);
     });
     watcher.on('error', () => this.close(conversationId, path));
-    this.watchers.set(key, { watcher, timer: null, knownMtimeMs: mtimeMs });
+    this.watchers.set(key, { watcher, timer: null, reviewTimer: null, knownMtimeMs: mtimeMs });
   }
 }
 

@@ -10,6 +10,7 @@
  * 本机目录（见 workspace/workspace-backend.ts），按会话权限档位决定写 / 执行是否审批或直接拒绝；
  * 审批没有超时自动拒绝。
  */
+import { randomUUID } from 'node:crypto';
 import { mkdir, rm } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Command } from '@langchain/langgraph';
@@ -39,6 +40,7 @@ import type { BackgroundService } from '../background/background-service';
 import type { LlmStore } from '../llm/llm-store';
 import type { ModeStore } from '../modes/mode-store';
 import { parseSkillSource, skillsAddArgs } from '../skills/github-install';
+import type { VideoSnapshots } from '../video/snapshots';
 import type { WebApi } from '../web-media/web-api';
 import { uploadAttachment } from '../web-media/web-media';
 import type { SkillStore } from '../skills/skill-store';
@@ -90,6 +92,8 @@ export interface RunDeps {
   skillsChanged?: () => void;
   /** 登录了 Web 账号：挂载生图 / 生视频 / 配音工具，附件同时上传为生成素材 */
   webApi?: WebApi | null;
+  /** agent 改剪辑工程前存快照（剪辑器的「撤销 agent 修改」）；测试里可不传 */
+  videoSnapshots?: VideoSnapshots;
   log?: (msg: string) => void;
 }
 
@@ -249,7 +253,12 @@ export class RunService {
     if (!conv) return;
     const workspaceDir = conv.workspaceDir;
     const runtimeDir = this.runtimeDir(conversationId);
-    const inner = new LocalWorkspaceSandbox(workspaceDir, { tracker: this.deps.processes });
+    const snapshots = this.deps.videoSnapshots;
+    const runKey = randomUUID();
+    const inner = new LocalWorkspaceSandbox(workspaceDir, {
+      tracker: this.deps.processes,
+      beforeWrite: snapshots ? (filePath) => snapshots.capture(conversationId, workspaceDir, filePath, runKey) : undefined,
+    });
     this.active.set(conversationId, { abort, sandbox: inner });
     /** 本轮正常结束：收尾后补投运行期间结束的后台任务通知（同 backend worker 在 done 之后 deliverPending） */
     let deliverAfter = false;

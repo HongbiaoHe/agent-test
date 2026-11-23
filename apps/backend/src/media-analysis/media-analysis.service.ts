@@ -322,7 +322,7 @@ export function isNetworkError(e: unknown): boolean {
   return e instanceof Error && e.message === 'fetch failed';
 }
 
-async function fetchBytes(url: string): Promise<Buffer> {
+export async function fetchBytes(url: string): Promise<Buffer> {
   const res = await fetch(url, {
     signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
   });
@@ -341,7 +341,7 @@ function mimeOf(
 }
 
 /** z.toJSONSchema 带 $schema 元字段，Gemini 的 responseJsonSchema 不需要它 */
-function withoutMeta(schema: object): object {
+export function withoutMeta(schema: object): object {
   return Object.fromEntries(
     Object.entries(schema).filter(([k]) => k !== '$schema'),
   );

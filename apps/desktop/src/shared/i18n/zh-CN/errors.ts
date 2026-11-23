@@ -140,6 +140,7 @@ export const errors = {
     missingMedia: '找不到素材：{{paths}}',
     importNotFile: '不是文件：{{path}}',
     jobNotFound: '导出任务不存在：{{id}}',
+    noSnapshot: '没有可撤销的 agent 修改',
     exportFailed: 'ffmpeg 导出失败（退出码 {{code}}）：{{detail}}',
   },
 } as const;

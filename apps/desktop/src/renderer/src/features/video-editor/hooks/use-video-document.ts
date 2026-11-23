@@ -23,10 +23,11 @@ export function useVideoDocument(conversationId: string, path: string) {
     latestRef.current = state;
   });
 
-  const load = useCallback(async () => {
+  /** initial = 打开时载入（新的撤销栈）；否则是外部修改后的重载（进撤销栈，见 lib/document.ts） */
+  const load = useCallback(async (mode: 'initial' | 'reload' = 'initial') => {
     try {
       const file = await agent.call('video.read', { conversationId, path });
-      dispatch({ type: 'loaded', file });
+      dispatch({ type: mode === 'initial' ? 'loaded' : 'reloaded', file });
     } catch (e) {
       dispatch({ type: 'loadFailed', error: messageOf(e) });
     }
@@ -91,7 +92,7 @@ export function useVideoDocument(conversationId: string, path: string) {
 
   // 静默重载
   useEffect(() => {
-    if (state.reloadToken > 0) void load();
+    if (state.reloadToken > 0) void load('reload');
   }, [state.reloadToken, load]);
 
   // 自动保存：最后一次编辑后约 1 秒写回；冲突未处理 / 上次写失败（等下一次编辑）时不自动写
@@ -152,8 +153,8 @@ export function useVideoDocument(conversationId: string, path: string) {
     undo,
     redo,
     flush,
-    /** 冲突提示「重新加载」：丢弃本地改动 */
-    reload: () => void load(),
+    /** 冲突提示「重新加载」：换成磁盘上的版本（本地改动留在撤销栈里，⌘Z 能找回） */
+    reload: () => void load('reload'),
     /** 冲突提示「保留我的修改」：不带 baseMtimeMs 强制写入 */
     keepMine: () => {
       if (present) void save(present, state.editVersion, undefined);
