@@ -89,62 +89,67 @@
 }
 
 .dark {
-  --background: oklch(0.17 0.004 60);
-  --foreground: oklch(0.95 0.002 80);
+  /* 暗色不是浅色反色（DESIGN.md §2.3）：
+     - 底色用近黑的暖深灰（不用纯黑），亮度对齐 #121418；
+     - 表面越高越亮：background → card → popover → secondary/muted → accent，靠明暗分层，浮层另有 1px 淡边框；
+     - 主文字柔和暖白（背景上约 15:1），次要文字在最亮的 accent 面上仍 ≥ 4.5:1；
+     - 功能色 / 强调色换成更浅更柔的色调，在 background / card / popover / muted / accent 上都 ≥ WCAG AA 4.5:1。 */
+  --background: oklch(0.191 0.005 65);
+  --foreground: oklch(0.931 0.004 80);
 
-  --card: oklch(0.205 0.004 60);
-  --card-foreground: oklch(0.95 0.002 80);
+  --card: oklch(0.2345 0.005 65);
+  --card-foreground: oklch(0.931 0.004 80);
 
-  --popover: oklch(0.205 0.004 60);
-  --popover-foreground: oklch(0.95 0.002 80);
+  --popover: oklch(0.262 0.005 65);
+  --popover-foreground: oklch(0.931 0.004 80);
 
-  --primary: oklch(0.92 0.002 80);
-  --primary-foreground: oklch(0.205 0.005 60);
+  --primary: oklch(0.9 0.004 80);
+  --primary-foreground: oklch(0.191 0.005 65);
 
-  --secondary: oklch(0.26 0.004 60);
-  --secondary-foreground: oklch(0.95 0.002 80);
+  --secondary: oklch(0.28 0.005 65);
+  --secondary-foreground: oklch(0.931 0.004 80);
 
-  --muted: oklch(0.255 0.004 60);
-  --muted-foreground: oklch(0.7 0.005 70);
+  --muted: oklch(0.28 0.005 65);
+  --muted-foreground: oklch(0.735 0.006 75);
 
-  --accent: oklch(0.28 0.004 60);
-  --accent-foreground: oklch(0.95 0.002 80);
+  --accent: oklch(0.305 0.006 65);
+  --accent-foreground: oklch(0.931 0.004 80);
 
-  --destructive: oklch(0.62 0.19 25);
-  --destructive-foreground: oklch(0.985 0.002 80);
+  --destructive: oklch(0.74 0.12 25);
+  --destructive-foreground: oklch(0.191 0.005 65);
 
-  --border: oklch(1 0 0 / 8%);
-  --input: oklch(1 0 0 / 12%);
-  --ring: oklch(0.55 0.01 70);
+  --border: oklch(1 0 0 / 10%);
+  --input: oklch(1 0 0 / 14%);
+  --ring: oklch(0.62 0.01 70);
 
-  --success: oklch(0.72 0.17 150);
-  --warning: oklch(0.78 0.14 80);
+  --success: oklch(0.8 0.12 150);
+  --warning: oklch(0.85 0.11 85);
 
-  --agent: oklch(0.74 0.15 50);
+  --agent: oklch(0.8 0.11 55);
   --agent-foreground: oklch(0.2 0.01 50);
-  --selection: oklch(0.72 0.16 255);
-  --checker-a: oklch(0.3 0.004 60);
-  --checker-b: oklch(0.25 0.004 60);
-  --workspace: oklch(0.14 0.004 60);
+  --selection: oklch(0.78 0.1 255);
+  --checker-a: oklch(0.3 0.005 65);
+  --checker-b: oklch(0.255 0.005 65);
+  --workspace: oklch(0.168 0.005 65);
 
   /* 暗底上发光成立：提亮方格、加浓光晕，最暗处可以压得更低（底色深，弱格子仍可辨） */
-  --thinking-cell: oklch(0.85 0.175 72);
+  --thinking-cell: oklch(0.86 0.1 75);
   --thinking-cell-dim: 0.15;
   --thinking-glow-strength: 58%;
 
   /* dark 下柔光用近白亮光（暗卡上更醒目） */
-  --glow-color: oklch(0.92 0.002 80);
+  --glow-color: oklch(0.88 0.004 80);
 
   /* dark 下点阵提亮 + 提高 alpha，暗底上点更醒目 */
   --dotfield-dot-from: oklch(0.8 0.006 70 / 0.55);
   --dotfield-dot-to: oklch(0.7 0.006 70 / 0.32);
 
-  --syntax-comment: oklch(0.66 0.01 240);
-  --syntax-keyword: oklch(0.72 0.15 25);
-  --syntax-string: oklch(0.85 0.14 150);
-  --syntax-number: oklch(0.77 0.1 245);
-  --syntax-function: oklch(0.79 0.12 300);
-  --syntax-property: oklch(0.85 0.07 240);
+  --syntax-comment: oklch(0.72 0.012 240);
+  --syntax-keyword: oklch(0.78 0.11 25);
+  --syntax-string: oklch(0.86 0.1 150);
+  --syntax-number: oklch(0.8 0.08 245);
+  --syntax-function: oklch(0.82 0.09 300);
+  --syntax-property: oklch(0.86 0.05 240);
 }
 
 @theme inline {
