@@ -79,6 +79,8 @@ export class CanvasRunSession {
         return this.web.agentConcat(canvasId, this.holderId, sources);
       },
       modelCatalog: (type) => this.web.modelCatalog(type),
+      // 只读：不要求持锁
+      inspectMedia: (versionIds, signal) => this.web.inspectMedia(canvasId, versionIds, signal),
     };
   }
 

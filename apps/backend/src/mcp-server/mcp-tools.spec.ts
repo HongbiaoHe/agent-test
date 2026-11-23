@@ -85,6 +85,7 @@ describe('画布 MCP 工具装配', () => {
     const { tools } = await client.listTools();
     expect(tools.map((t) => t.name).sort()).toEqual([
       'get_canvas',
+      'inspect_node_media',
       'list_canvases',
       'list_media_models',
       'wait_for_generations',

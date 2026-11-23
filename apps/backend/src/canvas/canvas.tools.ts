@@ -72,6 +72,8 @@ export function createCanvasToolBackend(
         media.createConcat(ctx.sessionId, ctx.userId, sources),
       ),
     modelCatalog: (type) => media.agentModelCatalog(type, ctx.userId),
+    inspectMedia: (versionIds, signal) =>
+      canvas.inspectMedia(ctx.sessionId, versionIds, signal),
   };
 }
 

@@ -15,7 +15,10 @@ import type {
   CanvasRunLock,
   CanvasSnapshot,
 } from '@agent-test/canvas-schema';
-import type { CanvasNodeConfigResult } from '@agent-test/agent-core/canvas/canvas-tools';
+import type {
+  CanvasNodeConfigResult,
+  MediaInspection,
+} from '@agent-test/agent-core/canvas/canvas-tools';
 import { z } from 'zod';
 import type { WebApi } from '../web-media/web-api';
 
@@ -159,6 +162,14 @@ export class CanvasWeb {
       await this.web.post(`/canvas-agent/${enc(id)}/uploaded-asset`, { scope, versionId }),
     );
     return r.asset;
+  }
+
+  /** 节点产物的理解结果（inspect_node_media；服务端只认这块画布节点上挂着的版本） */
+  async inspectMedia(id: string, versionIds: string[], signal?: AbortSignal): Promise<MediaInspection[]> {
+    const r = ownDto<{ items: MediaInspection[] }>(
+      await this.web.post(`/canvas-agent/${enc(id)}/media-inspect`, { versionIds }, signal),
+    );
+    return r.items;
   }
 
   async modelCatalog(type: 'image' | 'video'): Promise<unknown> {

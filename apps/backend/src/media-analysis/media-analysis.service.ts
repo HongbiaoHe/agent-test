@@ -25,6 +25,12 @@ const GEMINI_TIMEOUT_MS = 180_000;
 const WAIT_POLL_MS = 500;
 /** pending 超过这么久还没动静（job 丢了，如 Redis 重启）就重新投 */
 const STALE_PENDING_MS = 5 * 60_000;
+/**
+ * 工具路径（retryFailed=false）下失败结果的冷却期：冷却内直接交回失败，过了就重投。
+ * 失败多是临时的（网络、代理、上游超时），不设期限的话画布产物一旦失败就永远看不了——它没有
+ * 「用户重发附件」那样的重投入口。
+ */
+const FAILED_RETRY_COOLDOWN_MS = 5 * 60_000;
 
 /** 文件扩展名 → MIME（上传版本带 contentType；aigc 产物没有，按 URL 后缀猜） */
 const EXT_MIME: Record<string, string> = {
@@ -61,9 +67,10 @@ export class MediaAnalysisService {
    * 为这些版本投分析任务。已分析完（或正在分析）的直接复用，久无动静的重投——
    * 同一附件重复发送不会再分析一次。
    *
-   * retryFailed：失败过的要不要重投。用户发送消息时重投（给一次重来的机会，比如环境修好了）；
-   * agent 工具里不重投——否则 agent 每调一次工具就重新分析一遍，失败原因没变的话只是白等
-   * （2026-10-25 实测：连不上 Gemini 时每次调用干等约 22 秒，agent 连调 5 轮）。
+   * retryFailed：失败过的要不要立即重投。用户发送消息时重投（给一次重来的机会，比如环境修好了）；
+   * agent 工具里不立即重投——否则 agent 每调一次工具就重新分析一遍，失败原因没变的话只是白等
+   * （2026-10-25 实测：连不上 Gemini 时每次调用干等约 22 秒，agent 连调 5 轮）；
+   * 但失败超过 FAILED_RETRY_COOLDOWN_MS 的照样重投，临时故障修好后还能再看。
    */
   async enqueue(
     versionIds: readonly string[],
@@ -76,7 +83,10 @@ export class MediaAnalysisService {
       const stale =
         existing?.status === 'pending' &&
         Date.now() - existing.updatedAt.getTime() > STALE_PENDING_MS;
-      const retry = existing?.status === 'failed' && retryFailed;
+      const retry =
+        existing?.status === 'failed' &&
+        (retryFailed ||
+          Date.now() - existing.updatedAt.getTime() > FAILED_RETRY_COOLDOWN_MS);
       if (existing && !retry && !stale) continue;
       await this.prisma.mediaAnalysis.upsert({
         where: { versionId },
@@ -234,9 +244,22 @@ export class MediaAnalysisService {
     if (!v || v.generation.userId !== userId) {
       return { error: '没有这个素材（versionId 不存在或不属于当前用户）' };
     }
-    await this.enqueue([versionId], { retryFailed: false });
-    const [row] = await this.waitFor([versionId], timeoutMs);
+    const [row] = await this.analyzeAndWait([versionId], timeoutMs);
     return { versionId, type: v.generation.type, row: row ?? null };
+  }
+
+  /**
+   * agent 工具取分析的公共路径（归属由调用方先核对）：没分析过的现投、冷却内失败过的不重投，
+   * 再等最多 timeoutMs（或调用被取消）。返回此刻的分析行，可能有还没完成的。
+   */
+  async analyzeAndWait(
+    versionIds: readonly string[],
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<AnalysisRow[]> {
+    if (versionIds.length === 0) return [];
+    await this.enqueue(versionIds, { retryFailed: false });
+    return this.waitFor(versionIds, timeoutMs, undefined, signal);
   }
 
   private async rows(versionIds: readonly string[]): Promise<AnalysisRow[]> {

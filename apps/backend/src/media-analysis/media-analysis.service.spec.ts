@@ -83,6 +83,15 @@ describe('MediaAnalysisService', () => {
       expect(queue.add).not.toHaveBeenCalled();
     });
 
+    it('retryFailed=false 但失败已过冷却期：照样重投（临时故障修好后还能再看）', async () => {
+      prisma.mediaAnalysis.findUnique.mockResolvedValue({
+        status: 'failed',
+        updatedAt: new Date(Date.now() - 10 * 60_000),
+      });
+      await service.enqueue(['v1'], { retryFailed: false });
+      expect(queue.add).toHaveBeenCalledTimes(1);
+    });
+
     it('getForUser 走的就是不重投的路径：失败结果直接交回', async () => {
       prisma.mediaVersion.findUnique.mockResolvedValue({
         id: 'v1',

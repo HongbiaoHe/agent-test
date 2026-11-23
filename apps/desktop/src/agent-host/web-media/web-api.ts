@@ -47,8 +47,9 @@ export class WebApi {
     return this.request('GET', path);
   }
 
-  post(path: string, body: object): Promise<unknown> {
-    return this.request('POST', path, JSON.stringify(body), 'application/json');
+  /** signal：调用方放弃时中止（与请求超时一起生效） */
+  post(path: string, body: object, signal?: AbortSignal): Promise<unknown> {
+    return this.request('POST', path, JSON.stringify(body), 'application/json', signal);
   }
 
   patch(path: string, body: object): Promise<unknown> {
@@ -128,7 +129,14 @@ export class WebApi {
     return this.parse('POST', path, res);
   }
 
-  private async request(method: string, path: string, body?: string, contentType?: string): Promise<unknown> {
+  private async request(
+    method: string,
+    path: string,
+    body?: string,
+    contentType?: string,
+    signal?: AbortSignal,
+  ): Promise<unknown> {
+    const timeout = AbortSignal.timeout(REQUEST_TIMEOUT_MS);
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}${path}`, {
@@ -138,9 +146,11 @@ export class WebApi {
           ...(contentType ? { 'Content-Type': contentType } : {}),
         },
         body,
-        signal: AbortSignal.timeout(REQUEST_TIMEOUT_MS),
+        signal: signal ? AbortSignal.any([signal, timeout]) : timeout,
       });
     } catch (e) {
+      // 调用方自己放弃的：原样抛中止，别报成「连不上 Web 服务」
+      if (signal?.aborted) throw signal.reason;
       throw new WebApiError(0, null, hostI18n.t('errors.web.unreachable', { url: this.baseUrl, error: e instanceof Error ? e.message : String(e) }));
     }
     return this.parse(method, path, res);

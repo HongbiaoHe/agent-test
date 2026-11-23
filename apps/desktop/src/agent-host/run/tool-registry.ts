@@ -8,6 +8,7 @@
  */
 import { join } from 'node:path';
 import type { StructuredToolInterface } from '@langchain/core/tools';
+import { CANVAS_READONLY_TOOLS } from '@agent-test/agent-core/canvas/canvas-tools';
 import { MEDIA_GENERATION_PROMPT } from '@agent-test/agent-core/media/media-prompt';
 import type { RuntimeServer } from '@agent-test/agent-core/mcp/mcp-types';
 import type { Capability, RuntimeEnvironment } from '@agent-test/agent-core/modes/capabilities';
@@ -94,7 +95,13 @@ const MEDIA_ENTRIES: Entry[] = [
   { name: 'clone_voice', title: '克隆音色', description: '用参考音频克隆一个可用于配音的音色' },
 ].map((e) => ({ ...e, requires: ['media_api'] as const, promptSection: MEDIA_GENERATION_PROMPT }));
 
-/** 画布结构 / 生成工具（定义在 core canvas-tools.ts，与 Web 画布 agent 共用）：改画布要 canvas_write */
+/** 只读画布工具（core 的 CANVAS_READONLY_TOOLS）：只读档位也能用 */
+const READONLY_CANVAS_TOOLS: ReadonlySet<string> = new Set(CANVAS_READONLY_TOOLS);
+
+/**
+ * 画布结构 / 生成 / 查看工具（定义在 core canvas-tools.ts，与 Web 画布 agent 共用）：
+ * 改画布要 canvas_write，只读的（按 CANVAS_READONLY_TOOLS）只要 canvas。
+ */
 const CANVAS_ENTRIES: Entry[] = [
   { name: 'add_node', title: '画布：加节点', description: '在当前画布上新建一个节点' },
   { name: 'add_nodes', title: '画布：批量加节点', description: '一次新建多个节点' },
@@ -107,7 +114,12 @@ const CANVAS_ENTRIES: Entry[] = [
   { name: 'generate_media_node', title: '画布：生成', description: '触发生成节点出图 / 出视频（询问权限要确认）' },
   { name: 'merge_video_node', title: '画布：拼接', description: '触发视频拼接节点（询问权限要确认）' },
   { name: 'set_clip_order', title: '画布：拼接顺序', description: '调整拼接节点的成片顺序' },
-].map((e) => ({ ...e, requires: ['canvas', 'canvas_write'] as const, promptSection: DESKTOP_CANVAS_PROMPT }));
+  { name: 'inspect_node_media', title: '画布：查看产物', description: '查看节点产物（图 / 视频 / 音频）的内容描述，用来检查生成结果' },
+].map((e) => ({
+  ...e,
+  requires: READONLY_CANVAS_TOOLS.has(e.name) ? (['canvas'] as const) : (['canvas', 'canvas_write'] as const),
+  promptSection: DESKTOP_CANVAS_PROMPT,
+}));
 
 /** 后台任务说明段随后台工具一起出现（没勾就没有）；可写工作区才提 run_in_background。 */
 const backgroundSection = (env: RuntimeEnvironment): string =>

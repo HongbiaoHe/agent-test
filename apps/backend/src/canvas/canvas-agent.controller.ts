@@ -1,4 +1,13 @@
-import { Body, Controller, Get, Param, Post, UseGuards } from '@nestjs/common';
+import {
+  Body,
+  Controller,
+  Get,
+  Param,
+  Post,
+  Res,
+  UseGuards,
+} from '@nestjs/common';
+import type { Response } from 'express';
 import { CurrentUser } from '../auth/current-user.decorator';
 import { type AuthUser, JwtAuthGuard } from '../auth/jwt-auth.guard';
 import { desktopScope } from '../media/media-api.controller';
@@ -9,6 +18,7 @@ import { createCanvasToolBackend } from './canvas.tools';
 import {
   CanvasAgentConcatDto,
   CanvasAgentGenerationDto,
+  CanvasAgentInspectMediaDto,
   CanvasAgentLockDto,
   CanvasAgentNodeConfigDto,
   CanvasAgentOpDto,
@@ -138,6 +148,23 @@ export class CanvasAgentController {
       asset: await this.backend(id, user, dto.scope).findUploadedAsset(
         dto.versionId,
       ),
+    };
+  }
+
+  /** 节点产物的理解结果（只读，不要求持锁；只认这块画布节点上挂着的版本） */
+  @Post(':id/media-inspect')
+  async inspectMedia(
+    @Param('id') id: string,
+    @Body() dto: CanvasAgentInspectMediaDto,
+    @CurrentUser() user: AuthUser,
+    @Res({ passthrough: true }) res: Response,
+  ) {
+    await this.canvas.assertAccess(id, user.tenantId);
+    // desktop 停止本轮会中止这个请求：连接一断就不再等分析结果（正常响应后触发也无妨）
+    const abort = new AbortController();
+    res.on('close', () => abort.abort());
+    return {
+      items: await this.canvas.inspectMedia(id, dto.versionIds, abort.signal),
     };
   }
 }

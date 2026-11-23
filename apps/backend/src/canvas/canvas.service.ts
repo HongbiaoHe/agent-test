@@ -15,6 +15,7 @@ import {
   type UploadedAsset,
   type UploadFileInput,
 } from '../media/media-upload.service';
+import type { MediaInspection } from '@agent-test/agent-core/canvas/canvas-tools';
 import { MediaAnalysisService } from '../media-analysis/media-analysis.service';
 import { PrismaService } from '../prisma/prisma.service';
 import { CANVAS_ABORTS } from './canvas.abort';
@@ -564,6 +565,67 @@ export class CanvasService {
       data: { focusNodeIds: valid },
     });
     return { focusNodeIds: valid };
+  }
+
+  /**
+   * 节点产物的理解结果（inspect_node_media）：只认这块画布上某个节点挂着的版本——
+   * 版本 id 来自快照，但 desktop / MCP 经接口传进来，不能信任，按「这块画布的节点引用了它」核对。
+   * 没分析过的现投分析（刚失败过的不重投，免得每调一次白等一轮），再等最多 INSPECT_WAIT_MS（或调用被取消）；
+   * 等不到的回 pending，让 agent 稍后再查（要短于主站反代的 30 秒超时，desktop / MCP 都经它过来）。
+   */
+  async inspectMedia(
+    sessionId: string,
+    versionIds: readonly string[],
+    signal?: AbortSignal,
+  ): Promise<MediaInspection[]> {
+    const wanted = [...new Set(versionIds)];
+    if (wanted.length === 0) return [];
+    const versions = await this.prisma.mediaVersion.findMany({
+      where: { id: { in: wanted } },
+      select: { id: true, generationId: true },
+    });
+    // 只查这几个版本所属生成在本画布上的节点（大画布上别把所有节点都拉一遍）
+    const nodes =
+      versions.length > 0
+        ? await this.prisma.canvasNode.findMany({
+            where: {
+              sessionId,
+              mediaGenerationId: {
+                in: [...new Set(versions.map((v) => v.generationId))],
+              },
+            },
+            select: { mediaGenerationId: true },
+          })
+        : [];
+    const generationIds = new Set(nodes.map((n) => n.mediaGenerationId));
+    const valid = versions
+      .filter((v) => generationIds.has(v.generationId))
+      .map((v) => v.id);
+    const rows = await this.analysis.analyzeAndWait(
+      valid,
+      INSPECT_WAIT_MS,
+      signal,
+    );
+    const byId = new Map(rows.map((r) => [r.versionId, r]));
+    return wanted.map((versionId): MediaInspection => {
+      const row = byId.get(versionId);
+      if (!row) {
+        return {
+          versionId,
+          status: valid.includes(versionId) ? 'pending' : 'not_found',
+          summary: null,
+          detail: null,
+          error: null,
+        };
+      }
+      return {
+        versionId,
+        status: inspectionStatus(row.status),
+        summary: row.summary,
+        detail: row.detail,
+        error: row.error,
+      };
+    });
   }
 
   /**
@@ -1540,4 +1602,14 @@ function assertNodeFields(op: CanvasOpInput): void {
       HttpStatus.BAD_REQUEST,
     );
   }
+}
+
+/** inspect_node_media 等分析结果的上限（见 CanvasService.inspectMedia） */
+const INSPECT_WAIT_MS = 20_000;
+
+/** 分析表的状态 → 工具上的状态（库里只会有这四种，兜底按 pending） */
+function inspectionStatus(status: string): MediaInspection['status'] {
+  return status === 'done' || status === 'failed' || status === 'skipped'
+    ? status
+    : 'pending';
 }

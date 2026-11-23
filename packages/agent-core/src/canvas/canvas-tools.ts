@@ -94,7 +94,33 @@ export interface CanvasToolBackend {
   ): Promise<{ generationId: string } | { error: unknown }>;
   /** 生图 / 生视频模型目录（同 list_media_models） */
   modelCatalog(type: 'image' | 'video'): Promise<unknown>;
+  /**
+   * 节点产物的理解结果（图 / 视频 / 音频 → 文字描述，模型不必能看图）。按需分析、按版本缓存，
+   * 只认这块画布节点上挂着的版本；没分析过的现分析并等一小会，等不到回 pending。
+   * signal：调用被取消（用户停止 / MCP 客户端取消）时不再等。
+   */
+  inspectMedia(
+    versionIds: string[],
+    signal?: AbortSignal,
+  ): Promise<MediaInspection[]>;
 }
+
+/**
+ * 一个产物版本的理解结果（inspect_node_media 用；同一版本只分析一次，之后读缓存）。
+ * - done：有结果；pending：还在分析；failed：分析失败（不会自动重试）；
+ * - skipped：不值得分析（测试模式的占位素材等）；not_found：不是这块画布节点上挂着的产物。
+ */
+export interface MediaInspection {
+  versionId: string;
+  status: 'done' | 'pending' | 'failed' | 'skipped' | 'not_found';
+  summary: string | null;
+  /** 结构化描述（主体、构图、风格、画面文字、视频分镜、人声转写等），形状随媒体类型 */
+  detail: unknown;
+  error: string | null;
+}
+
+/** inspect_node_media 一次最多看几个节点：每个都可能要现分析，太多会等很久 */
+export const INSPECT_NODES_MAX = 10;
 
 /**
  * 取当前画布的执行端。服务端一个 agent 恒对应一块画布；desktop 的对话要先绑定画布——
@@ -116,6 +142,7 @@ export const CANVAS_TOOL_NAMES = [
   'generate_media_node',
   'merge_video_node',
   'set_clip_order',
+  'inspect_node_media',
 ] as const;
 
 /** 有破坏性（删）或要花钱（生成）的工具：需要审批时就审这些 */
@@ -126,8 +153,11 @@ export const CANVAS_SENSITIVE_TOOLS = [
   'merge_video_node',
 ] as const;
 
-/** 只读工具：只读权限下仍可挂 */
-export const CANVAS_READONLY_TOOLS = ['list_media_models'] as const;
+/** 只读工具：只读权限下仍可挂（MCP 的 scope、desktop 的能力要求都按它派生） */
+export const CANVAS_READONLY_TOOLS = [
+  'list_media_models',
+  'inspect_node_media',
+] as const;
 
 /** 已下线的节点类型 → 该改用什么。老会话的 checkpoint 里存着模型当初用过的这些值。 */
 const RETIRED_NODE_TYPES: Record<string, string> = {
@@ -1063,6 +1093,108 @@ export function createCanvasTools(
     },
   );
 
+  /**
+   * 看节点产物的实际内容。画布状态里只有节点的类型 / 标题 / 生成状态，模型（不少是纯文本模型）
+   * 看不到图——「分镜对不对」「这张图有没有文字」这类问题全靠它。产物转成文字描述，任何模型都能用。
+   */
+  const inspectNodeMedia = canvasTool(
+    async ({ nodeIds, detail }, config) => {
+      const b = await backend();
+      const snap = await b.snapshot();
+      const allIds = snap.nodes.map((n) => n.id);
+      const asked = nodeIds.slice(0, INSPECT_NODES_MAX);
+      const picked = asked.map((id) => {
+        const full = resolveNodeIdIn(allIds, id);
+        return { id, node: snap.nodes.find((n) => n.id === full) };
+      });
+      const versionIds = picked.flatMap(({ node }) =>
+        node?.mediaStatus === 'done' && node.mediaVersionId
+          ? [node.mediaVersionId]
+          : [],
+      );
+      const found =
+        versionIds.length > 0
+          ? await b.inspectMedia(versionIds, config.signal)
+          : [];
+      const byVersion = new Map(found.map((r) => [r.versionId, r]));
+      const nodes = picked.map(({ id, node }) => {
+        if (!node) return { nodeId: id, error: '节点不存在' };
+        const base = {
+          nodeId: shortNodeId(node.id),
+          type: node.type,
+          ...(node.label ? { label: node.label } : {}),
+        };
+        if (node.mediaStatus !== 'done' || !node.mediaVersionId) {
+          return {
+            ...base,
+            status: 'no_output',
+            note: `还没有可看的产物（${node.mediaStatus ?? '未生成'}）`,
+          };
+        }
+        const r = byVersion.get(node.mediaVersionId);
+        switch (r?.status) {
+          case 'done':
+            return {
+              ...base,
+              status: 'done',
+              summary: r.summary,
+              // 完整结构化描述（视频含逐镜描述与转写）很长，要了才给
+              ...(detail ? { analysis: r.detail } : {}),
+            };
+          case 'pending':
+            return {
+              ...base,
+              status: 'pending',
+              note: '还在分析（第一次看要现分析，视频更久）：先做别的，稍后再对它调用本工具',
+            };
+          case 'failed':
+            return {
+              ...base,
+              status: 'failed',
+              error: r.error,
+              note: '分析失败（原因见 error）：本轮不要再查它，如实告诉用户这个产物暂时看不到、不要凭提示词猜画面；几分钟后再查会重新分析',
+            };
+          case 'skipped':
+            return {
+              ...base,
+              status: 'skipped',
+              note: '没有可分析的真实内容（测试模式的占位素材，或不支持分析的产物）',
+            };
+          default:
+            return {
+              ...base,
+              status: 'not_found',
+              note: '取不到这个节点的产物',
+            };
+        }
+      });
+      return JSON.stringify({
+        nodes,
+        ...(nodeIds.length > asked.length
+          ? { note: `一次最多看 ${INSPECT_NODES_MAX} 个节点，其余的请再调一次` }
+          : {}),
+      });
+    },
+    {
+      name: 'inspect_node_media',
+      description: `查看节点产物（图片 / 视频 / 音频）的实际内容，返回文字描述：默认只回一句话摘要（summary），传 detail=true 再附完整结构化描述（主体、构图、风格、画面文字、视频分镜、人声转写等）。画布状态里只有节点的类型与标题，看不到画面——要检查生成结果对不对（如分镜是否符合要求、人物 / 产品是否一致、有没有多余文字）或从产物里挑素材时调用；核对细节时对少数几个节点传 detail=true。一次最多 ${INSPECT_NODES_MAX} 个节点；第一次查看要现分析（可能要几十秒，返回 pending 就稍后再查），之后读缓存。`,
+      schema: z.object({
+        nodeIds: z
+          .array(z.string())
+          .min(1)
+          .describe(
+            `要查看的节点 id（短 id 或完整 id），一次最多 ${INSPECT_NODES_MAX} 个`,
+          ),
+        detail: z
+          .boolean()
+          .optional()
+          .describe(
+            '要不要附完整结构化描述（默认只回摘要）。视频的完整描述很长，只对要核对细节的少数节点传 true',
+          ),
+      }),
+    },
+  );
+
   return [
     addNode,
     addNodes,
@@ -1076,5 +1208,6 @@ export function createCanvasTools(
     generateMediaNode,
     mergeVideoNode,
     setClipOrder,
+    inspectNodeMedia,
   ];
 }

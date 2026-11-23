@@ -48,6 +48,7 @@ describe('desktop 工具注册表', () => {
       ...MEDIA,
       'sync_media_to_sandbox',
       ...CANVAS,
+      'inspect_node_media',
       ...CANVAS_BINDING,
       ...BACKGROUND,
       'preview_page',
@@ -64,6 +65,8 @@ describe('desktop 工具注册表', () => {
     expect(byName.check_video_project).toEqual(['workspace']);
     // 画布在 Web 账号下：看要 canvas，改要 canvas_write（只读档位没有）
     for (const name of CANVAS) expect(byName[name]).toEqual(['canvas', 'canvas_write']);
+    // 看产物是只读的：只读档位也能用
+    expect(byName.inspect_node_media).toEqual(['canvas']);
     expect(byName.list_canvases).toEqual(['canvas']);
     expect(byName.open_canvas).toEqual(['canvas']);
     expect(byName.create_canvas).toEqual(['canvas', 'canvas_write']);
@@ -90,7 +93,7 @@ describe('desktop 工具注册表', () => {
     expect(a.toolDescriptors.map((t) => t.name)).toEqual(['save_skill', 'preview_page', ...VIDEO]);
     expect(a.systemPrompt.split(VIDEO_PROJECT_PROMPT)).toHaveLength(2);
     expect(a.unavailable.map((u) => u.name).sort()).toEqual(
-      [...MEDIA, 'sync_media_to_sandbox', ...CANVAS, ...CANVAS_BINDING, ...BACKGROUND].sort(),
+      [...MEDIA, 'sync_media_to_sandbox', ...CANVAS, 'inspect_node_media', ...CANVAS_BINDING, ...BACKGROUND].sort(),
     );
     expect(a.unavailable.every((u) => u.reason.startsWith('missing_capability:'))).toBe(true);
     expect(a.systemPrompt).not.toContain(MEDIA_GENERATION_PROMPT);
