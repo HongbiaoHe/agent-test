@@ -28,6 +28,9 @@ const SECTIONS: { key: SettingsSection; icon: LucideIcon }[] = [
   { key: 'modes', icon: SlidersHorizontal },
 ];
 
+/** 全部分区（顺序同设置页左栏）：全局搜索按它列出设置页 */
+export const SETTINGS_SECTIONS: readonly SettingsSection[] = SECTIONS.map((s) => s.key);
+
 export function SettingsDialog({
   open,
   section,

@@ -29,7 +29,7 @@ export function ChatMessage({ item }: { item: ThreadItem }) {
   if (item.kind === "assistant") {
     return (
       <div className="min-w-0">
-        <Markdown>{item.text}</Markdown>
+        <Markdown className="text-[15px] leading-[1.75] [&_li]:my-1.5 [&_ol]:my-3 [&_p]:my-3 [&_pre]:my-4 [&_ul]:my-3">{item.text}</Markdown>
         {item.streaming && (
           <span className="ml-0.5 inline-block h-3.5 w-1.5 translate-y-0.5 animate-pulse rounded-sm bg-foreground/60" />
         )}

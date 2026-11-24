@@ -181,6 +181,50 @@ export class ConversationRepo {
     return this.require(id);
   }
 
+  /**
+   * 「新建会话」复用最近的空会话：没有任何消息、没有标题（没重命名过）、没绑画布、没置顶、闲置。
+   * 找到就按这次新建的参数重置（模型 / 思考档位 / 工作区 / 权限 / 模式），创建与活动时间都记为现在（回到列表顶部）；
+   * 没有返回 null。免得连点「新建」攒下一串空会话。
+   */
+  reuseEmpty(
+    model: string | null,
+    workspace: { dir?: string; permission?: WorkspacePermission },
+    modeId: string | null,
+    thinkingLevel: string | null,
+  ): ConversationSummary | null {
+    const row = z
+      .object({ id: z.string() })
+      .optional()
+      .parse(
+        this.db
+          .prepare(
+            `SELECT id FROM conversation c
+             WHERE status = 'idle' AND title IS NULL AND canvas_id IS NULL AND pinned_at IS NULL
+               AND NOT EXISTS (SELECT 1 FROM message m WHERE m.conversation_id = c.id)
+             ORDER BY updated_at DESC LIMIT 1`,
+          )
+          .get(),
+      );
+    if (!row) return null;
+    const now = Date.now();
+    this.db
+      .prepare(
+        `UPDATE conversation SET model = ?, thinking_level = ?, workspace_dir = ?, permission = ?, mode_id = ?,
+           goal = '', mcp_app_context = NULL, created_at = ?, updated_at = ? WHERE id = ?`,
+      )
+      .run(
+        model,
+        thinkingLevel,
+        workspace.dir ?? this.defaultWorkspace(),
+        workspace.permission ?? 'ask',
+        modeId,
+        now,
+        now,
+        row.id,
+      );
+    return this.require(row.id);
+  }
+
   /** 切模式（下一轮运行生效）：运行中 / 等审批时拒绝（决策 8）；不动 updated_at */
   setMode(id: string, modeId: string | null): ConversationSummary {
     const cur = this.require(id);

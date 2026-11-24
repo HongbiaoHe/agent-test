@@ -28,6 +28,7 @@ import { useHostStatus, useModelOptions } from '../llm/api';
 import { CanvasAutoOpen } from '../canvas/canvas-auto-open';
 import { CanvasOpenerContext, useOpenCanvas } from '../canvas/open-canvas-context';
 import { ChatSidePanel } from '../side-panel/chat-side-panel';
+import { ConversationDetails } from '../side-panel/conversation-details';
 import { useSidePanel } from '../side-panel/use-side-panel';
 import { useOpenVideoEditor, VideoEditorOpenerContext } from '../video-editor/open-editor-context';
 
@@ -67,7 +68,7 @@ export function ChatView({
   const outerCanvasOpener = useOpenCanvas();
   const [stopRequested, setStopRequested] = useState(false);
   const outputs = useConversationOutputs(thread.items);
-  const infoOpen = side.item?.kind === 'info';
+  const sidePanelOpen = side.item !== null;
 
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: conversationKey(id) });
@@ -166,20 +167,28 @@ export function ChatView({
             />
           }
           headerTools={<ConversationToolbarIcons items={thread.items} />}
-          // 会话信息侧栏（嵌在画布页里时没有侧栏）
+          // 会话详情（弹出层）+ 右侧侧栏开关（嵌在画布页里时没有侧栏）
           headerEnd={
             embedded ? undefined : (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={t('chat.info.open')}
-                title={t('chat.info.open')}
-                aria-pressed={infoOpen}
-                data-testid="conversation-info-toggle"
-                onClick={side.toggleInfo}
-              >
-                <PanelRight />
-              </Button>
+              <>
+                <ConversationDetails
+                  conversation={conv}
+                  tokens={thread.tokens}
+                  outputs={outputs}
+                  onOpenOutputs={side.openLauncher}
+                />
+                <Button
+                  variant="ghost"
+                  size="icon-sm"
+                  aria-label={sidePanelOpen ? t('shell.sidePanel.close') : t('shell.sidePanel.open')}
+                  title={sidePanelOpen ? t('shell.sidePanel.close') : t('shell.sidePanel.open')}
+                  aria-pressed={sidePanelOpen}
+                  data-testid="side-panel-toggle"
+                  onClick={side.toggleLauncher}
+                >
+                  <PanelRight />
+                </Button>
+              </>
             )
           }
           conversationId={id}
@@ -263,7 +272,6 @@ export function ChatView({
             headerInset={headerInset}
             detailOpen={panelOpen && !!selectedTool}
             conversation={conv}
-            tokens={thread.tokens}
             outputs={outputs}
           />
         )}

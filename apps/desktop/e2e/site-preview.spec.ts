@@ -195,15 +195,15 @@ test('网页预览（真实模型）：preview_page 静态页 / 端口、对话�
     await expect(frame(page).getByRole('heading', { name: '静态页预览' })).toBeVisible();
     await closeSidePanel(page);
 
-    // 会话信息侧栏：产出物里列着这个网页，点开换成网页预览
-    await page.getByTestId('conversation-info-toggle').click();
-    const info = page.getByTestId('conversation-info');
-    const sites = info.getByRole('list', { name: '网页预览' });
+    // 侧栏启动页：产出物里列着这个网页，点开换成网页预览
+    await page.getByTestId('side-panel-toggle').click();
+    const launcher = page.getByTestId('side-panel-launcher');
+    const sites = launcher.getByRole('list', { name: '网页预览' });
     await expect(sites.getByRole('button')).toHaveCount(1);
     await expect(sites).toContainText('hello/index.html');
-    await page.screenshot({ path: join(screens, '51b-conversation-info-outputs.png') });
+    await page.screenshot({ path: join(screens, '51b-side-panel-launcher-outputs.png') });
     await sites.getByRole('button').click();
-    await expect(info).toBeHidden();
+    await expect(launcher).toBeHidden();
     await expect(frame(page).getByRole('heading', { name: '静态页预览' })).toBeVisible();
     await closeSidePanel(page);
 

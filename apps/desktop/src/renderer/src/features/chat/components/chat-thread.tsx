@@ -272,13 +272,13 @@ export function ChatThread({
       {/* h-12：与侧栏顶部（红绿灯那一行）同高，收起侧栏后标题和开关在一条线上 */}
       <header
         className={cn(
-          "app-drag flex h-12 shrink-0 items-center justify-between gap-3 border-b px-4 lg:px-5",
+          "app-drag flex h-12 shrink-0 items-center justify-between gap-3 px-4 lg:px-5",
           headerInset,
         )}
       >
         <div className="flex min-w-0 items-center gap-1.5">
           {headerTitle ?? (
-            <h1 className="truncate text-sm font-semibold tracking-tight">
+            <h1 className="truncate text-sm font-medium">
               {title}
             </h1>
           )}
@@ -461,107 +461,98 @@ export function ChatThread({
               items={attachments}
               onRemove={(p) => setAttachments((cur) => cur.filter((x) => x !== p))}
             />
-            <Textarea
-              ref={inputRef}
-              aria-label={t("chat.thread.message")}
-              rows={1}
-              value={draft}
-              onChange={(e) => setDraft(e.target.value)}
-              onKeyDown={onKeyDown}
-              onPaste={onPaste}
-              placeholder={busy ? t("chat.thread.placeholderBusy") : t("chat.thread.placeholder")}
-              // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
-              className="max-h-40 min-h-0 resize-none border-0 bg-transparent px-4 pt-3.5 pb-1.5 text-base shadow-none focus-visible:border-0 focus-visible:ring-0 md:text-sm dark:bg-transparent"
-            />
-            {/* 工具条：左侧附件 + 模型切换 + 思考深度，右侧发送。窄的时候（画布视图的右侧对话栏）左侧换行，
-                不压到发送按钮上；宽的时候一行放得下，与原来一样 */}
-            <div className="flex items-end justify-between gap-2 px-2.5 pb-2.5">
-              <div className="flex min-w-0 flex-wrap items-center gap-1">
-                <Button
-                  variant="ghost"
-                  size="icon-sm"
-                  aria-label={t("chat.thread.attachFiles")}
-                  title={t("chat.thread.attachFiles")}
-                  disabled={busy}
-                  onClick={() => void window.desktop.pickFiles().then(addAttachments)}
-                >
-                  <Paperclip />
-                </Button>
-                {workspaceDir && (
+            {/* 输入行：左附件、中间输入、右发送 / 停止——框里只放和输入相关的操作 */}
+            <div className="flex items-end gap-1.5 px-2.5 py-2">
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                aria-label={t("chat.thread.attachFiles")}
+                title={t("chat.thread.attachFiles")}
+                disabled={busy}
+                onClick={() => void window.desktop.pickFiles().then(addAttachments)}
+                className="mb-0.5 shrink-0 text-muted-foreground hover:text-foreground"
+              >
+                <Paperclip />
+              </Button>
+              <Textarea
+                ref={inputRef}
+                aria-label={t("chat.thread.message")}
+                rows={1}
+                value={draft}
+                onChange={(e) => setDraft(e.target.value)}
+                onKeyDown={onKeyDown}
+                onPaste={onPaste}
+                placeholder={busy ? t("chat.thread.placeholderBusy") : t("chat.thread.placeholder")}
+                // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
+                className="max-h-40 min-h-9 flex-1 resize-none border-0 bg-transparent px-1.5 py-2 text-base shadow-none focus-visible:border-0 focus-visible:ring-0 md:text-sm dark:bg-transparent"
+              />
+              <div className="mb-0.5 shrink-0">
+                {busy ? (
+                  // 运行中：发送位变停止——立即中止本轮所有操作（LLM 流式/工具等待/媒体生成）
                   <Button
-                    type="button"
-                    variant="ghost"
-                    size="xs"
-                    aria-label={t("chat.thread.workspaceFolder")}
-                    title={
-                      canChangeWorkspace
-                        ? t("chat.thread.workspaceChange", { dir: workspaceDir })
-                        : t("chat.thread.workspaceLocked", { dir: workspaceDir })
-                    }
-                    disabled={busy || !canChangeWorkspace}
-                    onClick={onChangeWorkspace}
-                    className="max-w-40 text-muted-foreground hover:text-foreground disabled:opacity-100"
+                    size="icon-sm"
+                    variant="destructive"
+                    aria-label={t("chat.thread.stop")}
+                    disabled={stopping}
+                    onClick={onStop}
+                    className="rounded-lg"
                   >
-                    <Folder />
-                    <span className="truncate">{workspaceDir.split("/").filter(Boolean).pop() ?? workspaceDir}</span>
+                    {stopping ? <Loader className="animate-spin" /> : <Square className="fill-current" />}
+                  </Button>
+                ) : (
+                  <Button
+                    size="icon-sm"
+                    aria-label={t("chat.thread.send")}
+                    disabled={!canSend}
+                    onClick={submit}
+                    className="rounded-lg"
+                  >
+                    <ArrowUp />
                   </Button>
                 )}
-                <ModeSwitcher
-                  value={modeId}
-                  modes={modes}
-                  onChange={onModeChange}
-                  disabled={busy}
-                />
-                <PermissionSwitcher
-                  value={permission}
-                  onChange={onPermissionChange}
-                  disabled={busy}
-                />
-                <ModelSwitcher
-                  value={model}
-                  onChange={onModelChange}
-                  disabled={busy}
-                />
-                <ThinkingSwitcher
-                  levels={thinkingLevels}
-                  value={thinkingLevel}
-                  onChange={onThinkingLevelChange}
-                  disabled={busy}
-                  className="h-6"
-                />
               </div>
-              {busy ? (
-                // 运行中：发送位变停止——立即中止本轮所有操作（LLM 流式/工具等待/媒体生成）
-                <Button
-                  size="icon-sm"
-                  variant="destructive"
-                  aria-label={t("chat.thread.stop")}
-                  disabled={stopping}
-                  onClick={onStop}
-                  className="rounded-lg"
-                >
-                  {stopping ? (
-                    <Loader className="animate-spin" />
-                  ) : (
-                    <Square className="fill-current" />
-                  )}
-                </Button>
-              ) : (
-                <Button
-                  size="icon-sm"
-                  aria-label={t("chat.thread.send")}
-                  disabled={!canSend}
-                  onClick={submit}
-                  className="rounded-lg"
-                >
-                  <ArrowUp />
-                </Button>
-              )}
             </div>
           </div>
-          <p className="mt-2 text-center text-xs text-muted-foreground">
-            {t("chat.thread.disclaimer")}
-          </p>
+          {/* 设置行：输入框下方一行小字。左：工作区 / 模式 / 权限；右：模型 / 思考深度。
+              窄的时候（画布视图的右侧对话栏）自动换行 */}
+          <div
+            className="mt-1.5 flex flex-wrap items-center justify-between gap-x-2 gap-y-1 px-1"
+            data-testid="composer-settings"
+          >
+            <div className="flex min-w-0 flex-wrap items-center gap-0.5">
+              {workspaceDir && (
+                <Button
+                  type="button"
+                  variant="ghost"
+                  size="xs"
+                  aria-label={t("chat.thread.workspaceFolder")}
+                  title={
+                    canChangeWorkspace
+                      ? t("chat.thread.workspaceChange", { dir: workspaceDir })
+                      : t("chat.thread.workspaceLocked", { dir: workspaceDir })
+                  }
+                  disabled={busy || !canChangeWorkspace}
+                  onClick={onChangeWorkspace}
+                  className="max-w-40 text-muted-foreground hover:text-foreground disabled:opacity-100"
+                >
+                  <Folder />
+                  <span className="truncate">{workspaceDir.split("/").filter(Boolean).pop() ?? workspaceDir}</span>
+                </Button>
+              )}
+              <ModeSwitcher value={modeId} modes={modes} onChange={onModeChange} disabled={busy} />
+              <PermissionSwitcher value={permission} onChange={onPermissionChange} disabled={busy} />
+            </div>
+            <div className="flex min-w-0 flex-wrap items-center justify-end gap-0.5">
+              <ModelSwitcher value={model} onChange={onModelChange} disabled={busy} />
+              <ThinkingSwitcher
+                levels={thinkingLevels}
+                value={thinkingLevel}
+                onChange={onThinkingLevelChange}
+                disabled={busy}
+                className="h-6"
+              />
+            </div>
+          </div>
         </div>
       </div>
       )}

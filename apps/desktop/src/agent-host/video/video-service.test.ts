@@ -1,4 +1,4 @@
-import { mkdtemp, readdir, readFile, rm, writeFile } from 'node:fs/promises';
+import { mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { emptyProject, type ReviewFile, type VideoProject } from '@agent-test/video-schema';
@@ -8,6 +8,7 @@ import type { HostEvent } from '../../shared/rpc';
 import { ffmpegBinaries } from './ffmpeg-paths';
 import { makeFixtures, makeVideo } from './test-media';
 import { VideoSnapshots } from './snapshots';
+import { THUMB_HEIGHT, ThumbnailService } from './thumbnails';
 import { exportStamp, VideoService } from './video-service';
 
 let ws: string;
@@ -34,6 +35,11 @@ function newService() {
     emit: (e) => events.push(e),
     binaries: ffmpegBinaries,
     snapshots: new VideoSnapshots(join(src, 'snapshots')),
+    thumbnails: new ThumbnailService({
+      cacheDir: join(src, 'thumbs'),
+      ffmpeg: () => ffmpegBinaries().ffmpeg,
+      ffprobe: () => ffmpegBinaries().ffprobe,
+    }),
   });
   return service;
 }
@@ -148,6 +154,33 @@ describe('VideoService', () => {
     expect((await snaps.restoreLatest('c', ws, path)).count).toBe(0);
     expect(await name()).toBe('v0');
     await expect(snaps.restoreLatest('c', ws, path)).rejects.toThrow();
+  });
+
+  it('预览帧拼图：每 0.5 秒一格、按宽高比定格宽、缓存命中不再跑 ffmpeg；不是视频报错', async () => {
+    const s = newService();
+    // clipA：3 秒 320x240 → 6 格，每格 96x72
+    const t = await s.thumbnails('c', files.clipA);
+    expect(t).toMatchObject({ count: 6, tileWidth: 96, tileHeight: THUMB_HEIGHT });
+    expect(t.interval).toBeCloseTo(0.5, 2);
+    expect(t.sprite.startsWith('data:image/jpeg;base64,')).toBe(true);
+    // 拼图本身的宽 = 格子数 × 格宽（JPEG SOF0 里读宽高）
+    const jpg = Buffer.from(t.sprite.slice(t.sprite.indexOf(',') + 1), 'base64');
+    const sof = jpg.indexOf(Buffer.from([0xff, 0xc0]));
+    expect([jpg.readUInt16BE(sof + 7), jpg.readUInt16BE(sof + 5)]).toEqual([6 * 96, THUMB_HEIGHT]);
+
+    const cached = await readdir(join(src, 'thumbs'));
+    expect(cached.filter((f) => f.endsWith('.jpg'))).toHaveLength(1);
+    // 第二次读缓存：内容相同
+    expect(await s.thumbnails('c', files.clipA)).toEqual(t);
+    // 素材变了（修改时间变）：重新生成，同一路径的旧拼图被清掉，缓存里仍只有一份
+    const later = new Date(Date.now() + 60_000);
+    await utimes(join(ws, files.clipA), later, later);
+    await s.thumbnails('c', files.clipA);
+    const after = await readdir(join(src, 'thumbs'));
+    expect(after.filter((f) => f.endsWith('.jpg'))).toHaveLength(1);
+    expect(after.filter((f) => f.endsWith('.json'))).toHaveLength(1);
+    expect(after).not.toEqual(cached);
+    await expect(s.thumbnails('c', files.music)).rejects.toThrow(/not a video/);
   });
 
   it('importFiles：复制到 media/imports/（重名加后缀）并探测；不是文件报错', async () => {

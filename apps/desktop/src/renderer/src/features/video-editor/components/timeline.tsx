@@ -6,11 +6,12 @@
  * - 拖片段本体：视频轨换位，音频 / 字幕改起点；拖片段左右边：裁剪（见 lib/timeline-edit.ts）。
  *   拖动中吸附到 0、播放头与其他片段的边（按住 Alt 关闭吸附），吸附处画一条辅助线。
  *   拖拽期间只改本地草稿，松手时整体提交一次（一步撤销、一次自动保存）。
+ * - 视频轨片段上平铺预览帧（components/filmstrip.tsx），随缩放与裁剪实时重算，一眼找到要定位的画面；
  * - 刻度行底部标出检查问题（规则检查 + 审片），颜色按严重程度，过期的审片标记变淡；点标记跳过去并选中片段。
  */
 import { layoutVideoTrack, projectDuration, type VideoProject } from '@agent-test/video-schema';
 import { Blend, Captions, Film, Image as ImageIcon, Maximize2, Music, Plus, ZoomIn, ZoomOut } from 'lucide-react';
-import { type PointerEvent as ReactPointerEvent, type ReactNode, useEffect, useLayoutEffect, useRef, useState } from 'react';
+import { type PointerEvent as ReactPointerEvent, type ReactNode, type UIEvent, useEffect, useLayoutEffect, useRef, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { Button } from '@/components/ui/button';
 import { Slider } from '@/components/ui/slider';
@@ -20,6 +21,7 @@ import { useElementSize } from '../hooks/use-element-size';
 import type { Selection } from '../lib/edit';
 import type { EditorIssue, IssueTone } from '../lib/issues';
 import { fileName, seamsOf } from '../lib/transition-edit';
+import { Filmstrip } from './filmstrip';
 import { audioSpan, formatTime } from '../lib/timeline';
 import {
   applyDrag,
@@ -34,6 +36,9 @@ import {
   tickStep,
   ZOOM_STEP,
 } from '../lib/timeline-edit';
+
+/** 视频行（h-12 = 48px）里片段块去掉上下 1px 边框后的高度：预览帧按这个高铺 */
+const VIDEO_ROW_INNER_HEIGHT = 46;
 
 /** 按下后移动超过这么多像素才算拖拽（否则只是点选） */
 const DRAG_THRESHOLD_PX = 3;
@@ -83,6 +88,8 @@ export function Timeline({
   onCommit,
   markers = [],
   onJump,
+  conversationId,
+  origin,
 }: {
   project: VideoProject;
   duration: number;
@@ -93,6 +100,10 @@ export function Timeline({
   onCommit: (project: VideoProject) => void;
   markers?: TimelineMarker[];
   onJump?: (issue: EditorIssue) => void;
+  /** 取视频预览帧（video.thumbnails）用 */
+  conversationId: string;
+  /** 工作区的 spark-preview:// 源（图片片段直接平铺原图）；还没拿到为 null */
+  origin: string | null;
 }) {
   const { t } = useTranslation();
   const [setViewport, viewportSize] = useElementSize<HTMLDivElement>();
@@ -100,6 +111,18 @@ export function Timeline({
   /** null = 适应宽度 */
   const [zoom, setZoom] = useState<number | null>(null);
   const [draft, setDraft] = useState<Draft | null>(null);
+  /** 横向滚动位置：预览帧只铺可视区域附近。滚动中按动画帧合并更新，不每个 scroll 事件都整条时间线重渲染 */
+  const [scrollLeft, setScrollLeft] = useState(0);
+  const scrollFrame = useRef(0);
+  const onScroll = (e: UIEvent<HTMLDivElement>) => {
+    const el = e.currentTarget;
+    if (scrollFrame.current) return;
+    scrollFrame.current = requestAnimationFrame(() => {
+      scrollFrame.current = 0;
+      setScrollLeft(el.scrollLeft);
+    });
+  };
+  useEffect(() => () => cancelAnimationFrame(scrollFrame.current), []);
   /** 缩放后要保持在指针下的时间点与它在视口里的横坐标 */
   const anchorRef = useRef<{ time: number; x: number } | null>(null);
 
@@ -269,7 +292,9 @@ export function Timeline({
       <div className="flex select-none">
         {/* 行标题 */}
         <div className="flex w-20 shrink-0 flex-col pt-5 text-xs text-muted-foreground">
-          <RowLabel icon={<Film />}>{t('video.timeline.video')}</RowLabel>
+          <RowLabel icon={<Film />} className="h-14">
+            {t('video.timeline.video')}
+          </RowLabel>
           <RowLabel icon={<Music />}>{t('video.timeline.audio')}</RowLabel>
           <RowLabel icon={<Captions />}>{t('video.timeline.subtitles')}</RowLabel>
         </div>
@@ -279,6 +304,7 @@ export function Timeline({
             setViewport(el);
           }}
           className="min-w-0 flex-1 overflow-x-auto overflow-y-hidden pb-1"
+          onScroll={onScroll}
           data-pps={pps}
           data-testid="video-timeline-scroll"
         >
@@ -324,7 +350,7 @@ export function Timeline({
             </div>
             {/* 成片之外（导出会截掉）的区域淡一些 */}
             <div className="pointer-events-none absolute inset-y-0 right-0 bg-muted/60" style={{ left: px(shownDuration) }} />
-            <Row>
+            <Row className="h-12">
               {layoutVideoTrack(shown).map(({ clip, start, end }) => (
                 <ClipBlock
                   key={clip.id}
@@ -335,6 +361,18 @@ export function Timeline({
                   }
                   label={clip.src.split('/').pop() ?? clip.src}
                   icon={clip.type === 'video' ? <Film /> : <ImageIcon />}
+                  background={
+                    <Filmstrip
+                      conversationId={conversationId}
+                      origin={origin}
+                      clip={clip}
+                      blockLeft={px(start)}
+                      blockWidth={px(end - start)}
+                      height={VIDEO_ROW_INNER_HEIGHT}
+                      pps={pps}
+                      view={{ left: scrollLeft, width: viewportSize.width }}
+                    />
+                  }
                   {...clipProps('video', clip.id)}
                 />
               ))}
@@ -413,17 +451,17 @@ export function Timeline({
   );
 }
 
-function RowLabel({ icon, children }: { icon: ReactNode; children: ReactNode }) {
+function RowLabel({ icon, children, className }: { icon: ReactNode; children: ReactNode; className?: string }) {
   return (
-    <div className="flex h-10 items-center gap-1.5 [&_svg]:size-3.5 [&_svg]:shrink-0">
+    <div className={cn('flex h-10 items-center gap-1.5 [&_svg]:size-3.5 [&_svg]:shrink-0', className)}>
       {icon}
       <span className="truncate">{children}</span>
     </div>
   );
 }
 
-function Row({ children }: { children: ReactNode }) {
-  return <div className="relative my-1 h-8 rounded-md bg-muted/50">{children}</div>;
+function Row({ children, className }: { children: ReactNode; className?: string }) {
+  return <div className={cn('relative my-1 h-8 rounded-md bg-muted/50', className)}>{children}</div>;
 }
 
 function ClipBlock({
@@ -434,6 +472,7 @@ function ClipBlock({
   className,
   label,
   icon,
+  background,
   onPointerDown,
   onSelect,
 }: {
@@ -444,6 +483,8 @@ function ClipBlock({
   className: string;
   label: string;
   icon?: ReactNode;
+  /** 铺在块底下的内容（视频轨的预览帧）；有它时文件名放进半透明小标签，压在画面上也看得清 */
+  background?: ReactNode;
   onPointerDown: (e: ReactPointerEvent<HTMLElement>) => void;
   onSelect: () => void;
 }) {
@@ -467,9 +508,19 @@ function ClipBlock({
       )}
       style={{ left, width }}
     >
+      {background}
       <span data-edge="start" className={cn(handle, 'left-0 rounded-l-md', selected && 'opacity-100')} data-testid="clip-handle-start" />
-      {icon}
-      <span className="pointer-events-none truncate">{label}</span>
+      {background ? (
+        <span className="pointer-events-none relative flex min-w-0 items-center gap-1 self-start rounded-sm bg-background/75 px-1 py-px">
+          {icon}
+          <span className="truncate">{label}</span>
+        </span>
+      ) : (
+        <>
+          {icon}
+          <span className="pointer-events-none truncate">{label}</span>
+        </>
+      )}
       <span data-edge="end" className={cn(handle, 'right-0 rounded-r-md', selected && 'opacity-100')} data-testid="clip-handle-end" />
     </button>
   );

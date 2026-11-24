@@ -96,24 +96,44 @@ test('侧栏：新建 / 重命名 / 置顶分组 / 搜索 / 收起与悬停弹�
   );
   db.close();
 
-  // ⌘K 打开搜索：空输入列出最近会话；搜正文命中并高亮；回车打开
+  // ⌘K 打开全局搜索：空输入列出最近使用（会话）与操作；搜正文命中并高亮；回车打开
   await page.keyboard.press('Meta+k');
   const search = page.getByTestId('search-dialog');
-  await expect(search.getByRole('option')).toHaveCount(2);
-  await search.getByLabel('搜索会话').fill('unicorn');
-  await expect(search.getByRole('option')).toHaveCount(1);
-  await expect(search.getByRole('option')).toContainText('Beta 调研');
-  await expect(search.locator('mark')).toHaveText('Unicorn');
+  const input = search.getByLabel('搜索', { exact: true });
+  const ofType = (type: string) => search.locator(`[data-testid="search-result"][data-type="${type}"]`);
+  await expect(ofType('conversation')).toHaveCount(2);
+  await expect(ofType('action')).toHaveCount(3);
+  await expect(search.getByText('最近使用')).toBeVisible();
+  await input.fill('unicorn');
+  await expect(ofType('conversation')).toHaveCount(1);
+  await expect(ofType('conversation')).toContainText('Beta 调研');
+  await expect(search.locator('mark').first()).toHaveText('Unicorn');
   await page.screenshot({ path: join(screens, '61-search-content.png') });
   // 输入后立刻回车：结果还没对上新输入，不应打开旧结果（Beta）
-  await search.getByLabel('搜索会话').fill('alpha');
-  await search.getByLabel('搜索会话').press('Enter');
+  await input.fill('alpha');
+  await input.press('Enter');
   await expect(search).toBeVisible();
-  await expect(search.getByRole('option')).toHaveCount(1);
-  await expect(search.getByRole('option')).toContainText('Alpha 项目');
-  await search.getByLabel('搜索会话').press('Enter');
+  await expect(ofType('conversation')).toHaveCount(1);
+  await expect(ofType('conversation')).toContainText('Alpha 项目');
+  await input.press('Enter');
   await expect(search).toBeHidden();
   await expect(page.getByRole('button', { name: '会话菜单' })).toContainText('Alpha 项目');
+
+  // 类型筛选：输入框为空时 → 切到「对话」，只列会话；再搜设置页，回车打开设置
+  await page.keyboard.press('Meta+k');
+  await expect(search.getByRole('tab', { name: '全部' })).toHaveAttribute('aria-selected', 'true');
+  await input.press('ArrowRight');
+  await expect(search.getByRole('tab', { name: '对话' })).toHaveAttribute('aria-selected', 'true');
+  await expect(ofType('conversation')).toHaveCount(2);
+  await expect(ofType('action')).toHaveCount(0);
+  await input.press('ArrowLeft');
+  await input.fill('外观');
+  await expect(ofType('setting').first()).toContainText('外观');
+  await page.screenshot({ path: join(screens, '61b-search-settings.png') });
+  await input.press('Enter');
+  await expect(search).toBeHidden();
+  await expect(page.getByRole('dialog').getByText('界面主题与语言。')).toBeVisible();
+  await page.keyboard.press('Escape');
   // 侧栏「搜索」按钮也能打开
   await page.getByRole('button', { name: /搜索/ }).first().click();
   await expect(search).toBeVisible();

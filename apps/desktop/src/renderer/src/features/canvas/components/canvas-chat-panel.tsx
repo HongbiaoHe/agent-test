@@ -70,7 +70,8 @@ function FirstMessage({
   const start = useMutation({
     mutationFn: async (message: string) => {
       // 新对话带上最近用的模式（同首页「新对话」）；建好先绑画布再开跑，第一轮就能看到画布
-      const conv = await agent.call('conversations.create', { modeId: readModePreference() ?? undefined });
+      // 一定新建（不复用空会话）：下面开跑失败会删掉它，不能删到用户已有的会话
+      const conv = await agent.call('conversations.create', { modeId: readModePreference() ?? undefined, reuseEmpty: false });
       try {
         await agent.call('conversations.setCanvas', { conversationId: conv.id, canvasId });
         await agent.call('run.start', { conversationId: conv.id, text: message, attachments: [] });
