@@ -32,8 +32,12 @@ await initI18n();
 syncFullScreenAttribute();
 const el = document.getElementById('root');
 if (!el) throw new Error('#root missing');
-createRoot(el).render(
+const root = createRoot(el);
+root.render(
   <StrictMode>
     <Root />
   </StrictMode>,
 );
+// 开发模式热更新：改了非组件模块（如 i18n 词典）时更新会冒泡到这里、整个入口重新执行。
+// 先卸载旧的根，否则每次都多挂一整份应用（多份 ⌘K 监听 → 一按就叠出好几个搜索弹窗）
+import.meta.hot?.dispose(() => root.unmount());
