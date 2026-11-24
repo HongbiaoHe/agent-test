@@ -32,12 +32,14 @@ import type { RunConfig, RunService } from './run/run-service';
 import { type DesktopRegistry, desktopCapabilities } from './run/tool-registry';
 import { parseSkillSource, skillsAddArgs } from './skills/github-install';
 import type { SkillStore } from './skills/skill-store';
+import type { StorageService } from './storage/storage-service';
 import type { VideoService } from './video/video-service';
 import type { WebApi } from './web-media/web-api';
 import { listDir, readFilePreview } from './workspace/files';
 
 export interface Services {
   repo: ConversationRepo;
+  storage: StorageService;
   runs: RunService;
   skills: SkillStore;
   mcp: McpStore;
@@ -381,14 +383,14 @@ export function createHandlers(s: Services): Handlers {
       s.video.cancelExport(p.jobId);
       return { ok: true };
     },
+    // 删会话 = 连同它在本机的全部数据、缓存与它新建的产出一起清（见 storage/storage-service.ts）
     'conversations.delete': async (p) => {
-      if (s.runs.isRunning(p.id)) s.runs.stop(p.id);
-      s.background.cancelByConversation(p.id);
-      s.repo.delete(p.id);
-      await s.runs.forgetThread(p.id);
-      s.listChanged();
+      await s.storage.deleteConversations([p.id]);
       return { ok: true };
     },
+    'storage.scan': () => s.storage.scan(),
+    'storage.clearCache': (p) => s.storage.clearCache(p),
+    'storage.deleteConversations': (p) => s.storage.deleteConversations(p.ids),
     'run.start': async (p) => {
       await s.runs.start(p.conversationId, p.text, p.attachments);
       return { ok: true };

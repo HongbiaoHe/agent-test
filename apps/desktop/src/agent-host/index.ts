@@ -11,12 +11,12 @@ import { mkdirSync } from 'node:fs';
 import { join } from 'node:path';
 import type { MessagePortMain } from 'electron';
 import { z } from 'zod';
-import type { HostControlMessage } from '../shared/desktop';
+import type { HostControlMessage, HostTrashRequest } from '../shared/desktop';
 import { LANGUAGE_PREFERENCES, LOCALES } from '../shared/i18n/locales';
 import { type HostEvent, isMethod, type RpcResponse } from '../shared/rpc';
 import { NodeSqliteSaver } from './db/checkpointer';
 import { ConversationRepo } from './db/conversations';
-import { openDatabase } from './db/database';
+import { openDatabase, reclaimFreeSpace } from './db/database';
 import { LEGACY_PRESETS, migrateLegacyModels } from './llm/legacy-migration';
 import { LlmStore } from './llm/llm-store';
 import { createModelResolver } from './llm/model-resolver';
@@ -30,6 +30,8 @@ import { createHandlers, dispatch } from './rpc-server';
 import { RunService } from './run/run-service';
 import { buildDesktopRegistry } from './run/tool-registry';
 import { SkillStore } from './skills/skill-store';
+import { ConversationFiles } from './storage/conversation-files';
+import { StorageService } from './storage/storage-service';
 import { ffmpegBinaries } from './video/ffmpeg-paths';
 import { CanvasWatcher } from './canvas/canvas-watcher';
 import { VideoService } from './video/video-service';
@@ -51,7 +53,8 @@ mkdirSync(profileDir, { recursive: true });
 if (installEnvProxy()) log('已启用环境代理');
 log(`数据目录：${profileDir === userData ? '访客空间' : profileDir}`);
 
-const db = openDatabase(join(profileDir, 'spark.db'));
+const dbFile = join(profileDir, 'spark.db');
+const db = openDatabase(dbFile);
 // 默认工作区来自 main 发来的配置；配置到达前不会有 renderer 请求（端口在配置之后才发）
 const repo = new ConversationRepo(db, () => current?.settings.workspaceDir ?? '');
 const interrupted = repo.failInterrupted();
@@ -63,6 +66,18 @@ new ProcessTracker(db).reapOrphans();
 const reaped = processes.reapOrphans();
 if (reaped) log(`清理了上次残留的命令进程组：${reaped} 个`);
 const checkpointer = new NodeSqliteSaver(db);
+// checkpoint 只留给停在审批上的会话续跑：其余的启动时清掉，空出来的页够多就整理一次把文件缩回去
+// 清理只是省空间：失败（磁盘满、库被别的进程占着）不能让 agent-host 起不来——main 会不停重启它
+try {
+  const prunedThreads = checkpointer.pruneExcept(
+    repo.list().filter((c) => c.status === 'waiting_approval').map((c) => c.id),
+  );
+  if (prunedThreads) log(`清理了 ${prunedThreads} 个会话用不上的 checkpoint`);
+  const reclaimed = reclaimFreeSpace(db);
+  if (reclaimed) log(`数据库整理完成，回收约 ${Math.round(reclaimed / 1024 / 1024)} MB`);
+} catch (e) {
+  log(`清理 checkpoint / 整理数据库失败：${String(e)}`);
+}
 const skills = new SkillStore(db, join(profileDir, 'skills'), process.env.SPARK_BUILTIN_SKILLS ?? null);
 
 const ports = new Set<MessagePortMain>();
@@ -97,7 +112,19 @@ const controlSchema = z.discriminatedUnion('type', [
     locale: z.enum(LOCALES),
   }),
   z.object({ type: z.literal('port') }),
+  z.object({ type: z.literal('trash-done'), id: z.number(), failed: z.array(z.string()) }),
 ]);
+
+// 把文件移进系统废纸篓：shell.trashItem 只在 main 进程可用，请它代办（见 main/agent-host.ts）
+let trashSeq = 0;
+const trashWaiters = new Map<number, (failed: string[]) => void>();
+function trash(paths: string[]): Promise<string[]> {
+  const req: HostTrashRequest = { type: 'trash', id: ++trashSeq, paths };
+  return new Promise((resolve) => {
+    trashWaiters.set(req.id, resolve);
+    process.parentPort.postMessage(req);
+  });
+}
 
 let current: Extract<HostControlMessage, { type: 'config' }> | null = null;
 const runtimeRoot = join(profileDir, 'runtime');
@@ -134,7 +161,9 @@ if (webApi) log(`已登录 Web 账号，媒体生成经 ${webApi.baseUrl}`);
 
 const modes = new ModeStore(db);
 // 工具注册表：启动时登记一次；后台任务服务在 RunService 之后才装配，经 getter 延迟取（只在运行期 create 时用到）
-const registry = buildDesktopRegistry({ webApi, skills, skillsChanged, background: () => background });
+// 会话写过的工作区文件：删会话时据此清掉它新建的产出
+const files = new ConversationFiles(db);
+const registry = buildDesktopRegistry({ webApi, skills, skillsChanged, background: () => background, files });
 
 // agent 改剪辑工程前的快照（剪辑器「撤销 agent 修改」）：RunService 写入、VideoService 读取与恢复
 const videoSnapshots = new VideoSnapshots(join(profileDir, 'video-snapshots'));
@@ -142,6 +171,7 @@ const videoSnapshots = new VideoSnapshots(join(profileDir, 'video-snapshots'));
 const runs = new RunService({
   webApi,
   videoSnapshots,
+  files,
   repo,
   checkpointer,
   skills,
@@ -190,16 +220,37 @@ try {
 } catch (e) {
   log(`未找到 ffmpeg / ffprobe：${String(e)}`);
 }
+const thumbsDir = join(profileDir, 'video-thumbs');
+const thumbnails = new ThumbnailService({
+  cacheDir: thumbsDir,
+  ffmpeg: () => ffmpegBinaries().ffmpeg,
+  ffprobe: () => ffmpegBinaries().ffprobe,
+});
 const video = new VideoService({
   workspaceOf: (conversationId) => repo.require(conversationId).workspaceDir,
   emit: broadcast,
   binaries: ffmpegBinaries,
   snapshots: videoSnapshots,
-  thumbnails: new ThumbnailService({
-    cacheDir: join(profileDir, 'video-thumbs'),
-    ffmpeg: () => ffmpegBinaries().ffmpeg,
-    ffprobe: () => ffmpegBinaries().ffprobe,
-  }),
+  thumbnails,
+  files,
+});
+
+// 存储占用与清理（设置 → 存储）；删除会话也走它，连同缓存、运行目录与它新建的产出一起清
+const storage = new StorageService({
+  db,
+  dbFile,
+  repo,
+  files,
+  checkpointer,
+  snapshots: videoSnapshots,
+  runtimeRoot,
+  thumbsDir,
+  runs,
+  cancelBackground: (conversationId) => background.cancelByConversation(conversationId),
+  forgetThumbnails: (absPath) => thumbnails.forget(absPath),
+  trash,
+  listChanged,
+  log,
 });
 
 // 画布：打开着的画布的实时事件从 Web 后端转发给画布视图（登录了 Web 账号才有）
@@ -208,6 +259,7 @@ const canvasWatcher = webApi
   : null;
 
 const handlers = createHandlers({
+  storage,
   canvasWatcher,
   video,
   background,
@@ -282,6 +334,11 @@ process.parentPort.on('message', (e) => {
     }
     llmChanged();
     process.parentPort.postMessage({ type: 'config-applied', seq: msg.data.seq });
+    return;
+  }
+  if (msg.data.type === 'trash-done') {
+    trashWaiters.get(msg.data.id)?.(msg.data.failed);
+    trashWaiters.delete(msg.data.id);
     return;
   }
   const port = e.ports[0];

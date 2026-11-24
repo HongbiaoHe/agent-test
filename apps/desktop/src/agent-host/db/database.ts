@@ -218,6 +218,23 @@ const MIGRATIONS: readonly string[] = [
   ALTER TABLE conversation ADD COLUMN canvas_bound_at INTEGER;
   CREATE INDEX conversation_canvas_idx ON conversation(canvas_id, canvas_bound_at);
   `,
+  // v14：会话写过的工作区文件（见 storage/conversation-files.ts）。created = 1：写之前文件不存在，是本会话新建的；
+  // 删会话时只把「本会话新建、且没有别的会话写过」的文件移进废纸篓。path 是本机绝对路径
+  `
+  CREATE TABLE conversation_file (
+    conversation_id TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+    path TEXT NOT NULL,
+    created INTEGER NOT NULL,
+    recorded_at INTEGER NOT NULL,
+    PRIMARY KEY (conversation_id, path)
+  );
+  CREATE INDEX conversation_file_path ON conversation_file (path);
+  `,
+  // v15：记录里区分目录——会话写文件时顺带新建的各级父目录（is_dir = 1），删会话时文件移走后空了就收掉；
+  // 用户项目里原有的目录没有记录，不会被动
+  `
+  ALTER TABLE conversation_file ADD COLUMN is_dir INTEGER NOT NULL DEFAULT 0;
+  `,
 ];
 
 export type Db = DatabaseSync;
@@ -241,6 +258,25 @@ function migrate(db: Db): void {
       db.exec(`PRAGMA user_version = ${i + 1}`);
     });
   }
+}
+
+/** 空闲页攒到这么多才整理：VACUUM 要把整个库重写一遍，小碎片不值得（删掉的页本来就会被之后的写入复用） */
+const RECLAIM_MIN_FREE_BYTES = 64 * 1024 * 1024;
+
+/**
+ * 把删数据空出来的页还给文件系统（SQLite 删行只把页挂进空闲链表，文件不会自己变小）。
+ * 空闲量不到 minFreeBytes 不动，返回 0；否则 VACUUM 并截断 WAL，返回整理前的空闲字节数。
+ * 不能在事务里调用。
+ */
+export function reclaimFreeSpace(db: Db, minFreeBytes = RECLAIM_MIN_FREE_BYTES): number {
+  const freePages = Number(db.prepare('PRAGMA freelist_count').get()?.freelist_count ?? 0);
+  const pageSize = Number(db.prepare('PRAGMA page_size').get()?.page_size ?? 0);
+  const free = freePages * pageSize;
+  if (free === 0 || free < minFreeBytes) return 0;
+  db.exec('VACUUM');
+  // WAL 模式下 VACUUM 的结果先写进 WAL：截断一次，主文件才真正缩小、WAL 也不留着
+  db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+  return free;
 }
 
 /** node:sqlite 没有 better-sqlite3 的 transaction() 包装，手写 BEGIN / COMMIT。 */

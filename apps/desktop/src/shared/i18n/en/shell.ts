@@ -74,6 +74,7 @@ export const shell = {
     renameTitle: 'Rename chat',
     titleLabel: 'Chat title',
     deleteTitle: 'Delete this chat?',
-    deleteDescription: 'The history of “{{title}}” will be permanently deleted. Files in the workspace are not affected.',
+    deleteDescription:
+      'The history, attachment copies and caches of “{{title}}” will be permanently deleted. Output files this conversation created are moved to the Trash. Other files in the workspace are not affected.',
   },
 } satisfies MessageShape<typeof source>;

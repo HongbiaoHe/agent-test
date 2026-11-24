@@ -13,6 +13,7 @@ import { LlmStore } from './llm/llm-store';
 import { ModeStore } from './modes/mode-store';
 import { createHandlers, type Services } from './rpc-server';
 import type { RunService } from './run/run-service';
+import type { StorageService } from './storage/storage-service';
 import { buildDesktopRegistry } from './run/tool-registry';
 import { SkillStore } from './skills/skill-store';
 import { VideoSnapshots } from './video/snapshots';
@@ -43,6 +44,7 @@ function setup() {
     // 这些用例不碰运行 / 后台任务：在注入处收窄成真实类型
     runs: {} as unknown as RunService,
     background: {} as unknown as BackgroundService,
+    storage: {} as unknown as StorageService,
     skills,
     mcp: new McpStore(db, 'http://127.0.0.1:1/cb', () => Promise.resolve()),
     modes: new ModeStore(db),

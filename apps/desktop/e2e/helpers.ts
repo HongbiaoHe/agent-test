@@ -48,7 +48,7 @@ export async function skipLoginIfShown(page: Page): Promise<void> {
   await expect(main).toBeVisible();
 }
 
-export type SettingsSection = '账号' | '外观' | '模型' | '工作区' | '技能' | '连接器' | '模式';
+export type SettingsSection = '账号' | '外观' | '模型' | '工作区' | '技能' | '连接器' | '模式' | '存储';
 
 /** 打开设置弹窗并切到某个分类（弹窗已开着就直接切） */
 export async function openSettings(page: Page, section: SettingsSection): Promise<void> {

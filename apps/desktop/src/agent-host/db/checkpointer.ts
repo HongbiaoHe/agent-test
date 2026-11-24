@@ -290,4 +290,27 @@ export class NodeSqliteSaver extends BaseCheckpointSaver {
     });
     return Promise.resolve();
   }
+
+  /**
+   * 只留给定会话的 checkpoint，其余会话的全部删掉；返回删了几个会话的。
+   * agent-host 启动时用：只有停在审批上的会话还用得上 checkpoint（见 RunService），其余的是旧版本
+   * 每步都存、跑完不清留下的，或上次崩溃没来得及清的。
+   */
+  pruneExcept(keepThreadIds: readonly string[]): number {
+    const keep = JSON.stringify(keepThreadIds);
+    const stale = 'thread_id NOT IN (SELECT value FROM json_each(?))';
+    return transaction(this.db, () => {
+      const row = this.db
+        .prepare(
+          `SELECT COUNT(*) AS n FROM (
+             SELECT thread_id FROM checkpoints WHERE ${stale}
+             UNION SELECT thread_id FROM writes WHERE ${stale}
+           )`,
+        )
+        .get(keep, keep);
+      this.db.prepare(`DELETE FROM checkpoints WHERE ${stale}`).run(keep);
+      this.db.prepare(`DELETE FROM writes WHERE ${stale}`).run(keep);
+      return z.object({ n: z.number() }).parse(row).n;
+    });
+  }
 }

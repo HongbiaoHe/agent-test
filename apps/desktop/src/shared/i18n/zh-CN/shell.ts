@@ -72,6 +72,7 @@ export const shell = {
     renameTitle: '重命名会话',
     titleLabel: '会话标题',
     deleteTitle: '删除这个会话？',
-    deleteDescription: '「{{title}}」的对话记录会被删除，无法恢复；工作区里的文件不受影响。',
+    deleteDescription:
+      '「{{title}}」的对话记录、附件副本和缓存会被删除，无法恢复。这个会话新建的产出文件会移到废纸篓，工作区里的其它文件不受影响。',
   },
 } as const;

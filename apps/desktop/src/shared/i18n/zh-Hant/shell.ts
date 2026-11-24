@@ -74,6 +74,7 @@ export const shell = {
     renameTitle: '重新命名對話',
     titleLabel: '對話標題',
     deleteTitle: '要刪除這個對話嗎？',
-    deleteDescription: '「{{title}}」的對話紀錄會被刪除，且無法復原；工作區裡的檔案不受影響。',
+    deleteDescription:
+      '「{{title}}」的對話紀錄、附件副本和快取會被刪除，且無法復原。這個對話新建的產出檔案會移到垃圾桶，工作區裡的其他檔案不受影響。',
   },
 } satisfies MessageShape<typeof source>;

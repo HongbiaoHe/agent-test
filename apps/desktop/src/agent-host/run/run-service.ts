@@ -12,7 +12,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { mkdir, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { join, resolve } from 'node:path';
 import { Command } from '@langchain/langgraph';
 import { createCanvasStateMiddleware } from '@agent-test/agent-core/canvas/canvas-state-middleware';
 import { buildAgent, type ModelResolver } from '@agent-test/agent-core/agent/agent.factory';
@@ -33,6 +33,7 @@ import { historyFromRows, type ReplayHistory, roleOf } from '@agent-test/agent-c
 import { buildActivePlan, buildSkillPrompt } from '@agent-test/agent-core/run/turn-prompts';
 import type { HitlDecision } from '../../shared/rpc';
 import type { NodeSqliteSaver } from '../db/checkpointer';
+import type { ConversationFiles } from '../storage/conversation-files';
 import type { ConversationRepo } from '../db/conversations';
 import type { McpStore } from '../mcp/mcp-store';
 import { hostI18n } from '../i18n';
@@ -94,6 +95,8 @@ export interface RunDeps {
   webApi?: WebApi | null;
   /** agent 改剪辑工程前存快照（剪辑器的「撤销 agent 修改」）；测试里可不传 */
   videoSnapshots?: VideoSnapshots;
+  /** 记下会话写过的工作区文件（删会话时清掉它新建的产出）；测试里可不传 */
+  files?: ConversationFiles;
   log?: (msg: string) => void;
 }
 
@@ -106,6 +109,8 @@ export class BusyError extends Error {}
 
 export class RunService {
   private readonly active = new Map<string, ActiveRun>();
+  /** 每个会话最近一轮 execute 的收尾 promise（stopAndWait 等它） */
+  private readonly settling = new Map<string, Promise<void>>();
   /**
    * 停在审批上的对话的画布上下文：运行锁不放（心跳照常），续跑沿用同一个持锁方——
    * 与 Web 画布 agent 等审批时画布仍算忙一致。审批被停止 / 对话被删时释放。
@@ -123,7 +128,7 @@ export class RunService {
   /** 后台任务通知已写进会话、会话已被 CAS 置为 running：开跑新的一轮（模型从历史里读到 <task-notification>） */
   runClaimed(conversationId: string): void {
     this.deps.listChanged();
-    void this.execute(conversationId, 'run');
+    this.launch(conversationId, 'run');
   }
 
   isRunning(conversationId: string): boolean {
@@ -180,7 +185,7 @@ export class RunService {
       void this.installSkillsCommand(conversationId, installArgs);
       return;
     }
-    void this.execute(conversationId, 'run');
+    this.launch(conversationId, 'run');
   }
 
   /**
@@ -220,7 +225,7 @@ export class RunService {
     }
     for (const d of decisions) repo.recordApproval(conversationId, d.type, d);
     this.deps.listChanged();
-    void this.execute(conversationId, 'resume', decisions);
+    this.launch(conversationId, 'resume', decisions);
   }
 
   stop(conversationId: string): void {
@@ -236,10 +241,32 @@ export class RunService {
       void run.sandbox.stop();
       return; // execute 的 catch / CAS 分支负责发 stopped result
     }
-    if (changed) this.finalizeStopped(conversationId);
+    if (!changed) return;
+    this.finalizeStopped(conversationId);
+    // 停在审批上的那一轮不会再续跑：它留着的 checkpoint 一并清掉
+    void this.deps.checkpointer.deleteThread(conversationId);
+  }
+
+  /**
+   * 停止并等这一轮收尾（落库、清 checkpoint、放画布锁、杀子进程）完成。
+   * 删会话前调用：否则收尾还会往已删的会话里写消息、重建运行目录。
+   */
+  async stopAndWait(conversationId: string): Promise<void> {
+    this.stop(conversationId);
+    await this.settling.get(conversationId);
   }
 
   // ── 一轮运行 ─────────────────────────────────────────────────────────────
+
+  /** 后台开跑一轮：execute 不被 await，出错只记日志（不能抛成未处理的 rejection 把 agent-host 带崩） */
+  private launch(conversationId: string, kind: 'run' | 'resume', decisions?: HitlDecision[]): void {
+    const settled = this.execute(conversationId, kind, decisions)
+      .catch((e: unknown) => this.deps.log?.(`运行收尾出错 conversation=${conversationId}: ${String(e)}`))
+      .finally(() => {
+        if (this.settling.get(conversationId) === settled) this.settling.delete(conversationId);
+      });
+    this.settling.set(conversationId, settled);
+  }
 
   private async execute(
     conversationId: string,
@@ -248,16 +275,18 @@ export class RunService {
   ): Promise<void> {
     const { repo, emit } = this.deps;
     const abort = new AbortController();
-    // execute 以 void 方式后台调用：会话在开跑前被删掉就直接放弃，不能抛成未处理的 rejection
+    // 会话在开跑前被删掉就直接放弃
     const conv = repo.get(conversationId);
     if (!conv) return;
     const workspaceDir = conv.workspaceDir;
     const runtimeDir = this.runtimeDir(conversationId);
     const snapshots = this.deps.videoSnapshots;
+    const files = this.deps.files;
     const runKey = randomUUID();
     const inner = new LocalWorkspaceSandbox(workspaceDir, {
       tracker: this.deps.processes,
       beforeWrite: snapshots ? (filePath) => snapshots.capture(conversationId, workspaceDir, filePath, runKey) : undefined,
+      trackWrite: files ? (filePath) => files.begin(conversationId, resolve(workspaceDir, filePath)) : undefined,
     });
     this.active.set(conversationId, { abort, sandbox: inner });
     /** 本轮正常结束：收尾后补投运行期间结束的后台任务通知（同 backend worker 在 done 之后 deliverPending） */
@@ -434,6 +463,9 @@ export class RunService {
         // tasks：把子 agent 的 namespace 对应到发起它的 task 调用（见 core consume-stream）
         streamMode: [...AGENT_STREAM_MODES],
         subgraphs: true,
+        // checkpoint 只在图退出（完成 / 出错 / 停在审批）时存一份：默认每一步都存一份完整状态（全部消息），
+        // 步数多的一轮能写出几百 MB，而崩溃后本来就从 message 表重放，中间状态用不上
+        durability: 'exit',
       });
 
       const turnMessageId = repo.lastUserMessageId(conversationId) ?? conversationId;
@@ -502,6 +534,8 @@ export class RunService {
       persist(errorEvt);
     } finally {
       this.active.delete(conversationId);
+      // checkpoint 只留给停在审批上的那一轮续跑：其余结局（完成 / 失败 / 停止）到这里就用不上了，立刻清掉
+      if (!awaitingApproval) await this.deps.checkpointer.deleteThread(conversationId);
       // 释放本轮持有的画布运行锁；停在审批上时留给续跑（见 parkedCanvas）
       if (canvasRun && awaitingApproval) this.parkedCanvas.set(conversationId, canvasRun);
       else await canvasRun?.session.close();

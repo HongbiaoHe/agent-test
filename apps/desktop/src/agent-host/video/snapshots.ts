@@ -28,8 +28,19 @@ export class VideoSnapshots {
 
   constructor(private readonly dir: string) {}
 
+  /** 这个会话全部快照所在的目录（存储占用统计；删会话 / 清缓存时整个删掉） */
+  conversationDir(conversationId: string): string {
+    return join(this.dir, encodeURIComponent(conversationId));
+  }
+
+  /** 存着快照的会话 id（含已删会话残留的） */
+  async conversationIds(): Promise<string[]> {
+    const names = await readdir(this.dir).catch(() => []);
+    return names.map((n) => decodeURIComponent(n));
+  }
+
   private folder(conversationId: string, relPath: string): string {
-    return join(this.dir, encodeURIComponent(conversationId), encodeURIComponent(relPath));
+    return join(this.conversationDir(conversationId), encodeURIComponent(relPath));
   }
 
   /** 文件名 `<毫秒>-<序号>.json`，按名字排序即时间顺序 */

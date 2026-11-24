@@ -9,7 +9,7 @@
  * features/video-editor/lib/tool-result.ts 解析成「打开剪辑器」卡片，字段名不能改。
  * 失败一律返回 `{ error, ... }` 给模型改正，不抛（同 preview_page）。
  */
-import { isAbsolute, relative, sep } from 'node:path';
+import { isAbsolute, join, relative, sep } from 'node:path';
 import { realpath } from 'node:fs/promises';
 import { tool } from '@langchain/core/tools';
 import {
@@ -38,6 +38,7 @@ import {
 } from '@agent-test/video-schema';
 import { z } from 'zod';
 import type { WebApi } from '../web-media/web-api';
+import { type FileRecorder, writeTracked } from '../storage/conversation-files';
 import { syncMediaToWorkspace } from '../web-media/web-media';
 import type { FfmpegBinaries } from './ffmpeg-paths';
 import { describeMediaIssue, runMediaChecks } from './media-checks';
@@ -172,6 +173,8 @@ export interface VideoToolOptions {
   /** 没登录 Web 账号时为 null：带 versionId 的素材报错 */
   webApi: WebApi | null;
   ffprobe: () => string;
+  /** 记下本会话新建的文件（下载的素材、工程文件），删会话时清掉 */
+  files?: FileRecorder;
 }
 
 class ToolInputError extends Error {
@@ -194,7 +197,7 @@ async function syncVersions(opts: VideoToolOptions, versionIds: string[]): Promi
       '引用 versionId 需要先登录 Web 账号（当前未登录）。请提示用户在设置里登录，或改用工作区里的文件（path）。',
     );
   }
-  const res = await syncMediaToWorkspace(opts.webApi, opts.conversationId, opts.workspaceDir, versionIds);
+  const res = await syncMediaToWorkspace(opts.webApi, opts.conversationId, opts.workspaceDir, versionIds, opts.files);
   if ('error' in res) throw new ToolInputError('下载素材失败', { detail: res.error });
   for (const s of res.synced) out.set(s.versionId, relative(opts.workspaceDir, s.path).split(sep).join('/'));
   if (res.errors?.length) throw new ToolInputError('部分素材下载失败', { errors: res.errors });
@@ -314,7 +317,10 @@ async function createProject(opts: VideoToolOptions, args: CreateArgs) {
   if (!parsed.ok) throw new ToolInputError('工程校验不通过', { issues: parsed.issues });
 
   const rel = await uniqueWorkspacePath(opts.workspaceDir, PROJECTS_DIR, slugify(args.name), PROJECT_FILE_SUFFIX);
-  await writeFileAtomic(await resolveWritable(opts.workspaceDir, rel), serializeProject(parsed.project));
+  // resolveWritable 会建好父目录：放进被跟踪的写入里，新建的目录才记得到
+  await writeTracked(opts.files, opts.conversationId, join(opts.workspaceDir, rel), async () =>
+    writeFileAtomic(await resolveWritable(opts.workspaceDir, rel), serializeProject(parsed.project)),
+  );
   return {
     path: rel,
     name: parsed.project.name,

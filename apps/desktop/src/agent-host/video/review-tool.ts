@@ -28,6 +28,7 @@ import {
   wrapSubtitle,
 } from '@agent-test/video-schema';
 import { z } from 'zod';
+import { type FileRecorder, writeTracked } from '../storage/conversation-files';
 import type { WebApi } from '../web-media/web-api';
 import { uploadAttachment } from '../web-media/web-media';
 import { buildAss, buildExportArgs, outputSize, runFfmpeg } from './export';
@@ -62,6 +63,8 @@ export interface ReviewToolOptions {
   /** 没登录 Web 账号时为 null */
   webApi: WebApi | null;
   binaries: () => FfmpegBinaries;
+  /** 记下本会话新建的审片结果文件，删会话时清掉 */
+  files?: FileRecorder;
 }
 
 const round3 = (n: number) => Math.round(n * 1000) / 1000;
@@ -165,7 +168,9 @@ export async function reviewProject(
     issues,
   };
   const reviewFile = reviewPathOf(rel);
-  await writeFileAtomic(await resolveWritable(workspaceDir, reviewFile), `${JSON.stringify(saved, null, 2)}\n`);
+  await writeTracked(opts.files, opts.conversationId, join(workspaceDir, reviewFile), async () =>
+    writeFileAtomic(await resolveWritable(workspaceDir, reviewFile), `${JSON.stringify(saved, null, 2)}\n`),
+  );
   return {
     verdict: review.verdict,
     summary: review.summary,

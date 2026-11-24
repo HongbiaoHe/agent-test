@@ -40,6 +40,11 @@ export interface LocalSandboxOptions {
   tracker?: { add(pgid: number, commandLine: string): void; remove(pgid: number): void };
   /** write / edit 落盘前调用（剪辑工程的快照，见 video/snapshots.ts）；不能抛错挡住写入 */
   beforeWrite?: (filePath: string) => Promise<void>;
+  /**
+   * write / edit 落盘前调用，返回「写成功之后要做的事」（写失败就不调）。
+   * 用来记下会话新建了哪些文件和目录（见 storage/conversation-files.ts）；两步都不能抛错
+   */
+  trackWrite?: (filePath: string) => Promise<() => Promise<void>>;
 }
 
 const DEFAULT_TIMEOUT_MS = 120_000;
@@ -69,6 +74,7 @@ export class LocalWorkspaceSandbox implements GuardableSandbox {
   private readonly env: Record<string, string>;
   private readonly tracker: LocalSandboxOptions['tracker'];
   private readonly beforeWrite: LocalSandboxOptions['beforeWrite'];
+  private readonly trackWrite: LocalSandboxOptions['trackWrite'];
 
   constructor(
     readonly root: string,
@@ -80,6 +86,7 @@ export class LocalWorkspaceSandbox implements GuardableSandbox {
     this.env = opts.env ?? whitelistedEnv();
     this.tracker = opts.tracker;
     this.beforeWrite = opts.beforeWrite;
+    this.trackWrite = opts.trackWrite;
   }
 
   // ── 生命周期：本机没有远端资源，start/stop 只管子进程 ───────────────────────
@@ -184,7 +191,10 @@ export class LocalWorkspaceSandbox implements GuardableSandbox {
 
   async write(filePath: string, content: string): Promise<WriteResult> {
     await this.beforeWrite?.(filePath);
-    return this.fs.write(filePath, content);
+    const commit = await this.trackWrite?.(filePath);
+    const res = await this.fs.write(filePath, content);
+    if (!res.error) await commit?.();
+    return res;
   }
 
   async edit(
@@ -194,7 +204,10 @@ export class LocalWorkspaceSandbox implements GuardableSandbox {
     replaceAll?: boolean,
   ): Promise<EditResult> {
     await this.beforeWrite?.(filePath);
-    return this.fs.edit(filePath, oldString, newString, replaceAll);
+    const commit = await this.trackWrite?.(filePath);
+    const res = await this.fs.edit(filePath, oldString, newString, replaceAll);
+    if (!res.error) await commit?.();
+    return res;
   }
 
   uploadFiles(files: Array<[string, Uint8Array]>): Promise<FileUploadResponse[]> {
