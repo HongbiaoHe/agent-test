@@ -20,6 +20,7 @@ import type {
   VideoExportStatus,
   VideoMediaProbe, VideoProjectFile, VideoProjectSummary, VideoWriteResult } from '../../shared/rpc';
 import { hostI18n } from '../i18n';
+import type { FileRecorder } from '../storage/conversation-files';
 import { buildAss, buildExportArgs, FfmpegError, type FfmpegRun, outputSize, runFfmpeg } from './export';
 import type { FfmpegBinaries } from './ffmpeg-paths';
 import { probeMedia } from './probe';
@@ -53,6 +54,8 @@ export interface VideoServiceDeps {
   snapshots: VideoSnapshots;
   /** 时间线视频轨的预览帧拼图 */
   thumbnails: ThumbnailService;
+  /** 记下本会话导出的成片，删会话时清掉 */
+  files?: FileRecorder;
 }
 
 interface WatchEntry {
@@ -226,6 +229,8 @@ export class VideoService {
       await writeFile(assPath, buildAss(project, outputSize(project, height), wrappedSubtitles));
     }
     const outputPath = await uniqueWorkspacePath(root, EXPORTS_DIR, `${slugify(project.name)}-${exportStamp()}`, '.mp4');
+    // 先看一眼再建目录（resolveWritable 会建 exports/）：导出成功后连同新建的目录一起记
+    const commitOutput = await this.deps.files?.begin(conversationId, join(root, outputPath));
     const outputAbs = await resolveWritable(root, outputPath);
     const args = buildExportArgs(project, {
       resolve: (src) => absBySrc.get(src) ?? src,
@@ -259,6 +264,8 @@ export class VideoService {
             await rm(outputAbs, { force: true });
             emit('cancelled', 0);
           } else {
+            // 成片导出成功才记；取消 / 失败的已经删掉
+            await commitOutput?.();
             emit('done', 1, { outputPath });
           }
         },

@@ -24,6 +24,13 @@ import { PROVIDER_PROTOCOLS, THINKING_STYLES } from '@agent-test/agent-core/prov
 import { z } from 'zod';
 import type { CallToolResult, ReadResourceResult } from '@modelcontextprotocol/sdk/types.js';
 import type { ReviewFile, VideoProject } from '@agent-test/video-schema';
+import {
+  CACHE_CATEGORIES,
+  type ClearCacheResult,
+  type DeleteConversationsResult,
+  SHARED_CACHE_CATEGORIES,
+  type StorageReport,
+} from './storage';
 import type {
   AigcCatalog,
   ApplyOpResult,
@@ -368,7 +375,17 @@ export const rpcSchemas = {
     /** 切模式：null = 回到通用模式；运行中 / 等审批时拒绝 */
     modeId: z.string().nullable().optional(),
   }),
+  /** 删除会话：连同本机的消息、缓存、运行目录与它新建的产出文件（产出移进废纸篓） */
   'conversations.delete': z.object({ id }),
+  /** 设置 → 存储：扫描当前账号每个会话的本机占用 */
+  'storage.scan': z.object({}),
+  /** 清缓存：不给 conversationIds = 全部会话；正在运行 / 等审批的会话跳过 */
+  'storage.clearCache': z.object({
+    conversationIds: z.array(id).max(5000).optional(),
+    categories: z.array(z.enum(CACHE_CATEGORIES)),
+    sharedCategories: z.array(z.enum(SHARED_CACHE_CATEGORIES)).optional(),
+  }),
+  'storage.deleteConversations': z.object({ ids: z.array(id).min(1).max(5000) }),
   'modes.list': z.object({}),
   'modes.create': AgentModeInputSchema,
   'modes.update': AgentModeInputSchema.extend({ id }),
@@ -568,6 +585,9 @@ export interface RpcResults {
   'conversations.get': ConversationDetail;
   'conversations.update': ConversationSummary;
   'conversations.delete': { ok: true };
+  'storage.scan': StorageReport;
+  'storage.clearCache': ClearCacheResult;
+  'storage.deleteConversations': DeleteConversationsResult;
   'modes.list': AgentMode[];
   'modes.create': AgentMode;
   'modes.update': AgentMode;

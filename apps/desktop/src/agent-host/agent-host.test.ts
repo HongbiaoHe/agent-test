@@ -1,5 +1,5 @@
 import { execFileSync, spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, statSync } from 'node:fs';
 import { mkdir, mkdtemp, readdir, readFile, rm, symlink, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -8,7 +8,7 @@ import { Annotation, Command, interrupt, StateGraph } from '@langchain/langgraph
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import { NodeSqliteSaver } from './db/checkpointer';
 import { ConversationRepo } from './db/conversations';
-import { openDatabase } from './db/database';
+import { openDatabase, reclaimFreeSpace } from './db/database';
 import { copyAttachments, userTextForModel } from './run/attachments';
 import { buildActivePlan } from '@agent-test/agent-core/run/turn-prompts';
 import { SkillInstallError, SkillStore } from './skills/skill-store';
@@ -59,6 +59,47 @@ describe('NodeSqliteSaver', () => {
     expect(await saver.getTuple(config)).toBeDefined();
     await saver.deleteThread('t2');
     expect(await saver.getTuple(config)).toBeUndefined();
+  });
+
+  it('pruneExcept 只留指定会话的 checkpoint（启动时清掉用不上的），留下的仍能续跑', async () => {
+    const db = openDatabase(join(dir, 'spark.db'));
+    const saver = new NodeSqliteSaver(db);
+    const graph = buildGraph(saver);
+    for (const id of ['keep', 'drop1', 'drop2']) await graph.invoke({ log: [id] }, { configurable: { thread_id: id } });
+
+    expect(saver.pruneExcept(['keep'])).toBe(2);
+    expect(await saver.getTuple({ configurable: { thread_id: 'drop1' } })).toBeUndefined();
+    expect(await saver.getTuple({ configurable: { thread_id: 'drop2' } })).toBeUndefined();
+    const leftover = db.prepare("SELECT COUNT(*) AS n FROM writes WHERE thread_id != 'keep'").get();
+    expect(leftover?.n).toBe(0);
+    const out = await graph.invoke(new Command({ resume: 'yes' }), { configurable: { thread_id: 'keep' } });
+    expect(out.log).toEqual(['keep', 'answer:yes']);
+    // 没有可删的：返回 0
+    expect(saver.pruneExcept(['keep'])).toBe(0);
+    expect(saver.pruneExcept([])).toBe(1);
+  });
+});
+
+describe('reclaimFreeSpace', () => {
+  it('空闲页达到阈值才整理；整理后文件缩小、数据还在', () => {
+    const file = join(dir, 'spark.db');
+    const db = openDatabase(file);
+    db.exec('CREATE TABLE blob_t (id INTEGER PRIMARY KEY, data BLOB)');
+    const insert = db.prepare('INSERT INTO blob_t (data) VALUES (?)');
+    for (let i = 0; i < 40; i++) insert.run(new Uint8Array(100_000));
+    db.exec('DELETE FROM blob_t WHERE id > 1');
+    db.exec('PRAGMA wal_checkpoint(TRUNCATE)');
+    const before = statSync(file).size;
+    expect(before).toBeGreaterThan(3_000_000);
+
+    // 空闲约 3.9MB：阈值比它高 → 不动
+    expect(reclaimFreeSpace(db, 64 * 1024 * 1024)).toBe(0);
+    expect(statSync(file).size).toBe(before);
+
+    const freed = reclaimFreeSpace(db, 1024 * 1024);
+    expect(freed).toBeGreaterThan(3_000_000);
+    expect(statSync(file).size).toBeLessThan(before - 3_000_000);
+    expect(db.prepare('SELECT COUNT(*) AS n FROM blob_t').get()?.n).toBe(1);
   });
 });
 

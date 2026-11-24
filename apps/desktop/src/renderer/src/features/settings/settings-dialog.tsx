@@ -1,21 +1,40 @@
 /**
  * 设置弹窗：左侧分类导航（同 Web /settings 的 SettingsNav 样式），右侧当前分类的内容。
- * 分类：账号（Web 账号 / 后端地址）、外观（主题 / 语言）、模型（Key / 默认模型）、工作区、技能、连接器、模式。
+ * 分类：账号（Web 账号 / 后端地址）、外观（主题 / 语言）、模型（Key / 默认模型）、工作区、技能、连接器、模式、存储。
  * 内容区用原生 overflow-y-auto（弹窗里 ScrollArea 遇到不确定高度会失效，见项目记忆）。
  */
-import { Bot, CircleUserRound, FolderOpen, type LucideIcon, Palette, Plug, SlidersHorizontal, Wrench } from 'lucide-react';
+import {
+  Bot,
+  CircleUserRound,
+  FolderOpen,
+  HardDrive,
+  type LucideIcon,
+  Palette,
+  Plug,
+  SlidersHorizontal,
+  Wrench,
+} from 'lucide-react';
 import { useTranslation } from 'react-i18next';
 import { Dialog, DialogContent, DialogDescription, DialogTitle } from '@/components/ui/dialog';
 import { cn } from '@/lib/utils';
 import { McpSettings } from '../mcp/mcp-view';
 import { ModesSettings } from '../modes/modes-view';
 import { SkillsSettings } from '../skills/skills-view';
+import { StorageSection } from '../storage/storage-section';
 import { AccountSection } from './sections/account-section';
 import { AppearanceSection } from './sections/appearance-section';
 import { ModelsSection } from './sections/models-section';
 import { WorkspaceSection } from './sections/workspace-section';
 
-export type SettingsSection = 'account' | 'appearance' | 'models' | 'workspace' | 'skills' | 'connectors' | 'modes';
+export type SettingsSection =
+  | 'account'
+  | 'appearance'
+  | 'models'
+  | 'workspace'
+  | 'skills'
+  | 'connectors'
+  | 'modes'
+  | 'storage';
 
 /** 名称与说明见字典 settings.sections.<key> */
 const SECTIONS: { key: SettingsSection; icon: LucideIcon }[] = [
@@ -26,6 +45,7 @@ const SECTIONS: { key: SettingsSection; icon: LucideIcon }[] = [
   { key: 'skills', icon: Wrench },
   { key: 'connectors', icon: Plug },
   { key: 'modes', icon: SlidersHorizontal },
+  { key: 'storage', icon: HardDrive },
 ];
 
 /** 全部分区（顺序同设置页左栏）：全局搜索按它列出设置页 */
@@ -37,6 +57,7 @@ export function SettingsDialog({
   onOpenChange,
   onSectionChange,
   onSignIn,
+  onConversationsDeleted,
 }: {
   open: boolean;
   section: SettingsSection;
@@ -44,6 +65,8 @@ export function SettingsDialog({
   onSectionChange: (section: SettingsSection) => void;
   /** 账号分类里点「登录」：关掉弹窗、回到登录页 */
   onSignIn: () => void;
+  /** 存储分类里删了会话：正开着其中某个会话的话，由调用方回到首页 */
+  onConversationsDeleted: (ids: string[]) => void;
 }) {
   const { t } = useTranslation();
   return (
@@ -82,6 +105,7 @@ export function SettingsDialog({
             {section === 'skills' && <SkillsSettings />}
             {section === 'connectors' && <McpSettings />}
             {section === 'modes' && <ModesSettings />}
+            {section === 'storage' && <StorageSection onConversationsDeleted={onConversationsDeleted} />}
           </div>
         </section>
       </DialogContent>

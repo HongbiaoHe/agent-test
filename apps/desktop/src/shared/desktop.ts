@@ -92,7 +92,19 @@ export type HostControlMessage =
       legacyConnections: LegacyConnection[];
       locale: Locale;
     }
-  | { type: 'port' };
+  | { type: 'port' }
+  /** 回应 agent-host 的 trash 请求：failed 是没能移进废纸篓的路径 */
+  | { type: 'trash-done'; id: number; failed: string[] };
+
+/**
+ * agent-host → main：把文件移进系统废纸篓（shell.trashItem 只在 main 进程可用）。
+ * 路径由 agent-host 自己按「会话新建的产出文件」算出来，不接受 renderer 传入。
+ */
+export interface HostTrashRequest {
+  type: 'trash';
+  id: number;
+  paths: string[];
+}
 
 /** renderer 收到 agent-host 端口时，preload 转发的 window message 标记 */
 export const AGENT_PORT_MESSAGE = 'spark:agent-port';

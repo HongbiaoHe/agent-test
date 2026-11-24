@@ -35,6 +35,7 @@ import { backgroundPrompt, createBackgroundTools, RUN_IN_BACKGROUND_TOOL } from 
 import { createPreviewPageTool, PREVIEW_PAGE_TOOL } from '../preview/preview-page.tool';
 import { createSaveSkillTool, SAVE_SKILL_TOOL } from '../skills/save-skill.tool';
 import type { SkillStore } from '../skills/skill-store';
+import type { FileRecorder } from '../storage/conversation-files';
 import { ffmpegBinaries } from '../video/ffmpeg-paths';
 import { REVIEW_VIDEO_PROJECT_TOOL, reviewVideoProjectTool, VIDEO_REVIEW_PROMPT } from '../video/review-tool';
 import {
@@ -69,6 +70,8 @@ export interface DesktopRegistryDeps {
   background: () => BackgroundService | null;
   skills: SkillStore;
   skillsChanged: () => void;
+  /** 记下会话新建的工作区文件（删会话时清掉）；测试里可不传 */
+  files?: FileRecorder;
 }
 
 /** 本环境的能力集（运行期按会话权限算；设置页目录按默认档位 ask 算） */
@@ -198,7 +201,7 @@ export function buildDesktopRegistry(deps: DesktopRegistryDeps): DesktopRegistry
       title: '媒体下载进工作区',
       description: '把本会话的附件 / 生成产物下载到工作区 media/ 目录供命令处理',
       requires: ['media_api', 'workspace_write'],
-      create: (ctx) => createSyncMediaTool(requireWeb(), ctx.conversationId, ctx.host.workspaceDir),
+      create: (ctx) => createSyncMediaTool(requireWeb(), ctx.conversationId, ctx.host.workspaceDir, deps.files),
     },
     ...shareFactory<DesktopToolHost>((ctx) => createBoundCanvasTools(requireCanvas(ctx)), CANVAS_ENTRIES),
     {
@@ -245,6 +248,7 @@ export function buildDesktopRegistry(deps: DesktopRegistryDeps): DesktopRegistry
           workspaceDir: ctx.host.workspaceDir,
           webApi: deps.webApi,
           ffprobe: () => ffmpegBinaries().ffprobe,
+          files: deps.files,
         }),
     },
     {
@@ -268,6 +272,7 @@ export function buildDesktopRegistry(deps: DesktopRegistryDeps): DesktopRegistry
           workspaceDir: ctx.host.workspaceDir,
           webApi: deps.webApi,
           binaries: ffmpegBinaries,
+          files: deps.files,
         }),
     },
   ]);

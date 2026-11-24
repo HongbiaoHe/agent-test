@@ -6,6 +6,7 @@ import {
   app,
   MessageChannelMain,
   session,
+  shell,
   utilityProcess,
   type UtilityProcess,
   type WebContents,
@@ -14,8 +15,10 @@ import {
   AGENT_PORT_CLOSED_MESSAGE,
   AGENT_PORT_MESSAGE,
   type HostControlMessage,
+  type HostTrashRequest,
 } from '../shared/desktop';
 import { FFMPEG_PATH_ENV, FFPROBE_PATH_ENV, localBuildBinaries, packageBinaries } from '../agent-host/video/ffmpeg-paths';
+import { z } from 'zod';
 import { appLocale } from './i18n';
 import type { DesktopStore } from './store';
 
@@ -57,6 +60,11 @@ export class AgentHostManager {
         const ack = configAck(data);
         if (ack !== null) {
           this.configAcks.get(ack)?.();
+          return;
+        }
+        const trash = trashRequest.safeParse(data);
+        if (trash.success) {
+          void this.trash(child, trash.data);
           return;
         }
         if (!isReady(data)) return;
@@ -139,6 +147,21 @@ export class AgentHostManager {
     wc.postMessage(AGENT_PORT_MESSAGE, null, [port2]);
   }
 
+  /** agent-host 请求把文件移进废纸篓（删会话时它新建的产出）：逐个移，移不动的原样报回去 */
+  private async trash(child: UtilityProcess, req: HostTrashRequest): Promise<void> {
+    const failed: string[] = [];
+    for (const path of req.paths) {
+      try {
+        await shell.trashItem(path);
+      } catch {
+        failed.push(path);
+      }
+    }
+    if (this.child !== child) return;
+    const msg: HostControlMessage = { type: 'trash-done', id: req.id, failed };
+    child.postMessage(msg);
+  }
+
   private notifyPortClosed(): void {
     for (const wc of this.renderers) wc.send(AGENT_PORT_CLOSED_MESSAGE);
   }
@@ -198,6 +221,8 @@ function configAck(data: unknown): number | null {
     ? data.seq
     : null;
 }
+
+const trashRequest = z.object({ type: z.literal('trash'), id: z.number(), paths: z.array(z.string()) });
 
 function isReady(data: unknown): boolean {
   return typeof data === 'object' && data !== null && 'type' in data && data.type === 'ready';

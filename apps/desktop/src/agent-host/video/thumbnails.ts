@@ -40,6 +40,8 @@ export function thumbnailPlan(
   return { count, interval: duration / count, tileWidth, tileHeight: THUMB_HEIGHT };
 }
 
+const sha1 = (s: string) => createHash('sha1').update(s).digest('hex').slice(0, 16);
+
 export class ThumbnailService {
   private readonly inflight = new Map<string, Promise<VideoThumbnails>>();
 
@@ -48,7 +50,6 @@ export class ThumbnailService {
   /** abs：素材的本机绝对路径（调用方已校验在工作区内） */
   async get(abs: string): Promise<VideoThumbnails> {
     const st = await stat(abs);
-    const sha1 = (s: string) => createHash('sha1').update(s).digest('hex').slice(0, 16);
     // 前缀 = 路径；后半 = 这一版内容（大小 + 修改时间 + 缓存格式）
     const key = `${sha1(abs)}-${sha1(`${CACHE_VERSION}\0${st.size}\0${st.mtimeMs}`)}`;
     const pending = this.inflight.get(key);
@@ -58,12 +59,17 @@ export class ThumbnailService {
     return job;
   }
 
+  /** 素材被删了（删会话时它新建的视频移进废纸篓）：这个路径的拼图缓存一并删掉 */
+  forget(abs: string): Promise<void> {
+    return this.pruneOlder(`${sha1(abs)}-`);
+  }
+
   /** 删掉同一路径（同前缀）的旧版本拼图；删不掉不影响本次结果 */
   private async pruneOlder(key: string): Promise<void> {
     const prefix = `${key.slice(0, key.indexOf('-'))}-`;
     const names = await readdir(this.deps.cacheDir).catch(() => []);
     for (const name of names) {
-      if (name.startsWith(prefix) && !name.startsWith(key)) {
+      if (name.startsWith(prefix) && name !== `${key}.jpg` && name !== `${key}.json`) {
         await rm(join(this.deps.cacheDir, name), { force: true }).catch(() => undefined);
       }
     }

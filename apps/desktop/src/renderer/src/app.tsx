@@ -327,6 +327,11 @@ export function App() {
           onOpenChange={setSettingsOpen}
           onSectionChange={setSection}
           onSignIn={signIn}
+          onConversationsDeleted={(ids) => {
+            // 正开着的会话被删了：回首页（对话、画布右侧对话栏、剪辑器都挂在会话上）
+            const openId = view.kind === 'chat' ? view.id : view.kind === 'canvas' || view.kind === 'video' ? view.conversationId : null;
+            if (openId && ids.includes(openId)) setView({ kind: 'home' });
+          }}
         />
       </div>
     </FileViewerProvider>

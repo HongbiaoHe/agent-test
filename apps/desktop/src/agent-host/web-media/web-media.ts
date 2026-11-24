@@ -18,6 +18,7 @@ import {
 } from '@agent-test/agent-core/media/media-tools';
 import { tool } from '@langchain/core/tools';
 import { z } from 'zod';
+import { type FileRecorder, writeTracked } from '../storage/conversation-files';
 import { WebApi, WebApiError } from './web-api';
 
 export const SYNC_MEDIA_TOOL = 'sync_media_to_sandbox';
@@ -113,6 +114,8 @@ export async function syncMediaToWorkspace(
   conversationId: string,
   workspaceDir: string,
   versionIds: string[],
+  /** 记下本会话下载进工作区的文件（删会话时清掉） */
+  files?: FileRecorder,
 ): Promise<SyncMediaResult> {
   const unique = [...new Set(versionIds)];
   let resolved: z.infer<typeof sourcesSchema>;
@@ -132,7 +135,8 @@ export async function syncMediaToWorkspace(
       continue;
     }
     try {
-      await download(src.url, path);
+      const url = src.url;
+      await writeTracked(files, conversationId, path, () => download(url, path));
       synced.push({ versionId: src.versionId, type: src.type, path });
     } catch (e) {
       errors.push({ versionId: src.versionId, reason: `同步失败：${e instanceof Error ? e.message : String(e)}` });
@@ -145,10 +149,10 @@ export async function syncMediaToWorkspace(
  * 同 Web 的 sync_media_to_sandbox：把本会话的媒体（用户附件、生成产物）下载进本机工作区
  * `<工作区>/media/<versionId>/<文件名>`，返回路径供 execute（ffmpeg 等）使用。只读会话不提供。
  */
-export function createSyncMediaTool(api: WebApi, conversationId: string, workspaceDir: string) {
+export function createSyncMediaTool(api: WebApi, conversationId: string, workspaceDir: string, files?: FileRecorder) {
   return tool(
     async ({ versionIds }: { versionIds: string[] }) =>
-      JSON.stringify(await syncMediaToWorkspace(api, conversationId, workspaceDir, versionIds)),
+      JSON.stringify(await syncMediaToWorkspace(api, conversationId, workspaceDir, versionIds, files)),
     {
       name: SYNC_MEDIA_TOOL,
       description:
