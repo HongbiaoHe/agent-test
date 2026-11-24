@@ -54,7 +54,7 @@ export function ConversationTitleMenu({
               size="sm"
               aria-label={t('chat.toolbar.menu')}
               // 按钮默认 shrink-0：标题超长时要能被压缩并省略号截断，不能盖住右侧工具图标
-              className="max-w-full min-w-0 shrink gap-1 px-2 text-sm font-semibold tracking-tight"
+              className="max-w-full min-w-0 shrink gap-1 px-2 text-sm font-medium"
             />
           }
         >

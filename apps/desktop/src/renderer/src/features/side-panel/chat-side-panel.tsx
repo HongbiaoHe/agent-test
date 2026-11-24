@@ -1,5 +1,5 @@
 /**
- * 对话的右侧侧栏：网页预览 / 剪辑器 / 画布 / 会话信息。
+ * 对话的右侧侧栏：网页预览 / 剪辑器 / 画布；什么都没开时是启动页（可打开的产出物列表）。
  *  - 默认停靠在对话右边、挤压对话（左边缘可拖动调整宽度，最窄 SIDE_PANEL_MIN_WIDTH，且至少给对话留同样宽；
  *    工具详情面板也开着时把它的宽度一并让出来）；
  *  - 「展开全部」：盖住整个对话区（不盖左侧会话栏），对话还在下面，收回即可继续聊；
@@ -15,8 +15,8 @@ import type { ConversationOutputs } from '../chat/lib/conversation-outputs';
 import { SidebarResizeHandle } from '../shell/sidebar-resize-handle';
 import { isTypingTarget } from '../video-editor/lib/keyboard';
 import { VideoEditorView } from '../video-editor/video-editor-view';
-import { ConversationInfoPane } from './conversation-info-pane';
 import { PanelControls } from './panel-controls';
+import { SidePanelLauncher } from './side-panel-launcher';
 import { SitePane } from './site-pane';
 import type { SidePanelItem } from './types';
 import { SIDE_PANEL_MIN_WIDTH, type SidePanelActions } from './use-side-panel';
@@ -38,7 +38,6 @@ export const ChatSidePanel = memo(function ChatSidePanel({
   headerInset,
   detailOpen,
   conversation,
-  tokens,
   outputs,
 }: {
   item: SidePanelItem | null;
@@ -51,9 +50,8 @@ export const ChatSidePanel = memo(function ChatSidePanel({
   headerInset?: string;
   /** 工具详情面板开着（宽屏下它与侧栏并排）：侧栏最宽时也要把它的宽度让出来 */
   detailOpen: boolean;
-  /** 会话信息栏用：会话摘要、累计 token、产出物（outputs 内容没变时引用不变，见 useConversationOutputs） */
+  /** 启动页用：会话摘要（当前画布）、产出物（outputs 内容没变时引用不变，见 useConversationOutputs） */
   conversation: ConversationSummary | null | undefined;
-  tokens: number;
   outputs: ConversationOutputs;
 }) {
   const { t } = useTranslation();
@@ -161,10 +159,9 @@ export const ChatSidePanel = memo(function ChatSidePanel({
         {item.kind === 'canvas' && (
           <CanvasWorkspace key={item.canvasId} canvasId={item.canvasId} trailing={controls} headerInset={inset} />
         )}
-        {item.kind === 'info' && (
-          <ConversationInfoPane
+        {item.kind === 'launcher' && (
+          <SidePanelLauncher
             conversation={conversation}
-            tokens={tokens}
             outputs={outputs}
             controls={controls}
             headerInset={inset}

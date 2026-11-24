@@ -16,6 +16,7 @@ import type { RunService } from './run/run-service';
 import { buildDesktopRegistry } from './run/tool-registry';
 import { SkillStore } from './skills/skill-store';
 import { VideoSnapshots } from './video/snapshots';
+import { ThumbnailService } from './video/thumbnails';
 import { VideoService } from './video/video-service';
 import type { WebApi } from './web-media/web-api';
 
@@ -64,6 +65,7 @@ function setup() {
       emit: () => undefined,
       binaries: () => ({ ffmpeg: 'ffmpeg', ffprobe: 'ffprobe' }),
       snapshots: new VideoSnapshots(join(tmpdir(), 'spark-rpc-test-snapshots')),
+      thumbnails: new ThumbnailService({ cacheDir: join(tmpdir(), 'spark-rpc-test-thumbs'), ffmpeg: () => 'ffmpeg', ffprobe: () => 'ffprobe' }),
     }),
     canvasWatcher: null,
   };
@@ -235,6 +237,44 @@ describe('通用模式 RPC', () => {
     // 模式没设默认模型：落到全局默认，不借用通用模式的设置
     const withMode = await h['conversations.create']({ modeId: mode.id });
     expect(withMode).toMatchObject({ model: ref, thinkingLevel: null, modeId: mode.id });
+  });
+});
+
+describe('新建会话复用空会话', () => {
+  it('已有空会话就复用（按新参数重置、回到列表顶部）；有消息 / 重命名 / 置顶 / 绑画布的不复用', async () => {
+    const { s, h } = setup();
+    const first = await h['conversations.create']({});
+    const again = await h['conversations.create']({ permission: 'auto' });
+    expect(again.id).toBe(first.id);
+    expect(again.permission).toBe('auto');
+    expect(again.updatedAt).toBeGreaterThanOrEqual(first.updatedAt);
+    // 对用户来说是一个新会话：创建时间也记为现在
+    expect(again.createdAt).toBe(again.updatedAt);
+    expect(s.repo.list()).toHaveLength(1);
+    // reuseEmpty: false（画布对话栏）：一定新建，开跑失败删掉它时不会删到已有的空会话
+    const fresh = await h['conversations.create']({ reuseEmpty: false });
+    expect(fresh.id).not.toBe(first.id);
+    s.repo.delete(fresh.id);
+    expect(s.repo.list().map((c) => c.id)).toEqual([first.id]);
+
+    // 有了消息：不再是空会话，新建得到新的
+    s.repo.appendMessage(first.id, 'user', 'message', { text: 'hi' });
+    const second = await h['conversations.create']({});
+    expect(second.id).not.toBe(first.id);
+
+    // 重命名过 / 置顶 / 绑了画布的空会话都不复用
+    s.repo.update(second.id, { title: '起了名字' });
+    const third = await h['conversations.create']({});
+    expect(third.id).not.toBe(second.id);
+    s.repo.setPinned(third.id, true);
+    const fourth = await h['conversations.create']({});
+    expect(fourth.id).not.toBe(third.id);
+    s.repo.setCanvas(fourth.id, 'canvas-1');
+    const fifth = await h['conversations.create']({});
+    expect(fifth.id).not.toBe(fourth.id);
+    // 再新建：复用第五个
+    expect((await h['conversations.create']({})).id).toBe(fifth.id);
+    expect(s.repo.list()).toHaveLength(5);
   });
 });
 

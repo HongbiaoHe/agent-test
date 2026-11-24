@@ -12,6 +12,7 @@
  * 9. 字幕导出与预览一致：长中英混排字幕在三种样式下，导出成片的帧与预览画布截图逐行比对（行数、每行上下左右边界）；
  * 10. 检查与撤销：规则问题实时显示并跳转、审片结果标记与过期、外部修改进撤销栈、撤销 agent 修改（快照）、音频用途；
  * 11. 转场：接缝里从 46 种内置转场选、落盘、成片变短；预览（WebGL）与导出（xfade）在转场中途同一帧逐点比对，内置与自创表达式各一次。
+ * 12. 视频轨预览帧：抽帧拼图平铺在片段上，随缩放与入点变化。
  * 每个用例自建临时目录与素材（失败重跑时也是干净的前置状态）。
  */
 import { execFileSync } from 'node:child_process';
@@ -374,7 +375,10 @@ test('真实模型：create_video_project → 工程卡片 → 打开剪辑器�
   await expect(page.locator('main[data-view]')).toHaveAttribute('data-view', /^chat:/);
   await expect(page.getByTestId('timeline')).toBeVisible();
   await expect(title(page)).toHaveText('E2E 宣传片');
-  await expect(page.getByTestId('video-timeline-content').getByRole('button')).toHaveCount(5);
+  // 三轨片段 5 个（不含视频轨接缝上的转场按钮）
+  await expect(
+    page.getByTestId('video-timeline-content').getByRole('button').and(page.locator(':not([data-testid="transition-seam"])')),
+  ).toHaveCount(5);
   for (const label of ['a.mp4', 'b.mp4', 'music.m4a', '第一句', '第二句']) await expect(clipBlock(page, label)).toBeVisible();
 
   // 关掉侧栏
@@ -762,6 +766,46 @@ test('转场：接缝里选转场落盘、成片变短；预览转场中途的�
   writeProject(ws, rel, { ...withCustom, video: [{ ...withCustom.video[0], transition: custom }, withCustom.video[1]] });
   await expect(picker).toContainText('菱形展开');
   await compare('custom');
+  await app.close();
+});
+
+test('视频轨预览帧：片段上平铺抽帧画面，放大后格子变多、按时间取到递增的帧，裁剪后跟着变', async () => {
+  const { app, page, ws, rel } = await openEditor('video-filmstrip', (ws) => {
+    writeProject(ws, 'videos/demo.sparkvideo.json', demoProject(ws, makeMedia(ws)));
+    return 'videos/demo.sparkvideo.json';
+  });
+  const strip = clipBlock(page, 'a.mp4').getByTestId('video-filmstrip');
+  await expect(strip).toBeVisible({ timeout: 15_000 });
+  const frames = async () =>
+    strip.locator('[data-frame]').evaluateAll((els) => els.map((el) => Number(el.getAttribute('data-frame'))));
+  const fitFrames = await frames();
+  expect(fitFrames.length).toBeGreaterThan(0);
+  // 格子从左到右取到的素材帧不回退
+  expect(fitFrames).toEqual([...fitFrames].sort((a, b) => a - b));
+  // 背景确实是拼图（Blob URL），文件名小标签仍可读
+  const bg = await strip.locator('[data-frame]').first().evaluate((el) => getComputedStyle(el).backgroundImage);
+  expect(bg).toMatch(/^url\("blob:/);
+  await expect(clipBlock(page, 'a.mp4')).toContainText('a.mp4');
+  await page.screenshot({ path: join(screens, 'video-filmstrip-fit.png') });
+
+  // 放大：同一段素材铺出更多格子（以视口中心为锚点缩放，可视区里的格子仍按时间递增）
+  for (let i = 0; i < 3; i++) await editor(page).getByRole('button', { name: '放大', exact: true }).click();
+  await expect.poll(async () => (await frames()).length).toBeGreaterThan(fitFrames.length);
+  const zoomed = await frames();
+  expect(zoomed).toEqual([...zoomed].sort((a, b) => a - b));
+  await page.screenshot({ path: join(screens, 'video-filmstrip-zoomed.png') });
+
+  // 改入点到 1.5 秒：第一格从素材 1.5 秒附近的帧开始（每 0.5 秒一帧 → 第 3 帧起）
+  await editor(page).getByRole('button', { name: '适应宽度', exact: true }).click();
+  await clipBlock(page, 'a.mp4').click();
+  await inspector(page).getByRole('spinbutton', { name: '入点（秒）' }).fill('1.5');
+  await expect.poll(async () => (await frames())[0] ?? -1).toBeGreaterThanOrEqual(3);
+  await expect
+    .poll(() => {
+      const c = readProject(ws, rel).video[0];
+      return c.type === 'video' ? c.inPoint : -1;
+    }, { timeout: 10_000 })
+    .toBe(1.5);
   await app.close();
 });
 

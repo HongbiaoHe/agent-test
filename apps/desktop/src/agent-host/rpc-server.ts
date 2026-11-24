@@ -200,11 +200,17 @@ export function createHandlers(s: Services): Handlers {
       // 思考档位只在创建时回填（决策 11）
       const mode = p.modeId ? s.modes.get(p.modeId) : null;
       const defaults = mode ?? s.modes.getGeneral();
-      let c = s.repo.create(
-        p.model ?? defaults.defaultModel ?? s.llm.effectiveRef(null),
-        { dir, permission: p.permission },
-        mode?.id ?? null,
-      );
+      const model = p.model ?? defaults.defaultModel ?? s.llm.effectiveRef(null);
+      // 已经有空会话（没消息、没重命名、没绑画布）：复用它，不再攒一串空会话
+      const reused =
+        p.reuseEmpty === false
+          ? null
+          : s.repo.reuseEmpty(model, { dir, permission: p.permission }, mode?.id ?? null, defaults.defaultThinkingLevel ?? null);
+      if (reused) {
+        s.listChanged();
+        return reused;
+      }
+      let c = s.repo.create(model, { dir, permission: p.permission }, mode?.id ?? null);
       if (defaults.defaultThinkingLevel) c = s.repo.update(c.id, { thinkingLevel: defaults.defaultThinkingLevel });
       s.listChanged();
       return c;
@@ -370,6 +376,7 @@ export function createHandlers(s: Services): Handlers {
     'video.snapshots': (p) => s.video.snapshotInfo(p.conversationId, p.path),
     'video.restoreSnapshot': (p) => s.video.restoreSnapshot(p.conversationId, p.path),
     'video.readReview': (p) => s.video.readReview(p.conversationId, p.path),
+    'video.thumbnails': (p) => s.video.thumbnails(p.conversationId, p.path),
     'video.exportCancel': (p) => {
       s.video.cancelExport(p.jobId);
       return { ok: true };

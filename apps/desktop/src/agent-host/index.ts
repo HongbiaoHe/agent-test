@@ -34,6 +34,7 @@ import { ffmpegBinaries } from './video/ffmpeg-paths';
 import { CanvasWatcher } from './canvas/canvas-watcher';
 import { VideoService } from './video/video-service';
 import { VideoSnapshots } from './video/snapshots';
+import { ThumbnailService } from './video/thumbnails';
 import { WebApi } from './web-media/web-api';
 import { ProcessTracker } from './workspace/process-tracker';
 
@@ -194,6 +195,11 @@ const video = new VideoService({
   emit: broadcast,
   binaries: ffmpegBinaries,
   snapshots: videoSnapshots,
+  thumbnails: new ThumbnailService({
+    cacheDir: join(profileDir, 'video-thumbs'),
+    ffmpeg: () => ffmpegBinaries().ffmpeg,
+    ffprobe: () => ffmpegBinaries().ffprobe,
+  }),
 });
 
 // 画布：打开着的画布的实时事件从 Web 后端转发给画布视图（登录了 Web 账号才有）

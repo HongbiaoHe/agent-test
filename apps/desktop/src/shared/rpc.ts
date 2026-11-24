@@ -250,6 +250,18 @@ export type HitlDecision = z.infer<typeof hitlDecisionSchema>;
 
 /** ── 视频剪辑器（videos/*.sparkvideo.json，见 @agent-test/video-schema）──────────────────── */
 
+/** 时间线视频轨的预览帧拼图（agent-host/video/thumbnails.ts 生成） */
+export interface VideoThumbnails {
+  /** data:image/jpeg;base64,… 横排拼图 */
+  sprite: string;
+  /** 格子数 */
+  count: number;
+  /** 第 k 格 = 素材 k × interval 秒处 */
+  interval: number;
+  tileWidth: number;
+  tileHeight: number;
+}
+
 /** 工作区里的一个剪辑工程（列表用） */
 export interface VideoProjectSummary {
   /** 工作区相对路径，如 videos/promo.sparkvideo.json */
@@ -339,6 +351,8 @@ export const rpcSchemas = {
     permission: z.enum(WORKSPACE_PERMISSIONS).optional(),
     /** 所选模式；模式带默认模型 / 思考档位时只在这里回填（之后以会话自己的值为准） */
     modeId: z.string().min(1).optional(),
+    /** 有空会话时复用它（默认）；false = 一定新建（画布对话栏：开跑失败会删掉它，不能删到用户已有的会话） */
+    reuseEmpty: z.boolean().optional(),
   }),
   'conversations.get': z.object({ id }),
   'conversations.update': z.object({
@@ -442,6 +456,8 @@ export const rpcSchemas = {
   'video.restoreSnapshot': z.object({ conversationId: z.string().min(1), path: z.string().min(1) }),
   /** 工程旁边的审片结果（<名字>.review.json）；没有为 null */
   'video.readReview': z.object({ conversationId: z.string().min(1), path: z.string().min(1) }),
+  /** 视频素材的预览帧拼图（path = 素材的工作区相对路径） */
+  'video.thumbnails': z.object({ conversationId: z.string().min(1), path: z.string().min(1) }),
   // 画布（数据在 Web 账号下，agent-host 代为调用 Web 后端的 /canvas 接口；规则由服务端执行）
   'canvas.list': z.object({ cursor: z.string().min(1).optional() }),
   'canvas.create': z.object({ title: z.string().max(100).optional() }),
@@ -612,6 +628,7 @@ export interface RpcResults {
   'video.snapshots': { count: number; latestAt: number | null };
   'video.restoreSnapshot': { count: number; latestAt: number | null };
   'video.readReview': ReviewFile | null;
+  'video.thumbnails': VideoThumbnails;
   'skills.list': SkillInfo[];
   'skills.get': SkillDetail;
   'skills.install': SkillInfo;

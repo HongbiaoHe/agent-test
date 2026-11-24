@@ -82,7 +82,7 @@ function SidebarAction({
       disabled={disabled}
       onClick={onClick}
       className={cn(
-        "h-8 w-full justify-start gap-2.5 px-2.5 font-normal [&_svg:not([class*='size-'])]:size-4",
+        "h-9 w-full justify-start gap-3 px-2.5 font-normal [&_svg:not([class*='size-'])]:size-4",
         active && 'bg-accent text-accent-foreground',
       )}
     >
@@ -96,6 +96,7 @@ function SidebarAction({
 function ConversationItem({
   conv,
   active,
+  showIcon,
   onOpen,
   onTogglePin,
   onRename,
@@ -103,6 +104,8 @@ function ConversationItem({
 }: {
   conv: ConversationSummary;
   active: boolean;
+  /** 只有置顶分组带图标：按时间分组的列表是纯文字，读起来更轻 */
+  showIcon: boolean;
   onOpen: () => void;
   onTogglePin: () => void;
   onRename: () => void;
@@ -112,12 +115,12 @@ function ConversationItem({
   return (
     <div
       className={cn(
-        'group flex items-center gap-2 rounded-lg px-2.5 py-1.5 text-sm hover:bg-accent',
+        'group flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-accent',
         active && 'bg-accent text-accent-foreground',
       )}
     >
       <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={onOpen}>
-        <MessageSquare className="size-3.5 shrink-0 text-muted-foreground" />
+        {showIcon && <MessageSquare className="size-3.5 shrink-0 text-muted-foreground" />}
         <span className="truncate">{conversationTitle(conv)}</span>
       </button>
       <StatusDot status={conv.status} />
@@ -239,12 +242,12 @@ export function Sidebar({
         {groups.map((g) => {
           const open = !folded.has(g.key);
           return (
-            <section key={g.key} className="pt-2">
+            <section key={g.key} className="pt-4">
               <button
                 type="button"
                 aria-expanded={open}
                 onClick={() => toggleGroup(g.key)}
-                className="flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium text-muted-foreground hover:text-foreground"
+                className="flex items-center gap-1 rounded-md px-2.5 pb-1 text-[13px] font-medium text-foreground/80 hover:text-foreground"
               >
                 {t(`shell.groups.${g.key}`)}
                 <ChevronDown className={cn('size-3 transition-transform', !open && '-rotate-90')} />
@@ -258,6 +261,7 @@ export function Sidebar({
                         key={c.id}
                         conv={c}
                         active={viewConversationId(view) === c.id}
+                        showIcon={g.key === 'pinned'}
                         onOpen={() => onNavigate({ kind: 'chat', id: c.id })}
                         onTogglePin={() => actions.setPinned.mutate({ id: c.id, pinned: c.pinnedAt === null })}
                         onRename={() => setRenaming(ref)}
@@ -272,7 +276,7 @@ export function Sidebar({
         })}
       </nav>
       {/* 底部：用户（Web 账号）+ 设置（同 Web 侧栏底部） */}
-      <div className="flex shrink-0 items-center justify-between gap-2 border-t border-border px-3 py-2.5">
+      <div className="flex shrink-0 items-center justify-between gap-2 px-3 py-3">
         {signedIn ? (
           <button
             type="button"

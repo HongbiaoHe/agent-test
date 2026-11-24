@@ -18,6 +18,7 @@ import { useWebAccount } from './features/auth/use-web-account';
 import { SettingsDialog, type SettingsSection } from './features/settings/settings-dialog';
 import { useSettings } from './features/settings/sections/use-settings';
 import { SearchDialog } from './features/shell/search-dialog';
+import type { SearchTarget } from './features/shell/search-items';
 import { Sidebar, type View } from './features/shell/sidebar';
 import { SidebarResizeHandle } from './features/shell/sidebar-resize-handle';
 import { COLLAPSED_HEADER_INSET, SidebarToggle } from './features/shell/sidebar-toggle';
@@ -147,6 +148,36 @@ export function App() {
   const navigate = (v: View) => {
     layout.closePeek();
     setView(v);
+  };
+  /** 全局搜索选中一项：会话 / 画布 / 设置页 / 操作 */
+  const openSearchTarget = async (target: SearchTarget) => {
+    try {
+      switch (target.kind) {
+        case 'chat':
+          navigate({ kind: 'chat', id: target.id });
+          return;
+        case 'canvas': {
+          // 同画布列表：右侧对话栏接上最近一个绑定着它的对话
+          const conv = await agent.call('canvas.latestConversation', { id: target.canvasId });
+          navigate({ kind: 'canvas', canvasId: target.canvasId, conversationId: conv?.id ?? null });
+          return;
+        }
+        case 'canvas-list':
+          navigate({ kind: 'canvas-list' });
+          return;
+        case 'settings':
+          openSettings(target.section);
+          return;
+        case 'new-chat': {
+          const c = await agent.call('conversations.create', { modeId: readModePreference() ?? undefined });
+          void qc.invalidateQueries({ queryKey: ['conversations'] });
+          navigate({ kind: 'chat', id: c.id });
+          return;
+        }
+      }
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : String(e));
+    }
   };
   const openVideoEditor = (target: { conversationId: string; path: string }) =>
     navigate({ kind: 'video', conversationId: target.conversationId, path: target.path });
@@ -285,9 +316,9 @@ export function App() {
         <SearchDialog
           open={searchOpen}
           onOpenChange={setSearchOpen}
-          onSelect={(id) => {
+          onSelect={(target) => {
             setSearchOpen(false);
-            navigate({ kind: 'chat', id });
+            void openSearchTarget(target);
           }}
         />
         <SettingsDialog

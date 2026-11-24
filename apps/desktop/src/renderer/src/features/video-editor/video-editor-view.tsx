@@ -325,6 +325,8 @@ function EditorBody({
           onCommit={(next) => doc.edit(next)}
           markers={markers}
           onJump={jump}
+          conversationId={conversationId}
+          origin={origin}
         />
       </div>
       <ScrollArea className="w-72 shrink-0 border-l">

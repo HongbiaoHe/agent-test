@@ -30,11 +30,13 @@ export function useSidePanel() {
         setItem((cur) => ({ kind: 'site', spec, openCount: cur?.kind === 'site' ? cur.openCount + 1 : 0 })),
       openVideo: (path: string) => setItem({ kind: 'video', path }),
       openCanvas: (canvasId: string) => setItem({ kind: 'canvas', canvasId }),
-      /** 顶栏「会话信息」按钮：开着就关，没开就换成它（收回停靠：信息栏不需要盖住对话） */
-      toggleInfo: () => {
-        setItem((cur) => (cur?.kind === 'info' ? null : { kind: 'info' }));
+      /** 顶栏最右的侧栏开关：开着（不管开的是什么）就关，没开就打开启动页 */
+      toggleLauncher: () => {
+        setItem((cur) => (cur ? null : { kind: 'launcher' }));
         setExpanded(false);
       },
+      /** 打开启动页（「会话详情」里点「产出物」） */
+      openLauncher: () => setItem({ kind: 'launcher' }),
       close: () => {
         setItem(null);
         setExpanded(false);

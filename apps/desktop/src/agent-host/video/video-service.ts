@@ -24,6 +24,7 @@ import { buildAss, buildExportArgs, FfmpegError, type FfmpegRun, outputSize, run
 import type { FfmpegBinaries } from './ffmpeg-paths';
 import { probeMedia } from './probe';
 import type { SnapshotInfo, VideoSnapshots } from './snapshots';
+import type { ThumbnailService, VideoThumbnails } from './thumbnails';
 import {
   assertProjectPath,
   listProjects,
@@ -50,6 +51,8 @@ export interface VideoServiceDeps {
   binaries: () => FfmpegBinaries;
   /** agent 改工程前存的快照（「撤销 agent 修改」） */
   snapshots: VideoSnapshots;
+  /** 时间线视频轨的预览帧拼图 */
+  thumbnails: ThumbnailService;
 }
 
 interface WatchEntry {
@@ -132,6 +135,12 @@ export class VideoService {
   restoreSnapshot(conversationId: string, path: string): Promise<SnapshotInfo> {
     assertProjectPath(path);
     return this.deps.snapshots.restoreLatest(conversationId, this.deps.workspaceOf(conversationId), path);
+  }
+
+  /** 视频素材的预览帧拼图（时间线视频轨平铺用）；path 是工作区相对路径 */
+  async thumbnails(conversationId: string, path: string): Promise<VideoThumbnails> {
+    const abs = await resolveExisting(this.deps.workspaceOf(conversationId), path);
+    return this.deps.thumbnails.get(abs);
   }
 
   /** 工程旁边的审片结果；没有或格式不对返回 null */
