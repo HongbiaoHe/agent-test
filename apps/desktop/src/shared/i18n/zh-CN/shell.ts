@@ -64,6 +64,9 @@ export const shell = {
     collapse: '收起为侧栏',
     close: '关闭侧栏',
     resize: '拖动调整侧栏宽度',
+    tabs: '侧栏标签',
+    newTab: '新建标签页',
+    closeTab: '关闭标签页：{{title}}',
   },
   conversation: {
     untitled: '新对话',

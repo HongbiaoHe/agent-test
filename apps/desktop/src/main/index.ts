@@ -3,9 +3,9 @@
  * renderer 不开放 Node 能力（contextIsolation + sandbox），原生能力只经 preload 暴露的 window.desktop。
  */
 import { join } from 'node:path';
-import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, shell } from 'electron';
+import { app, BrowserWindow, dialog, ipcMain, nativeTheme, net, protocol, shell, webFrameMain } from 'electron';
 import { z } from 'zod';
-import { THEME_PREFERENCES } from '../shared/desktop';
+import { SITE_FRAME_PREFIX, THEME_PREFERENCES } from '../shared/desktop';
 import { LANGUAGE_PREFERENCES } from '../shared/i18n/locales';
 import { AgentHostManager } from './agent-host';
 import { appLocale, mainI18n, syncMainLocale } from './i18n';
@@ -142,6 +142,19 @@ function createWindow(): void {
     e.preventDefault();
     if (/^https?:/.test(url)) void shell.openExternal(url);
   });
+  // 网页预览 iframe 里的导航（首次加载、点链接、脚本跳转、单页应用改地址）：告诉界面，地址栏与后退 / 前进据此更新。
+  // 预览的 iframe 是跨源的，界面自己看不到它跳到了哪；按 iframe 的 name 认是哪个预览
+  const reportSiteNavigation = (url: string, isMainFrame: boolean, processId: number, routingId: number) => {
+    if (isMainFrame) return;
+    const name = webFrameMain.fromId(processId, routingId)?.name;
+    if (name?.startsWith(SITE_FRAME_PREFIX)) win.webContents.send('desktop:siteNavigated', name, url);
+  };
+  win.webContents.on('did-frame-navigate', (_e, url, _code, _status, isMainFrame, processId, routingId) =>
+    reportSiteNavigation(url, isMainFrame, processId, routingId),
+  );
+  win.webContents.on('did-navigate-in-page', (_e, url, isMainFrame, processId, routingId) =>
+    reportSiteNavigation(url, isMainFrame, processId, routingId),
+  );
   const devUrl = process.env.ELECTRON_RENDERER_URL;
   if (devUrl) void win.loadURL(devUrl);
   else void win.loadFile(join(__dirname, '../renderer/index.html'));

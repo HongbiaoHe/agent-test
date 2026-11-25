@@ -1,9 +1,18 @@
 /**
- * 侧栏状态：打开的内容、是否展开全部、宽度（拖动调整，记在本机；不可用时用默认值）。
+ * 侧栏状态：打开的标签、当前标签、是否显示 / 展开全部（见 side-panel-tabs.ts）、宽度（拖动调整，记在本机；不可用时用默认值）。
  */
 import { useMemo, useState } from 'react';
 import type { PreviewSpec } from '../viewer/preview-target';
-import type { SidePanelItem } from './types';
+import {
+  activateTab,
+  closeTab,
+  EMPTY_SIDE_PANEL,
+  hidePanel,
+  openItem,
+  openNewTab,
+  type SidePanelTabs,
+  togglePanel,
+} from './side-panel-tabs';
 
 const WIDTH_KEY = 'spark.sidePanel.width';
 export const SIDE_PANEL_DEFAULT_WIDTH = 640;
@@ -19,31 +28,27 @@ function readWidth(): number {
 }
 
 export function useSidePanel() {
-  const [item, setItem] = useState<SidePanelItem | null>(null);
-  const [expanded, setExpanded] = useState(false);
+  const [state, setState] = useState<SidePanelTabs>(EMPTY_SIDE_PANEL);
   const [width, setWidth] = useState(readWidth);
 
   // 操作函数引用稳定（只用 setState）：放进订阅 effect 的依赖、传给 FileViewerProvider 都不会每次渲染重建
   const actions = useMemo(
     () => ({
-      openSite: (spec: PreviewSpec) =>
-        setItem((cur) => ({ kind: 'site', spec, openCount: cur?.kind === 'site' ? cur.openCount + 1 : 0 })),
-      openVideo: (path: string) => setItem({ kind: 'video', path }),
-      openCanvas: (canvasId: string) => setItem({ kind: 'canvas', canvasId }),
-      /** 顶栏最右的侧栏开关：开着（不管开的是什么）就关，没开就打开启动页 */
-      toggleLauncher: () => {
-        setItem((cur) => (cur ? null : { kind: 'launcher' }));
-        setExpanded(false);
-      },
-      /** 打开启动页（「会话详情」里点「产出物」） */
-      openLauncher: () => setItem({ kind: 'launcher' }),
-      close: () => {
-        setItem(null);
-        setExpanded(false);
-      },
-      toggleExpanded: () => setExpanded((v) => !v),
+      // 打开内容：各占一个标签，已经开着就切过去（网页会重新加载）
+      openSite: (spec: PreviewSpec) => setState((s) => openItem(s, { kind: 'site', spec, openCount: 0 })),
+      openVideo: (path: string) => setState((s) => openItem(s, { kind: 'video', path })),
+      openCanvas: (canvasId: string) => setState((s) => openItem(s, { kind: 'canvas', canvasId })),
+      /** 加号 / 「会话详情」里的「产出物」：打开（或切到）新建标签页 */
+      newTab: () => setState(openNewTab),
+      activate: (id: string) => setState((s) => activateTab(s, id)),
+      closeTab: (id: string) => setState((s) => closeTab(s, id)),
+      /** 顶栏最右的侧栏开关：开着就收起，收起着就打开（没有标签时给一个新建标签页） */
+      toggle: () => setState(togglePanel),
+      /** 收起侧栏：所有标签一起收起，都留着 */
+      hide: () => setState(hidePanel),
+      toggleExpanded: () => setState((s) => ({ ...s, expanded: !s.expanded })),
       /** 收回停靠（如 agent 发来审批：展开时会盖住对话里的审批面板） */
-      collapse: () => setExpanded(false),
+      collapse: () => setState((s) => (s.expanded ? { ...s, expanded: false } : s)),
       /** 拖动松手后的宽度（拖动途中由侧栏直接改 DOM，不经这里，免得整个对话视图每帧重渲染） */
       resize: (w: number) => setWidth(Math.max(SIDE_PANEL_MIN_WIDTH, Math.round(w))),
       commitWidth: (w: number) => {
@@ -57,8 +62,9 @@ export function useSidePanel() {
     [],
   );
 
-  // actions 单独给一份（引用稳定）：侧栏组件 memo 时只认 item / expanded / width / actions，对话流式输出不牵连它
-  return { item, expanded, width, actions, ...actions };
+  // actions 单独给一份（引用稳定）：侧栏组件 memo 时只认 tabs / activeId / open / expanded / width / actions，
+  // 对话流式输出不牵连它
+  return { ...state, width, actions, ...actions };
 }
 
 export type SidePanelState = ReturnType<typeof useSidePanel>;

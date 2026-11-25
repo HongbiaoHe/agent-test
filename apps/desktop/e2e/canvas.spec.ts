@@ -117,9 +117,11 @@ test('画布：列表新建 → 改名 → 右侧对话里本机 agent 建节点
     const card = page.getByTestId('canvas-card');
     await expect(card).toContainText(cardTitle);
     await page.screenshot({ path: join(screens, 'canvas-3-side-panel.png') });
+    // 关闭侧栏是收起：画布的标签还留着（没有卸载），点卡片就是切回这个标签
     await side.getByRole('button', { name: '关闭侧栏' }).click();
-    await expect(side).toHaveCount(0);
+    await expect(side).toBeHidden();
     await card.getByRole('button', { name: '打开画布' }).click();
+    await expect(side.getByRole('tab')).toHaveCount(1);
     await expect(sideCanvas.getByRole('button', { name: cardTitle })).toBeVisible({ timeout: 15_000 });
     await side.getByRole('button', { name: '展开全部' }).click();
     await expect(side).toHaveAttribute('data-expanded', 'true');
