@@ -84,6 +84,13 @@ export function useConversation(conversationId: string | null) {
         return;
       }
       const record = typeof payload === "object" && payload !== null ? { ...payload } : {};
+      // 运行中送达的用户消息（插入 / 排队的消息，见 agent-host pending）：当成一条用户气泡落在这个位置；
+      // 排队的消息会开新的一轮，所以一并标记运行中
+      if (type === "user_message") {
+        setLiveEvents((prev) => [...prev, { type: "message", role: "user", payload: record, at: ts }]);
+        setPending(true);
+        return;
+      }
       setLiveEvents((prev) => [...prev, { type, payload: record, at: ts }]);
       if (type === "result" || type === "error") setPending(false);
       // 后台任务通知唤醒了 agent：新的一轮开始了

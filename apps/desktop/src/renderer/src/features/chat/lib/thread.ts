@@ -483,7 +483,8 @@ function reduceEvent(input: ThreadState, ev: NormalizedEvent): ThreadState {
         const attachments = parseAttachments(ev.payload?.attachments);
         if (!text && attachments.length === 0) return state;
         items.push({ kind: "user", id: id(), text, attachments, at: ev.at });
-        return { ...state, items, nextId, turnStartedAt: ev.at ?? null };
+        // 运行中插入的消息（injected）属于正在进行的这一轮：不重置这一轮的开始时间
+        return { ...state, items, nextId, turnStartedAt: ev.payload?.injected ? state.turnStartedAt : (ev.at ?? null) };
       }
       if (!text) return state;
       if (last?.kind === "assistant" && last.streaming) {

@@ -4,6 +4,7 @@ import {
   isToolMessage,
   type ToolMessage,
 } from '@langchain/core/messages';
+import { isSteeringMessage } from '../run/steering';
 import { ConversationEvent } from './types';
 
 /** 未补充 seq/conversationId/ts 的事件（由发布层补全）。 */
@@ -20,6 +21,7 @@ export type RawEvent = Pick<ConversationEvent, 'type' | 'payload'>;
  *  - updates  + AIMessage(tool_calls)→ tool_start
  *  - updates  + AIMessage(文本)      → message
  *  - updates  + ToolMessage          → tool_end（Command 返回的结果只在这里，如 task）
+ *  - updates  + HumanMessage(steering)→ user_message { ids }（运行中插入的用户消息，见 run/steering.ts）
  * namespace 不在这里解释：子 agent 归属由 consumeAgentStream 按 namespace 判定。
  *
  * data 来自 LangGraph 流，运行时是真实的 LangChain 消息实例，故用官方类型守卫
@@ -213,6 +215,13 @@ function normalizeUpdate(data: unknown): RawEvent | null {
     }
 
     if (Array.isArray(node.messages) && node.messages.length) {
+      // 运行中插入的用户消息（steering 中间件一次写入一条或多条）：只给 id，正文由宿主按 id 取
+      const steered = node.messages.flatMap((m) =>
+        isBaseMessage(m) && isSteeringMessage(m) && m.id ? [m.id] : [],
+      );
+      if (steered.length) {
+        return { type: 'user_message', payload: { ids: steered } };
+      }
       const last = node.messages[node.messages.length - 1];
       // 工具结果：普通工具在 messages 流里已经给过一次（消费方按 toolCallId 去重）；以 Command 返回结果的
       // 工具（如子 agent 的 task）只出现在 updates 里，不从这里取就永远没有 tool_end

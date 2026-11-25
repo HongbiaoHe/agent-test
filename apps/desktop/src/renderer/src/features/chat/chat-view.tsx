@@ -5,14 +5,14 @@
  */
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query';
 import { KeyRound, PanelRight } from 'lucide-react';
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useTranslation } from 'react-i18next';
 import { toast } from 'sonner';
 import { Alert, AlertAction, AlertDescription, AlertTitle } from '@/components/ui/alert';
 import { Button } from '@/components/ui/button';
 import { agent } from '@/lib/agent-client';
 import { asThinkingLevel, type ThinkingLevel } from '@/lib/thinking-level';
-import type { HitlDecision } from '../../../../shared/rpc';
+import type { HitlDecision, PendingKind } from '../../../../shared/rpc';
 import type { WorkspacePermission } from '../../../../shared/workspace';
 import { attachmentTypeOf } from '@/components/attachments/attachments';
 import { ChatThread } from './components/chat-thread';
@@ -92,9 +92,28 @@ export function ChatView({
 
   if (stopRequested && !thread.busy) setStopRequested(false);
 
-  function handleSend(text: string, attachments: string[]) {
+  // 待发消息（运行中插入 / 排队、还没送达的）：agent-host 入队、送达、删除时推 pending-changed
+  const pendingKey = ['pending', id] as const;
+  const pending = useQuery({ queryKey: pendingKey, queryFn: () => agent.call('pending.list', { conversationId: id }) });
+  useEffect(
+    () =>
+      agent.subscribe((e) => {
+        if (e.kind === 'reconnected' || (e.type === 'pending-changed' && e.conversationId === id)) {
+          void qc.invalidateQueries({ queryKey: ['pending', id] });
+        }
+      }),
+    [id, qc],
+  );
+  const onPendingError = (e: unknown) => toast.error(e instanceof Error ? e.message : String(e));
+
+  function handleSend(text: string, attachments: string[], mode: PendingKind) {
     if (!hasModels) {
       toast.error(t('chat.view.noModels'));
+      return;
+    }
+    // agent 在跑（或停在审批 / 提问上）：进待发列表，Enter = 下一次模型调用前插入，⌘Enter = 这一轮结束后发
+    if (thread.busy) {
+      agent.call('pending.add', { conversationId: id, text, attachments, kind: mode }).catch(onPendingError);
       return;
     }
     thread.pushUserMessage(
@@ -212,6 +231,18 @@ export function ChatView({
             );
           }}
           onSend={handleSend}
+          pendingMessages={pending.data ?? []}
+          onRemovePending={(pendingId) =>
+            void agent.call('pending.remove', { conversationId: id, id: pendingId }).catch(onPendingError)
+          }
+          onEditPending={(pendingId) => agent.call('pending.remove', { conversationId: id, id: pendingId })}
+          onSendPending={() => {
+            thread.markRunning();
+            agent.call('pending.send', { conversationId: id }).catch((e: unknown) => {
+              thread.markIdle();
+              onPendingError(e);
+            });
+          }}
           onStop={() => {
             if (stopRequested) return;
             setStopRequested(true);

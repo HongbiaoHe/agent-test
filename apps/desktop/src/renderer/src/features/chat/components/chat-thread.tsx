@@ -29,6 +29,7 @@ import { formatTokensCompact } from "@/lib/format-tokens";
 import type { ThinkingLevel } from "@/lib/thinking-level";
 import { cn } from "@/lib/utils";
 
+import type { PendingKind, PendingMessage } from "../../../../../shared/rpc";
 import type { WorkspacePermission } from "../../../../../shared/workspace";
 import { usageModelLabel } from "../../llm/model-options";
 import type { Approval, ThreadItem } from "../lib/thread";
@@ -36,6 +37,7 @@ import { ApprovalPanel } from "./approval-panel";
 import { isAskUserApproval, QuestionPanel } from "./question-panel";
 import { ModelSwitcher } from "./model-switcher";
 import { ModeSwitcher } from "./mode-switcher";
+import { PendingList } from "./pending-list";
 import { PermissionSwitcher } from "./permission-switcher";
 import { WorkspaceFilesButton } from "./workspace-panel";
 import { TaskPlanPanel } from "./task-plan-panel";
@@ -60,6 +62,10 @@ export function ChatThread({
   onOpenDetail,
   onDecide,
   onSend,
+  pendingMessages,
+  onRemovePending,
+  onEditPending,
+  onSendPending,
   onStop,
   stopping,
   model,
@@ -98,8 +104,18 @@ export function ChatThread({
   onOpenDetail: (id: string) => void;
   /** 审批决策回传：decisions 顺序对应 actionRequests（由 ApprovalPanel 组装） */
   onDecide: (decisions: unknown[]) => void;
-  /** 发送：正文 + 本地附件路径（带附件时正文可为空；agent-host 复制进会话运行目录） */
-  onSend: (text: string, attachments: string[]) => void;
+  /**
+   * 发送：正文 + 本地附件路径（带附件时正文可为空；agent-host 复制进会话运行目录）。
+   * mode 只在 agent 运行中有意义：steer（Enter）= 下一次模型调用前插入，queue（⌘Enter）= 这一轮结束后发
+   */
+  onSend: (text: string, attachments: string[], mode: PendingKind) => void;
+  /** 待发消息（运行中发出、还没送达 agent 的），显示在输入框上方 */
+  pendingMessages: PendingMessage[];
+  onRemovePending: (id: string) => void;
+  /** 编辑一条待发消息：从待发列表取走，返回它的内容填回输入框（已经送达了返回 null） */
+  onEditPending: (id: string) => Promise<PendingMessage | null>;
+  /** 会话空闲时把留着的待发消息作为新一轮发出去 */
+  onSendPending: () => void;
   onStop: () => void;
   /** 停止指令请求中（HTTP 在途）：按钮转圈并禁用，防重复点击 */
   stopping: boolean;
@@ -151,7 +167,8 @@ export function ChatThread({
         .filter(Boolean),
     );
   const [dragging, setDragging] = useState(false);
-  const canSend = !busy && !sendDisabled && (draft.trim().length > 0 || attachments.length > 0);
+  // 运行中也能发：消息进待发列表（见 PendingList）
+  const canSend = !sendDisabled && (draft.trim().length > 0 || attachments.length > 0);
   // 滚动编排：发送后把这条消息顶到视口顶部，回复在其下方生长而视图不动；
   // 底部留白只缩不涨；跟随底部默认关，只由「回到最新」按钮开启。
   const { contentRef, spacerRef, atLatest, armAnchor, jumpToLatest } =
@@ -179,7 +196,8 @@ export function ChatThread({
       : commands.filter((c) =>
           c.name.toLowerCase().startsWith(cmdPrefix.toLowerCase()),
         );
-  const showCmdMenu = !busy && cmdPrefix !== null && matches.length > 0;
+  // 运行中也能补全命令：命令会排到这一轮结束后执行
+  const showCmdMenu = cmdPrefix !== null && matches.length > 0;
 
   // 按分类（Built-in/GitHub）分组展示；flat 为菜单从上到下的实际可选顺序（键盘导航以此为准），
   // 与渲染共用同一 groupedKinds，保证顺序一致
@@ -195,31 +213,42 @@ export function ChatThread({
     setActiveIndex(0);
   }
 
-  function submit() {
+  function submit(mode: PendingKind = "steer") {
     if (!canSend) return;
-    armAnchor();
-    onSend(draft.trim(), attachments);
+    // 空闲时发送会开新的一轮：把这条消息顶到视口顶部。运行中发的消息先进待发列表，视图不动
+    if (!busy) armAnchor();
+    onSend(draft.trim(), attachments, mode);
     setDraft("");
     setAttachments([]);
   }
 
+  /** 编辑待发消息：取回来放进输入框（已有的草稿留在后面，不覆盖） */
+  function editPending(id: string) {
+    void onEditPending(id).then((m) => {
+      if (!m) return;
+      setDraft((cur) => (cur.trim() ? `${m.text}\n${cur}` : m.text));
+      addAttachments(m.attachments.map((a) => a.path));
+      inputRef.current?.focus();
+    });
+  }
+
   /** 粘贴：剪贴板里有文件（截图、复制的图片）就当附件收下，不往输入框里贴 */
   function onPaste(e: React.ClipboardEvent<HTMLTextAreaElement>) {
-    if (busy || e.clipboardData.files.length === 0) return;
+    if (e.clipboardData.files.length === 0) return;
     e.preventDefault();
     addFiles(e.clipboardData.files);
   }
 
   /** 拖拽文件进输入框：只认带文件的拖拽（拖一段文字进来照常） */
   function onDragOver(e: React.DragEvent<HTMLDivElement>) {
-    if (busy || !e.dataTransfer.types.includes("Files")) return;
+    if (!e.dataTransfer.types.includes("Files")) return;
     e.preventDefault();
     setDragging(true);
   }
 
   function onDrop(e: React.DragEvent<HTMLDivElement>) {
     setDragging(false);
-    if (busy || e.dataTransfer.files.length === 0) return;
+    if (e.dataTransfer.files.length === 0) return;
     e.preventDefault();
     addFiles(e.dataTransfer.files);
   }
@@ -243,7 +272,8 @@ export function ChatThread({
       e.preventDefault();
       // 补全打开时 Enter 选中当前高亮命令并收起菜单，而不是发送半截命令
       if (showCmdMenu) pickCommand((flat[activeIndex] ?? flat[0]).name);
-      else submit();
+      // 运行中：Enter 插入（下一次模型调用前），⌘Enter 排队（这一轮结束后）；空闲时两者都是直接发送
+      else submit(e.metaKey || e.ctrlKey ? "queue" : "steer");
     }
   }
 
@@ -448,6 +478,13 @@ export function ChatThread({
               ))}
             </div>
           )}
+          <PendingList
+            items={pendingMessages}
+            idle={!busy}
+            onRemove={onRemovePending}
+            onEdit={editPending}
+            onSend={onSendPending}
+          />
           <div
             onDragOver={onDragOver}
             onDragLeave={() => setDragging(false)}
@@ -468,7 +505,6 @@ export function ChatThread({
                 size="icon-sm"
                 aria-label={t("chat.thread.attachFiles")}
                 title={t("chat.thread.attachFiles")}
-                disabled={busy}
                 onClick={() => void window.desktop.pickFiles().then(addAttachments)}
                 className="mb-0.5 shrink-0 text-muted-foreground hover:text-foreground"
               >
@@ -482,13 +518,13 @@ export function ChatThread({
                 onChange={(e) => setDraft(e.target.value)}
                 onKeyDown={onKeyDown}
                 onPaste={onPaste}
-                placeholder={busy ? t("chat.thread.placeholderBusy") : t("chat.thread.placeholder")}
+                placeholder={busy ? t("chat.thread.placeholderSteer") : t("chat.thread.placeholder")}
                 // 移动端必须 ≥16px（text-base）：iOS 对 <16px 的输入框聚焦会自动放大整页
                 className="max-h-40 min-h-9 flex-1 resize-none border-0 bg-transparent px-1.5 py-2 text-base shadow-none focus-visible:border-0 focus-visible:ring-0 md:text-sm dark:bg-transparent"
               />
-              <div className="mb-0.5 shrink-0">
-                {busy ? (
-                  // 运行中：发送位变停止——立即中止本轮所有操作（LLM 流式/工具等待/媒体生成）
+              <div className="mb-0.5 flex shrink-0 items-center gap-1.5">
+                {busy && (
+                  // 运行中：停止始终在——立即中止本轮所有操作（LLM 流式/工具等待/媒体生成）
                   <Button
                     size="icon-sm"
                     variant="destructive"
@@ -499,12 +535,14 @@ export function ChatThread({
                   >
                     {stopping ? <Loader className="animate-spin" /> : <Square className="fill-current" />}
                   </Button>
-                ) : (
+                )}
+                {/* 空闲时是发送；运行中输入了内容才出现，点它等于 Enter（插入） */}
+                {(!busy || canSend) && (
                   <Button
                     size="icon-sm"
                     aria-label={t("chat.thread.send")}
                     disabled={!canSend}
-                    onClick={submit}
+                    onClick={() => submit()}
                     className="rounded-lg"
                   >
                     <ArrowUp />
