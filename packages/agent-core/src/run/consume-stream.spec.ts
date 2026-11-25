@@ -1,6 +1,7 @@
 import {
   AIMessage,
   AIMessageChunk,
+  HumanMessage,
   ToolMessage,
 } from '@langchain/core/messages';
 import { z } from 'zod';
@@ -599,5 +600,70 @@ describe('consumeAgentStream — 子 agent', () => {
         payload: { text: '无映射', subagent: { callId: 'tools:tZ', name: '' } },
       },
     ]);
+  });
+});
+
+describe('运行中插入的用户消息（steering）', () => {
+  const steered = (...ids: string[]) => [
+    [],
+    'updates',
+    {
+      'steeringMiddleware.before_model': {
+        messages: ids.map(
+          (id) =>
+            new HumanMessage({
+              id,
+              content: `note\n\n${id}`,
+              additional_kwargs: { steering: true },
+            }),
+        ),
+      },
+    },
+  ];
+
+  it('按流里的位置交给 sink.steered：前面的文本先收口，同一个 id 只认一次', async () => {
+    const { sink, log } = recordingSink();
+    const order: string[] = [];
+    sink.steered = async (id) => {
+      await Promise.resolve();
+      order.push(
+        `steered:${id}@${log.filter((l) => l.op === 'persist').length}`,
+      );
+    };
+    await consumeAgentStream(
+      streamOf([
+        token('先说一句'),
+        steered('s1', 's2'),
+        // 审批续跑回放同一条 update：不重复交付
+        steered('s1', 's2'),
+        token('再说一句'),
+      ]),
+      sink,
+      opts(),
+    );
+    // 交付时「先说一句」已经落库（1 行），「再说一句」还没有
+    expect(order).toEqual(['steered:s1@1', 'steered:s2@1']);
+    expect(
+      log.filter((l) => l.op === 'persist').map((l) => l.event.payload),
+    ).toEqual([{ text: '先说一句' }, { text: '再说一句' }]);
+  });
+
+  it('子 agent 命名空间里的不认；宿主没实现 steered 时忽略', async () => {
+    const { sink } = recordingSink();
+    const got: string[] = [];
+    sink.steered = (id) => {
+      got.push(id);
+    };
+    const [, mode, data] = steered('s9');
+    await consumeAgentStream(
+      streamOf([[['tools:abc'], mode, data]]),
+      sink,
+      opts(),
+    );
+    expect(got).toEqual([]);
+
+    const plain = recordingSink();
+    await consumeAgentStream(streamOf([steered('s1')]), plain.sink, opts());
+    expect(plain.log).toEqual([]);
   });
 });

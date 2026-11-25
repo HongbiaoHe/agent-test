@@ -388,6 +388,16 @@ export function createHandlers(s: Services): Handlers {
       await s.storage.deleteConversations([p.id]);
       return { ok: true };
     },
+    'pending.list': (p) => s.runs.listPending(p.conversationId),
+    'pending.add': async (p) => {
+      await s.runs.enqueue(p.conversationId, p.text, p.attachments, p.kind);
+      return { ok: true };
+    },
+    'pending.remove': (p) => s.runs.removePending(p.conversationId, p.id),
+    'pending.send': (p) => {
+      s.runs.sendPending(p.conversationId);
+      return { ok: true };
+    },
     'storage.scan': () => s.storage.scan(),
     'storage.clearCache': (p) => s.storage.clearCache(p),
     'storage.deleteConversations': (p) => s.storage.deleteConversations(p.ids),

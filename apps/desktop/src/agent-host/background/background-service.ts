@@ -430,16 +430,31 @@ export class BackgroundService {
    * 写消息与开跑，并发调用也只唤醒一次。
    */
   deliverPending(conversationId: string): void {
-    const pending = this.deps.db
+    if (this.undelivered(conversationId).length === 0) return;
+    if (!this.deps.repo.get(conversationId)) return;
+    if (!this.deps.repo.transition(conversationId, WAKEABLE, 'running')) return;
+    const count = this.writeNotifications(conversationId);
+    this.deps.listChanged();
+    this.deps.log?.(`会话 ${conversationId} 投递 ${count} 条后台任务通知并唤醒 agent`);
+    this.deps.startTurn(conversationId);
+  }
+
+  private undelivered(conversationId: string): TaskRow[] {
+    return this.deps.db
       .prepare(
         `SELECT * FROM background_task WHERE conversation_id = ? AND delivered = 0 AND notify = 1
          AND status != 'running' ORDER BY finished_at ASC`,
       )
       .all(conversationId)
       .map((r) => taskRow.parse(r));
-    if (pending.length === 0) return;
-    if (!this.deps.repo.get(conversationId)) return;
-    if (!this.deps.repo.transition(conversationId, WAKEABLE, 'running')) return;
+  }
+
+  /**
+   * 只把未投递的通知写进会话（不改会话状态、不开跑），返回写了几条。调用方必须已经把会话置成 running：
+   * deliverPending 自己用，RunService 用待发消息续跑新一轮时也调它，通知并进同一轮。
+   */
+  writeNotifications(conversationId: string): number {
+    const pending = this.undelivered(conversationId);
     transaction(this.deps.db, () => {
       for (const row of pending) {
         this.deps.db.prepare('UPDATE background_task SET delivered = 1 WHERE id = ?').run(row.id);
@@ -451,9 +466,7 @@ export class BackgroundService {
         this.deps.emit(conversationId, { type: 'task_notification', payload: content });
       }
     });
-    this.deps.listChanged();
-    this.deps.log?.(`会话 ${conversationId} 投递 ${pending.length} 条后台任务通知并唤醒 agent`);
-    this.deps.startTurn(conversationId);
+    return pending.length;
   }
 
   // ── 内部 ─────────────────────────────────────────────────────────────────

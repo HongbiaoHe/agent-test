@@ -22,6 +22,7 @@ import { LlmStore } from './llm/llm-store';
 import { createModelResolver } from './llm/model-resolver';
 import { McpStore } from './mcp/mcp-store';
 import { ModeStore } from './modes/mode-store';
+import { PendingStore } from './pending/pending-store';
 import { createOAuthCallbackServer, OAUTH_REDIRECT_URI } from './mcp/oauth-callback';
 import { installEnvProxy } from './proxy';
 import { BackgroundService } from './background/background-service';
@@ -172,6 +173,8 @@ const runs = new RunService({
   webApi,
   videoSnapshots,
   files,
+  pending: new PendingStore(db),
+  pendingChanged: (conversationId) => broadcast({ kind: 'event', type: 'pending-changed', conversationId }),
   repo,
   checkpointer,
   skills,

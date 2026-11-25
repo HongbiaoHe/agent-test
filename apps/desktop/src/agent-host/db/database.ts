@@ -235,6 +235,18 @@ const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE conversation_file ADD COLUMN is_dir INTEGER NOT NULL DEFAULT 0;
   `,
+  // v16：待发消息（agent 运行中用户又发来、还没送达的消息，见 pending/pending-store.ts）。
+  // kind：steer = 下一次模型调用前插入；queue = 这一轮结束后发。content 与用户消息同形（JSON）
+  `
+  CREATE TABLE pending_message (
+    id TEXT PRIMARY KEY,
+    conversation_id TEXT NOT NULL REFERENCES conversation(id) ON DELETE CASCADE,
+    kind TEXT NOT NULL,
+    content TEXT NOT NULL,
+    created_at INTEGER NOT NULL
+  );
+  CREATE INDEX pending_message_conversation ON pending_message (conversation_id, created_at);
+  `,
 ];
 
 export type Db = DatabaseSync;

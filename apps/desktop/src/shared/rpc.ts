@@ -156,6 +156,19 @@ export interface AttachmentRef {
   url?: string;
 }
 
+/** 待发消息的两种送达时机：steer = 主 agent 下一次模型调用前插入；queue = 这一轮结束后作为新一轮发出 */
+export const PENDING_KINDS = ['steer', 'queue'] as const;
+export type PendingKind = (typeof PENDING_KINDS)[number];
+
+/** agent 运行中用户又发来、还没送达的一条消息（输入框上方的待发列表） */
+export interface PendingMessage {
+  id: string;
+  kind: PendingKind;
+  text: string;
+  attachments: AttachmentRef[];
+  createdAt: number;
+}
+
 export interface ConversationDetail {
   conversation: ConversationSummary;
   messages: StoredMessage[];
@@ -386,6 +399,22 @@ export const rpcSchemas = {
     sharedCategories: z.array(z.enum(SHARED_CACHE_CATEGORIES)).optional(),
   }),
   'storage.deleteConversations': z.object({ ids: z.array(id).min(1).max(5000) }),
+  /** 待发消息（运行中又发来、还没送达 agent 的消息） */
+  'pending.list': z.object({ conversationId: id }),
+  /**
+   * 运行中发消息：steer = 下一次模型调用前插入，queue = 这一轮结束后发（以 / 开头的命令一律按 queue）。
+   * 会话其实已经空闲（界面状态慢了半拍）时直接当普通消息开跑
+   */
+  'pending.add': z.object({
+    conversationId: id,
+    text: z.string().max(100_000),
+    attachments: z.array(z.string().min(1)).max(20).default([]),
+    kind: z.enum(PENDING_KINDS),
+  }),
+  /** 删除一条待发消息（也用于「编辑」：界面拿返回值填回输入框）；已经送达 / 不存在返回 null */
+  'pending.remove': z.object({ conversationId: id, id }),
+  /** 会话空闲时把留着的待发消息作为新一轮发出去 */
+  'pending.send': z.object({ conversationId: id }),
   'modes.list': z.object({}),
   'modes.create': AgentModeInputSchema,
   'modes.update': AgentModeInputSchema.extend({ id }),
@@ -588,6 +617,10 @@ export interface RpcResults {
   'storage.scan': StorageReport;
   'storage.clearCache': ClearCacheResult;
   'storage.deleteConversations': DeleteConversationsResult;
+  'pending.list': PendingMessage[];
+  'pending.add': { ok: true };
+  'pending.remove': PendingMessage | null;
+  'pending.send': { ok: true };
   'modes.list': AgentMode[];
   'modes.create': AgentMode;
   'modes.update': AgentMode;
@@ -696,6 +729,8 @@ export type HostEvent =
       event: ConversationStreamEvent;
     }
   | { kind: 'event'; type: 'conversations-changed' }
+  /** 某个会话的待发消息变了（入队 / 送达 / 删除）：输入框上方的待发列表据此刷新 */
+  | { kind: 'event'; type: 'pending-changed'; conversationId: string }
   | { kind: 'event'; type: 'mcp-changed' }
   | { kind: 'event'; type: 'skills-changed' }
   /** 模式增删改、通用模式 / 平台片段改写（设置页列表、会话内选择器据此刷新） */

@@ -5,6 +5,7 @@ import {
   ToolMessage,
 } from '@langchain/core/messages';
 import { historyFromRows, type HistoryRow, roleOf } from './history';
+import { steeringText } from './steering';
 
 const row = (
   seq: number,
@@ -182,5 +183,51 @@ describe('roleOf', () => {
     expect(roleOf('reasoning')).toBe('assistant');
     expect(roleOf('context_summary')).toBe('system');
     expect(roleOf('something_new')).toBe('assistant');
+  });
+});
+
+describe('historyFromRows：运行中插入的用户消息', () => {
+  it('一轮中间的用户消息留在原位：排在上一步的工具结果之后、下一段助手输出之前（与实时注入的顺序一致）', async () => {
+    const h = await historyFromRows(
+      [
+        row(0, 'user', 'message', { text: '做个页面' }),
+        row(1, 'assistant', 'tool_start', {
+          tool_calls: [
+            { id: 'c1', name: 'write_file', args: { path: 'a.html' } },
+          ],
+        }),
+        row(2, 'tool', 'tool_end', {
+          toolCallId: 'c1',
+          name: 'write_file',
+          content: 'ok',
+        }),
+        row(3, 'user', 'message', { text: '改成中文', injected: true }),
+        row(4, 'assistant', 'tool_start', {
+          tool_calls: [
+            { id: 'c2', name: 'edit_file', args: { path: 'a.html' } },
+          ],
+        }),
+        row(5, 'tool', 'tool_end', {
+          toolCallId: 'c2',
+          name: 'edit_file',
+          content: 'ok',
+        }),
+        row(6, 'assistant', 'message', { text: '好了' }),
+      ],
+      // 宿主对插入的消息套上固定说明（与实时注入用同一个函数）
+      (content) => {
+        const c = content as { text: string; injected?: boolean };
+        return c.injected ? steeringText(c.text) : c.text;
+      },
+    );
+    expect(h.entries.map((e) => shape(e.message))).toEqual([
+      'human:做个页面',
+      'ai:+[c1:write_file]',
+      'tool(c1,write_file):ok',
+      `human:${steeringText('改成中文')}`,
+      'ai:+[c2:edit_file]',
+      'tool(c2,edit_file):ok',
+      'ai:好了',
+    ]);
   });
 });

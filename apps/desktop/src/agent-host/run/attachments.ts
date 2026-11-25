@@ -5,6 +5,7 @@
  */
 import { access, copyFile, mkdir, stat } from 'node:fs/promises';
 import { basename, extname, join } from 'node:path';
+import { steeringText } from '@agent-test/agent-core/run/steering';
 import { z } from 'zod';
 import type { AttachmentRef } from '../../shared/rpc';
 import { hostI18n } from '../i18n';
@@ -63,9 +64,12 @@ const userContentSchema = z.object({
         size: z.number(),
         versionId: z.string().optional(),
         mediaType: z.string().optional(),
+        url: z.string().optional(),
       }),
     )
     .default([]),
+  /** 运行中插入的消息（见 agent-core run/steering.ts）：给模型时前面带固定说明，界面显示原文 */
+  injected: z.boolean().optional(),
 });
 
 export type UserContent = z.infer<typeof userContentSchema>;
@@ -77,7 +81,13 @@ export function parseUserContent(content: unknown): UserContent {
 
 /** 重放给模型的用户消息文本：正文 + 「[附件]」清单；副本已不在的标「已丢失」 */
 export async function userTextForModel(content: unknown): Promise<string> {
-  const { text, attachments } = parseUserContent(content);
+  const parsed = parseUserContent(content);
+  const body = await userBodyForModel(parsed);
+  // 实时注入与之后的历史重放都走这里：同一条消息给模型的正文逐字一致，前缀缓存才稳定
+  return parsed.injected ? steeringText(body) : body;
+}
+
+async function userBodyForModel({ text, attachments }: UserContent): Promise<string> {
   if (attachments.length === 0) return text;
   const lines: string[] = [];
   for (const a of attachments) {

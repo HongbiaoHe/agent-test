@@ -34,6 +34,8 @@ import { type CallUsage, extractUsages } from '../agent/token-usage';
  *     task 的最终结果）；文本段按 agent 分别累积，并行的子 agent 互不串段。任务 id → task 调用的对应
  *     来自 `tasks` 流模式（ns 为空、name=tools 的任务输入里带 lg_tool_call）。子 agent 的 todo 计划不推不落：
  *     它会顶掉主计划卡片，且 buildActivePlan 读「最近一次计划」会读到它。
+ *  8. 运行中插入的用户消息（run/steering.ts）：updates 里的 user_message{ids} 是文本段边界，逐个 id 交给
+ *     TurnSink.steered——由宿主落库（role=user）并推给前端。按 id 只认第一次（审批续跑会回放 updates）。
  */
 
 /** 本轮 agent.stream 要开的流模式（tasks 用于把子 agent 的 namespace 对应到 task 调用） */
@@ -56,6 +58,11 @@ export interface TurnSink {
    * 此时不推 token_usage。不记 token 的宿主（设计 agent）不实现，这里就不抽取用量。
    */
   recordUsage?(call: CallUsage): number | null | Promise<number | null>;
+  /**
+   * 运行中插入的一条用户消息已经写进对话（见 run/steering.ts）：宿主按 id 把它落库（role=user）并推给前端。
+   * 调用时机就是它在流里的位置——上一步的工具结果已经落库，下一次模型输出还没开始。不支持插入的宿主不实现。
+   */
+  steered?(id: string): void | Promise<void>;
 }
 
 export interface ConsumeStreamOptions {
@@ -106,6 +113,7 @@ const toolStartPayload = z.object({
   tool_calls: z.array(z.object({ id: z.string().optional() }).loose()),
 });
 const toolEndPayload = z.object({ toolCallId: z.string().optional() });
+const steeredPayload = z.object({ ids: z.array(z.string()) });
 /** tasks 流里 tools 节点的任务：每个工具调用一个任务（Send），输入里带本次调用 */
 const toolsTask = z.object({
   id: z.string(),
@@ -137,6 +145,7 @@ export async function consumeAgentStream(
   const seenMessageIds = new Set<string>();
   const seenToolCallIds = new Set<string>();
   const seenToolEndIds = new Set<string>();
+  const seenSteeredIds = new Set<string>();
   /** tools 任务 id → 发起它的 task 调用（见文件头第 7 条） */
   const taskCalls = new Map<string, SubagentRef>();
   /** 思考源消息 id → 所属子 agent（落库时带上） */
@@ -291,6 +300,20 @@ export async function consumeAgentStream(
           seenMessageIds.add(p.sourceId);
         }
         await flushText(agent, buffers.get(key)?.text || p?.text);
+        continue;
+      }
+      if (raw.type === 'user_message') {
+        // 只认主 agent 的（子 agent 不挂 steering 中间件，这里再兜一层）
+        const ids = agent
+          ? []
+          : (steeredPayload.safeParse(raw.payload).data?.ids ?? []);
+        const fresh = ids.filter((id) => !seenSteeredIds.has(id));
+        if (fresh.length === 0) continue;
+        await flushText(agent);
+        for (const id of fresh) {
+          seenSteeredIds.add(id);
+          await sink.steered?.(id);
+        }
         continue;
       }
       // 其余事件（tool_start / tool_end / plan_update / control_request）是文本段边界

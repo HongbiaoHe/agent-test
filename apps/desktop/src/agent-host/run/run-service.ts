@@ -30,8 +30,9 @@ import { priorMessageIds, readInterrupt } from '@agent-test/agent-core/run/agent
 import { compactHistory } from '@agent-test/agent-core/run/compaction';
 import { AGENT_STREAM_MODES, consumeAgentStream } from '@agent-test/agent-core/run/consume-stream';
 import { historyFromRows, type ReplayHistory, roleOf } from '@agent-test/agent-core/run/history';
+import { createSteeringMiddleware, type SteeringMessage } from '@agent-test/agent-core/run/steering';
 import { buildActivePlan, buildSkillPrompt } from '@agent-test/agent-core/run/turn-prompts';
-import type { HitlDecision } from '../../shared/rpc';
+import type { AttachmentRef, HitlDecision, PendingKind, PendingMessage } from '../../shared/rpc';
 import type { NodeSqliteSaver } from '../db/checkpointer';
 import type { ConversationFiles } from '../storage/conversation-files';
 import type { ConversationRepo } from '../db/conversations';
@@ -40,6 +41,7 @@ import { hostI18n } from '../i18n';
 import type { BackgroundService } from '../background/background-service';
 import type { LlmStore } from '../llm/llm-store';
 import type { ModeStore } from '../modes/mode-store';
+import type { PendingStore } from '../pending/pending-store';
 import { parseSkillSource, skillsAddArgs } from '../skills/github-install';
 import type { VideoSnapshots } from '../video/snapshots';
 import type { WebApi } from '../web-media/web-api';
@@ -48,7 +50,7 @@ import type { SkillStore } from '../skills/skill-store';
 import { LocalWorkspaceSandbox } from '../workspace/local-sandbox';
 import type { ProcessTracker } from '../workspace/process-tracker';
 import { buildWorkspaceBackend, permissionInterrupts } from '../workspace/workspace-backend';
-import { copyAttachments, userTextForModel } from './attachments';
+import { copyAttachments, type UserContent, userTextForModel } from './attachments';
 import {
   DESKTOP_ATTACHMENTS_SECTION,
   DESKTOP_MEDIA_ATTACHMENTS_NOTE,
@@ -97,6 +99,10 @@ export interface RunDeps {
   videoSnapshots?: VideoSnapshots;
   /** 记下会话写过的工作区文件（删会话时清掉它新建的产出）；测试里可不传 */
   files?: ConversationFiles;
+  /** 待发消息（运行中插入 / 排队）；不传 = 不支持运行中发消息 */
+  pending?: PendingStore;
+  /** 某个会话的待发消息变了：通知界面刷新待发列表 */
+  pendingChanged?: (conversationId: string) => void;
   log?: (msg: string) => void;
 }
 
@@ -106,6 +112,14 @@ interface ActiveRun {
 }
 
 export class BusyError extends Error {}
+
+/** 没有运行、也没有停在审批上的状态：可以开新的一轮 */
+const IDLE_STATUSES = ['idle', 'done', 'failed', 'stopped'] as const;
+
+/** 运行中插入的消息落库 / 给模型时带上 injected 标记（给模型的正文前面加固定说明，见 attachments.ts） */
+function injectedContent(content: UserContent): UserContent {
+  return { ...content, injected: true };
+}
 
 export class RunService {
   private readonly active = new Map<string, ActiveRun>();
@@ -155,22 +169,7 @@ export class RunService {
       throw new BusyError(hostI18n.t('errors.run.busy'));
     }
     if (!text.trim() && attachmentPaths.length === 0) throw new Error(hostI18n.t('errors.run.emptyMessage'));
-    const attachments = await copyAttachments(
-      join(this.runtimeDir(conversationId), 'attachments'),
-      attachmentPaths,
-    );
-    // 登录 Web 账号时，图片 / 视频 / 音频附件同时上传为生成素材（失败不挡发送：本机副本照样可用）
-    const api = this.deps.webApi;
-    if (api) {
-      for (const a of attachments) {
-        try {
-          const up = await uploadAttachment(api, conversationId, a.path, a.filename);
-          if (up) Object.assign(a, { versionId: up.versionId, mediaType: up.type, url: up.url });
-        } catch (e) {
-          this.deps.log?.(`附件上传为生成素材失败 ${a.filename}：${String(e)}`);
-        }
-      }
-    }
+    const attachments = await this.receiveAttachments(conversationId, attachmentPaths);
     repo.appendMessage(conversationId, 'user', 'message', { text, attachments });
     if (!conv.goal) {
       repo.update(conversationId, {
@@ -188,11 +187,161 @@ export class RunService {
     this.launch(conversationId, 'run');
   }
 
+  /** 把用户选的本地文件复制进运行目录；登录了 Web 账号时媒体附件同时上传为生成素材 */
+  private async receiveAttachments(conversationId: string, paths: string[]): Promise<AttachmentRef[]> {
+    const attachments = await copyAttachments(join(this.runtimeDir(conversationId), 'attachments'), paths);
+    // 失败不挡发送：本机副本照样可用
+    const api = this.deps.webApi;
+    if (api) {
+      for (const a of attachments) {
+        try {
+          const up = await uploadAttachment(api, conversationId, a.path, a.filename);
+          if (up) Object.assign(a, { versionId: up.versionId, mediaType: up.type, url: up.url });
+        } catch (e) {
+          this.deps.log?.(`附件上传为生成素材失败 ${a.filename}：${String(e)}`);
+        }
+      }
+    }
+    return attachments;
+  }
+
+  // ── 运行中发来的消息（插入 / 排队，见 pending/pending-store.ts）───────────────────────────
+
+  private isBusy(conversationId: string): boolean {
+    const status = this.deps.repo.get(conversationId)?.status;
+    return this.active.has(conversationId) || status === 'running' || status === 'waiting_approval';
+  }
+
+  listPending(conversationId: string): PendingMessage[] {
+    return (this.deps.pending?.list(conversationId) ?? []).map((e) => e.view);
+  }
+
+  /**
+   * agent 在跑（或停在审批 / 提问上）的时候用户又发来一条消息：
+   * - steer：主 agent 下一次模型调用前作为用户消息插入（不打断正在执行的工具；审批处理完之后才会有下一次调用）；
+   * - queue：这一轮结束后发。以 / 开头的命令一律按 queue——/技能名 在一轮开始时把技能全文加进系统提示，
+   *   中途加会改掉系统提示（前缀缓存失效），/skills add 也不经过模型。
+   * 会话其实已经空闲（界面状态慢了半拍）就当普通消息开跑。
+   */
+  async enqueue(conversationId: string, text: string, attachmentPaths: string[], kind: PendingKind): Promise<void> {
+    const { repo, pending } = this.deps;
+    repo.require(conversationId);
+    if (!pending || !this.isBusy(conversationId)) {
+      await this.start(conversationId, text, attachmentPaths);
+      // 界面没有乐观插入这条气泡（它以为在排队）：推一条让它显示出来
+      const last = repo.lastOfType(conversationId, 'message');
+      if (last?.role === 'user') this.deps.emit(conversationId, { type: 'user_message', payload: last.content });
+      return;
+    }
+    if (!text.trim() && attachmentPaths.length === 0) throw new Error(hostI18n.t('errors.run.emptyMessage'));
+    const attachments = await this.receiveAttachments(conversationId, attachmentPaths);
+    pending.add(conversationId, text.trimStart().startsWith('/') ? 'queue' : kind, { text, attachments });
+    this.deps.pendingChanged?.(conversationId);
+    // 复制 / 上传附件期间这一轮可能已经结束了：没人会再来取这条消息，自己接着跑
+    if (!this.isBusy(conversationId) && repo.get(conversationId)?.status === 'done') this.continueWithPending(conversationId);
+  }
+
+  /** 删除一条待发消息（界面的「编辑」也是先取走再填回输入框）；已送达 / 不存在返回 null */
+  removePending(conversationId: string, id: string): PendingMessage | null {
+    const entry = this.deps.pending?.get(id);
+    if (!entry || entry.conversationId !== conversationId) return null;
+    this.deps.pending?.take(id);
+    this.deps.pendingChanged?.(conversationId);
+    return entry.view;
+  }
+
+  /** 会话空闲时（被停止 / 失败 / 重启后）把留着的待发消息作为新一轮发出去 */
+  sendPending(conversationId: string): void {
+    this.deps.repo.require(conversationId);
+    if (this.isBusy(conversationId)) throw new BusyError(hostI18n.t('errors.run.busy'));
+    if (!this.continueWithPending(conversationId)) throw new Error(hostI18n.t('errors.run.emptyMessage'));
+  }
+
+  /**
+   * 本轮这一次模型调用前要插入的消息：所有还没取过的 steer。taken 是本轮已经交给模型的 id——
+   * 落库 / 从待发表删除要等它出现在流里（deliverSteered），这之前不能再给第二次。
+   */
+  private async takeSteering(conversationId: string, taken: Set<string>): Promise<SteeringMessage[]> {
+    const out: SteeringMessage[] = [];
+    for (const entry of this.deps.pending?.list(conversationId) ?? []) {
+      if (entry.view.kind !== 'steer' || taken.has(entry.view.id)) continue;
+      taken.add(entry.view.id);
+      out.push({ id: entry.view.id, text: await userTextForModel(injectedContent(entry.content)) });
+    }
+    return out;
+  }
+
+  /** 插入的消息已经出现在流里（位置就是它在对话里的位置）：落库、从待发表删掉、推给界面 */
+  private deliverSteered(conversationId: string, id: string): void {
+    const entry = this.deps.pending?.take(id);
+    // 审批续跑会回放 updates：已经送达过的不再处理
+    if (!entry) return;
+    const content = injectedContent(entry.content);
+    this.deps.repo.appendMessage(conversationId, 'user', 'message', content);
+    this.deps.emit(conversationId, { type: 'user_message', payload: content });
+    this.deps.pendingChanged?.(conversationId);
+  }
+
+  /**
+   * 用留着的待发消息开新的一轮（没赶上插入的 steer + 所有 queue，按发出顺序合并进同一轮）；没有待发消息返回 false。
+   * 调用方保证会话空闲。同时还有没投递的后台任务通知就并进这一轮（通知在前）。
+   */
+  private continueWithPending(conversationId: string): boolean {
+    const { repo, pending, emit } = this.deps;
+    if ((pending?.list(conversationId) ?? []).length === 0) return false;
+    const conv = repo.require(conversationId);
+    // CAS：收尾的这几步 await 之间用户可能已经发了新消息开了新的一轮——那一轮会接手这些待发消息
+    if (!repo.transition(conversationId, IDLE_STATUSES, 'running')) return false;
+    const entries = pending?.list(conversationId) ?? [];
+    this.background?.writeNotifications(conversationId);
+    for (const entry of entries) {
+      pending?.take(entry.view.id);
+      repo.appendMessage(conversationId, 'user', 'message', entry.content);
+      emit(conversationId, { type: 'user_message', payload: entry.content });
+    }
+    if (!conv.goal) {
+      const first = entries[0].content;
+      repo.update(conversationId, { goal: first.text.trim() || first.attachments.map((a) => a.filename).join(', ') });
+    }
+    this.deps.pendingChanged?.(conversationId);
+    this.deps.listChanged();
+    // /skills add 不经过模型：逐条安装；其余的交给 agent 跑一轮（一条普通消息都没有就到此结束）
+    const installs = entries.flatMap((e) => {
+      const args = skillsAddArgs(e.content.text);
+      return args === null ? [] : [args];
+    });
+    const needsRun = installs.length < entries.length;
+    void this.runSkillInstalls(conversationId, installs, needsRun);
+    return true;
+  }
+
+  private async runSkillInstalls(conversationId: string, installs: string[], thenRun: boolean): Promise<void> {
+    for (const args of installs) await this.installSkills(conversationId, args);
+    if (thenRun) this.launch(conversationId, 'run');
+    else this.finishCommand(conversationId);
+  }
+
   /**
    * `/skills add …`（兼容 npx skills add 写法）：不交给模型，直接从 GitHub 安装，把结果作为助手消息回在对话里。
    * 失败也落一条说明（不标会话失败：这是一次命令，不是 agent 运行）。
    */
   private async installSkillsCommand(conversationId: string, args: string): Promise<void> {
+    await this.installSkills(conversationId, args);
+    this.finishCommand(conversationId);
+  }
+
+  /** 命令执行完（没有 agent 运行）：会话回到 done */
+  private finishCommand(conversationId: string): void {
+    const { repo, emit } = this.deps;
+    if (repo.transition(conversationId, ['running'], 'done')) {
+      const evt: RawEvent = { type: 'result', payload: { status: 'done' } };
+      emit(conversationId, evt);
+      repo.appendMessage(conversationId, 'assistant', 'result', evt.payload);
+    }
+    this.deps.listChanged();
+  }
+
+  private async installSkills(conversationId: string, args: string): Promise<void> {
     const { repo, emit } = this.deps;
     const say = (text: string) => {
       const msg: RawEvent = { type: 'message', payload: { text } };
@@ -210,12 +359,6 @@ export class RunService {
     } catch (e) {
       say(hostI18n.t('errors.skills.installFailed', { error: e instanceof Error ? e.message : String(e) }));
     }
-    if (repo.transition(conversationId, ['running'], 'done')) {
-      const evt: RawEvent = { type: 'result', payload: { status: 'done' } };
-      emit(conversationId, evt);
-      repo.appendMessage(conversationId, 'assistant', 'result', evt.payload);
-    }
-    this.deps.listChanged();
   }
 
   resume(conversationId: string, decisions: HitlDecision[]): void {
@@ -300,6 +443,8 @@ export class RunService {
     const canvasRun = this.deps.webApi ? (parked ?? this.canvasContext(conversationId, this.deps.webApi)) : null;
     /** 本轮停在审批上：画布锁留着给续跑 */
     let awaitingApproval = false;
+    /** 本轮已经交给模型的插入消息 id（见 takeSteering） */
+    const steered = new Set<string>();
     try {
       await mkdir(workspaceDir, { recursive: true });
       await mkdir(runtimeDir, { recursive: true });
@@ -447,10 +592,13 @@ export class RunService {
         dynamicContext: [activePlanProvider, mcpAppContextProvider],
         subagents,
         // 画布状态注入：挂了画布工具、且对话绑定了画布时，画布一变就追加一份最新状态（与 Web 画布 agent 同一份逻辑）
-        middleware:
-          canvasRun && tools.some((t) => t.name === 'add_node')
+        middleware: [
+          ...(canvasRun && tools.some((t) => t.name === 'add_node')
             ? [createCanvasStateMiddleware(() => this.canvasContextText(canvasRun))]
-            : [],
+            : []),
+          // 运行中插入的用户消息：主 agent 每次模型调用前取走待插入的，写进对话（见 core run/steering.ts）
+          createSteeringMiddleware(() => this.takeSteering(conversationId, steered)),
+        ],
       });
 
       const stream = await agent.stream(input, {
@@ -479,6 +627,7 @@ export class RunService {
           persist: (event) => {
             persist(event);
           },
+          steered: (id) => this.deliverSteered(conversationId, id),
           recordUsage: (call) => {
             if (!repo.recordUsage({ conversationId, turnMessageId, ...call })) return null;
             total += call.total;
@@ -541,8 +690,9 @@ export class RunService {
       else await canvasRun?.session.close();
       await inner.stop();
       this.deps.listChanged();
-      // 会话现在空闲：当时没投出去的后台任务通知写进会话并唤醒新一轮
-      if (deliverAfter) this.background?.deliverPending(conversationId);
+      // 会话现在空闲、且这一轮是正常结束的：没赶上插入的消息和排队的消息合并成新的一轮（后台任务通知并进去）；
+      // 没有待发消息时，当时没投出去的后台任务通知写进会话并唤醒新一轮。被停止 / 失败的不自动续跑，待发消息留着
+      if (deliverAfter && !this.continueWithPending(conversationId)) this.background?.deliverPending(conversationId);
     }
   }
 

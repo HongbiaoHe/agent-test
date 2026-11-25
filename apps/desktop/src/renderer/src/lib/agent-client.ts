@@ -23,6 +23,7 @@ const eventSchema = z.discriminatedUnion('type', [
     event: z.object({ type: z.string(), payload: z.unknown(), ts: z.number() }),
   }),
   z.object({ kind: z.literal('event'), type: z.literal('conversations-changed') }),
+  z.object({ kind: z.literal('event'), type: z.literal('pending-changed'), conversationId: z.string() }),
   z.object({ kind: z.literal('event'), type: z.literal('mcp-changed') }),
   z.object({ kind: z.literal('event'), type: z.literal('skills-changed') }),
   z.object({ kind: z.literal('event'), type: z.literal('modes-changed') }),
