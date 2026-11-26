@@ -68,7 +68,7 @@ export function ChatView({
   const outerCanvasOpener = useOpenCanvas();
   const [stopRequested, setStopRequested] = useState(false);
   const outputs = useConversationOutputs(thread.items);
-  const sidePanelOpen = side.item !== null;
+  const sidePanelOpen = side.open;
 
   const refresh = () => {
     void qc.invalidateQueries({ queryKey: conversationKey(id) });
@@ -194,7 +194,7 @@ export function ChatView({
                   conversation={conv}
                   tokens={thread.tokens}
                   outputs={outputs}
-                  onOpenOutputs={side.openLauncher}
+                  onOpenOutputs={side.newTab}
                 />
                 <Button
                   variant="ghost"
@@ -203,7 +203,7 @@ export function ChatView({
                   title={sidePanelOpen ? t('shell.sidePanel.close') : t('shell.sidePanel.open')}
                   aria-pressed={sidePanelOpen}
                   data-testid="side-panel-toggle"
-                  onClick={side.toggleLauncher}
+                  onClick={side.toggle}
                 >
                   <PanelRight />
                 </Button>
@@ -294,7 +294,9 @@ export function ChatView({
         )}
         {!embedded && (
           <ChatSidePanel
-            item={side.item}
+            tabs={side.tabs}
+            activeId={side.activeId}
+            open={side.open}
             expanded={side.expanded}
             width={side.width}
             actions={side.actions}

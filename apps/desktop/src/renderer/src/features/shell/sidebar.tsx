@@ -115,11 +115,16 @@ function ConversationItem({
   return (
     <div
       className={cn(
-        'group flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-accent',
+        'group relative flex items-center gap-2 rounded-lg px-2.5 py-2 text-sm hover:bg-accent',
         active && 'bg-accent text-accent-foreground',
       )}
     >
-      <button type="button" className="flex min-w-0 flex-1 items-center gap-2 text-left" onClick={onOpen}>
+      {/* 点击区铺满整个条目（悬停时的灰色底）：内边距、标题右边的空白、状态点都能点中，不只是标题文字 */}
+      <button
+        type="button"
+        className="flex min-w-0 flex-1 items-center gap-2 text-left after:absolute after:inset-0 after:rounded-lg"
+        onClick={onOpen}
+      >
         {showIcon && <MessageSquare className="size-3.5 shrink-0 text-muted-foreground" />}
         <span className="truncate">{conversationTitle(conv)}</span>
       </button>
@@ -130,8 +135,8 @@ function ConversationItem({
             <button
               type="button"
               aria-label={t('shell.sidebar.conversationActions')}
-              // 平时隐藏，悬停条目或菜单打开时出现
-              className="-my-1 flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-background/60 hover:text-foreground focus-visible:opacity-100 data-popup-open:opacity-100"
+              // 平时隐藏，悬停条目或菜单打开时出现；relative 让它浮在整行的点击区上面
+              className="relative -my-1 flex size-5 shrink-0 items-center justify-center rounded-md text-muted-foreground opacity-0 group-hover:opacity-100 hover:bg-background/60 hover:text-foreground focus-visible:opacity-100 data-popup-open:opacity-100"
             />
           }
         >

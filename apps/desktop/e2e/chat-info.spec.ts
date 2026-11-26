@@ -2,9 +2,11 @@
  * 不需要模型的两条：
  * 1) 窗口全屏：没有红绿灯，收起侧栏后的开关靠左、对话顶栏不再空出红绿灯那一截；退出全屏恢复；
  * 2) 会话详情弹出层：顶栏列表图标打开，显示工作区 / 模型 / 模式 / 权限 / token；「产出物」打开右侧侧栏启动页；
- *    顶栏最右的侧栏开关打开 / 关闭启动页，没有产出物时给提示。
+ *    顶栏最右的侧栏开关打开 / 关闭启动页，没有产出物时给提示；
+ * 3) 弹层盖在窗口拖动区上时点得动：侧栏开着剪辑器（它的顶栏是拖动区）时，token 详情弹窗的关闭按钮正好压在上面。
  * 有产出物（网页预览）时的列表与点开，在 site-preview.spec 的真实模型用例里测。
  */
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { expect, test } from '@playwright/test';
 import { launch, newChat, screens, tempDirs } from './helpers';
@@ -79,6 +81,61 @@ test('会话详情弹出层与侧栏启动页：详情显示环境与用量，�
     await expect(panelToggle).toHaveAttribute('aria-pressed', 'false');
     await panelToggle.click();
     await expect(launcher).toBeVisible();
+  } finally {
+    await app.close();
+  }
+});
+
+test('弹层盖在窗口拖动区上：token 详情弹窗的关闭按钮不被当成拖窗口，点了能关', async () => {
+  // Electron 的拖动区只看元素盒子、不看层叠：弹窗盖在某个 app-drag 顶栏上时，真实鼠标点在那片范围里会被当成
+  // 拖窗口吞掉。Playwright 的点击直接发给页面、绕过了这层，所以这里同时断言「关闭按钮底下确实有拖动区」
+  // 和「关闭按钮本身是 no-drag」（文档顺序在后的 no-drag 会挖掉底下的拖动区）
+  const ws = join(dirs.root, 'drag-workspace');
+  mkdirSync(join(ws, 'videos'), { recursive: true });
+  writeFileSync(join(ws, 'videos', 'x.sparkvideo.json'), '{ broken');
+  const { app, page } = await launch({ userData: join(dirs.root, 'drag-user-data'), workspace: ws });
+  try {
+    await newChat(page);
+    // 侧栏开剪辑器：它的顶栏（拖动区）在标签栏下面，y 48～96
+    await page.getByRole('button', { name: '工作区文件', exact: true }).click();
+    const sheet = page.getByRole('dialog');
+    await sheet.getByRole('button', { name: 'videos', exact: true }).click();
+    await sheet.getByRole('button', { name: 'x.sparkvideo.json', exact: true }).click();
+    await expect(page.getByTestId('chat-side-panel').getByTestId('video-editor')).toBeVisible();
+
+    await page.getByRole('button', { name: /tokens$/ }).click();
+    const dialog = page.locator('[data-slot="dialog-content"]');
+    await expect(dialog).toBeVisible();
+    // 有很多轮运行时弹窗撑到 max-h（85vh），顶边离窗口顶只有 7.5vh：关闭按钮落进剪辑器顶栏的范围
+    await dialog.evaluate(async (el) => {
+      if (el instanceof HTMLElement) el.style.height = '85vh';
+      // 等打开时的缩放动画走完再量位置（动画中的盒子还没到最终位置）
+      await Promise.all(el.getAnimations().map((a) => a.finished));
+    });
+    const close = dialog.locator('[data-slot="dialog-close"]');
+    const probe = await close.evaluate((btn) => {
+      const region = (el: Element) => getComputedStyle(el).getPropertyValue('-webkit-app-region');
+      const r = btn.getBoundingClientRect();
+      const x = r.left + r.width / 2;
+      const y = r.top + r.height / 2;
+      const dragsUnder = [...document.querySelectorAll('.app-drag')].filter((el) => {
+        const b = el.getBoundingClientRect();
+        return region(el) === 'drag' && x >= b.left && x <= b.right && y >= b.top && y <= b.bottom;
+      }).length;
+      const overlay = document.querySelector('[data-slot="dialog-overlay"]');
+      return {
+        dragsUnder,
+        close: region(btn),
+        popup: btn.parentElement ? region(btn.parentElement) : '',
+        overlay: overlay ? region(overlay) : '',
+      };
+    });
+    expect(probe.dragsUnder).toBeGreaterThan(0);
+    expect(probe).toMatchObject({ close: 'no-drag', popup: 'no-drag', overlay: 'no-drag' });
+    await close.click();
+    await expect(dialog).toBeHidden();
+    // 没有弹层时顶栏照旧可以拖窗口
+    expect(await page.locator('header.app-drag').first().evaluate((el) => getComputedStyle(el).getPropertyValue('-webkit-app-region'))).toBe('drag');
   } finally {
     await app.close();
   }

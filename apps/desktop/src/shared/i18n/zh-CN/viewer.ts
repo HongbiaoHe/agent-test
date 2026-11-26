@@ -1,5 +1,11 @@
 /** 全屏预览弹窗（图片 / 视频 / 音频 / Markdown / 文本 / 网页） */
 export const viewer = {
+  browser: {
+    back: '后退',
+    forward: '前进',
+    address: '地址',
+    invalidAddress: '只能打开本机服务（如 localhost:3000）或当前工作区里的网页',
+  },
   closePreview: '关闭预览',
   cannotPreviewSelf: '不能在这里预览 Spark 自身',
   noWorkspace: '这个会话没有工作区',

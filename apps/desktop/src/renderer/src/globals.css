@@ -246,6 +246,19 @@
 .app-drag [role="button"] {
   -webkit-app-region: no-drag;
 }
+/*
+ * 浮在上面的弹层（弹窗及其遮罩、菜单、下拉、气泡、侧拉、提示条）一律不可拖：
+ * Electron 的拖动区只看元素盒子、不看层叠顺序——弹层盖在某个顶栏上时，落在顶栏范围里的点击
+ * 会被当成拖窗口吞掉（弹窗的关闭按钮点不了）。拖动区按文档顺序合成，后面的 no-drag 盖过前面的 drag：
+ * Base UI 的弹层挂在 body 末尾（#root 之后），所以这里写一次就能挖掉它们底下的拖动区。
+ * 规则落在每个元素上而不只是容器：容器是 0×0 的，盒子在里面那些 fixed 定位的元素上。
+ */
+body > :not(#root),
+body > :not(#root) *,
+[data-sonner-toaster],
+[data-sonner-toaster] * {
+  -webkit-app-region: no-drag;
+}
 
 /* 对话里的 Markdown 正文（只用语义 token） */
 .markdown {

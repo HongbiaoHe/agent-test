@@ -66,6 +66,9 @@ export const shell = {
     collapse: '收起為側欄',
     close: '關閉側欄',
     resize: '拖動調整側欄寬度',
+    tabs: '側欄分頁',
+    newTab: '新增分頁',
+    closeTab: '關閉分頁：{{title}}',
   },
   conversation: {
     untitled: '新對話',

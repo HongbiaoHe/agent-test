@@ -24,6 +24,15 @@ const api: DesktopApi = {
   },
   openExternal: (url) => ipcRenderer.invoke('desktop:openExternal', url),
   showInFolder: (path) => ipcRenderer.invoke('desktop:showInFolder', path),
+  onSiteNavigated: (listener) => {
+    const handler = (_e: unknown, frameName: unknown, url: unknown) => {
+      if (typeof frameName === 'string' && typeof url === 'string') listener(frameName, url);
+    };
+    ipcRenderer.on('desktop:siteNavigated', handler);
+    return () => {
+      ipcRenderer.removeListener('desktop:siteNavigated', handler);
+    };
+  },
   sitePreviewOrigin: (workspaceDir) => ipcRenderer.invoke('desktop:sitePreviewOrigin', workspaceDir),
   fetchText: (url) => ipcRenderer.invoke('desktop:fetchText', url),
   getWebAccount: () => ipcRenderer.invoke('desktop:getWebAccount'),

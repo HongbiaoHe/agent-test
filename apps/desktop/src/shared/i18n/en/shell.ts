@@ -66,6 +66,9 @@ export const shell = {
     collapse: 'Back to side panel',
     close: 'Close side panel',
     resize: 'Drag to resize the side panel',
+    tabs: 'Side panel tabs',
+    newTab: 'New tab',
+    closeTab: 'Close tab: {{title}}',
   },
   conversation: {
     untitled: 'New chat',

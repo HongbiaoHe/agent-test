@@ -41,10 +41,12 @@ async function freePort(): Promise<number> {
 }
 
 // 网页预览开在对话右侧的侧栏里（不再是全屏弹窗）
-const viewer = (page: Page) => page.getByTestId('site-pane');
+// 侧栏是带标签的容器：别的标签里的网页还挂着（只是隐藏），所以只认当前标签里的那个
+const viewer = (page: Page) =>
+  page.locator('[data-testid="side-tab-panel"][data-active="true"]').getByTestId('site-pane');
 const frame = (page: Page) => viewer(page).locator('iframe').contentFrame();
 
-/** 关掉右侧侧栏（网页预览），等它消失 */
+/** 收起右侧侧栏（标签都留着），等网页预览不再可见 */
 async function closeSidePanel(page: Page): Promise<void> {
   await page.getByTestId('chat-side-panel').getByRole('button', { name: '关闭侧栏' }).click();
   await expect(viewer(page)).toBeHidden();
@@ -57,8 +59,10 @@ test('工作区面板：.html 以网页打开（相对路径资源、交互、�
     join(ws, 'site', 'index.html'),
     '<!doctype html><meta charset="utf-8"><link rel="stylesheet" href="css/style.css">' +
       '<script>let n = 0;</script>' +
-      '<h1>面板预览</h1><button onclick="document.getElementById(\'c\').textContent = ++n">加一</button><span id="c">0</span>',
+      '<h1>面板预览</h1><button onclick="document.getElementById(\'c\').textContent = ++n">加一</button><span id="c">0</span>' +
+      '<p><a href="other.html">去第二页</a></p>',
   );
+  writeFileSync(join(ws, 'site', 'other.html'), '<!doctype html><meta charset="utf-8"><h1>第二页</h1>');
   writeFileSync(join(ws, 'site', 'css', 'style.css'), 'h1 { color: rgb(200, 30, 30); }');
   const { app, page } = await launch({ userData: join(dirs.root, 'panel-user-data'), workspace: ws });
   // 诊断：记录预览 iframe 的每次导航与点击时刻。这条用例在整套里偶发「点了加一计数仍为 0」，
@@ -78,7 +82,13 @@ test('工作区面板：.html 以网页打开（相对路径资源、交互、�
     const heading = frame(page).getByRole('heading', { name: '面板预览' });
     await expect(heading).toBeVisible();
     await expect(heading).toHaveCSS('color', 'rgb(200, 30, 30)');
-    await expect(viewer(page)).toContainText('/site/index.html');
+    // 浏览器式的工具栏：地址栏显示工作区里的路径；刚打开没有可后退 / 前进的
+    const address = viewer(page).getByRole('textbox', { name: '地址' });
+    const back = viewer(page).getByRole('button', { name: '后退' });
+    const forward = viewer(page).getByRole('button', { name: '前进' });
+    await expect(address).toHaveValue('/site/index.html');
+    await expect(back).toBeDisabled();
+    await expect(forward).toBeDisabled();
     expect(await viewer(page).locator('iframe').getAttribute('src')).toMatch(/^spark-preview:\/\/w-[a-f0-9]{16}\/site\/index\.html$/);
     nav.push(`click@${Date.now() - t0}`);
     await frame(page).getByRole('button', { name: '加一' }).click();
@@ -88,6 +98,39 @@ test('工作区面板：.html 以网页打开（相对路径资源、交互、�
     await viewer(page).getByRole('button', { name: '刷新' }).click();
     await expect(frame(page).locator('#c')).toHaveText('0');
     await expect(heading).toHaveCSS('color', 'rgb(30, 30, 200)');
+    // 页面里点链接：地址栏跟着变，可以后退；后退 / 前进回到对应的页面
+    await frame(page).getByRole('link', { name: '去第二页' }).click();
+    await expect(frame(page).getByRole('heading', { name: '第二页' })).toBeVisible();
+    await expect(address).toHaveValue('/site/other.html');
+    await expect(back).toBeEnabled();
+    await page.screenshot({ path: join(screens, '50b-site-browser-second-page.png') });
+    await back.click();
+    await expect(heading).toBeVisible();
+    await expect(address).toHaveValue('/site/index.html');
+    await expect(back).toBeDisabled();
+    await expect(forward).toBeEnabled();
+    await forward.click();
+    await expect(frame(page).getByRole('heading', { name: '第二页' })).toBeVisible();
+    await expect(address).toHaveValue('/site/other.html');
+    // 地址栏直接输入工作区里的路径，回车加载；这也算一次访问，可以再后退
+    await address.fill('/site/index.html');
+    await address.press('Enter');
+    await expect(heading).toBeVisible();
+    await expect(address).toHaveValue('/site/index.html');
+    await expect(back).toBeEnabled();
+    // 深色主题下的工具栏（等配色过渡走完再截图）
+    await page.emulateMedia({ colorScheme: 'dark' });
+    await expect(page.locator('html')).toHaveClass(/\bdark\b/);
+    await page.waitForTimeout(500);
+    await page.screenshot({ path: join(screens, '50c-site-browser-dark.png') });
+    await page.emulateMedia({ colorScheme: 'light' });
+    // 外网地址不能在这里打开：提示原因，Esc 放弃修改后地址栏回到当前页面
+    await address.fill('https://example.com');
+    await address.press('Enter');
+    await expect(page.getByText('只能打开本机服务')).toBeVisible();
+    await expect(heading).toBeVisible();
+    await address.press('Escape');
+    await expect(address).toHaveValue('/site/index.html');
     await page.screenshot({ path: join(screens, '50-site-preview-panel-light.png') });
     await page.emulateMedia({ colorScheme: 'dark' });
     await expect(page.locator('html')).toHaveClass(/\bdark\b/);
@@ -107,13 +150,13 @@ test('工作区面板：.html 以网页打开（相对路径资源、交互、�
     expect(sideBox?.width).toBe(chatBox?.width);
     await expect(page.getByRole('button', { name: '新建对话' })).toBeInViewport();
     await page.screenshot({ path: join(screens, '50-site-preview-panel-expanded.png') });
-    // 左侧会话栏收起时，展开的侧栏顶栏给侧栏开关让位：标题不被开关盖住
+    // 左侧会话栏收起时，展开的侧栏顶栏（标签栏）给侧栏开关让位：第一个标签不被开关盖住
     await page.getByRole('button', { name: '收起侧栏' }).click();
     // 开关收起时有 200ms 的位移动画：等它停稳再比位置
     await expect
       .poll(async () => {
         const toggleBox = await page.getByRole('button', { name: '展开侧栏' }).boundingBox();
-        const titleBox = await side.getByRole('heading').boundingBox();
+        const titleBox = await side.getByRole('tab').first().boundingBox();
         return titleBox && toggleBox ? Math.round(titleBox.x - (toggleBox.x + toggleBox.width)) : null;
       })
       .toBeGreaterThanOrEqual(0);
@@ -195,8 +238,13 @@ test('网页预览（真实模型）：preview_page 静态页 / 端口、对话�
     await expect(frame(page).getByRole('heading', { name: '静态页预览' })).toBeVisible();
     await closeSidePanel(page);
 
-    // 侧栏启动页：产出物里列着这个网页，点开换成网页预览
+    // 顶栏的侧栏开关：收起着就重新打开，标签还在（回到刚才的网页）
     await page.getByTestId('side-panel-toggle').click();
+    await expect(frame(page).getByRole('heading', { name: '静态页预览' })).toBeVisible();
+    // 加号 → 新建标签页：产出物里列着这个网页；点它——已经开着，切回那个标签，新建标签页收掉
+    const side = page.getByTestId('chat-side-panel');
+    await side.getByRole('button', { name: '新建标签页' }).click();
+    await expect(side.getByRole('tab')).toHaveCount(2);
     const launcher = page.getByTestId('side-panel-launcher');
     const sites = launcher.getByRole('list', { name: '网页预览' });
     await expect(sites.getByRole('button')).toHaveCount(1);
@@ -204,6 +252,7 @@ test('网页预览（真实模型）：preview_page 静态页 / 端口、对话�
     await page.screenshot({ path: join(screens, '51b-side-panel-launcher-outputs.png') });
     await sites.getByRole('button').click();
     await expect(launcher).toBeHidden();
+    await expect(side.getByRole('tab')).toHaveCount(1);
     await expect(frame(page).getByRole('heading', { name: '静态页预览' })).toBeVisible();
     await closeSidePanel(page);
 
@@ -223,7 +272,7 @@ test('网页预览（真实模型）：preview_page 静态页 / 端口、对话�
       `本机 ${port} 端口上已经有一个 web 服务在运行。不要启动任何服务、不要执行命令，直接调用 preview_page 预览它的 /about 页面。`,
     );
     await expect(frame(page).getByRole('heading', { name: '关于页' })).toBeVisible();
-    await expect(viewer(page)).toContainText(`localhost:${port}/about`);
+    await expect(viewer(page).getByRole('textbox', { name: '地址' })).toHaveValue(`localhost:${port}/about`);
     await closeSidePanel(page);
 
     // 4) 对话链接：本机服务 / 工作区 .html 都在应用内预览

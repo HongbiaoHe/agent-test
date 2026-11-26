@@ -41,6 +41,28 @@ test('侧栏：新建 / 重命名 / 置顶分组 / 搜索 / 收起与悬停弹�
   await expect(group(page, '今天')).toContainText('Alpha 项目');
   await expect(group(page, '今天')).toContainText('Beta 调研');
 
+  // 整个条目（悬停时的灰色底）都能点中：点左侧内边距、标题右边的空白，都切到那个会话
+  const header = page.getByRole('button', { name: '会话菜单' });
+  await expect(header).toContainText('Beta 调研');
+  const alphaRow = nav(page).locator('div.group').filter({ hasText: 'Alpha 项目' });
+  const rowBox = await alphaRow.boundingBox();
+  if (!rowBox) throw new Error('找不到会话条目');
+  await page.mouse.click(rowBox.x + 3, rowBox.y + rowBox.height / 2);
+  await expect(header).toContainText('Alpha 项目');
+  const betaRow = nav(page).locator('div.group').filter({ hasText: 'Beta 调研' });
+  const betaBox = await betaRow.boundingBox();
+  if (!betaBox) throw new Error('找不到会话条目');
+  // 标题右边、「…」左边的空白；以及上下内边距
+  await page.mouse.click(betaBox.x + betaBox.width - 40, betaBox.y + 3);
+  await expect(header).toContainText('Beta 调研');
+  await page.mouse.click(rowBox.x + rowBox.width - 40, rowBox.y + rowBox.height - 3);
+  await expect(header).toContainText('Alpha 项目');
+  // 「…」照样打开菜单（不会被整行的点击区盖住）
+  await alphaRow.hover();
+  await alphaRow.getByRole('button', { name: '会话操作' }).click();
+  await expect(page.getByRole('menuitem', { name: '重命名' })).toBeVisible();
+  await page.keyboard.press('Escape');
+
   // 超长标题：顶栏标题省略号截断，不盖住右侧 token 徽标；侧栏条目同样截断
   const longTitle = `超长标题 ${'Cinematic night-time stunt film, square 1:1, two shots joined by a hard cut. '.repeat(3)}`.slice(0, 190);
   await newChat(page);

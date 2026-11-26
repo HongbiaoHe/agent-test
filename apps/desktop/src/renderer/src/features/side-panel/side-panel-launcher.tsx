@@ -1,6 +1,6 @@
 /**
- * 右侧侧栏的启动页（顶栏最右的侧栏开关打开；没有打开具体内容时的样子）：
- * 居中列出本会话可预览的产出物（网页预览、剪辑工程、画布、生成的媒体），点哪条就在侧栏里打开哪条
+ * 右侧侧栏的新建标签页（标签栏的加号、或顶栏最右的侧栏开关在没有标签时打开）：
+ * 居中列出本会话可预览的产出物（网页预览、剪辑工程、画布、生成的媒体），点哪条就在这个标签里打开哪条
  * （媒体滚到对话里的卡片）。会话本身的信息在顶栏的「会话详情」弹出层里（conversation-details.tsx）。
  */
 import { AudioLines, Clapperboard, Globe, Image as ImageIcon, Mic, Network, Video } from 'lucide-react';
@@ -9,7 +9,6 @@ import { useTranslation } from 'react-i18next';
 import { Badge } from '@/components/ui/badge';
 import { ScrollArea } from '@/components/ui/scroll-area';
 import type { MediaType } from '@/lib/api';
-import { cn } from '@/lib/utils';
 import type { ConversationSummary } from '../../../../shared/rpc';
 import { useConversationMedia } from '../chat/components/media-card';
 import type { ConversationOutputs } from '../chat/lib/conversation-outputs';
@@ -38,16 +37,12 @@ export function outputCount(conversation: ConversationSummary | null | undefined
 export function SidePanelLauncher({
   conversation,
   outputs,
-  controls,
-  headerInset,
   onOpenSite,
   onOpenVideo,
   onOpenCanvas,
 }: {
   conversation: ConversationSummary | null | undefined;
   outputs: ConversationOutputs;
-  controls: ReactNode;
-  headerInset?: string;
   onOpenSite: (spec: PreviewSpec) => void;
   onOpenVideo: (path: string) => void;
   onOpenCanvas: (canvasId: string) => void;
@@ -58,10 +53,6 @@ export function SidePanelLauncher({
 
   return (
     <section className="flex h-full min-w-0 flex-col bg-background" data-testid="side-panel-launcher">
-      {/* 只有开关，没有标题和分割线：启动页本身就是一张干净的列表 */}
-      <header className={cn('app-drag flex h-12 shrink-0 items-center justify-end gap-1 px-3', headerInset)}>
-        {controls}
-      </header>
       <ScrollArea className="min-h-0 flex-1">
         <div className="mx-auto flex min-h-full w-full max-w-sm flex-col justify-center px-6 py-16">
           {empty ? (

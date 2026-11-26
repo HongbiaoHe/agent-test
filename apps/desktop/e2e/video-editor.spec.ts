@@ -124,7 +124,8 @@ function readProject(ws: string, rel: string): VideoProject {
 
 // ---------- 界面操作 ----------
 
-const editor = (page: Page) => page.getByTestId('video-editor');
+// 侧栏是带标签的容器：别的标签里的剪辑器还挂着（只是隐藏），所以只认当前可见的那个
+const editor = (page: Page) => page.locator('[data-testid="video-editor"]:visible');
 const timeline = (page: Page) => page.getByTestId('video-timeline');
 const inspector = (page: Page) => page.getByTestId('video-inspector');
 const saveState = (page: Page) => page.getByTestId('video-save-state');
@@ -143,7 +144,7 @@ async function openFromPanel(page: Page, rel: string): Promise<void> {
   const parts = rel.split('/');
   for (const dir of parts.slice(0, -1)) await sheet.getByRole('button', { name: dir, exact: true }).click();
   await sheet.getByRole('button', { name: parts[parts.length - 1], exact: true }).click();
-  await expect(sidePanel(page).getByTestId('video-editor')).toBeVisible();
+  await expect(editor(page)).toBeVisible();
   await expect(page.locator('main[data-view]')).toHaveAttribute('data-view', /^chat:/);
   if ((await sidePanel(page).getAttribute('data-expanded')) !== 'true') {
     await sidePanel(page).getByRole('button', { name: '展开全部' }).click();
@@ -371,7 +372,7 @@ test('真实模型：create_video_project → 工程卡片 → 打开剪辑器�
 
   // 在对话右侧的侧栏里打开（不跳走）：对话还在旁边
   await card.getByRole('button', { name: '打开剪辑器' }).click();
-  await expect(sidePanel(page).getByTestId('video-editor')).toBeVisible();
+  await expect(editor(page)).toBeVisible();
   await expect(page.locator('main[data-view]')).toHaveAttribute('data-view', /^chat:/);
   await expect(page.getByTestId('timeline')).toBeVisible();
   await expect(title(page)).toHaveText('E2E 宣传片');
@@ -463,6 +464,92 @@ test('侧栏里的剪辑器：在对话那边按退格不删片段；在剪辑�
   await expect(clipBlock(page, 'a.mp4')).toHaveCount(0);
   await closeEditor(page);
   await expect.poll(clips, { timeout: 10_000 }).toBe(1);
+  await app.close();
+});
+
+test('侧栏多标签：剪辑器和网页同时开着，切换不重载、状态都在；收起是全部一起收起，再打开都还在；逐个关标签', async () => {
+  const { app, page } = await openEditor('video-tabs', (ws) => {
+    writeProject(ws, 'videos/tabs.sparkvideo.json', demoProject(ws, makeMedia(ws)));
+    mkdirSync(join(ws, 'site'), { recursive: true });
+    writeFileSync(
+      join(ws, 'site', 'index.html'),
+      '<!doctype html><meta charset="utf-8"><h1>标签里的网页</h1>' +
+        '<button onclick="document.getElementById(\'c\').textContent = ++n">加一</button><span id="c">0</span><script>let n = 0;</script>',
+    );
+    return 'videos/tabs.sparkvideo.json';
+  });
+  const side = sidePanel(page);
+  const tabs = side.getByRole('tab');
+  const activePanel = side.locator('[data-testid="side-tab-panel"][data-active="true"]');
+  const frame = () => activePanel.locator('iframe').contentFrame();
+  await side.getByRole('button', { name: '收起为侧栏' }).click();
+  await expect(tabs).toHaveCount(1);
+  await expect(saveState(page)).toHaveText('已保存');
+  // 剪辑器里先选中一个片段：一会儿切走再切回来，选中状态和属性面板都要还在
+  await clipBlock(page, 'a.mp4').click();
+  await expect(inspector(page)).toContainText('a.mp4');
+
+  // 再打开一个网页：多出一个标签，剪辑器只是被藏起来（没有卸载）
+  await page.getByRole('button', { name: '工作区文件', exact: true }).click();
+  const sheet = page.getByRole('dialog');
+  await sheet.getByRole('button', { name: 'site', exact: true }).click();
+  await sheet.getByRole('button', { name: 'index.html' }).click();
+  await sheet.getByRole('button', { name: '预览网页' }).click();
+  await expect(tabs).toHaveCount(2);
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'true');
+  await expect(frame().getByRole('heading', { name: '标签里的网页' })).toBeVisible();
+  await expect(editor(page)).toBeHidden();
+  // 只是藏起来，没有卸载
+  await expect(page.getByTestId('video-editor')).toHaveCount(1);
+  await frame().getByRole('button', { name: '加一' }).click();
+  await expect(frame().locator('#c')).toHaveText('1');
+  await page.screenshot({ path: join(screens, 'side-tabs-1-site.png') });
+
+  // 切回剪辑器：选中的片段、属性面板、时间线都还在（没有重新加载工程）
+  await tabs.nth(0).click();
+  await expect(editor(page)).toBeVisible();
+  await expect(inspector(page)).toContainText('a.mp4');
+  await expect(clipBlock(page, 'a.mp4')).toBeVisible();
+  await expect(clipBlock(page, 'b.mp4')).toBeVisible();
+  const clipBox = await clipBlock(page, 'a.mp4').boundingBox();
+  expect(clipBox?.width ?? 0).toBeGreaterThan(10);
+  // 标签栏上高亮的是剪辑器这个标签
+  await expect(tabs.nth(0)).toHaveAttribute('aria-selected', 'true');
+  await expect(tabs.nth(1)).toHaveAttribute('aria-selected', 'false');
+  await expect(side.getByTestId('side-tab').nth(0)).toHaveAttribute('data-active', 'true');
+  await page.waitForTimeout(400); // 等标签底色的过渡走完再截图
+  await page.screenshot({ path: join(screens, 'side-tabs-2-editor.png') });
+  // 切回网页：计数还是 1，没有重新加载
+  await tabs.nth(1).click();
+  await expect(frame().locator('#c')).toHaveText('1');
+
+  // 收起侧栏：两个标签一起收起；顶栏开关再打开，都还在，网页计数没变
+  await side.getByRole('button', { name: '关闭侧栏' }).click();
+  await expect(side).toBeHidden();
+  await page.getByTestId('side-panel-toggle').click();
+  await expect(side).toBeVisible();
+  await expect(tabs).toHaveCount(2);
+  await expect(frame().locator('#c')).toHaveText('1');
+
+  // 加号：新建标签页；深色主题下看一眼标签栏
+  await side.getByRole('button', { name: '新建标签页' }).click();
+  await expect(tabs).toHaveCount(3);
+  await expect(side.getByTestId('side-panel-launcher')).toBeVisible();
+  await page.emulateMedia({ colorScheme: 'dark' });
+  await page.waitForTimeout(400);
+  await page.screenshot({ path: join(screens, 'side-tabs-3-new-tab-dark.png') });
+  await page.emulateMedia({ colorScheme: 'light' });
+
+  // 逐个关：关掉当前的新建标签页回到左边的网页；关网页剩剪辑器；全关完侧栏消失
+  await side.getByRole('button', { name: '关闭标签页：新建标签页' }).click();
+  await expect(tabs).toHaveCount(2);
+  await expect(frame().locator('#c')).toHaveText('1');
+  await side.getByRole('button', { name: /^关闭标签页：.*index\.html/ }).click();
+  await expect(tabs).toHaveCount(1);
+  await expect(editor(page)).toBeVisible();
+  await side.getByRole('button', { name: /^关闭标签页：/ }).click();
+  await expect(side).toHaveCount(0);
+  await expect(page.getByTestId('side-panel-toggle')).toHaveAttribute('aria-pressed', 'false');
   await app.close();
 });
 
@@ -818,7 +905,8 @@ test('损坏工程：非法 JSON 与 schema 不过都显示报错页并列出问
     writeProject(ws, 'videos/bad.sparkvideo.json', bad);
     return 'videos/broken.sparkvideo.json';
   });
-  const invalid = page.getByTestId('video-invalid');
+  // 两个坏工程先后打开，各占一个标签：只看当前可见的报错页
+  const invalid = page.locator('[data-testid="video-invalid"]:visible');
   await expect(invalid).toBeVisible();
   await expect(invalid).toContainText('工程文件有问题，无法在剪辑器里打开');
   await expect(invalid).toContainText('JSON');
@@ -826,6 +914,7 @@ test('损坏工程：非法 JSON 与 schema 不过都显示报错页并列出问
 
   await closeEditor(page);
   await openFromPanel(page, 'videos/bad.sparkvideo.json');
+  await expect(sidePanel(page).getByRole('tab')).toHaveCount(2);
   await expect(invalid).toBeVisible();
   await expect(invalid).toContainText('video.0.outPoint: 出点不能超过素材时长');
   await page.screenshot({ path: join(screens, 'video-3-invalid.png') });

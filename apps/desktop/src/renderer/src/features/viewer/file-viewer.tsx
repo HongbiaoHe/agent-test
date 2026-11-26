@@ -11,6 +11,7 @@ import { useQuery } from '@tanstack/react-query';
 import { ExternalLink, FileWarning, FolderOpen, Loader2, RotateCw, X } from 'lucide-react';
 import { type MouseEvent, type ReactNode, useMemo, useState } from 'react';
 import { useTranslation } from 'react-i18next';
+import { cn } from '@/lib/utils';
 import { Button } from '@/components/ui/button';
 import { Dialog, DialogContent, DialogTitle } from '@/components/ui/dialog';
 import { CodeViewer } from '@/features/chat/components/highlight';
@@ -171,9 +172,24 @@ export function portUrl(spec: Extract<PreviewSpec, { kind: 'port' }>): string {
 }
 
 /** 网页预览的 iframe（全屏弹窗与右侧侧栏共用） */
-export function SiteBody({ spec, workspaceDir }: { spec: PreviewSpec; workspaceDir: string | null }) {
+export function SiteBody({
+  spec,
+  workspaceDir,
+  url,
+  frameName,
+  flush = false,
+}: {
+  spec: PreviewSpec;
+  workspaceDir: string | null;
+  /** 直接加载这个地址（侧栏的浏览器在后退 / 前进 / 地址栏回车时给）；不给就按 spec 算 */
+  url?: string | null;
+  /** iframe 的 name：main 据此把这个 iframe 里的导航报给界面（见 DesktopApi.onSiteNavigated） */
+  frameName?: string;
+  /** 贴边铺满（侧栏的浏览器）：不要圆角、边框和阴影。缺省是弹窗里的卡片样式 */
+  flush?: boolean;
+}) {
   const { t } = useTranslation();
-  const fileRoot = spec.kind === 'file' ? workspaceDir : null;
+  const fileRoot = spec.kind === 'file' && !url ? workspaceDir : null;
   const origin = useQuery({
     queryKey: ['site-preview-origin', fileRoot],
     queryFn: () => window.desktop.sitePreviewOrigin(fileRoot ?? ''),
@@ -182,10 +198,10 @@ export function SiteBody({ spec, workspaceDir }: { spec: PreviewSpec; workspaceD
     retry: false,
   });
   let src: string;
-  if (spec.kind === 'port') {
+  if (url) {
+    src = url;
+  } else if (spec.kind === 'port') {
     src = portUrl(spec);
-    // 开发模式下 renderer 自己就跑在 localhost 的某个端口上：同源页面 + allow-same-origin 等于把主窗口交出去
-    if (new URL(src).origin === window.location.origin) return <Unavailable message={t('viewer.cannotPreviewSelf')} />;
   } else {
     if (!workspaceDir) return <Unavailable message={t('viewer.noWorkspace')} />;
     if (origin.isPending) return <Loading />;
@@ -194,15 +210,18 @@ export function SiteBody({ spec, workspaceDir }: { spec: PreviewSpec; workspaceD
     }
     src = `${origin.data}/${spec.path.split('/').map(encodeURIComponent).join('/')}`;
   }
+  // 开发模式下 renderer 自己就跑在 localhost 的某个端口上：同源页面 + allow-same-origin 等于把主窗口交出去
+  if (new URL(src).origin === window.location.origin) return <Unavailable message={t('viewer.cannotPreviewSelf')} />;
   return (
     <iframe
       src={src}
+      name={frameName}
       title={spec.title}
       sandbox={SITE_SANDBOX}
       // 页面没设背景时 iframe 默认透明，会透出深色蒙层：让 iframe 的配色方案与页面不同，
       // Chromium 就按页面自己的画布色铺一层不透明背景（同浏览器里打开时的样子）
       style={{ colorScheme: 'dark' }}
-      className="min-h-0 flex-1 self-stretch rounded-lg border border-border shadow-sm"
+      className={cn('min-h-0 flex-1 self-stretch', flush ? 'border-0' : 'rounded-lg border border-border shadow-sm')}
     />
   );
 }

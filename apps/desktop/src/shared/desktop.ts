@@ -68,6 +68,11 @@ export interface DesktopApi {
   onFullScreenChange(listener: (fullscreen: boolean) => void): () => void;
   openExternal(url: string): Promise<void>;
   showInFolder(path: string): Promise<void>;
+  /**
+   * 网页预览的 iframe 里发生了导航（首次加载、点链接、脚本跳转、单页应用改地址）：frameName 是那个 iframe 的 name
+   * （SITE_FRAME_PREFIX 开头，界面给每个预览起的），url 是它现在的地址。返回取消订阅
+   */
+  onSiteNavigated(listener: (frameName: string, url: string) => void): () => void;
   /** 工作区网页预览的源（spark-preview://w-<hash>）：工作区根即站点根，页面地址 = 源 + / + 工作区相对路径 */
   sitePreviewOrigin(workspaceDir: string): Promise<string>;
   /** 预览弹窗读远程 md / 文本（经 main 取，绕开 renderer 的跨域限制）；只放行 http(s)，最多 2MB */
@@ -79,6 +84,9 @@ export interface DesktopApi {
   signInWeb(email: string, code: string, apiUrl: string): Promise<WebAccountStatus>;
   signOutWeb(): Promise<WebAccountStatus>;
 }
+
+/** 网页预览 iframe 的 name 前缀：main 据此认出哪些子框架的导航要告诉界面 */
+export const SITE_FRAME_PREFIX = 'spark-site-';
 
 /** main → agent-host（utilityProcess.postMessage） */
 export type HostControlMessage =
